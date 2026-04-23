@@ -12,7 +12,7 @@ git init
 git add .
 git commit -m "Initial commit"
 git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/pc-health-check.git
+git remote add origin https://github.com/heznpc/pc-health-check.git
 git push -u origin main
 ```
 
@@ -25,25 +25,14 @@ git push -u origin main
 
 After ~1 minute your site is live at:
 ```
-https://YOUR_USERNAME.github.io/pc-health-check/
-```
-
-### 3. Replace placeholder URLs
-
-Search the repo for `your-username` and `YOUR_USERNAME` and replace with your actual GitHub username:
-
-```bash
-# Files that need updating:
-#   README.md
-#   docs/index.html
-#   docs/i18n/*.json
+https://heznpc.github.io/pc-health-check/
 ```
 
 ## Custom domain (optional)
 
 1. Buy a domain (e.g. `pchealth.example.com`)
 2. Create `docs/CNAME` with a single line: `pchealth.example.com`
-3. At your domain registrar, add a CNAME record pointing to `YOUR_USERNAME.github.io`
+3. At your domain registrar, add a CNAME record pointing to `heznpc.github.io`
 4. In Settings → Pages → Custom domain, enter your domain
 
 GitHub Pages provides free TLS automatically.

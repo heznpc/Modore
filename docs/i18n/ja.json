@@ -115,7 +115,7 @@
       "desc": "macOS 10.15+ · Python 3(12+は標準搭載)。<code>검사하기.command</code> を右クリック → 開く。",
       "btn": "pch-v0.2-mac.zip →"
     },
-    "github_side": "クローン・フォーク: <a href='https://github.com/your-username/pc-health-check' target='_blank' rel='noopener'>github.com/your-username/pc-health-check</a>。1,500行を自分で確認できます。"
+    "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>。1,500行を自分で確認できます。"
   },
   "final": {
     "heading": "疑わしい今、<em>6分で答えが出ます。</em>",

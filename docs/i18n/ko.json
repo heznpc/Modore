@@ -115,7 +115,7 @@
       "desc": "macOS 10.15+ · Python 3 (12+ 기본). <code>검사하기.command</code> 우클릭 → 열기.",
       "btn": "pch-v0.2-mac.zip →"
     },
-    "github_side": "클론이나 포크: <a href='https://github.com/your-username/pc-health-check' target='_blank' rel='noopener'>github.com/your-username/pc-health-check</a>. 1,500줄 읽고 직접 확인."
+    "github_side": "클론이나 포크: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>. 1,500줄 읽고 직접 확인."
   },
   "final": {
     "heading": "의심되는 지금, <em>6분이면 답이 나옵니다.</em>",

@@ -3,7 +3,7 @@
 > A locale-aware security diagnostic tool that **explains your PC in plain language**.
 > Built for people who get confused when generic scanners flag their legitimate banking software as malware.
 
-[🌐 **Website**](https://your-username.github.io/pc-health-check/) · [📥 Download](https://github.com/your-username/pc-health-check/releases) · [🇰🇷 한국어 가이드](./사용법.txt)
+[🌐 **Website**](https://heznpc.github.io/pc-health-check/) · [📥 Download](https://github.com/heznpc/pc-health-check/releases) · [🇰🇷 한국어 가이드](./사용법.txt)
 
 ---
 
@@ -86,7 +86,7 @@ If/when the project graduates to a GUI, the plan is [Tauri 2](https://v2.tauri.a
 ## Installation
 
 ### Windows
-1. Download the latest [release zip](https://github.com/your-username/pc-health-check/releases)
+1. Download the latest [release zip](https://github.com/heznpc/pc-health-check/releases)
 2. Extract anywhere (USB, Desktop, Downloads — no installer)
 3. Double-click `검사하기.bat`
 
