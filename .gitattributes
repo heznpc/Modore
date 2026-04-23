@@ -1,0 +1,9 @@
+# Force LF in the repo and on checkout for all text files. Without
+# this, Windows-side autocrlf rewrites every checkout to CRLF and
+# Swift toolchains on macOS get confused by mixed line endings.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.zip binary
+*.tar.zst binary
