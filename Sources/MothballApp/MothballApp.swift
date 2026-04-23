@@ -12,6 +12,12 @@ struct MothballApp: App {
                 .frame(minWidth: 760, minHeight: 480)
         }
         .windowResizability(.contentMinSize)
+
+        // macOS surfaces this scene via the standard Cmd+, shortcut
+        // and the "Settings..." menu item — no custom plumbing needed.
+        Settings {
+            SettingsView().environmentObject(model)
+        }
     }
 }
 

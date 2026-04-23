@@ -17,6 +17,12 @@ final class AppModel: ObservableObject {
         didSet { defaults.set(archiveDirectory.path, forKey: Keys.archiveDirectory.rawValue) }
     }
 
+    // When true, every scan runs `git fetch` per repo before reading
+    // upstream state. Slower and requires network; off by default.
+    @Published var fetchBeforeArchive: Bool {
+        didSet { defaults.set(fetchBeforeArchive, forKey: Keys.fetchBeforeArchive.rawValue) }
+    }
+
     @Published var scanLocations: [URL] = []
     @Published var scanState: ScanState = .idle
     @Published var inspectedRepos: [InspectedRepo] = []
@@ -26,12 +32,13 @@ final class AppModel: ObservableObject {
     @Published var lastArchiveSummary: ArchiveSummary?
 
     private let defaults: UserDefaults
-    private let scanner: RepoScanner
     private let classifier: SafetyClassifier
+    private let log: ActivityLog?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.hasAcceptedFirstRun = defaults.bool(forKey: Keys.firstRunAccepted.rawValue)
+        self.fetchBeforeArchive = defaults.bool(forKey: Keys.fetchBeforeArchive.rawValue)
 
         let defaultArchive = FileManager.default.homeDirectoryForCurrentUser
             .appending(path: "Archive", directoryHint: .isDirectory)
@@ -41,8 +48,10 @@ final class AppModel: ObservableObject {
             self.archiveDirectory = defaultArchive
         }
 
-        self.scanner = RepoScanner()
         self.classifier = SafetyClassifier()
+        // Failure to open the log shouldn't keep the app from starting —
+        // we just lose the audit trail for this session.
+        self.log = try? ActivityLog.userDefault()
     }
 
     // MARK: - Scan locations
@@ -63,7 +72,11 @@ final class AppModel: ObservableObject {
         scanState = .running
         inspectedRepos = []
         let roots = scanLocations
-        let scanner = self.scanner
+        // Build a fresh scanner per scan so toggling `fetchBeforeArchive`
+        // takes effect on the next scan without app restart.
+        let scanner = RepoScanner(
+            inspector: GitInspector(fetchBeforeInspect: fetchBeforeArchive)
+        )
         let classifier = self.classifier
         Task { [weak self] in
             let infos = await scanner.scan(roots: roots)
@@ -116,7 +129,7 @@ final class AppModel: ObservableObject {
         let orchestrator = ArchiveOrchestrator(configuration: .init(
             archiveDirectory: archiveDirectory
         ))
-        let run = ArchiveRun(repos: request.repos, orchestrator: orchestrator)
+        let run = ArchiveRun(repos: request.repos, orchestrator: orchestrator, log: log)
         activeArchiveRun = run
         Task { [weak self] in
             await run.execute()
@@ -140,6 +153,7 @@ final class AppModel: ObservableObject {
     private enum Keys: String {
         case firstRunAccepted = "Mothball.firstRunAccepted"
         case archiveDirectory = "Mothball.archiveDirectory"
+        case fetchBeforeArchive = "Mothball.fetchBeforeArchive"
     }
 }
 
@@ -184,10 +198,12 @@ final class ArchiveRun: ObservableObject, Identifiable {
 
     private let repos: [InspectedRepo]
     private let orchestrator: ArchiveOrchestrator
+    private let log: ActivityLog?
 
-    init(repos: [InspectedRepo], orchestrator: ArchiveOrchestrator) {
+    init(repos: [InspectedRepo], orchestrator: ArchiveOrchestrator, log: ActivityLog?) {
         self.repos = repos
         self.orchestrator = orchestrator
+        self.log = log
         self.total = repos.count
         self.results = repos.map { PerRepoResult(repoPath: $0.info.path) }
     }
@@ -196,6 +212,11 @@ final class ArchiveRun: ObservableObject, Identifiable {
         for (index, repo) in repos.enumerated() {
             currentRepoName = repo.info.path.lastPathComponent
             currentStep = .preparing
+
+            await log?.append(.archiveStart(
+                path: repo.info.path,
+                sizeBytes: repo.info.sizeBytes
+            ))
 
             do {
                 let result = try await orchestrator.archive(repo.info) { [weak self] step in
@@ -209,8 +230,29 @@ final class ArchiveRun: ObservableObject, Identifiable {
                         self.currentStep = mapped
                     }
                 }
+                await log?.append(.archiveSuccess(
+                    archive: result.archive,
+                    sourceBytes: result.originalBytes,
+                    archiveBytes: result.archiveBytes
+                ))
+                await log?.append(.trashed(path: repo.info.path))
                 results[index].success = result
+            } catch ArchiveOrchestrator.ArchiveError.trashFailed(let path, let underlying) {
+                // Archive promoted to its final path successfully; only
+                // the trash step failed. Log the distinction so a user
+                // grepping the log later can tell "archive worked, just
+                // delete the original yourself" from a real failure.
+                await log?.append(.trashFailed(
+                    path: path,
+                    error: String(describing: underlying)
+                ))
+                results[index].failure = ArchiveOrchestrator.ArchiveError
+                    .trashFailed(path, underlying: underlying)
             } catch {
+                await log?.append(.archiveFailed(
+                    path: repo.info.path,
+                    error: String(describing: error)
+                ))
                 results[index].failure = error
             }
             completedCount = index + 1

@@ -10,12 +10,27 @@ public struct GitInspector: Sendable {
     public let gitExecutable: URL
     public let perCommandTimeout: Duration
 
+    /// When true, run `git fetch --quiet --prune --no-tags origin`
+    /// before reading metadata. This refreshes the local upstream ref
+    /// so `aheadOfOrigin` reflects the actual remote state instead of
+    /// the last-known-local snapshot.
+    ///
+    /// Off by default because fetch adds network latency (~hundreds of
+    /// ms per repo at minimum) and can fail entirely on offline use.
+    public let fetchBeforeInspect: Bool
+
+    public let fetchTimeout: Duration
+
     public init(
         gitExecutable: URL = URL(fileURLWithPath: "/usr/bin/git"),
-        perCommandTimeout: Duration = .seconds(5)
+        perCommandTimeout: Duration = .seconds(5),
+        fetchBeforeInspect: Bool = false,
+        fetchTimeout: Duration = .seconds(30)
     ) {
         self.gitExecutable = gitExecutable
         self.perCommandTimeout = perCommandTimeout
+        self.fetchBeforeInspect = fetchBeforeInspect
+        self.fetchTimeout = fetchTimeout
     }
 
     public func inspect(repoAt url: URL) async throws -> GitMetadata {
@@ -23,6 +38,14 @@ public struct GitInspector: Sendable {
         let gitDir = url.appending(path: ".git")
         guard FileManager.default.fileExists(atPath: gitDir.path) else {
             throw Error.notARepository(url)
+        }
+
+        if fetchBeforeInspect {
+            // Best-effort: a missing remote, network outage, or auth
+            // prompt should NOT make the inspection itself fail. The
+            // result will just reflect whatever the local upstream ref
+            // already says, which is what we'd have done without fetch.
+            await tryFetch(at: url)
         }
 
         // All commands below are read-only and safe to run concurrently
@@ -93,6 +116,15 @@ public struct GitInspector: Sendable {
             workingDirectory: repo,
             timeout: perCommandTimeout,
             wrapping: Error.process
+        )
+    }
+
+    private func tryFetch(at repo: URL) async {
+        _ = try? await ProcessRunner.run(
+            executable: gitExecutable,
+            arguments: ["fetch", "--quiet", "--prune", "--no-tags", "origin"],
+            workingDirectory: repo,
+            timeout: fetchTimeout
         )
     }
 
