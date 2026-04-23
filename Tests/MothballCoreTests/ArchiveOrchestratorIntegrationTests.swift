@@ -42,7 +42,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
         try await repo.commit("initial")
         try await repo.fakePushedOrigin()
         return try await RepoScanner().scan(roots: [repo.url.deletingLastPathComponent()])
-            .first { $0.path == repo.url } ?? XCTUnwrap(nil)
+            .first { $0.path.standardizedFileURL == repo.url.standardizedFileURL } ?? XCTUnwrap(nil)
     }
 
     // MARK: - Tests
@@ -149,7 +149,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
         // Use the scanner so size and mtime are computed identically to
         // what production would feed in.
         let infos = await RepoScanner().scan(roots: [repo.url.deletingLastPathComponent()])
-        guard let mine = infos.first(where: { $0.path == repo.url }) else {
+        guard let mine = infos.first(where: { $0.path.standardizedFileURL == repo.url.standardizedFileURL }) else {
             struct NotFound: Error {}
             throw NotFound()
         }

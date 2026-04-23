@@ -69,7 +69,7 @@ final class GitInspectorIntegrationTests: XCTestCase {
 
         XCTAssertEqual(meta.originURL, "git@example.invalid:fake/repo.git")
         XCTAssertEqual(meta.aheadOfOrigin, 0)
-        XCTAssertTrue(meta.git.isFullyPushed)
+        XCTAssertTrue(meta.isFullyPushed)
     }
 
     func test_unpushedCommitsAreCounted() async throws {
