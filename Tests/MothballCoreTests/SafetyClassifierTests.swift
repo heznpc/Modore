@@ -140,7 +140,7 @@ final class SafetyClassifierTests: XCTestCase {
     func test_emptyRepoUsesFileMTime() {
         // No commits, but file mtime is old → falls through to dormant logic.
         let v = classifier.classify(
-            repo(daysAgo: 365, hasCommits: false, hasUpstream: false),
+            repo(daysAgo: 365, hasUpstream: false, hasCommits: false),
             now: now
         )
         // No commits implies hasUpstream is false (we wired it that way),
