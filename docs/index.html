@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="meta.title">PC 건강검진</title>
+  <meta name="description" data-i18n-attr="content:meta.description" content="">
+  <meta property="og:title" data-i18n-attr="content:meta.title" content="">
+  <meta property="og:description" data-i18n-attr="content:meta.description" content="">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🩺</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a href="#" class="brand">
+      <span class="brand-mark">pch</span>
+      <span class="brand-name" data-i18n="brand.name">PC 건강검진</span>
+    </a>
+    <nav class="nav">
+      <a href="#problem" data-i18n="nav.problem">문제</a>
+      <a href="#how" data-i18n="nav.how">동작 방식</a>
+      <a href="#privacy" data-i18n="nav.privacy">프라이버시</a>
+      <a href="#download" data-i18n="nav.download">다운로드</a>
+      <a href="https://github.com/your-username/pc-health-check" target="_blank" rel="noopener" class="github-link">GitHub</a>
+      <div class="lang-switcher" id="langSwitcher">
+        <button class="lang-btn active" data-lang="ko">KO</button>
+        <button class="lang-btn" data-lang="en">EN</button>
+        <button class="lang-btn" data-lang="ja">JA</button>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<!-- ======================================================
+     HERO
+     ====================================================== -->
+<section class="hero">
+  <div class="container hero-inner">
+    <div>
+      <div class="hero-tag">
+        <span class="pulse"></span>
+        <span data-i18n="hero.tag">v0.2 · Windows &amp; macOS</span>
+      </div>
+      <h1 data-i18n="hero.title">내 PC를 <em>설명해주는</em> 보안 진단 도구.</h1>
+      <p class="hero-subtitle" data-i18n="hero.subtitle">
+        범용 백신은 한국 뱅킹 플러그인을 악성코드로 오판합니다. PC 건강검진은 IPinside·nProtect·MagicLine·V3를 알아보고, 진짜 위험만 골라냅니다.
+      </p>
+      <div class="hero-actions">
+        <a href="#download" class="btn btn-primary" data-i18n="hero.cta_primary">zip 다운로드 <span class="arrow">→</span></a>
+        <a href="https://github.com/your-username/pc-health-check" target="_blank" rel="noopener" class="btn btn-ghost" data-i18n="hero.cta_secondary">소스 읽어보기</a>
+      </div>
+      <div class="hero-meta">
+        <span><span data-i18n="hero.meta.free">무료</span></span>
+        <span class="dot">·</span>
+        <span><span data-i18n="hero.meta.oss">MIT 오픈소스</span></span>
+        <span class="dot">·</span>
+        <span><span data-i18n="hero.meta.no_install">설치 없음</span></span>
+        <span class="dot">·</span>
+        <span data-i18n="hero.meta.loc">~1,500 LoC</span>
+      </div>
+    </div>
+
+    <!-- 실제 리포트 UI 미리보기 (mockup) -->
+    <div class="report-preview">
+      <div class="preview-titlebar">
+        <div class="preview-dots"><span></span><span></span><span></span></div>
+        <div class="preview-url">file:///PC건강검진/검사결과.html</div>
+      </div>
+      <div class="preview-body">
+        <div class="preview-verdict">
+          <div class="icon">🟡</div>
+          <div class="text">
+            <div class="label" data-i18n="preview.verdict_label">WARNING</div>
+            <div class="msg" data-i18n="preview.verdict_msg">확인 권장 3건 · 위험 0건</div>
+          </div>
+        </div>
+        <div class="preview-cards">
+          <div class="preview-card red"><div class="count">0</div><div class="label" data-i18n="preview.danger">위험</div></div>
+          <div class="preview-card yellow"><div class="count">3</div><div class="label" data-i18n="preview.check">확인</div></div>
+          <div class="preview-card green"><div class="count">93</div><div class="label" data-i18n="preview.safe">정상</div></div>
+        </div>
+        <div class="preview-table">
+          <div class="preview-row">
+            <span class="pbadge safe" data-i18n="preview.rows.safe">SAFE</span>
+            <span class="name">I3GProc.exe</span>
+            <span class="meta" data-i18n="preview.rows.banking">IPinside · 뱅킹</span>
+          </div>
+          <div class="preview-row">
+            <span class="pbadge safe" data-i18n="preview.rows.safe">SAFE</span>
+            <span class="name">KakaoTalk.exe</span>
+            <span class="meta" data-i18n="preview.rows.signed">Kakao · 서명됨</span>
+          </div>
+          <div class="preview-row">
+            <span class="pbadge check" data-i18n="preview.rows.check">CHECK</span>
+            <span class="name">MPSch.exe</span>
+            <span class="meta" data-i18n="preview.rows.appdata">AppData · 미서명</span>
+          </div>
+          <div class="preview-row">
+            <span class="pbadge safe" data-i18n="preview.rows.safe">SAFE</span>
+            <span class="name">chrome.exe</span>
+            <span class="meta">Google · VT 0/72</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================
+     TICKER: 인식하는 한국 SW 이름
+     ====================================================== -->
+<section class="ticker-section">
+  <div class="container">
+    <div class="ticker-label" data-i18n="ticker.label">화이트리스트에 포함된 프로그램 · RECOGNIZED SOFTWARE</div>
+    <div class="ticker">
+      <div class="ticker-track" id="tickerTrack">
+        <span class="ok">IPinside</span>
+        <span class="ok">nProtect</span>
+        <span class="ok">INISAFE</span>
+        <span class="ok">MagicLine4NP</span>
+        <span class="ok">WIZVERA</span>
+        <span class="ok">Veraport</span>
+        <span class="ok">XecureWeb</span>
+        <span class="ok">TouchEn nxKey</span>
+        <span class="ok">AhnLab V3</span>
+        <span class="ok">Alyac (알약)</span>
+        <span class="ok">KakaoTalk</span>
+        <span class="ok">Naver Whale</span>
+        <span class="ok">Hancom Office</span>
+        <span class="ok">HOffice</span>
+        <span class="ok">Realtek Audio</span>
+        <span class="ok">NVIDIA GeForce</span>
+        <span class="ok">Docker Desktop</span>
+        <span class="ok">Python · Node.js</span>
+        <span class="ok">Chrome · Edge · Firefox</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================
+     PROBLEM - Before/After
+     ====================================================== -->
+<section id="problem" class="section">
+  <div class="container">
+    <div class="section-kicker" data-i18n="problem.kicker">PROBLEM</div>
+    <h2 data-i18n="problem.heading">"수상한 항목 30건"이 떴을 때, <em>무엇이 진짜 위협인가?</em></h2>
+    <p class="lead" data-i18n="problem.lead">
+      한국 PC는 뱅킹·공공기관·쇼핑몰 보안 플러그인으로 가득합니다. 이것들은 전부 범용 스캐너에는 수상해 보이지만, 실제로는 정상입니다. 컴퓨터에 익숙하지 않은 사용자는 구분할 길이 없어 "전부 무시"하거나 "전부 삭제"하는 양극단을 택하게 됩니다.
+    </p>
+
+    <div class="compare">
+      <div class="compare-col bad">
+        <h3><span class="icon">⚠</span><span data-i18n="problem.generic.label">범용 스캐너</span></h3>
+        <p class="quote" data-i18n="problem.generic.quote">"의심스러운 항목 30건이 발견되었습니다."</p>
+        <ul class="compare-list">
+          <li><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.reasons.unsigned">미서명 네트워크 훅</span></li>
+          <li><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.reasons.port">포트 리스닝</span></li>
+          <li><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.reasons.kext">커널 드라이버</span></li>
+          <li><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.reasons.bho">브라우저 훅</span></li>
+          <li><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.reasons.persist">상시 실행</span></li>
+          <li><span class="tool-name">+ 25 more...</span><span class="reason"></span></li>
+        </ul>
+      </div>
+
+      <div class="compare-col good">
+        <h3><span class="icon">🩺</span><span data-i18n="problem.pch.label">PC 건강검진</span></h3>
+        <p class="quote" data-i18n="problem.pch.quote">"29건은 정상 뱅킹 SW. 1건은 확인 필요."</p>
+        <ul class="compare-list">
+          <li class="safe"><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.pch.reasons.ipinside">IPinside 정상</span></li>
+          <li class="safe"><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.pch.reasons.inisafe">INISAFE 정상</span></li>
+          <li class="safe"><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.pch.reasons.dream">드림시큐리티</span></li>
+          <li class="safe"><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.pch.reasons.wizvera">전자서명 정상</span></li>
+          <li class="safe"><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.pch.reasons.bank">공인 뱅킹 보안</span></li>
+          <li class="check"><span class="tool-name">MPSch.exe</span><span class="reason" data-i18n="problem.pch.reasons.unknown">모름 → VT 조회</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================
+     HOW IT WORKS - 파이프라인
+     ====================================================== -->
+<section id="how" class="section">
+  <div class="container">
+    <div class="section-kicker" data-i18n="how.kicker">HOW IT WORKS</div>
+    <h2 data-i18n="how.heading">8가지 진단 &rarr; 1개의 HTML 리포트.</h2>
+    <p class="lead" data-i18n="how.lead">
+      프레임워크 없음. 바이너리 없음. OS별 스크립트가 시스템을 수집하면, 크로스플랫폼 Python 생성기가 브라우저에서 바로 열 수 있는 HTML 리포트로 조립합니다.
+    </p>
+
+    <div class="pipeline">
+      <div class="pipe-node">
+        <div class="label">01 · COLLECT</div>
+        <h4 data-i18n="how.p1.title">시스템 수집</h4>
+        <p data-i18n="how.p1.desc">프로세스·네트워크·포트·자동실행·보안상태. Sysinternals + launchd + VirusTotal 해시 조회.</p>
+        <code>scanner.ps1 · scanner.sh</code>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-node">
+        <div class="label">02 · NORMALIZE</div>
+        <h4 data-i18n="how.p2.title">JSON 정규화</h4>
+        <p data-i18n="how.p2.desc">한국 SW 화이트리스트 대조 후 신호등 판정. OS 무관 공통 스키마.</p>
+        <code>scan_result.json</code>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-node">
+        <div class="label">03 · RENDER</div>
+        <h4 data-i18n="how.p3.title">HTML 생성</h4>
+        <p data-i18n="how.p3.desc">브라우저가 여는 단일 HTML. 실행 파일 없음, 서명 없음, 추적 없음.</p>
+        <code>검사결과.html</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================
+     PRIVACY - 실제 코드로 증명
+     ====================================================== -->
+<section id="privacy" class="section">
+  <div class="container">
+    <div class="section-kicker" data-i18n="privacy.kicker">PRIVACY · AUDITABLE</div>
+    <h2 data-i18n="privacy.heading">"개인정보 안전합니다"라는 <em>말 대신, 코드로 증명</em>.</h2>
+    <p class="lead" data-i18n="privacy.lead">
+      모든 네트워크 호출은 소스 코드에 있습니다. VirusTotal 조회는 <strong>SHA-256 해시만</strong> 전송하고, 파일 본문은 컴퓨터를 떠나지 않습니다. 아래가 실제 호출부입니다.
+    </p>
+
+    <div class="privacy-block">
+      <div class="privacy-points">
+        <div class="privacy-point">
+          <h4 data-i18n="privacy.points.hash.title">해시만 전송, 파일 업로드 안 함</h4>
+          <p data-i18n="privacy.points.hash.desc"><code>Get-FileHash</code>로 로컬에서 SHA-256 계산 후 GET 요청. 알려지지 않은 해시면 "unknown" 반환, 자동 업로드 없음.</p>
+        </div>
+        <div class="privacy-point">
+          <h4 data-i18n="privacy.points.telemetry.title">텔레메트리 0건</h4>
+          <p data-i18n="privacy.points.telemetry.desc">사용 통계·에러 리포트 어떤 것도 수집하지 않습니다. 네트워크 호출은 VirusTotal 하나뿐이며 옵트인입니다.</p>
+        </div>
+        <div class="privacy-point">
+          <h4 data-i18n="privacy.points.local.title">로컬 캐시만</h4>
+          <p data-i18n="privacy.points.local.desc">VT 응답은 %LOCALAPPDATA% (Windows) 또는 ~/Library/Caches (macOS)에 48시간 저장. 클라우드 계정 없음.</p>
+        </div>
+        <div class="privacy-point">
+          <h4 data-i18n="privacy.points.audit.title">읽을 수 있는 소스</h4>
+          <p data-i18n="privacy.points.audit.desc">컴파일된 바이너리 0개. PowerShell · Python · Bash 약 1,500줄. <code>grep Invoke-RestMethod scripts/</code>로 모든 네트워크 호출 확인 가능.</p>
+        </div>
+      </div>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="filename">scripts/vt-lookup.ps1</span>
+          <span class="link">L142-L160 · <a href="https://github.com/your-username/pc-health-check/blob/main/scripts/vt-lookup.ps1" target="_blank" rel="noopener">GitHub</a></span>
+        </div>
+<pre><span class="c"># SHA-256 해시 계산 - 로컬에서만 수행</span>
+<span class="v">$hash</span> = (<span class="f">Get-FileHash</span> -Path <span class="v">$FilePath</span> -Algorithm <span class="s">SHA256</span>).Hash.ToLower()
+
+<span class="c"># VirusTotal API v3 조회 - 해시만 전송, 파일 업로드 없음</span>
+<span class="v">$url</span>     = <span class="s">"https://www.virustotal.com/api/v3/files/</span><span class="v">$hash</span><span class="s">"</span>
+<span class="v">$headers</span> = @{
+    <span class="s">'x-apikey'</span> = <span class="v">$apiKey</span>
+    <span class="s">'accept'</span>   = <span class="s">'application/json'</span>
+}
+
+<span class="k">try</span> {
+    <span class="v">$resp</span> = <span class="f">Invoke-RestMethod</span> -Uri <span class="v">$url</span> -Headers <span class="v">$headers</span> -Method Get
+    <span class="k">return</span> <span class="v">$resp</span>.data.attributes.last_analysis_stats
+} <span class="k">catch</span> {
+    <span class="k">if</span> (<span class="v">$_</span>.Exception.Response.StatusCode -eq <span class="s">404</span>) {
+        <span class="k">return</span> <span class="s">'unknown'</span>   <span class="c"># 알려지지 않은 해시 - 업로드 안 함</span>
+    }
+}
+</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================
+     DOWNLOAD
+     ====================================================== -->
+<section id="download" class="section">
+  <div class="container">
+    <div class="section-kicker" data-i18n="download.kicker">DOWNLOAD</div>
+    <h2 data-i18n="download.heading">지금 다운로드.</h2>
+    <p class="lead" data-i18n="download.lead">
+      단일 zip. USB에 담아 다른 PC에서도 바로 실행 가능. 설치 없음, 관리자 권한 없이도 대부분 동작.
+    </p>
+
+    <div class="download-grid">
+      <a href="https://github.com/your-username/pc-health-check/releases/latest" target="_blank" rel="noopener" class="dl-card">
+        <span class="os-mark">WIN</span>
+        <h3 data-i18n="download.windows.title">Windows</h3>
+        <p data-i18n="download.windows.desc">Windows 10 / 11 · PowerShell 5.1 기본 포함. <code>검사하기.bat</code> 더블클릭.</p>
+        <span class="dl-link" data-i18n="download.windows.btn">pch-v0.2-win.zip →</span>
+      </a>
+      <a href="https://github.com/your-username/pc-health-check/releases/latest" target="_blank" rel="noopener" class="dl-card">
+        <span class="os-mark">MAC</span>
+        <h3 data-i18n="download.macos.title">macOS</h3>
+        <p data-i18n="download.macos.desc">macOS 10.15+ · Python 3 (12+ 기본). <code>검사하기.command</code> 우클릭 → 열기.</p>
+        <span class="dl-link" data-i18n="download.macos.btn">pch-v0.2-mac.zip →</span>
+      </a>
+    </div>
+
+    <p class="github-side" data-i18n="download.github_side">
+      클론이나 포크: <a href="https://github.com/your-username/pc-health-check" target="_blank" rel="noopener">github.com/your-username/pc-health-check</a>. 1,500줄 읽고 직접 확인.
+    </p>
+  </div>
+</section>
+
+<!-- ======================================================
+     FINAL CTA
+     ====================================================== -->
+<section class="final-cta">
+  <div class="container">
+    <h2 data-i18n="final.heading">의심되는 지금, <em>6분이면 답이 나옵니다.</em></h2>
+    <p data-i18n="final.lead">가입 없음. 이메일 없음. 결과는 내 브라우저에서만 열립니다.</p>
+    <div class="hero-actions" style="justify-content:center;">
+      <a href="#download" class="btn btn-primary" data-i18n="final.cta">지금 다운로드 <span class="arrow">→</span></a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <div>
+      <a href="https://github.com/your-username/pc-health-check" target="_blank" rel="noopener">GitHub</a>
+      &nbsp;·&nbsp;
+      <span data-i18n="footer.license">MIT License</span>
+      &nbsp;·&nbsp;
+      <span data-i18n="footer.version">v0.2</span>
+    </div>
+    <div class="credits" data-i18n="footer.credits">
+      Microsoft Sysinternals · Objective-See · Malware Zero 커뮤니티에 감사.
+    </div>
+  </div>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>

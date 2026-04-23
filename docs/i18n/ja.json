@@ -1,0 +1,130 @@
+{
+  "meta": {
+    "title": "PCヘルスチェック — PCを「説明してくれる」セキュリティ診断",
+    "description": "韓国の銀行プラグインを誤検知しないロケール対応診断ツール。シグナル形式のレポート、VirusTotalハッシュ照会、ファイルはアップロードしません。無料・MITオープンソース。Windows & macOS対応。"
+  },
+  "brand": {
+    "name": "PCヘルスチェック"
+  },
+  "nav": {
+    "problem": "問題",
+    "how": "仕組み",
+    "privacy": "プライバシー",
+    "download": "ダウンロード"
+  },
+  "hero": {
+    "tag": "v0.2 · Windows & macOS",
+    "title": "PCを<em>説明してくれる</em>セキュリティ診断。",
+    "subtitle": "一般的なアンチウイルスは、韓国の銀行プラグインをマルウェアと誤判定します。PCヘルスチェックは IPinside、nProtect、MagicLine、V3 を認識し、本当の脅威だけを浮き彫りにします。",
+    "cta_primary": "zipをダウンロード <span class='arrow'>→</span>",
+    "cta_secondary": "ソースを読む",
+    "meta": {
+      "free": "無料",
+      "oss": "MITオープンソース",
+      "no_install": "インストール不要",
+      "loc": "~1,500行"
+    }
+  },
+  "preview": {
+    "verdict_label": "要確認",
+    "verdict_msg": "要確認 3件 · 危険 0件",
+    "danger": "危険",
+    "check": "要確認",
+    "safe": "安全",
+    "rows": {
+      "safe": "安全",
+      "check": "要確認",
+      "banking": "IPinside · 銀行",
+      "signed": "Kakao · 署名済",
+      "appdata": "AppData · 未署名"
+    }
+  },
+  "ticker": {
+    "label": "ホワイトリスト収録ソフトウェア · RECOGNIZED SOFTWARE"
+  },
+  "problem": {
+    "kicker": "PROBLEM",
+    "heading": "「怪しい項目が30件」と表示された時、<em>本当の脅威はどれ?</em>",
+    "lead": "韓国のPCには銀行・公的機関・ECサイトのセキュリティプラグインが大量にインストールされています。汎用スキャナにはすべて怪しく見えますが、実際は正常です。PCに詳しくないユーザーは見分けがつかず、「全部無視」か「全部削除」の両極端に走ってしまいがちです。",
+    "generic": {
+      "label": "汎用スキャナ",
+      "quote": "「不審な項目が30件検出されました」"
+    },
+    "pch": {
+      "label": "PCヘルスチェック",
+      "quote": "「29件は正常な銀行SW。1件のみ要確認」",
+      "reasons": {
+        "ipinside": "IPinside 正常",
+        "inisafe": "INISAFE 正常",
+        "dream": "DreamSecurity",
+        "wizvera": "電子署名正常",
+        "bank": "公認銀行SW",
+        "unknown": "不明 → VT照会"
+      }
+    },
+    "reasons": {
+      "unsigned": "未署名ネットフック",
+      "port": "ポートリスナー",
+      "kext": "カーネルドライバ",
+      "bho": "ブラウザフック",
+      "persist": "常時実行"
+    }
+  },
+  "how": {
+    "kicker": "HOW IT WORKS",
+    "heading": "8種の診断 → 1つのHTMLレポート。",
+    "lead": "フレームワーク不要。バイナリ不要。OS別スクリプトがシステムを収集し、クロスプラットフォームのPythonジェネレータがブラウザで開けるHTMLレポートに組み立てます。",
+    "p1": { "title": "収集", "desc": "プロセス・ネットワーク・ポート・自動実行・セキュリティ状態。Sysinternals + launchd + VirusTotalハッシュ照会。" },
+    "p2": { "title": "正規化", "desc": "韓国SWホワイトリストと照合してシグナル判定。OS非依存の共通スキーマ。" },
+    "p3": { "title": "レンダリング", "desc": "ブラウザで開く単一HTML。実行ファイルなし、署名なし、追跡なし。" }
+  },
+  "privacy": {
+    "kicker": "PRIVACY · AUDITABLE",
+    "heading": "「安全です」と言葉で言うのではなく、<em>コードで証明</em>。",
+    "lead": "すべてのネットワーク呼び出しはソースコードに記述されています。VirusTotal照会は<strong>SHA-256ハッシュのみ</strong>を送信し、ファイル本体はPCから出ません。以下が実際の呼び出し箇所です。",
+    "points": {
+      "hash": {
+        "title": "ハッシュのみ送信、ファイルのアップロードなし",
+        "desc": "<code>Get-FileHash</code>でローカルSHA-256計算後、GETリクエスト。不明なハッシュの場合は「unknown」を返し、自動アップロードはしません。"
+      },
+      "telemetry": {
+        "title": "テレメトリー0件",
+        "desc": "使用統計・エラーレポートなど、いかなるデータも収集しません。ネットワーク呼び出しはVirusTotalのみ、それもオプトインです。"
+      },
+      "local": {
+        "title": "ローカルキャッシュのみ",
+        "desc": "VT応答は %LOCALAPPDATA% (Windows) または ~/Library/Caches (macOS) に48時間保存。クラウドアカウント不要。"
+      },
+      "audit": {
+        "title": "読めるソース",
+        "desc": "コンパイル済みバイナリ0個。PowerShell · Python · Bashで約1,500行。<code>grep Invoke-RestMethod scripts/</code>ですべてのネットワーク呼び出しを確認できます。"
+      }
+    }
+  },
+  "download": {
+    "kicker": "DOWNLOAD",
+    "heading": "いますぐダウンロード。",
+    "lead": "単一zip。USBに入れて別PCでもそのまま実行可。インストール不要、ほとんどの診断で管理者権限も不要。",
+    "windows": {
+      "title": "Windows",
+      "desc": "Windows 10 / 11 · PowerShell 5.1 標準搭載。<code>검사하기.bat</code> をダブルクリック。",
+      "btn": "pch-v0.2-win.zip →"
+    },
+    "macos": {
+      "title": "macOS",
+      "desc": "macOS 10.15+ · Python 3(12+は標準搭載)。<code>검사하기.command</code> を右クリック → 開く。",
+      "btn": "pch-v0.2-mac.zip →"
+    },
+    "github_side": "クローン・フォーク: <a href='https://github.com/your-username/pc-health-check' target='_blank' rel='noopener'>github.com/your-username/pc-health-check</a>。1,500行を自分で確認できます。"
+  },
+  "final": {
+    "heading": "疑わしい今、<em>6分で答えが出ます。</em>",
+    "lead": "登録不要。メールアドレス不要。レポートは自分のブラウザでのみ開かれます。",
+    "cta": "いますぐダウンロード <span class='arrow'>→</span>"
+  },
+  "footer": {
+    "license": "MIT License",
+    "version": "v0.2",
+    "credits": "Microsoft Sysinternals · Objective-See · Malware Zeroコミュニティに感謝。"
+  }
+}

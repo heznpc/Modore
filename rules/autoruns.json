@@ -1,0 +1,124 @@
+[
+  {
+    "id": "ps_encoded_command",
+    "description": "PowerShell 인코딩 명령 - 악성코드 전형적 패턴",
+    "when": { "launchString.iregex": "powershell.*(-enc|-encodedcommand)" },
+    "then": {
+      "risk": "danger",
+      "note": "PowerShell 인코딩 명령. 악성코드의 전형적 패턴입니다.",
+      "finding": {
+        "category": "check_autorun",
+        "title": "수상한 자동실행: {entry}",
+        "detail": "{note} 명령: {launchString}"
+      }
+    }
+  },
+  {
+    "id": "ps_hidden_window",
+    "description": "PowerShell 숨김 창 실행",
+    "when": { "launchString.iregex": "powershell.*-w(indow)?\\s*(style)?\\s*hidden" },
+    "then": {
+      "risk": "danger",
+      "note": "숨김 PowerShell 창 실행. 악성코드 흔적.",
+      "finding": {
+        "category": "check_autorun",
+        "title": "숨김 PowerShell 자동실행: {entry}",
+        "detail": "{note} 명령: {launchString}"
+      }
+    }
+  },
+  {
+    "id": "mshta_remote",
+    "description": "MSHTA로 원격 스크립트 실행",
+    "when": { "launchString.iregex": "mshta.*http" },
+    "then": {
+      "risk": "danger",
+      "note": "MSHTA로 원격 스크립트 실행 - 악성코드의 전형적 패턴.",
+      "finding": {
+        "category": "check_autorun",
+        "title": "MSHTA 원격 실행: {entry}",
+        "detail": "{note} 명령: {launchString}"
+      }
+    }
+  },
+  {
+    "id": "vbs_autorun",
+    "description": "VBScript 자동 실행",
+    "when": { "launchString.iregex": "(wscript|cscript).*\\.vbs" },
+    "then": {
+      "risk": "warning",
+      "note": "VBScript 자동 실행 - 악성코드일 가능성이 있습니다.",
+      "finding": {
+        "category": "check_autorun",
+        "title": "VBScript 자동실행: {entry}",
+        "detail": "{note} 명령: {launchString}"
+      }
+    }
+  },
+  {
+    "id": "curl_wget_http",
+    "description": "curl/wget으로 원격 파일 받기",
+    "when": { "launchString.iregex": "(curl|wget).+http" },
+    "then": {
+      "risk": "danger",
+      "note": "인터넷에서 코드 다운로드 후 실행 - 악성코드 전형적 패턴.",
+      "finding": {
+        "category": "check_autorun",
+        "title": "수상한 자동실행: {entry}",
+        "detail": "{note} 명령: {launchString}"
+      }
+    }
+  },
+  {
+    "id": "temp_autorun_unsigned",
+    "description": "임시 폴더의 미서명 자동실행",
+    "when": {
+      "image.iregex": "(AppData\\\\Local\\\\Temp|\\\\Windows\\\\Temp\\\\|/tmp/|/var/tmp/)",
+      "verified.equals": false
+    },
+    "then": {
+      "risk": "danger",
+      "note": "임시 폴더의 서명 없는 자동실행 - 매우 의심스러움.",
+      "finding": {
+        "category": "check_autorun",
+        "title": "수상한 자동실행: {entry}",
+        "detail": "{note} 경로: {image}"
+      }
+    }
+  },
+  {
+    "id": "temp_autorun_signed",
+    "description": "임시 폴더의 자동실행 (서명됨)",
+    "when": { "image.iregex": "(AppData\\\\Local\\\\Temp|\\\\Windows\\\\Temp\\\\|/tmp/|/var/tmp/)" },
+    "then": { "risk": "warning", "note": "임시 폴더에서 자동실행" }
+  },
+  {
+    "id": "autorun_microsoft_signed",
+    "description": "MS 서명된 자동실행",
+    "when": { "signer.contains": "Microsoft" },
+    "then": { "risk": "safe", "note": "Microsoft 서명 자동실행" }
+  },
+  {
+    "id": "autorun_verified",
+    "description": "검증된 서명 자동실행",
+    "when": { "verified.equals": true },
+    "then": { "risk": "safe", "note": "디지털 서명 검증됨" }
+  },
+  {
+    "id": "appdata_autorun",
+    "description": "AppData의 미서명 자동실행",
+    "when": {
+      "image.iregex": "AppData\\\\",
+      "verified.equals": false
+    },
+    "then": {
+      "risk": "warning",
+      "note": "사용자 폴더의 서명 없는 자동실행 - 본인이 설치한 프로그램인지 확인",
+      "finding": {
+        "category": "check_autorun",
+        "title": "확인 필요한 자동실행: {entry}",
+        "detail": "{note} 경로: {image}"
+      }
+    }
+  }
+]

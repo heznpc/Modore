@@ -1,0 +1,72 @@
+[
+  {
+    "id": "defender_realtime_off",
+    "description": "Windows Defender 실시간 감시 꺼짐",
+    "when": { "realtimeEnabled.equals": false },
+    "then": {
+      "risk": "danger",
+      "note": "Windows Defender 실시간 감시가 꺼져 있습니다.",
+      "finding": {
+        "category": "check_defender",
+        "title": "Defender 실시간 감시 꺼짐",
+        "detail": "악성코드가 꺼뜨렸을 가능성도 있습니다. 다른 백신을 안 쓴다면 보안 설정에서 즉시 재활성화하세요."
+      }
+    }
+  },
+  {
+    "id": "defender_av_off",
+    "description": "Windows Defender 안티바이러스 꺼짐",
+    "when": { "antivirusEnabled.equals": false },
+    "then": {
+      "risk": "danger",
+      "note": "안티바이러스가 꺼져 있습니다.",
+      "finding": {
+        "category": "check_defender",
+        "title": "안티바이러스 꺼짐",
+        "detail": "다른 백신(V3, 알약 등)을 쓰고 있지 않다면 위험합니다."
+      }
+    }
+  },
+  {
+    "id": "defender_sig_stale",
+    "description": "바이러스 정의 7일 이상 오래됨",
+    "when": { "signatureDaysOld.gt": 7 },
+    "then": {
+      "risk": "warning",
+      "note": "바이러스 정의 파일이 오래됐습니다.",
+      "finding": {
+        "category": "check_defender",
+        "title": "바이러스 정의 파일 {signatureDaysOld}일 전 것",
+        "detail": "최신 악성코드를 잡지 못할 수 있습니다. PowerShell 관리자로 'Update-MpSignature' 실행."
+      }
+    }
+  },
+  {
+    "id": "gatekeeper_off",
+    "description": "macOS Gatekeeper 꺼짐",
+    "when": { "gatekeeper.contains": "disabled" },
+    "then": {
+      "risk": "danger",
+      "note": "Gatekeeper가 꺼져 있습니다.",
+      "finding": {
+        "category": "check_defender",
+        "title": "Gatekeeper 꺼짐",
+        "detail": "서명 없는 앱이 경고 없이 실행됩니다. 'spctl --master-enable'로 재활성화하세요."
+      }
+    }
+  },
+  {
+    "id": "sip_off",
+    "description": "macOS SIP 꺼짐",
+    "when": { "sip.contains": "disabled" },
+    "then": {
+      "risk": "warning",
+      "note": "System Integrity Protection이 꺼져 있습니다.",
+      "finding": {
+        "category": "check_defender",
+        "title": "SIP 비활성화",
+        "detail": "macOS 시스템 파일 보호가 비활성화되었습니다. 복구 모드에서 'csrutil enable' 권장."
+      }
+    }
+  }
+]

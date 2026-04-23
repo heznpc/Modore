@@ -1,0 +1,44 @@
+[
+  {
+    "id": "miner_pool_port",
+    "description": "채굴 풀로 알려진 포트에 연결 중",
+    "when": { "remotePort.in": [3333, 4444, 5555, 7777, 8333, 9999, 14444, 14433, 45560, 45700, 5730, 8888, 17777] },
+    "then": {
+      "risk": "danger",
+      "note": "암호화폐 채굴 풀에서 흔히 쓰이는 포트입니다.",
+      "finding": {
+        "category": "check_network",
+        "title": "채굴풀 포트 연결 감지",
+        "detail": "{process} → {remoteAddress}:{remotePort} {note}"
+      }
+    }
+  },
+  {
+    "id": "vt_ip_malicious_many",
+    "description": "VT 악성 IP",
+    "when": { "vtIp.malicious.gte": 3 },
+    "then": {
+      "risk": "danger",
+      "note": "VirusTotal에서 악성 IP로 보고되었습니다.",
+      "finding": {
+        "category": "check_network",
+        "title": "VirusTotal 악성 IP: {remoteAddress}",
+        "detail": "{process}이 악성으로 알려진 IP에 연결 중. {note}"
+      }
+    }
+  },
+  {
+    "id": "vt_ip_suspicious",
+    "description": "VT 1-2개 악성 - 의심 IP",
+    "when": { "vtIp.malicious.gte": 1, "vtIp.malicious.lt": 3 },
+    "then": {
+      "risk": "warning",
+      "note": "일부 백신이 악성 IP로 보고했습니다.",
+      "finding": {
+        "category": "check_network",
+        "title": "VirusTotal 의심 IP: {remoteAddress}",
+        "detail": "{process}이 의심 IP에 연결 중."
+      }
+    }
+  }
+]

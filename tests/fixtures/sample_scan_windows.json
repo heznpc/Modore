@@ -1,0 +1,2349 @@
+﻿{
+    "scannedAt":  "2000-01-01 00:00:00",
+    "computerName":  "SAMPLE-WIN",
+    "userName":  "sample",
+    "osVersion":  "Microsoft Windows 10 Pro",
+    "findings":  [
+                     {
+                         "level":  "warning",
+                         "category":  "check_autorun",
+                         "title":  "확인 필요한 자동실행: MPSch.exe",
+                         "detail":  "사용자 폴더의 서명 없는 자동실행. 경로: File not found: C:\\Users\\sample\\AppData\\Roaming\\MatchPop\\common\\bin\\MPSch.exe"
+                     },
+                     {
+                         "level":  "warning",
+                         "category":  "check_scheduled",
+                         "title":  "AppData에서 실행되는 예약 작업: o2sch1",
+                         "detail":  "실행파일: C:\\Users\\sample\\AppData\\Roaming\\MatchPop\\common\\bin\\MPSch.exe. 본인이 설치한 프로그램이면 안전합니다."
+                     },
+                     {
+                         "level":  "warning",
+                         "category":  "check_defender",
+                         "title":  "바이러스 정의 파일이 207일 전 것",
+                         "detail":  "최신 악성코드를 잡지 못할 수 있습니다. \u0027Update-MpSignature\u0027 명령으로 업데이트하세요."
+                     }
+                 ],
+    "sections":  {
+                     "cpu":  [
+                                 {
+                                     "name":  "claude",
+                                     "pid_":  1624,
+                                     "cpu":  115,
+                                     "memoryMB":  482.4,
+                                     "path":  "C:\\Program Files\\WindowsApps\\Claude_1.3883.0.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe",
+                                     "risk":  "safe",
+                                     "note":  "Anthropic - Claude Desktop AI 어시스턴트",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "claude",
+                                     "pid_":  14396,
+                                     "cpu":  58.4,
+                                     "memoryMB":  135.1,
+                                     "path":  "C:\\Program Files\\WindowsApps\\Claude_1.3883.0.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe",
+                                     "risk":  "safe",
+                                     "note":  "Anthropic - Claude Desktop AI 어시스턴트",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "sihost",
+                                     "pid_":  8604,
+                                     "cpu":  27.6,
+                                     "memoryMB":  25.1,
+                                     "path":  "C:\\WINDOWS\\system32\\sihost.exe",
+                                     "risk":  "safe",
+                                     "note":  "Microsoft - Windows 셸 인프라",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "explorer",
+                                     "pid_":  9160,
+                                     "cpu":  26.3,
+                                     "memoryMB":  116.9,
+                                     "path":  "C:\\WINDOWS\\Explorer.EXE",
+                                     "risk":  "safe",
+                                     "note":  "Microsoft - Windows 탐색기(바탕화면/작업표시줄)",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "claude",
+                                     "pid_":  4820,
+                                     "cpu":  11.6,
+                                     "memoryMB":  218.3,
+                                     "path":  "C:\\Program Files\\WindowsApps\\Claude_1.3883.0.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe",
+                                     "risk":  "safe",
+                                     "note":  "Anthropic - Claude Desktop AI 어시스턴트",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "KakaoTalk",
+                                     "pid_":  856,
+                                     "cpu":  10.1,
+                                     "memoryMB":  14.3,
+                                     "path":  "C:\\Program Files (x86)\\Kakao\\KakaoTalk\\KakaoTalk.exe",
+                                     "risk":  "safe",
+                                     "note":  "Kakao - 카카오톡 메신저",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "ShellExperienceHost",
+                                     "pid_":  5944,
+                                     "cpu":  6.2,
+                                     "memoryMB":  41.6,
+                                     "path":  "C:\\Windows\\SystemApps\\ShellExperienceHost_cw5n1h2txyewy\\ShellExperienceHost.exe",
+                                     "risk":  "unknown",
+                                     "note":  "처음 보는 프로그램 - 확인 필요",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "NvBackend",
+                                     "pid_":  10824,
+                                     "cpu":  5.7,
+                                     "memoryMB":  8.6,
+                                     "path":  "C:\\Program Files (x86)\\NVIDIA Corporation\\Update Core\\NvBackend.exe",
+                                     "risk":  "safe",
+                                     "note":  "NVIDIA - NVIDIA 백엔드(GeForce Experience)",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "svchost",
+                                     "pid_":  11824,
+                                     "cpu":  5.3,
+                                     "memoryMB":  24.4,
+                                     "path":  "C:\\WINDOWS\\system32\\svchost.exe",
+                                     "risk":  "safe",
+                                     "note":  "Microsoft - Windows 시스템 서비스 호스트",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "svchost",
+                                     "pid_":  10448,
+                                     "cpu":  4.8,
+                                     "memoryMB":  13.2,
+                                     "path":  "C:\\WINDOWS\\System32\\svchost.exe",
+                                     "risk":  "safe",
+                                     "note":  "Microsoft - Windows 시스템 서비스 호스트",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "svchost",
+                                     "pid_":  14892,
+                                     "cpu":  4.4,
+                                     "memoryMB":  22.5,
+                                     "path":  "C:\\WINDOWS\\system32\\svchost.exe",
+                                     "risk":  "safe",
+                                     "note":  "Microsoft - Windows 시스템 서비스 호스트",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "SearchApp",
+                                     "pid_":  9792,
+                                     "cpu":  3.8,
+                                     "memoryMB":  11.5,
+                                     "path":  "C:\\WINDOWS\\SystemApps\\Microsoft.Windows.Search_cw5n1h2txyewy\\SearchApp.exe",
+                                     "risk":  "safe",
+                                     "note":  "Microsoft - Windows 검색",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "SearchApp",
+                                     "pid_":  8616,
+                                     "cpu":  3.5,
+                                     "memoryMB":  25.8,
+                                     "path":  "C:\\WINDOWS\\SystemApps\\Microsoft.Windows.Search_cw5n1h2txyewy\\SearchApp.exe",
+                                     "risk":  "safe",
+                                     "note":  "Microsoft - Windows 검색",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "claude",
+                                     "pid_":  4660,
+                                     "cpu":  3.5,
+                                     "memoryMB":  434.6,
+                                     "path":  "C:\\Users\\sample\\AppData\\Roaming\\Claude\\claude-code\\2.1.111\\claude.exe",
+                                     "risk":  "safe",
+                                     "note":  "Anthropic - Claude Desktop AI 어시스턴트",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "RtkNGUI64",
+                                     "pid_":  13856,
+                                     "cpu":  2.8,
+                                     "memoryMB":  9.2,
+                                     "path":  "C:\\Program Files\\Realtek\\Audio\\HDA\\RtkNGUI64.exe",
+                                     "risk":  "safe",
+                                     "note":  "Realtek - Realtek 오디오 설정",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "WebViewHost",
+                                     "pid_":  12112,
+                                     "cpu":  2.7,
+                                     "memoryMB":  24.7,
+                                     "path":  "C:\\Program Files\\WindowsApps\\Microsoft.MicrosoftOfficeHub_19.2509.54051.0_x64__8wekyb3d8bbwe\\WebViewHost.exe",
+                                     "risk":  "info",
+                                     "note":  "정상적으로 설치된 프로그램",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "PhoneExperienceHost",
+                                     "pid_":  13424,
+                                     "cpu":  2.5,
+                                     "memoryMB":  48.2,
+                                     "path":  "C:\\Program Files\\WindowsApps\\Microsoft.YourPhone_1.25072.63.0_x64__8wekyb3d8bbwe\\PhoneExperienceHost.exe",
+                                     "risk":  "info",
+                                     "note":  "정상적으로 설치된 프로그램",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "msedgewebview2",
+                                     "pid_":  13888,
+                                     "cpu":  2.3,
+                                     "memoryMB":  13.7,
+                                     "path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\140.0.3485.94\\msedgewebview2.exe",
+                                     "risk":  "info",
+                                     "note":  "정상적으로 설치된 프로그램",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "claude",
+                                     "pid_":  12764,
+                                     "cpu":  2.2,
+                                     "memoryMB":  429.4,
+                                     "path":  "C:\\Users\\sample\\AppData\\Roaming\\Claude\\claude-code\\2.1.111\\claude.exe",
+                                     "risk":  "safe",
+                                     "note":  "Anthropic - Claude Desktop AI 어시스턴트",
+                                     "sig":  null,
+                                     "vt":  null
+                                 },
+                                 {
+                                     "name":  "OneDrive.Sync.Service",
+                                     "pid_":  10692,
+                                     "cpu":  2.1,
+                                     "memoryMB":  17.2,
+                                     "path":  "C:\\Program Files\\Microsoft OneDrive\\26.055.0323.0004\\OneDrive.Sync.Service.exe",
+                                     "risk":  "safe",
+                                     "note":  "Microsoft - OneDrive 동기화 서비스",
+                                     "sig":  null,
+                                     "vt":  null
+                                 }
+                             ],
+                     "gpu":  {
+                                 "process":  "claude",
+                                 "usage":  17.1
+                             },
+                     "network":  [
+                                     {
+                                         "process":  "claude",
+                                         "pid_":  12764,
+                                         "remoteAddress":  "160.79.104.10",
+                                         "remotePort":  443,
+                                         "path":  "C:\\Users\\sample\\AppData\\Roaming\\Claude\\claude-code\\2.1.111\\claude.exe",
+                                         "risk":  "safe",
+                                         "note":  "Anthropic - Claude Desktop AI 어시스턴트",
+                                         "vtIp":  null
+                                     }
+                                 ],
+                     "listeningPorts":  [
+                                            {
+                                                "port":  49668,
+                                                "process":  "svchost",
+                                                "pid_":  2696,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  49667,
+                                                "process":  "svchost",
+                                                "pid_":  1724,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  49666,
+                                                "process":  "svchost",
+                                                "pid_":  1308,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  49692,
+                                                "process":  "services",
+                                                "pid_":  756,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 서비스 관리자"
+                                            },
+                                            {
+                                                "port":  49670,
+                                                "process":  "svchost",
+                                                "pid_":  3656,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  49669,
+                                                "process":  "spoolsv",
+                                                "pid_":  3100,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - 인쇄 스풀러"
+                                            },
+                                            {
+                                                "port":  49665,
+                                                "process":  "wininit",
+                                                "pid_":  704,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 초기화"
+                                            },
+                                            {
+                                                "port":  14430,
+                                                "process":  "nosstarter.npe",
+                                                "pid_":  10016,
+                                                "path":  null,
+                                                "risk":  "unknown",
+                                                "note":  "처음 보는 프로그램 - 확인 필요"
+                                            },
+                                            {
+                                                "port":  5040,
+                                                "process":  "svchost",
+                                                "pid_":  8572,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  135,
+                                                "process":  "svchost",
+                                                "pid_":  900,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  49664,
+                                                "process":  "lsass",
+                                                "pid_":  764,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 보안/로그인 관리"
+                                            },
+                                            {
+                                                "port":  21300,
+                                                "process":  "I3GProc",
+                                                "pid_":  9972,
+                                                "path":  "C:\\Program Files (x86)\\IPinside_LWS\\I3GProc.exe",
+                                                "risk":  "info",
+                                                "note":  "IPinside - 은행/쇼핑몰 IP 추적 보안 플러그인"
+                                            },
+                                            {
+                                                "port":  14440,
+                                                "process":  "nosstarter.npe",
+                                                "pid_":  10016,
+                                                "path":  null,
+                                                "risk":  "unknown",
+                                                "note":  "처음 보는 프로그램 - 확인 필요"
+                                            },
+                                            {
+                                                "port":  49668,
+                                                "process":  "svchost",
+                                                "pid_":  2696,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  49667,
+                                                "process":  "svchost",
+                                                "pid_":  1724,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  49666,
+                                                "process":  "svchost",
+                                                "pid_":  1308,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  49692,
+                                                "process":  "services",
+                                                "pid_":  756,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 서비스 관리자"
+                                            },
+                                            {
+                                                "port":  49670,
+                                                "process":  "svchost",
+                                                "pid_":  3656,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  49669,
+                                                "process":  "spoolsv",
+                                                "pid_":  3100,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - 인쇄 스풀러"
+                                            },
+                                            {
+                                                "port":  49665,
+                                                "process":  "wininit",
+                                                "pid_":  704,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 초기화"
+                                            },
+                                            {
+                                                "port":  445,
+                                                "process":  "System",
+                                                "pid_":  4,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 커널"
+                                            },
+                                            {
+                                                "port":  135,
+                                                "process":  "svchost",
+                                                "pid_":  900,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  80,
+                                                "process":  "System",
+                                                "pid_":  4,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 커널"
+                                            },
+                                            {
+                                                "port":  49664,
+                                                "process":  "lsass",
+                                                "pid_":  764,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 보안/로그인 관리"
+                                            },
+                                            {
+                                                "port":  7680,
+                                                "process":  "svchost",
+                                                "pid_":  9756,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 시스템 서비스 호스트"
+                                            },
+                                            {
+                                                "port":  5357,
+                                                "process":  "System",
+                                                "pid_":  4,
+                                                "path":  null,
+                                                "risk":  "safe",
+                                                "note":  "Microsoft - Windows 커널"
+                                            }
+                                        ],
+                     "startup":  [
+                                     {
+                                         "location":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "SecurityHealth",
+                                         "command":  "C:\\WINDOWS\\system32\\SecurityHealthSystray.exe",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "RTHDVCPL",
+                                         "command":  "\"C:\\Program Files\\Realtek\\Audio\\HDA\\RtkNGUI64.exe\" -s",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "AdobeAAMUpdater-1.0",
+                                         "command":  "\"C:\\Program Files (x86)\\Common Files\\Adobe\\OOBE\\PDApp\\UWA\\UpdaterStartupUtility.exe\"",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "AdobeGCInvoker-1.0",
+                                         "command":  "\"C:\\Program Files (x86)\\Common Files\\Adobe\\AdobeGCClient\\AGCInvokerUtility.exe\"",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "CDAServer",
+                                         "command":  "C:\\Program Files\\Common Files\\Common Desktop Agent\\CDASrv.exe",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "NvBackend",
+                                         "command":  "\"C:\\Program Files (x86)\\NVIDIA Corporation\\Update Core\\NvBackend.exe\"",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "ShadowPlay",
+                                         "command":  "C:\\WINDOWS\\system32\\rundll32.exe C:\\WINDOWS\\system32\\nvspcap64.dll,ShadowPlayOnSystemStart",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "HancomHNetComAgent",
+                                         "command":  "C:\\Program Files (x86)\\Hnc\\Office 2018\\HOffice100\\Bin\\HNetCom.Agent.exe",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "KakaoTalk",
+                                         "command":  "\"C:\\Program Files (x86)\\Kakao\\KakaoTalk\\KakaoTalk.exe\" -bystartup",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "Microsoft.Lists",
+                                         "command":  "C:\\Program Files\\Microsoft OneDrive\\26.055.0323.0004\\OneDrive.Sync.Service.exe",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "Docker Desktop",
+                                         "command":  "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "HncUpdateTray",
+                                         "command":  "C:\\Program Files (x86)\\Hnc\\Office 2018\\HncUtils\\Service\\HncUpdateTray.exe",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     },
+                                     {
+                                         "location":  "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                         "name":  "ipinside-lws",
+                                         "command":  "C:\\Program Files (x86)\\IPinside_LWS\\I3GProc.exe",
+                                         "risk":  "safe",
+                                         "note":  ""
+                                     }
+                                 ],
+                     "autoruns":  [
+                                      {
+                                          "category":  "",
+                                          "entry":  "ASUS Com Service: ",
+                                          "image":  "c:\\program files (x86)\\asus\\axsp\\1.01.02\\atkexcomsvc.exe",
+                                          "signer":  "(Verified) ASUSTeK Computer Inc.",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files (x86)\\ASUS\\AXSP\\1.01.02\\atkexComSvc.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) ASUSTeK Computer Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Battle.net Update Helper Svc: Battle.net Admin Agent",
+                                          "image":  "c:\\programdata\\battle.net_components\\battlenet_helpersvc\\agenthelper.exe",
+                                          "signer":  "(Verified) Blizzard Entertainment, Inc.",
+                                          "verified":  true,
+                                          "launchString":  "C:\\ProgramData\\Battle.net_components\\battlenet_helpersvc\\AgentHelper.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Blizzard Entertainment, Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "CacaoEncoder Sync: ",
+                                          "image":  "c:\\windows\\ceuuecrtmunm.exe",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "\"C:\\WINDOWS\\ceuuecrtmunm.exe\" /srv",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Docker Desktop Service: Docker Desktop Service",
+                                          "image":  "c:\\program files\\docker\\docker\\com.docker.service",
+                                          "signer":  "(Verified) Docker Inc",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files\\Docker\\Docker\\com.docker.service\"",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Docker Inc",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Claude: Desktop application for Claude.ai",
+                                          "image":  "c:\\program files\\windowsapps\\claude_1.3883.0.0_x64__pzs8sxrjxfjjc\\app\\resources\\cowork-svc.exe",
+                                          "signer":  "(Verified) Anthropic, PBC",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files\\WindowsApps\\Claude_1.3883.0.0_x64__pzs8sxrjxfjjc\\app\\resources\\cowork-svc.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Anthropic, PBC",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NVIDIA GeForce Experience Service: NVIDIA GeForce Experience Service",
+                                          "image":  "c:\\program files\\nvidia corporation\\geforce experience service\\gfexperienceservice.exe",
+                                          "signer":  "(Verified) NVIDIA Corporation",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files\\NVIDIA Corporation\\GeForce Experience Service\\GfExperienceService.exe\"",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) NVIDIA Corporation",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Google Chrome Elevation Service (GoogleChromeElevationService): 암호화 서비스 및 Google Chrome 브라우저가 최신 상태가 아닌 경우 이를 복구하는 안전한 방법을 제공합니다. 이 서비스를 사용 중지하면 에서 암호화된 데이터에 액세스할 수 없거나 에서 자체적으로 복구할 수 없을 수도 있습니다.",
+                                          "image":  "c:\\program files (x86)\\google\\chrome\\application\\147.0.7727.116\\elevation_service.exe",
+                                          "signer":  "(Verified) Google LLC",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Google\\Chrome\\Application\\147.0.7727.116\\elevation_service.exe\"",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Google LLC",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Google 업데이터 내부 서비스 (GoogleUpdaterInternalService148.0.7730.0): Google 소프트웨어를 항상 최신 상태로 유지합니다. 이 서비스를 사용 중지하거나 중단하면 Google 소프트웨어가 최신 상태로 유지되지 않습니다. 즉, 발생할 수 있는 보안 취약점이 수정되지 않고 기능이 작동하지 않을 수 있습니다. 이 서비스를 사용하는 Google 소프트웨어가 없으면 이 서비스는 자동으로 제거됩니다.",
+                                          "image":  "c:\\program files (x86)\\google\\googleupdater\\148.0.7730.0\\updater.exe",
+                                          "signer":  "(Verified) Google LLC",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Google\\GoogleUpdater\\148.0.7730.0\\updater.exe\" --system --windows-service --service=update-internal",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Google LLC",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Google 업데이터 서비스 (GoogleUpdaterService148.0.7730.0): Google 소프트웨어를 항상 최신 상태로 유지합니다. 이 서비스를 사용 중지하거나 중단하면 Google 소프트웨어가 최신 상태로 유지되지 않습니다. 즉, 발생할 수 있는 보안 취약점이 수정되지 않고 기능이 작동하지 않을 수 있습니다. 이 서비스를 사용하는 Google 소프트웨어가 없으면 이 서비스는 자동으로 제거됩니다.",
+                                          "image":  "c:\\program files (x86)\\google\\googleupdater\\148.0.7730.0\\updater.exe",
+                                          "signer":  "(Verified) Google LLC",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Google\\GoogleUpdater\\148.0.7730.0\\updater.exe\" --system --windows-service --service=update",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Google LLC",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Google 업데이트 서비스 (gupdate): 항상 최신 버전의 Google 소프트웨어를 사용할 수 있습니다. 이 서비스를 사용하지 않거나 중지하면 최신 버전의 Google 소프트웨어를 사용할 수 없습니다. 이 경우 보안 문제가 발생해도 해결할 수 없으며 기능이 작동하지 않을 수 있습니다. 이 서비스를 사용하는 Google 소프트웨어가 없으면 서비스가 자동으로 제거됩니다.",
+                                          "image":  "c:\\program files (x86)\\google\\update\\googleupdate.exe",
+                                          "signer":  "(Verified) Google LLC",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Google\\Update\\GoogleUpdate.exe\" /svc",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Google LLC",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Google 업데이트 서비스 (gupdatem): 항상 최신 버전의 Google 소프트웨어를 사용할 수 있습니다. 이 서비스를 사용하지 않거나 중지하면 최신 버전의 Google 소프트웨어를 사용할 수 없습니다. 이 경우 보안 문제가 발생해도 해결할 수 없으며 기능이 작동하지 않을 수 있습니다. 이 서비스를 사용하는 Google 소프트웨어가 없으면 서비스가 자동으로 제거됩니다.",
+                                          "image":  "c:\\program files (x86)\\google\\update\\googleupdate.exe",
+                                          "signer":  "(Verified) Google LLC",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Google\\Update\\GoogleUpdate.exe\" /medsvc",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Google LLC",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "HncUpdateService_NEO2: HncUpdateService",
+                                          "image":  "c:\\program files (x86)\\hnc\\office 2018\\hncutils\\service\\hncupdateservice.exe",
+                                          "signer":  "(Verified) HANCOM. INC,",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files (x86)\\Hnc\\Office 2018\\HncUtils\\Service\\HncUpdateService.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) HANCOM. INC,",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Interezen LWS: interezen LWS",
+                                          "image":  "c:\\program files (x86)\\ipinside_lws\\i3gmainsvc.exe",
+                                          "signer":  "(Verified) Interezen. Co.,Ltd",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\IPinside_LWS\\I3GMainSvc.exe\"",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Interezen. Co.,Ltd",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "nProtect Online Security(PFS): nProtect Online Security(PFS)",
+                                          "image":  "c:\\program files (x86)\\incainternet\\nprotect online security\\nossvc.exe",
+                                          "signer":  "(Verified) INCA Internet Co.,Ltd.",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\INCAInternet\\nProtect Online Security\\nossvc.exe\" /SVC",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) INCA Internet Co.,Ltd.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NVIDIA Display Container LS: Container service for NVIDIA root features",
+                                          "image":  "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispig.inf_amd64_0afec3f2050014a0\\display.nvcontainer\\nvdisplay.container.exe",
+                                          "signer":  "(Verified) NVIDIA Corporation",
+                                          "verified":  true,
+                                          "launchString":  "C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispig.inf_amd64_0afec3f2050014a0\\Display.NvContainer\\NVDisplay.Container.exe -s NVDisplay.ContainerLocalSystem -f %ProgramData%\\NVIDIA\\NVDisplay.ContainerLocalSystem.log -l 3 -d C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispig.inf_amd64_0afec3f2050014a0\\Display.NvContainer\\plugins\\LocalSystem -r -p 30000 -cfg NVDisplay.ContainerLocalSystem\\LocalSystem /ert",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) NVIDIA Corporation",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NVIDIA Network Service: NVIDIA Network Service",
+                                          "image":  "c:\\program files (x86)\\nvidia corporation\\netservice\\nvnetworkservice.exe",
+                                          "signer":  "(Verified) NVIDIA Corporation",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\NVIDIA Corporation\\NetService\\NvNetworkService.exe\"",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) NVIDIA Corporation",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NVIDIA Streamer Service: Service for SHIELD Streaming",
+                                          "image":  "c:\\program files\\nvidia corporation\\nvstreamsrv\\nvstreamsvc.exe",
+                                          "signer":  "(Verified) NVIDIA Corporation",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files\\NVIDIA Corporation\\NvStreamSrv\\nvstreamsvc.exe\"",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) NVIDIA Corporation",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "VPWalletService: Non-ActiveX 결제서비스",
+                                          "image":  "c:\\program files (x86)\\vp\\vpwalletservice\\vpwalletservice.exe",
+                                          "signer":  "(Verified) VP Inc.",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files (x86)\\VP\\VPWalletService\\VPWalletService.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) VP Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "XIGNCODE3 for TalesRunner_KR: Wellbia.com Security Service",
+                                          "image":  "c:\\program files\\common files\\wellbia.com\\xldr_talesrunner_kr.exe",
+                                          "signer":  "(Verified) Wellbia.com Co., Ltd.",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files\\Common Files\\Wellbia.com\\xldr_talesrunner_kr.exe\"",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Wellbia.com Co., Ltd.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "AsIO: ",
+                                          "image":  "c:\\windows\\syswow64\\drivers\\asio.sys",
+                                          "signer":  "(Verified) ASUSTeK Computer Inc.",
+                                          "verified":  true,
+                                          "launchString":  "SysWow64\\drivers\\AsIO.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) ASUSTeK Computer Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Intel(R) Serial IO GPIO Controller Driver: Intel(R) Serial IO GPIO Controller Driver",
+                                          "image":  "c:\\windows\\system32\\drivers\\ialpssi_gpio.sys",
+                                          "signer":  "(Verified) Intel Corporation - Client Components Group",
+                                          "verified":  true,
+                                          "launchString":  "\\SystemRoot\\System32\\drivers\\iaLPSSi_GPIO.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Intel Corporation - Client Components Group",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Service for Realtek HD Audio (WDM): Realtek(r) High Definition Audio Function Driver",
+                                          "image":  "c:\\windows\\system32\\drivers\\rtkvhd64.sys",
+                                          "signer":  "(Verified) Realtek Semiconductor Corp",
+                                          "verified":  true,
+                                          "launchString":  "\\SystemRoot\\system32\\drivers\\RTKVHD64.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Realtek Semiconductor Corp",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Intel(R) Management Engine Interface : Intel(R) Management Engine Interface",
+                                          "image":  "c:\\windows\\system32\\drivers\\teedriverw8x64.sys",
+                                          "signer":  "(Verified) Intel(R) Embedded Subsystems and IP Blocks Group",
+                                          "verified":  true,
+                                          "launchString":  "\\SystemRoot\\System32\\drivers\\TeeDriverW8x64.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Intel(R) Embedded Subsystems and IP Blocks Group",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "np_ck64s: nProtect Crypto Driver Simple Version.",
+                                          "image":  "c:\\windows\\syswow64\\np_ck64s.sys",
+                                          "signer":  "(Verified) INCA Internet Co.,Ltd.",
+                                          "verified":  true,
+                                          "launchString":  "\\??\\C:\\WINDOWS\\syswow64\\np_ck64s.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) INCA Internet Co.,Ltd.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Service for NVIDIA High Definition Audio Driver: NVIDIA HDMI Audio Driver",
+                                          "image":  "c:\\windows\\system32\\drivers\\nvhda64v.sys",
+                                          "signer":  "(Verified) NVIDIA Corporation",
+                                          "verified":  true,
+                                          "launchString":  "\\SystemRoot\\system32\\drivers\\nvhda64v.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) NVIDIA Corporation",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "nvlddmkm: NVIDIA Windows Kernel Mode Driver, Version 560.94 ",
+                                          "image":  "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispig.inf_amd64_0afec3f2050014a0\\nvlddmkm.sys",
+                                          "signer":  "(Verified) NVIDIA Corporation",
+                                          "verified":  true,
+                                          "launchString":  "\\SystemRoot\\System32\\DriverStore\\FileRepository\\nv_dispig.inf_amd64_0afec3f2050014a0\\nvlddmkm.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) NVIDIA Corporation",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NvStreamKms: Nvidia Streaming Kernel Service",
+                                          "image":  "c:\\program files\\nvidia corporation\\nvstreamsrv\\nvstreamkms.sys",
+                                          "signer":  "(Verified) NVIDIA Corporation",
+                                          "verified":  true,
+                                          "launchString":  "\\??\\C:\\Program Files\\NVIDIA Corporation\\NvStreamSrv\\NvStreamKms.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) NVIDIA Corporation",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NVIDIA Virtual Audio Device (Wave Extensible) (WDM): NVIDIA Virtual Audio Driver",
+                                          "image":  "c:\\windows\\system32\\drivers\\nvvad64v.sys",
+                                          "signer":  "(Verified) NVIDIA Corporation",
+                                          "verified":  true,
+                                          "launchString":  "\\SystemRoot\\system32\\drivers\\nvvad64v.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) NVIDIA Corporation",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "USB SCSK Driver Service: USB SCSK Driver",
+                                          "image":  "c:\\windows\\syswow64\\drivers\\scskusbs.sys",
+                                          "signer":  "(Verified) Softcamp Co., Ltd.",
+                                          "verified":  true,
+                                          "launchString":  "syswow64\\drivers\\scskusbs.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Softcamp Co., Ltd.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "nProtect Firewall Core Driver : nProtect Firewall Core Driver ",
+                                          "image":  "c:\\windows\\system32\\tkfwfv64.sys",
+                                          "signer":  "(Verified) INCA Internet Co.,Ltd.",
+                                          "verified":  true,
+                                          "launchString":  "\\SystemRoot\\system32\\TKFWFV64.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) INCA Internet Co.,Ltd.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "X6va067: ",
+                                          "image":  "c:\\windows\\syswow64\\drivers\\x6va067",
+                                          "signer":  "(Verified) Wiselogic Co., Ltd.",
+                                          "verified":  true,
+                                          "launchString":  "\\??\\C:\\WINDOWS\\SysWOW64\\Drivers\\X6va067",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Wiselogic Co., Ltd.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "xhunter1: XIGNCODE3 System Guard",
+                                          "image":  "c:\\windows\\xhunter1.sys",
+                                          "signer":  "(Verified) Wellbia.com Co., Ltd.",
+                                          "verified":  true,
+                                          "launchString":  "\\??\\C:\\WINDOWS\\xhunter1.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Wellbia.com Co., Ltd.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "xspirit: ",
+                                          "image":  "c:\\windows\\xspirit.sys",
+                                          "signer":  "(Verified) Wellbia.com Co., Ltd.",
+                                          "verified":  true,
+                                          "launchString":  "\\??\\C:\\WINDOWS\\xspirit.sys",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Wellbia.com Co., Ltd.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  " atmfd.dll",
+                                          "image":  "File not found: atmfd.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "atmfd.dll",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Hancom PDF Port Monitor",
+                                          "image":  "c:\\windows\\system32\\hnce2pprmonp.dll",
+                                          "signer":  "(Not verified) Hancom Inc.",
+                                          "verified":  false,
+                                          "launchString":  "HNCE2PPRMONP.dll",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "wowarmhw.dll",
+                                          "image":  "c:\\windows\\system32\\wowarmhw.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "wowarmhw.dll",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "xtajit.dll",
+                                          "image":  "c:\\windows\\system32\\xtajit.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "xtajit.dll",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "wow64cpu.dll",
+                                          "image":  "c:\\windows\\syswow64\\wow64cpu.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "wow64cpu.dll",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "wowarmhw.dll",
+                                          "image":  "c:\\windows\\syswow64\\wowarmhw.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "wowarmhw.dll",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "xtajit.dll",
+                                          "image":  "c:\\windows\\syswow64\\xtajit.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "xtajit.dll",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "wow64.dll",
+                                          "image":  "c:\\windows\\syswow64\\wow64.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "wow64.dll",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "wow64win.dll",
+                                          "image":  "c:\\windows\\syswow64\\wow64win.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "wow64win.dll",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Windows 명령 처리기",
+                                          "image":  "c:\\windows\\system32\\cmd.exe",
+                                          "signer":  "(Verified) Microsoft Windows",
+                                          "verified":  true,
+                                          "launchString":  "cmd.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "Microsoft 서명",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Realtek HD 오디오 관리자",
+                                          "image":  "c:\\program files\\realtek\\audio\\hda\\rtkngui64.exe",
+                                          "signer":  "(Verified) Realtek Semiconductor Corp",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files\\Realtek\\Audio\\HDA\\RtkNGUI64.exe\" -s",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Realtek Semiconductor Corp",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Adobe Updater Startup Utility",
+                                          "image":  "c:\\program files (x86)\\common files\\adobe\\oobe\\pdapp\\uwa\\updaterstartuputility.exe",
+                                          "signer":  "(Verified) Adobe Systems Incorporated",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Common Files\\Adobe\\OOBE\\PDApp\\UWA\\UpdaterStartupUtility.exe\"",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Adobe Systems Incorporated",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Adobe GC Invoker Utility",
+                                          "image":  "c:\\program files (x86)\\common files\\adobe\\adobegcclient\\agcinvokerutility.exe",
+                                          "signer":  "(Verified) Adobe Inc.",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Common Files\\Adobe\\AdobeGCClient\\AGCInvokerUtility.exe\"",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Adobe Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "CDA Server",
+                                          "image":  "c:\\program files\\common files\\common desktop agent\\cdasrv.exe",
+                                          "signer":  "(Verified) Samsung Electronics CO., LTD.",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files\\Common Files\\Common Desktop Agent\\CDASrv.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Samsung Electronics CO., LTD.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NVIDIA Backend",
+                                          "image":  "c:\\program files (x86)\\nvidia corporation\\update core\\nvbackend.exe",
+                                          "signer":  "(Verified) NVIDIA Corporation",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\NVIDIA Corporation\\Update Core\\NvBackend.exe\"",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) NVIDIA Corporation",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NVIDIA Capture Server Proxy",
+                                          "image":  "c:\\windows\\system32\\nvspcap64.dll",
+                                          "signer":  "(Not verified) NVIDIA Corporation",
+                                          "verified":  false,
+                                          "launchString":  "C:\\WINDOWS\\system32\\rundll32.exe C:\\WINDOWS\\system32\\nvspcap64.dll,ShadowPlayOnSystemStart",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "HncUpdateTray",
+                                          "image":  "c:\\program files (x86)\\hnc\\office 2018\\hncutils\\service\\hncupdatetray.exe",
+                                          "signer":  "(Verified) HANCOM. INC,",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files (x86)\\Hnc\\Office 2018\\HncUtils\\Service\\HncUpdateTray.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) HANCOM. INC,",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Interezen Process",
+                                          "image":  "c:\\program files (x86)\\ipinside_lws\\i3gproc.exe",
+                                          "signer":  "(Verified) Interezen. Co.,Ltd",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files (x86)\\IPinside_LWS\\I3GProc.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Interezen. Co.,Ltd",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Google Chrome",
+                                          "image":  "c:\\program files (x86)\\google\\chrome\\application\\platformexperiencehelper\\platform_experience_helper.exe",
+                                          "signer":  "(Verified) Google LLC",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Google\\Chrome\\Application\\PlatformExperienceHelper\\platform_experience_helper.exe\" --first-run",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Google LLC",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Google Chrome Installer",
+                                          "image":  "c:\\program files (x86)\\google\\chrome\\application\\147.0.7727.116\\installer\\chrmstp.exe",
+                                          "signer":  "(Verified) Google LLC",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Google\\Chrome\\Application\\147.0.7727.116\\Installer\\chrmstp.exe\" --configure-user-settings --verbose-logging --system-level --channel=stable",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Google LLC",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Adobe® Flash® Player Installer/Uninstaller 32.0 r0",
+                                          "image":  "c:\\windows\\syswow64\\macromed\\flash\\flashutil32_32_0_0_344_pepper.exe",
+                                          "signer":  "(Verified) Adobe Inc.",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\WINDOWS\\SysWOW64\\Macromed\\Flash\\FlashUtil32_32_0_0_344_pepper.exe\" -check pepperplugin",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Adobe Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Adobe Genuine Software Integrity Service",
+                                          "image":  "c:\\program files (x86)\\common files\\adobe\\adobegcclient\\agsservice.exe",
+                                          "signer":  "(Verified) Adobe Inc.",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Common Files\\Adobe\\AdobeGCClient\\AGSService.exe\" ",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Adobe Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Adobe GC Invoker Utility",
+                                          "image":  "c:\\program files (x86)\\common files\\adobe\\adobegcclient\\agcinvokerutility.exe",
+                                          "signer":  "(Verified) Adobe Inc.",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Common Files\\Adobe\\AdobeGCClient\\AGCInvokerUtility.exe\" -mode=scheduled",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Adobe Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "sch.exe",
+                                          "image":  "c:\\program files (x86)\\cacaoencoder\\sch.exe",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "\"C:\\Program Files (x86)\\CacaoEncoder\\sch.exe\" /sch",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "설치 폴더이지만 서명 없음",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "MPSch.exe",
+                                          "image":  "File not found: C:\\Users\\sample\\AppData\\Roaming\\MatchPop\\common\\bin\\MPSch.exe",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "\"C:\\Users\\sample\\AppData\\Roaming\\MatchPop\\common\\bin\\MPSch.exe\" ",
+                                          "sha256":  "",
+                                          "risk":  "warning",
+                                          "note":  "사용자 폴더의 서명 없는 자동실행",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "remotefxvgpudisablement.exe",
+                                          "image":  "c:\\windows\\system32\\remotefxvgpudisablement.exe",
+                                          "signer":  "(Not verified) Microsoft Corporation",
+                                          "verified":  false,
+                                          "launchString":  "\"%windir%\\System32\\RemoteFXvGPUDisablement.exe\" Disable",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "remotefxvgpudisablement.exe",
+                                          "image":  "c:\\windows\\system32\\remotefxvgpudisablement.exe",
+                                          "signer":  "(Not Verified) Microsoft Corporation",
+                                          "verified":  false,
+                                          "launchString":  "\"%windir%\\System32\\RemoteFXvGPUDisablement.exe\" Warning",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Core Sync",
+                                          "image":  "c:\\program files (x86)\\common files\\adobe\\coresyncextension\\coresync_x64.dll",
+                                          "signer":  "(Verified) Adobe Systems Incorporated",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{2A118EB5-5797-4F5E-8B3D-F4ECBA3C98E4}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Adobe Systems Incorporated",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "POContextMenuHandler64.dll",
+                                          "image":  "File not found: C:\\Program Files (x86)\\Polaris Office\\Office8\\Binary\\SyncOverlay\\X64\\POContextMenuHandler64.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "HKCR\\CLSID\\{FFB89EEA-EFCF-4156-BC81-CA72A260FB62}",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "POContextMenuHandler64.dll",
+                                          "image":  "File not found: C:\\Program Files (x86)\\Polaris Office\\Office8\\Binary\\SyncOverlay\\X64\\POContextMenuHandler64.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "HKCR\\CLSID\\{FFB89EEA-EFCF-4156-BC81-CA72A260FB62}",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NVIDIA Display Shell Extension",
+                                          "image":  "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispig.inf_amd64_0afec3f2050014a0\\nvshext.dll",
+                                          "signer":  "(Verified) NVIDIA Corporation",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{3D1975AF-48C6-4f8e-A182-BE0E08FA86A9}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) NVIDIA Corporation",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "POContextMenuHandler64.dll",
+                                          "image":  "File not found: C:\\Program Files (x86)\\Polaris Office\\Office8\\Binary\\SyncOverlay\\X64\\POContextMenuHandler64.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "HKCR\\CLSID\\{FFB89EEA-EFCF-4156-BC81-CA72A260FB62}",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Core Sync",
+                                          "image":  "c:\\program files (x86)\\common files\\adobe\\coresyncextension\\coresync_x64.dll",
+                                          "signer":  "(Verified) Adobe Systems Incorporated",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{2A118EB5-5797-4F5E-8B3D-F4ECBA3C98E4}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Adobe Systems Incorporated",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Core Sync",
+                                          "image":  "c:\\program files (x86)\\common files\\adobe\\coresyncextension\\coresync_x64.dll",
+                                          "signer":  "(Verified) Adobe Systems Incorporated",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{AB9CF9F8-8A96-4F9D-BF21-CE85714C3A47}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Adobe Systems Incorporated",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Core Sync",
+                                          "image":  "c:\\program files (x86)\\common files\\adobe\\coresyncextension\\coresync_x64.dll",
+                                          "signer":  "(Verified) Adobe Systems Incorporated",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{853B7E05-C47D-4985-909A-D0DC5C6D7303}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Adobe Systems Incorporated",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Core Sync",
+                                          "image":  "c:\\program files (x86)\\common files\\adobe\\coresyncextension\\coresync_x64.dll",
+                                          "signer":  "(Verified) Adobe Systems Incorporated",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{42D38F2E-98E9-4382-B546-E24E4D6D04BB}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Adobe Systems Incorporated",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "0FileIconSyncOn64.dll",
+                                          "image":  "File not found: C:\\Program Files (x86)\\Polaris Office\\Office8\\Binary\\SyncOverlay\\X64\\0FileIconSyncOn64.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "HKCR\\CLSID\\{62E15A97-5651-41E4-95C4-706D30C86A4B}",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "1FileIconSyncAlert64.dll",
+                                          "image":  "File not found: C:\\Program Files (x86)\\Polaris Office\\Office8\\Binary\\SyncOverlay\\X64\\1FileIconSyncAlert64.dll",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "HKCR\\CLSID\\{BF741CA6-27BF-4B49-A3A3-1C39415582D8}",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "p3melonwmt2.ax",
+                                          "image":  "File not found: C:\\Program Files (x86)\\Melon Player4\\system32\\p3melonwmt2.ax",
+                                          "signer":  "",
+                                          "verified":  false,
+                                          "launchString":  "HKCR\\CLSID\\{CBFA8DEC-011C-4033-93AF-5F6EED269191}",
+                                          "sha256":  "",
+                                          "risk":  "info",
+                                          "note":  "확인 필요",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NetCom Agent",
+                                          "image":  "c:\\program files (x86)\\hnc\\office 2018\\hoffice100\\bin\\hnetcom.agent.exe",
+                                          "signer":  "(Verified) HANCOM. INC,",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files (x86)\\Hnc\\Office 2018\\HOffice100\\Bin\\HNetCom.Agent.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) HANCOM. INC,",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "KakaoTalk(32-bit)",
+                                          "image":  "c:\\program files (x86)\\kakao\\kakaotalk\\kakaotalk.exe",
+                                          "signer":  "(Verified) Kakao Corp.",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Kakao\\KakaoTalk\\KakaoTalk.exe\" -bystartup",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Kakao Corp.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Docker Desktop Launcher",
+                                          "image":  "c:\\program files\\docker\\docker\\docker desktop.exe",
+                                          "signer":  "(Verified) Docker Inc",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Docker Inc",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "NetCom Agent",
+                                          "image":  "c:\\program files (x86)\\hnc\\office 2018\\hoffice100\\bin\\hnetcom.agent.exe",
+                                          "signer":  "(Verified) HANCOM. INC,",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files (x86)\\Hnc\\Office 2018\\HOffice100\\Bin\\HNetCom.Agent.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) HANCOM. INC,",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "KakaoTalk(32-bit)",
+                                          "image":  "c:\\program files (x86)\\kakao\\kakaotalk\\kakaotalk.exe",
+                                          "signer":  "(Verified) Kakao Corp.",
+                                          "verified":  true,
+                                          "launchString":  "\"C:\\Program Files (x86)\\Kakao\\KakaoTalk\\KakaoTalk.exe\" -bystartup",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Kakao Corp.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Docker Desktop Launcher",
+                                          "image":  "c:\\program files\\docker\\docker\\docker desktop.exe",
+                                          "signer":  "(Verified) Docker Inc",
+                                          "verified":  true,
+                                          "launchString":  "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Docker Inc",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      },
+                                      {
+                                          "category":  "",
+                                          "entry":  "Bandizip shell menu dll",
+                                          "image":  "c:\\program files\\bandizip\\bdzshl.x64.dll",
+                                          "signer":  "(Verified) Bandisoft International Inc.",
+                                          "verified":  true,
+                                          "launchString":  "HKCR\\CLSID\\{5B69A6B4-393B-459C-8EBB-214237A9E7AC}",
+                                          "sha256":  "",
+                                          "risk":  "safe",
+                                          "note":  "서명됨: (Verified) Bandisoft International Inc.",
+                                          "vt":  null
+                                      }
+                                  ],
+                     "scheduledTasks":  [
+                                            {
+                                                "name":  "Adobe Flash Player PPAPI Notifier",
+                                                "path":  "\\",
+                                                "state":  "Ready",
+                                                "execute":  "C:\\WINDOWS\\SysWOW64\\Macromed\\Flash\\FlashUtil32_32_0_0_344_pepper.exe",
+                                                "arguments":  "-check pepperplugin",
+                                                "risk":  "safe",
+                                                "note":  ""
+                                            },
+                                            {
+                                                "name":  "Adobe-Genuine-Software-Integrity-Scheduler-1.0",
+                                                "path":  "\\",
+                                                "state":  "Ready",
+                                                "execute":  "C:\\Program Files (x86)\\Common Files\\Adobe\\AdobeGCClient\\AGSService.exe",
+                                                "arguments":  null,
+                                                "risk":  "safe",
+                                                "note":  ""
+                                            },
+                                            {
+                                                "name":  "AdobeGCInvoker-1.0",
+                                                "path":  "\\",
+                                                "state":  "Ready",
+                                                "execute":  "C:\\Program Files (x86)\\Common Files\\Adobe\\AdobeGCClient\\AGCInvokerUtility.exe",
+                                                "arguments":  "-mode=scheduled",
+                                                "risk":  "safe",
+                                                "note":  ""
+                                            },
+                                            {
+                                                "name":  "ceuuecrtmuns",
+                                                "path":  "\\",
+                                                "state":  "Ready",
+                                                "execute":  "C:\\Program Files (x86)\\CacaoEncoder\\sch.exe",
+                                                "arguments":  "/sch",
+                                                "risk":  "safe",
+                                                "note":  ""
+                                            },
+                                            {
+                                                "name":  "o2sch1",
+                                                "path":  "\\",
+                                                "state":  "Ready",
+                                                "execute":  "C:\\Users\\sample\\AppData\\Roaming\\MatchPop\\common\\bin\\MPSch.exe",
+                                                "arguments":  null,
+                                                "risk":  "warning",
+                                                "note":  "사용자 AppData 폴더에서 실행 - 확인 필요"
+                                            },
+                                            {
+                                                "name":  "OneDrive Per-Machine Standalone Update Task",
+                                                "path":  "\\",
+                                                "state":  "Ready",
+                                                "execute":  "C:\\Program Files\\Microsoft OneDrive\\OneDriveStandaloneUpdater.exe",
+                                                "arguments":  null,
+                                                "risk":  "safe",
+                                                "note":  ""
+                                            },
+                                            {
+                                                "name":  "OneDrive Reporting Task-S-1-5-21-1111111111-2222222222-3333333333-1001",
+                                                "path":  "\\",
+                                                "state":  "Ready",
+                                                "execute":  "C:\\Program Files\\Microsoft OneDrive\\OneDriveStandaloneUpdater.exe",
+                                                "arguments":  "/reporting",
+                                                "risk":  "safe",
+                                                "note":  ""
+                                            },
+                                            {
+                                                "name":  "OneDrive Startup Task-S-1-5-21-1111111111-2222222222-3333333333-1001",
+                                                "path":  "\\",
+                                                "state":  "Ready",
+                                                "execute":  "C:\\Program Files\\Microsoft OneDrive\\26.055.0323.0004\\OneDriveLauncher.exe",
+                                                "arguments":  "/startInstances",
+                                                "risk":  "safe",
+                                                "note":  ""
+                                            }
+                                        ],
+                     "defender":  {
+                                      "realtimeEnabled":  true,
+                                      "antivirusEnabled":  true,
+                                      "lastQuickScan":  "2026-04-23 10:46",
+                                      "lastFullScan":  "없음",
+                                      "signatureLastUpdated":  "2025-09-28",
+                                      "signatureDaysOld":  207
+                                  },
+                     "recentInstalls":  [
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Microsoft Visual C++ 2022 X86 Debug Runtime - 14.50.35719",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows IoT Extension SDK",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Desktop Libs x86",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows Mobile Extension SDK Contracts",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows IoT Extension SDK Contracts",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows App Certification Kit x64",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows App Certification Kit x64 (OnecoreUAP)",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK for Windows Store Apps Headers",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "SDK ARM64 Redistributables",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK for Windows Store Apps Metadata",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "WinRT Intellisense PPI - Other Languages",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Universal General MIDI DLS Extension SDK",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK OnecoreUap Headers x64",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Universal CRT Headers Libraries and Sources",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Microsoft Visual C++ 2022 X86 Additional Runtime - 14.50.35719",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Desktop Tools arm64",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Microsoft Visual Studio Setup WMI Provider",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "vs_FileTracker_Singleton",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows Team Extension SDK Contracts",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Redistributables",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK OnecoreUap Headers arm64",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "WinRT Intellisense PPI - en-us",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Modern Versioned Developer Tools",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows Desktop Extension SDK Contracts",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK OnecoreUap Headers x86",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Desktop Tools x64",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "WinRT Intellisense IoT - en-us",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK for Windows Store Apps DirectX x86 Remote",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Universal CRT Tools x86",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows Desktop Extension SDK",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Facade Windows WinMD Versioned",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Microsoft Visual Studio Setup Configuration",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Signing Tools",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "WinRT Intellisense Desktop - Other Languages",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Python Launcher",
+                                                "publisher":  "Python Software Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "WinAppDeploy",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK for Windows Store Apps",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK for Windows Store Apps Headers OnecoreUap",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Desktop Headers x64",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Desktop Headers x86",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows Mobile Extension SDK",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "SDK ARM64 Additions",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK for Windows Store Apps Contracts",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Desktop Tools x86",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows App Certification Kit SupportedApiList x86",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "vcpp_crt.redist.clickonce",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Universal CRT Tools x64",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Application Verifier x64 External Package (DesktopEditions)",
+                                                "publisher":  "Microsoft",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Python 3.14.4 Core Interpreter (64-bit)",
+                                                "publisher":  "Python Software Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Python 3.14.4 Documentation (64-bit)",
+                                                "publisher":  "Python Software Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Microsoft Visual C++ 2022 X64 Additional Runtime - 14.50.35719",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-23",
+                                                "name":  "TR Launcher 버전 1.0.8.11",
+                                                "publisher":  "Blomics",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Visual Studio Build Tools 2026",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-23",
+                                                "name":  "Google Chrome",
+                                                "publisher":  "Google LLC",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK DirectX x64 Remote",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Python 3.14.4 Test Suite (64-bit)",
+                                                "publisher":  "Python Software Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Python 3.14.4 pip Bootstrap (64-bit)",
+                                                "publisher":  "Python Software Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Node.js",
+                                                "publisher":  "Node.js Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows App Certification Kit Native Components",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Python 3.14.4 Executables (64-bit)",
+                                                "publisher":  "Python Software Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Python 3.14.4 Tcl/Tk Support (64-bit)",
+                                                "publisher":  "Python Software Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Git",
+                                                "publisher":  "The Git Development Community",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Microsoft Visual C++ 2022 X64 Debug Runtime - 14.50.35719",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Application Verifier x64 External Package (OnecoreUAP)",
+                                                "publisher":  "Microsoft",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Python 3.14.4 Development Libraries (64-bit)",
+                                                "publisher":  "Python Software Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Python 3.14.4 Add to Path (64-bit)",
+                                                "publisher":  "Python Software Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Microsoft Visual Studio Installer",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Microsoft Visual C++ 2022 X64 Minimum Runtime - 14.50.35719",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Python 3.14.4 Standard Library (64-bit)",
+                                                "publisher":  "Python Software Foundation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Kits Configuration Installer",
+                                                "publisher":  "Microsoft",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK for Windows Store Apps Tools",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "WinRT Intellisense Mobile - en-us",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "WinRT Intellisense IoT - Other Languages",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Universal CRT Redistributable",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK for Windows Store Managed Apps Libs",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Microsoft Visual C++ 2022 X86 Minimum Runtime - 14.50.35719",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "WinRT Intellisense UAP - en-us",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK ARM64 Desktop Tools",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK EULA",
+                                                "publisher":  "Microsoft Corporations",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "WinRT Intellisense Desktop - en-us",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK for Windows Store Apps Libs",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "WinRT Intellisense UAP - Other Languages",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Desktop Headers arm64",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "MSI Development Tools",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Universal CRT Extension SDK",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Universal CRT Redistributable",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK DirectX x86 Remote",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Modern Non-Versioned Developer Tools",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Desktop Libs arm64",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows Team Extension SDK",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK Desktop Libs x64",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            },
+                                            {
+                                                "installDate":  "2026-04-19",
+                                                "name":  "Windows SDK AddOn",
+                                                "publisher":  "Microsoft Corporation",
+                                                "risk":  "safe"
+                                            }
+                                        ],
+                     "systemLoad":  {
+                                        "cpuPercent":  37,
+                                        "memoryPercent":  58,
+                                        "totalMemoryGB":  7.9
+                                    },
+                     "virustotal":  {
+                                        "enabled":  false,
+                                        "callsThisScan":  0,
+                                        "cacheHours":  0
+                                    },
+                     "sysinternals":  {
+                                          "sigcheckEnabled":  true,
+                                          "autorunscEnabled":  true
+                                      }
+                 },
+    "summary":  {
+                    "overall":  "warning",
+                    "dangerCount":  0,
+                    "warningCount":  3,
+                    "message":  "확인 권장: 3 건의 항목을 살펴보세요."
+                }
+}

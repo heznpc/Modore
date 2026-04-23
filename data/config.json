@@ -1,0 +1,31 @@
+{
+  "_comment": "PC 건강검진 설정 파일. API 키는 여기서 관리합니다.",
+  "_howto": "VirusTotal API 키 발급: https://www.virustotal.com 가입 -> 우측 상단 프로필 아이콘 -> 'API Key' 복사",
+
+  "virustotal": {
+    "enabled": false,
+    "apiKey": "",
+    "cacheHours": 48,
+    "maxCallsPerScan": 100,
+    "_note": "enabled를 true로 바꾸고 apiKey에 키를 붙여넣으세요. 해시만 전송하며 파일은 업로드하지 않습니다."
+  },
+
+  "scan": {
+    "includeVtFileCheck": true,
+    "includeVtIpCheck": true,
+    "skipMicrosoftSigned": true,
+    "_note": "Microsoft 서명 파일은 VT 조회에서 제외하여 쿼터를 아낍니다."
+  },
+
+  "sysinternals": {
+    "useSigcheck": true,
+    "useAutorunsc": true,
+    "autoDownload": true,
+    "_note": "sigcheck/autorunsc는 Microsoft Sysinternals 도구. autoDownload=true면 첫 실행 시 자동 다운로드. false면 사용자 확인 후 다운로드."
+  },
+
+  "report": {
+    "autoOpenBrowser": true,
+    "includeTechnicalDetails": true
+  }
+}

@@ -1,0 +1,45 @@
+# 스캔 결과물 (사용자 PC 정보 포함 - 커밋 금지)
+scan_result.json
+monitor_result.json
+raw_facts.json
+검사결과.html
+검사결과_*.html
+
+# VT 캐시
+vt-cache.json
+
+# 사용자 API 키 (실수로 커밋 방지)
+# config.json은 템플릿이므로 커밋. 하지만 내부의 apiKey는 빈 값으로 유지.
+# 실제 키는 config.local.json 같은 별도 파일로 분리 권장 (추후)
+
+# 파이썬
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 에디터
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 빌드
+build/
+dist/
+*.zip
+!docs/**/*.zip
+
+# 로그
+*.log
+/.github/_workflows_pending/

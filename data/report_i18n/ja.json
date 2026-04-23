@@ -1,0 +1,107 @@
+{
+  "title": "PCヘルスチェック レポート",
+  "meta_line": "{computer} / {user} · {os} · 検査時刻: {scannedAt}",
+  "load_line": "現在 CPU {cpu}% · メモリ {mem}% · 総メモリ {totalGb} GB",
+  "cards": {
+    "danger": "🔴 危険",
+    "warning": "🟡 要確認",
+    "safe": "🟢 正常"
+  },
+  "badges": {
+    "danger": "🔴 危険",
+    "warning": "🟡 要確認",
+    "info": "🔵 情報",
+    "safe": "🟢 安全",
+    "unknown": "⚪ 不明"
+  },
+  "sections": {
+    "findings": "🔍 主な発見",
+    "findings_none": "注意が必要な項目は見つかりませんでした。 🎉",
+    "monitor": "⏱️ 5分間アイドル監視(本当のCPU使用者を特定)",
+    "monitor_none": "5分監視はまだ実行されていません。アイドル検査で「本当の原因」を特定できます。",
+    "cpu": "🖥️ CPU使用率トップのプロセス(即時)",
+    "defender_win": "🛡️ Windows Defender 状態",
+    "defender_mac": "🍎 macOS セキュリティ状態",
+    "network": "🌐 外部ネットワーク接続",
+    "listening": "🚪 外部からアクセス可能なポート",
+    "startup": "🔁 自動起動プログラム(基本)",
+    "autoruns": "🔬 自動起動の総合分析",
+    "autoruns_desc": "Windowsはレジストリ・タスクスケジューラ・サービス・ドライバ・ブラウザ拡張・WMIイベントなど20以上の場所を検査。macOSはlaunchd・ログイン項目・拡張など。",
+    "scheduled": "⏰ スケジュールタスク",
+    "installs": "📦 直近30日以内にインストールされたプログラム",
+    "tips": "💡 推奨アクション"
+  },
+  "table_headers": {
+    "verdict": "判定",
+    "vt": "VT",
+    "vt_country": "VT/国",
+    "signature": "署名",
+    "program": "プログラム",
+    "cpu_sec": "CPU(秒)",
+    "memory_mb": "メモリ(MB)",
+    "description": "説明",
+    "path": "パス",
+    "investigate": "調査",
+    "remote_ip": "リモートIP",
+    "port": "ポート",
+    "category": "カテゴリ",
+    "entry": "項目",
+    "name": "名前",
+    "command": "コマンド",
+    "execute": "実行ファイル",
+    "state": "状態",
+    "install_date": "インストール日",
+    "program_name": "プログラム名",
+    "publisher": "発行元",
+    "avg_cpu": "平均CPU",
+    "max_cpu": "最大CPU"
+  },
+  "links": {
+    "google_search": "Google検索",
+    "vt_report": "VTレポート",
+    "vt_lookup": "VT照会",
+    "search_suffix": "+プロセス"
+  },
+  "vt_summary": {
+    "enabled": "🛰️ <b>VirusTotal 照会 有効</b> · 今回 {calls} 件照会 · キャッシュ {hours}時間 · ハッシュのみ送信(ファイルアップロード無し)",
+    "disabled": "ℹ️ VirusTotal 照会は無効です。<code>data/config.json</code>の<code>enabled: true</code>に変更しAPIキーを入力してください。<a href='https://www.virustotal.com/gui/my-apikey' target='_blank'>APIキー取得</a>"
+  },
+  "explain_summary": "💡 これはどんな検査?",
+  "explain_warning": "🟡 確認推奨:",
+  "explain_danger": "🔴 危険サイン:",
+  "monitor_header": {
+    "avg_cpu_label": "5分平均CPU",
+    "duration_label": "監視期間",
+    "duration_unit": "分",
+    "time_label": "監視時刻"
+  },
+  "defender_labels": {
+    "realtime": "リアルタイム保護",
+    "antivirus": "アンチウイルス",
+    "signature": "ウイルス定義",
+    "last_quick": "最新クイックスキャン",
+    "last_full": "最新フルスキャン",
+    "gatekeeper": "Gatekeeper",
+    "sip": "System Integrity Protection (SIP)",
+    "xprotect": "XProtect バージョン",
+    "on": "オン",
+    "off": "オフ",
+    "enabled": "有効",
+    "disabled": "無効",
+    "days_ago": "{days}日前",
+    "days_ago_suffix": "日前",
+    "unknown": "不明"
+  },
+  "tips": {
+    "defender_update": { "title": "アンチウイルスを更新", "desc_key": "explain_tips_defender_update" },
+    "virustotal":      { "title": "疑わしいファイルを検査", "desc_key": "explain_tips_virustotal" },
+    "full_scan":       { "title": "フルスキャン実行", "desc_key": "explain_tips_full_scan" },
+    "hardware_noise":  { "title": "ハードウェア騒音", "desc_key": "explain_tips_hardware_noise" }
+  },
+  "footer": "PCヘルスチェック v0.3 · 生成 {now}",
+  "hidden_rows_note": "署名検証済みの正常項目 {count} 件は非表示。",
+  "muted": {
+    "autorunsc_disabled": "Sysinternals autorunsc が未インストールか無効です。<code>data/config.json</code>の<code>sysinternals.useAutorunsc</code>を<code>true</code>に設定してください。",
+    "defender_unavailable": "Defender情報を読み取れません。"
+  }
+}

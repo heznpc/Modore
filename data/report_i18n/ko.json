@@ -1,0 +1,119 @@
+{
+  "title": "PC 건강검진 결과",
+  "meta_line": "{computer} / {user} · {os} · 검사 시각: {scannedAt}",
+  "load_line": "현재 CPU {cpu}% · 메모리 {mem}% · 메모리 총 {totalGb} GB",
+  "cards": {
+    "danger": "🔴 위험 항목",
+    "warning": "🟡 확인 필요",
+    "safe": "🟢 정상 확인"
+  },
+  "badges": {
+    "danger": "🔴 위험",
+    "warning": "🟡 확인",
+    "info": "🔵 정보",
+    "safe": "🟢 안전",
+    "unknown": "⚪ 모름"
+  },
+  "sections": {
+    "findings": "🔍 주요 발견 사항",
+    "findings_none": "주의가 필요한 항목이 발견되지 않았습니다. 🎉",
+    "monitor": "⏱️ 5분 유휴 모니터링 (진짜 CPU 범인 찾기)",
+    "monitor_none": "5분 모니터링을 아직 실행하지 않았습니다. 유휴 상태 검사로 '진짜 범인'을 찾을 수 있습니다.",
+    "cpu": "🖥️ CPU 사용 상위 프로세스 (즉시)",
+    "defender_win": "🛡️ Windows Defender 상태",
+    "defender_mac": "🍎 macOS 보안 상태",
+    "network": "🌐 외부 네트워크 연결",
+    "listening": "🚪 외부에서 접속 가능한 포트",
+    "startup": "🔁 자동 실행 프로그램 (기본)",
+    "autoruns": "🔬 자동 실행 종합 분석",
+    "autoruns_desc": "Windows는 레지스트리 · 예약작업 · 서비스 · 드라이버 · 브라우저 확장 · WMI 이벤트 등 모든 자동실행 지점을 검사합니다. macOS는 launchd · 로그인 항목 · 확장 등.",
+    "scheduled": "⏰ 예약 작업",
+    "installs": "📦 최근 30일 이내 설치된 프로그램",
+    "tips": "💡 권장 조치"
+  },
+  "table_headers": {
+    "verdict": "판정",
+    "vt": "VT",
+    "vt_country": "VT/국가",
+    "signature": "서명",
+    "program": "프로그램",
+    "cpu_sec": "CPU(초)",
+    "memory_mb": "메모리(MB)",
+    "description": "설명",
+    "path": "경로",
+    "investigate": "조사",
+    "remote_ip": "원격 IP",
+    "port": "포트",
+    "category": "분류",
+    "entry": "항목",
+    "name": "이름",
+    "command": "명령",
+    "execute": "실행 파일",
+    "state": "상태",
+    "install_date": "설치일",
+    "program_name": "프로그램명",
+    "publisher": "게시자",
+    "avg_cpu": "평균 CPU",
+    "max_cpu": "최대 CPU"
+  },
+  "links": {
+    "google_search": "구글 검색",
+    "vt_report": "VT 리포트",
+    "vt_lookup": "VT 조회",
+    "search_suffix": "+프로세스"
+  },
+  "vt_summary": {
+    "enabled": "🛰️ <b>VirusTotal 조회 활성화</b> · 이번 검사에서 {calls} 건 조회 · 캐시 TTL {hours}시간 · 해시만 전송 (파일 업로드 안 함)",
+    "disabled": "ℹ️ VirusTotal 조회 비활성화 상태. 활성화하려면 <code>data/config.json</code>에서 <code>enabled: true</code>로 바꾸고 API 키를 입력하세요. <a href='https://www.virustotal.com/gui/my-apikey' target='_blank'>API 키 발급 받기</a>"
+  },
+  "explain_summary": "💡 이게 무슨 검사인가요?",
+  "explain_warning": "🟡 확인 권장:",
+  "explain_danger": "🔴 위험 신호:",
+  "monitor_header": {
+    "avg_cpu_label": "5분 평균 전체 CPU",
+    "duration_label": "관찰 기간",
+    "duration_unit": "분",
+    "time_label": "관찰 시각"
+  },
+  "defender_labels": {
+    "realtime": "실시간 감시",
+    "antivirus": "안티바이러스",
+    "signature": "바이러스 정의",
+    "last_quick": "최근 빠른 검사",
+    "last_full": "최근 전체 검사",
+    "gatekeeper": "Gatekeeper",
+    "sip": "System Integrity Protection (SIP)",
+    "xprotect": "XProtect 버전",
+    "on": "켜짐",
+    "off": "꺼짐",
+    "enabled": "활성화",
+    "disabled": "비활성화",
+    "days_ago": "{days}일 전",
+    "days_ago_suffix": "일 전",
+    "unknown": "알 수 없음"
+  },
+  "tips": {
+    "defender_update": {
+      "title": "백신 업데이트",
+      "desc_key": "explain_tips_defender_update"
+    },
+    "virustotal": {
+      "title": "의심 파일 검사",
+      "desc_key": "explain_tips_virustotal"
+    },
+    "full_scan": {
+      "title": "전체 검사",
+      "desc_key": "explain_tips_full_scan"
+    },
+    "hardware_noise": {
+      "title": "하드웨어 소음",
+      "desc_key": "explain_tips_hardware_noise"
+    }
+  },
+  "footer": "PC 건강검진 v0.3 · 생성 시각 {now}",
+  "hidden_rows_note": "서명 검증된 정상 항목 {count}건은 숨겨졌습니다.",
+  "muted": {
+    "autorunsc_disabled": "Sysinternals autorunsc 미설치 또는 비활성화 상태. <code>data/config.json</code>의 <code>sysinternals.useAutorunsc</code>를 <code>true</code>로 바꾸세요.",
+    "defender_unavailable": "Defender 정보를 읽을 수 없습니다."
+  }
+}

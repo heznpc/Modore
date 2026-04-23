@@ -1,0 +1,107 @@
+{
+  "title": "PC Health Check Report",
+  "meta_line": "{computer} / {user} · {os} · Scanned at: {scannedAt}",
+  "load_line": "Current CPU {cpu}% · Memory {mem}% · Total memory {totalGb} GB",
+  "cards": {
+    "danger": "🔴 Danger",
+    "warning": "🟡 Needs check",
+    "safe": "🟢 Confirmed safe"
+  },
+  "badges": {
+    "danger": "🔴 DANGER",
+    "warning": "🟡 CHECK",
+    "info": "🔵 INFO",
+    "safe": "🟢 SAFE",
+    "unknown": "⚪ UNKNOWN"
+  },
+  "sections": {
+    "findings": "🔍 Key findings",
+    "findings_none": "No items require your attention. 🎉",
+    "monitor": "⏱️ 5-minute idle monitor (find the real CPU culprit)",
+    "monitor_none": "5-minute monitor not yet run. The idle test catches the 'real culprit'.",
+    "cpu": "🖥️ Top CPU processes (instant snapshot)",
+    "defender_win": "🛡️ Windows Defender status",
+    "defender_mac": "🍎 macOS security status",
+    "network": "🌐 External network connections",
+    "listening": "🚪 Externally reachable ports",
+    "startup": "🔁 Startup programs (basic)",
+    "autoruns": "🔬 Autorun comprehensive analysis",
+    "autoruns_desc": "Windows: registry, scheduled tasks, services, drivers, browser extensions, WMI events, and ~20 other persistence points. macOS: launchd, login items, extensions.",
+    "scheduled": "⏰ Scheduled tasks",
+    "installs": "📦 Programs installed in the last 30 days",
+    "tips": "💡 Recommended actions"
+  },
+  "table_headers": {
+    "verdict": "Verdict",
+    "vt": "VT",
+    "vt_country": "VT/Country",
+    "signature": "Signature",
+    "program": "Program",
+    "cpu_sec": "CPU(sec)",
+    "memory_mb": "Memory(MB)",
+    "description": "Description",
+    "path": "Path",
+    "investigate": "Investigate",
+    "remote_ip": "Remote IP",
+    "port": "Port",
+    "category": "Category",
+    "entry": "Entry",
+    "name": "Name",
+    "command": "Command",
+    "execute": "Executable",
+    "state": "State",
+    "install_date": "Installed",
+    "program_name": "Program",
+    "publisher": "Publisher",
+    "avg_cpu": "Avg CPU",
+    "max_cpu": "Max CPU"
+  },
+  "links": {
+    "google_search": "Google",
+    "vt_report": "VT report",
+    "vt_lookup": "VT lookup",
+    "search_suffix": "+process"
+  },
+  "vt_summary": {
+    "enabled": "🛰️ <b>VirusTotal enabled</b> · {calls} lookups this scan · {hours}h cache · hash only (no file upload)",
+    "disabled": "ℹ️ VirusTotal disabled. To enable, set <code>enabled: true</code> and your API key in <code>data/config.json</code>. <a href='https://www.virustotal.com/gui/my-apikey' target='_blank'>Get an API key</a>"
+  },
+  "explain_summary": "💡 What does this check?",
+  "explain_warning": "🟡 Check advised:",
+  "explain_danger": "🔴 Danger signs:",
+  "monitor_header": {
+    "avg_cpu_label": "5-min avg CPU",
+    "duration_label": "Duration",
+    "duration_unit": "min",
+    "time_label": "Monitored at"
+  },
+  "defender_labels": {
+    "realtime": "Real-time protection",
+    "antivirus": "Antivirus",
+    "signature": "Signature",
+    "last_quick": "Last quick scan",
+    "last_full": "Last full scan",
+    "gatekeeper": "Gatekeeper",
+    "sip": "System Integrity Protection (SIP)",
+    "xprotect": "XProtect version",
+    "on": "On",
+    "off": "Off",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "days_ago": "{days} days ago",
+    "days_ago_suffix": " days ago",
+    "unknown": "Unknown"
+  },
+  "tips": {
+    "defender_update": { "title": "Update antivirus", "desc_key": "explain_tips_defender_update" },
+    "virustotal":      { "title": "Check suspicious files", "desc_key": "explain_tips_virustotal" },
+    "full_scan":       { "title": "Run a full scan", "desc_key": "explain_tips_full_scan" },
+    "hardware_noise":  { "title": "Hardware noise", "desc_key": "explain_tips_hardware_noise" }
+  },
+  "footer": "PC Health Check v0.3 · Generated {now}",
+  "hidden_rows_note": "{count} verified-signed safe items hidden.",
+  "muted": {
+    "autorunsc_disabled": "Sysinternals autorunsc not installed or disabled. Set <code>sysinternals.useAutorunsc</code> to <code>true</code> in <code>data/config.json</code>.",
+    "defender_unavailable": "Defender info unavailable."
+  }
+}
