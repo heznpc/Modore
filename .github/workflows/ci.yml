@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Validate rule JSON files
+        run: |
+          status=0
+          for f in rules/*.json; do
+            if python3 -c "import json,sys; json.load(open('$f'))" 2>/dev/null; then
+              echo "✓ $f"
+            else
+              echo "✗ $f — invalid JSON"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Python syntax check
+        run: python3 -m compileall -q scripts/
+
+      - name: Pytest
+        run: python3 -m pytest tests/ -q
+
+  powershell:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PowerShell syntax check
+        shell: pwsh
+        run: |
+          $errors = @()
+          Get-ChildItem -Path scripts -Filter *.ps1 -Recurse | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              Write-Host "✗ $($_.FullName)"
+              $parseErrors | ForEach-Object { Write-Host "  $_" }
+              $errors += $_.FullName
+            } else {
+              Write-Host "✓ $($_.FullName)"
+            }
+          }
+          if ($errors.Count -gt 0) { exit 1 }
