@@ -23,6 +23,33 @@ public struct ArchiveManifest: Codable, Sendable, Equatable {
         public let lastCommitDate: Date?
         public let aheadOfOrigin: Int?
         public let wasDirty: Bool
+
+        public init(
+            origin: String?,
+            branch: String?,
+            headSHA: String?,
+            lastCommitDate: Date?,
+            aheadOfOrigin: Int?,
+            wasDirty: Bool
+        ) {
+            self.origin = origin
+            self.branch = branch
+            self.headSHA = headSHA
+            self.lastCommitDate = lastCommitDate
+            self.aheadOfOrigin = aheadOfOrigin
+            self.wasDirty = wasDirty
+        }
+
+        public init(from metadata: GitMetadata) {
+            self.init(
+                origin: metadata.originURL,
+                branch: metadata.currentBranch,
+                headSHA: metadata.headSHA,
+                lastCommitDate: metadata.lastCommitDate,
+                aheadOfOrigin: metadata.aheadOfOrigin,
+                wasDirty: metadata.isDirty
+            )
+        }
     }
 
     public static let currentSchemaVersion = 1

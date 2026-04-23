@@ -254,14 +254,7 @@ public struct ArchiveOrchestrator: Sendable {
             originalPath: repo.path.path,
             sizeBytesBefore: repo.sizeBytes,
             sizeBytesArchive: archiveBytes,
-            git: ArchiveManifest.Git(
-                origin: repo.git.originURL,
-                branch: repo.git.currentBranch,
-                headSHA: repo.git.headSHA,
-                lastCommitDate: repo.git.lastCommitDate,
-                aheadOfOrigin: repo.git.aheadOfOrigin,
-                wasDirty: repo.git.isDirty
-            ),
+            git: ArchiveManifest.Git(from: repo.git),
             restoreHint: repo.git.originURL.map { "git clone \($0)" }
         )
     }

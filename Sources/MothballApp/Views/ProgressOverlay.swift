@@ -14,7 +14,7 @@ struct ProgressOverlay: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(run.currentRepoName).font(.headline).lineLimit(1)
-                Text(run.currentStep).font(.callout).foregroundStyle(.secondary)
+                Text(run.currentStep.localizedLabel).font(.callout).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
