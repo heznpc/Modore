@@ -17,6 +17,7 @@ DerivedData/
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # Build output
 build/
