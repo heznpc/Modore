@@ -58,6 +58,60 @@ function getNested(obj, path) {
   return path.split('.').reduce((acc, key) => acc?.[key], obj);
 }
 
+// ----- HTML sanitizer (allowlist 기반) -----
+// 번역 JSON은 레포 owner가 머지하지만, 커뮤니티 PR을 받는 경로이므로
+// defense-in-depth로 클라이언트 측 필터를 둠.
+//  - 허용 태그: 타이포그래피용 인라인 요소만
+//  - 허용 속성: A의 href/target/rel, SPAN의 class, 그 외 모두 제거
+//  - 위험 URL 스킴(javascript:, data:, vbscript:) 제거
+//  - target="_blank"인 A에는 rel="noopener noreferrer" 강제
+const ALLOWED_TAGS = new Set(['EM', 'STRONG', 'CODE', 'A', 'SPAN', 'BR']);
+const ALLOWED_ATTRS = {
+  A: ['href', 'target', 'rel'],
+  SPAN: ['class'],
+};
+const DANGEROUS_URL = /^\s*(javascript|data|vbscript):/i;
+
+function sanitizeHTML(input) {
+  const tmpl = document.createElement('template');
+  tmpl.innerHTML = String(input);
+
+  function walk(node) {
+    // 자식을 뒤에서부터 순회 (안전한 in-place 제거)
+    for (let i = node.childNodes.length - 1; i >= 0; i--) {
+      const child = node.childNodes[i];
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        if (!ALLOWED_TAGS.has(child.tagName)) {
+          // 허용되지 않은 태그: 내용만 텍스트로 살리고 껍데기 제거
+          node.replaceChild(document.createTextNode(child.textContent || ''), child);
+          continue;
+        }
+        const allowed = ALLOWED_ATTRS[child.tagName] || [];
+        for (let j = child.attributes.length - 1; j >= 0; j--) {
+          const attr = child.attributes[j];
+          if (!allowed.includes(attr.name)) {
+            child.removeAttribute(attr.name);
+            continue;
+          }
+          if (attr.name === 'href' && DANGEROUS_URL.test(attr.value)) {
+            child.removeAttribute('href');
+          }
+        }
+        if (child.tagName === 'A' && child.getAttribute('target') === '_blank') {
+          child.setAttribute('rel', 'noopener noreferrer');
+        }
+        walk(child);
+      } else if (child.nodeType !== Node.TEXT_NODE) {
+        // 코멘트/CDATA 등 모두 제거
+        node.removeChild(child);
+      }
+    }
+  }
+
+  walk(tmpl.content);
+  return tmpl.innerHTML;
+}
+
 // ----- DOM 적용 -----
 function applyTranslations(translations) {
   // 텍스트 노드
@@ -73,8 +127,9 @@ function applyTranslations(translations) {
       el.textContent = value;
       document.title = value;
     } else {
-      // HTML 포함할 수 있게 innerHTML 사용. 신뢰된 JSON이므로 XSS 이슈 없음.
-      el.innerHTML = value;
+      // 번역 문자열은 allowlist sanitizer를 통과시킨 뒤 innerHTML 주입.
+      // 허용 태그 외(script/iframe/img/on*=/javascript:)는 제거됨.
+      el.innerHTML = sanitizeHTML(value);
     }
   });
 

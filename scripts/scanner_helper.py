@@ -98,7 +98,15 @@ config = load_json(CONFIG_PATH, default={}) or {}
 # ============================================================
 class VtLookup:
     def __init__(self, cfg, cache_dir):
-        self.cfg = (cfg or {}).get("virustotal") or {}
+        self.cfg = dict((cfg or {}).get("virustotal") or {})
+        # 환경변수 우선: VT_API_KEY가 설정돼 있으면 config.json의 apiKey를 무시.
+        # 공유/CI 환경에서 키를 디스크에 평문 저장하지 않아도 되는 옵션.
+        env_key = os.environ.get("VT_API_KEY")
+        if env_key:
+            self.cfg["apiKey"] = env_key
+            # env 키가 있으면 명시적으로 활성화 (config.enabled가 false여도 사용자가 env로 옵트인했다고 간주)
+            if not self.cfg.get("enabled"):
+                self.cfg["enabled"] = True
         self.enabled = bool(self.cfg.get("enabled")) and bool(self.cfg.get("apiKey")) and not NO_VT
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)

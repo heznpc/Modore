@@ -40,6 +40,14 @@ function Initialize-VtLookup {
         }
     }
 
+    # 환경변수 우선: VT_API_KEY가 있으면 config.json의 apiKey를 덮어쓰고 자동 활성화.
+    # 공유/CI 환경에서 키를 디스크 평문으로 저장하지 않아도 되는 경로.
+    $envKey = [System.Environment]::GetEnvironmentVariable('VT_API_KEY')
+    if (-not [string]::IsNullOrWhiteSpace($envKey)) {
+        $script:VtConfig.virustotal.apiKey = $envKey
+        $script:VtConfig.virustotal.enabled = $true
+    }
+
     # 캐시 로드
     if (Test-Path $script:VtCachePath) {
         try {

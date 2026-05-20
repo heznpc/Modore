@@ -1,0 +1,4 @@
+# Dev/CI 전용 의존성. 런타임에는 어떤 외부 패키지도 필요 없음.
+# 핀: CI 재현성 + supply-chain 표면 축소.
+# 업데이트 정책: dependabot github-actions 그룹과 별도로 분기마다 수동 검토.
+pytest==8.3.4

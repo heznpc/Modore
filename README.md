@@ -93,19 +93,43 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 
 ### Requirements
 - **Windows**: PowerShell 5.1+ (built into Windows 10/11).
-- **macOS**: Python 3.7+ (`brew install python3` if missing; built-in on macOS 12+).
+- **macOS**: Python 3.11+ (`brew install python3` if missing; built-in on macOS 13+). Python 3.7–3.10 are EOL or reaching EOL within months and are no longer supported.
 
 ## Enabling VirusTotal lookup (optional, recommended)
 
 1. Sign up at [virustotal.com](https://www.virustotal.com) — free.
 2. Profile icon → **API Key** → copy.
-3. Edit `data/config.json`:
+3. Either:
+
+   **Option A — environment variable (recommended for shared / CI / multi-user PCs):**
+   ```bash
+   # macOS / Linux
+   export VT_API_KEY="your_key_here"
+
+   # Windows PowerShell (current session)
+   $env:VT_API_KEY = "your_key_here"
+
+   # Windows PowerShell (persistent, current user)
+   [System.Environment]::SetEnvironmentVariable('VT_API_KEY', 'your_key_here', 'User')
+   ```
+   When `VT_API_KEY` is set, it overrides `data/config.json` and auto-enables VirusTotal. The key never touches disk.
+
+   **Option B — `data/config.json` (simpler for single-user PCs):**
    ```json
    "virustotal": {
      "enabled": true,
      "apiKey": "YOUR_KEY_HERE"
    }
    ```
+   Lock the file so other users can't read it:
+   ```bash
+   # macOS / Linux
+   chmod 600 data/config.json
+
+   # Windows (PowerShell, owner-only ACL)
+   icacls data\config.json /inheritance:r /grant:r "$env:USERNAME:F"
+   ```
+
 4. Run the scan. File hashes will be cross-checked against 70+ antivirus engines.
 
 **Privacy note.** Only the SHA-256 hash is sent. VirusTotal never receives file contents. If the hash is unknown, the tool reports "unknown" — it does not upload the file.
@@ -191,11 +215,17 @@ CI runs rule-JSON validation, Python syntax checks, PowerShell parser checks, an
 
 ## Contributing
 
-Whitelist contributions are especially welcome. If you recognize a legitimate local app missing from `data/whitelist.json`, please open a PR with:
+Whitelist contributions are especially welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the full guide. Short version — if you recognize a legitimate local app missing from `data/whitelist.json`, open a PR with:
 - Process name (lowercased, without extension)
 - Vendor
 - Short Korean/Japanese/English description
 - Category (system / browser / korean_common / banking_security / dev_tools / hardware / cloud)
+
+## Security
+
+Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new) or `wantcongz@gmail.com` — see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
+
+This project verifies all downloaded Sysinternals binaries via `Get-AuthenticodeSignature` against a Microsoft signer subject before executing them. If a CDN or DNS were compromised, the tool refuses to run the binary rather than silently trusting TLS.
 
 ## License
 

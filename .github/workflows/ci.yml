@@ -6,19 +6,25 @@ on:
   pull_request:
     branches: [main]
 
+# 최소 권한: 모든 job은 contents:read만 필요 (체크아웃 + 로컬 실행).
+# 어떤 job도 push, release, packages, pages 권한 불필요.
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
-      - name: Install pytest
-        run: pip install pytest
+      - name: Install pytest (pinned)
+        # pytest는 CI에서만 사용. major 변경 시 의도적으로 bump.
+        run: pip install -r requirements-dev.txt
 
       - name: Validate rule JSON files
         run: |
@@ -43,7 +49,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: PowerShell syntax check
         shell: pwsh
