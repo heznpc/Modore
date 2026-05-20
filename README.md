@@ -18,8 +18,9 @@ was fully pushed.
 
 ## Build
 
-Requires macOS 13+ and Swift 5.9+ (Xcode 15+, full Xcode toolchain —
-Command Line Tools alone does not include `XCTest`).
+Requires macOS 13+ and Swift 6.0+ (Xcode 16+, full Xcode toolchain —
+Command Line Tools alone does not include `XCTest`). Strict
+concurrency is on by default; the codebase is Sendable-clean.
 
 ```
 swift build

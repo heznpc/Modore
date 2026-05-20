@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # SPM is omitted on purpose: Mothball has zero external Swift dependencies
+  # (Package.swift `dependencies: []`). Re-add a `swift` ecosystem entry only
+  # if that changes.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]

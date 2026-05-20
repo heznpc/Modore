@@ -9,10 +9,23 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Default to least-privilege at the workflow level. Individual jobs may
+# escalate one scope at a time if they need it. This build/test only
+# reads code, so contents:read is enough.
+permissions:
+  contents: read
+
 jobs:
   build:
-    name: Build & test (macOS)
-    runs-on: macos-latest
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # README promises macOS 13+. Test the floor (macos-13) and the
+        # current top (macos-latest) so we don't silently drop the
+        # bottom of the promised support window.
+        os: [macos-13, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -27,9 +40,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          # No external SPM deps → no Package.resolved. Key on Package.swift
+          # and the Swift version reported by the toolchain so cache invalidates
+          # on either a package edit or a runner image bump.
+          key: ${{ matrix.os }}-spm-${{ hashFiles('Package.swift') }}-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            ${{ runner.os }}-spm-
+            ${{ matrix.os }}-spm-
 
       - name: Build
         run: swift build --build-tests
