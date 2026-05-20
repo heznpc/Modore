@@ -50,12 +50,25 @@ function Initialize-Sigcheck {
         $url = 'https://live.sysinternals.com/sigcheck.exe'
         Invoke-WebRequest -Uri $url -OutFile $script:SigcheckPath -UseBasicParsing -ErrorAction Stop
 
+        # ===== Authenticode 검증 (필수) =====
+        # 다운로드된 바이너리가 Microsoft 서명 + 유효 상태가 아니면 즉시 삭제.
+        # TLS만 신뢰하지 않고 코드사이닝까지 강제하여 CDN/DNS 침해 시나리오를 차단.
+        $sig = Get-AuthenticodeSignature -FilePath $script:SigcheckPath
+        $okStatus = $sig.Status -eq 'Valid'
+        $okSigner = $sig.SignerCertificate -and ($sig.SignerCertificate.Subject -match 'O=Microsoft Corporation')
+        if (-not ($okStatus -and $okSigner)) {
+            Remove-Item -Path $script:SigcheckPath -Force -ErrorAction SilentlyContinue
+            $reason = if (-not $okStatus) { "서명 상태=$($sig.Status)" } else { "서명자=$($sig.SignerCertificate.Subject)" }
+            if (-not $Quiet) { Write-Host " 실패: Microsoft 서명 검증 거부 ($reason)" -ForegroundColor Red }
+            return $false
+        }
+
         # EULA 자동 수락 (스크립트 자동화용, /accepteula 플래그 보완)
         New-Item -Path 'HKCU:\Software\Sysinternals\Sigcheck' -Force | Out-Null
         Set-ItemProperty -Path 'HKCU:\Software\Sysinternals\Sigcheck' -Name 'EulaAccepted' -Value 1 -Type DWord
 
         $script:SigcheckReady = $true
-        if (-not $Quiet) { Write-Host " 완료" -ForegroundColor Green }
+        if (-not $Quiet) { Write-Host " 완료 (Microsoft 서명 확인됨)" -ForegroundColor Green }
         return $true
     } catch {
         if (-not $Quiet) { Write-Host " 실패: $($_.Exception.Message)" -ForegroundColor Red }
