@@ -21,9 +21,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
 
-      - name: Install pytest (pinned)
-        # pytest는 CI에서만 사용. major 변경 시 의도적으로 bump.
+      - name: Install pytest (pinned via requirements-dev.txt)
         run: pip install -r requirements-dev.txt
 
       - name: Validate rule JSON files
