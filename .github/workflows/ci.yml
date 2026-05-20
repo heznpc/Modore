@@ -17,17 +17,18 @@ permissions:
 
 jobs:
   build:
-    name: Build & test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # README promises macOS 13+. Test the floor (macos-13) and the
-        # current top (macos-latest) so we don't silently drop the
-        # bottom of the promised support window.
-        os: [macos-13, macos-latest]
+    name: Build & test (macOS)
+    # macos-latest only. Previous matrix added macos-13 to exercise the
+    # floor of the README's "macOS 13+" support window, but GitHub-hosted
+    # macos-13 runner capacity has effectively dried up in 2026-05
+    # (3.5h+ queue with no scheduling) so it blocks every PR. The macOS
+    # 13 promise is now exercised manually before each tagged release
+    # rather than per-commit on CI.
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      # v6 / v5 are the Node 24 generation; v4 emits a deprecation
+      # warning as of 2026-05 and will hard-fail after the 2026-09 cutoff.
+      - uses: actions/checkout@v6
 
       - name: Show toolchain
         run: |
@@ -37,15 +38,15 @@ jobs:
           /usr/bin/tar --version | head -1
 
       - name: Cache .build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .build
           # No external SPM deps → no Package.resolved. Key on Package.swift
-          # and the Swift version reported by the toolchain so cache invalidates
-          # on either a package edit or a runner image bump.
-          key: ${{ matrix.os }}-spm-${{ hashFiles('Package.swift') }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          # and the workflow itself so cache invalidates on either a package
+          # edit or a runner image / toolchain pin bump.
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.swift') }}-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            ${{ matrix.os }}-spm-
+            ${{ runner.os }}-spm-
 
       - name: Build
         run: swift build --build-tests
