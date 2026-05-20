@@ -7,7 +7,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    # All github-actions updates collapse into one grouped PR via the
+    # `actions` pattern below, so the limit is effectively 1. Keep it
+    # honest rather than carry dead headroom.
+    open-pull-requests-limit: 1
     groups:
       actions:
         patterns: ["*"]
