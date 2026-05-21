@@ -101,6 +101,15 @@ To add a new language:
 
 **Important — XSS hygiene:** translation strings can include a small whitelist of HTML tags (`<em>`, `<strong>`, `<code>`, `<a>`, `<br>`, `<span>`) for typography. Everything else is stripped by the sanitizer in `docs/script.js`. **Do not** include `<script>`, `<iframe>`, `<img>`, `on*` event handlers, or `javascript:` URLs — they'll be silently removed, and a PR with deliberate attempts will be rejected.
 
+If you modify `sanitizeHTML` in `docs/script.js`, **always re-run the sanitizer smoke test**:
+
+```bash
+cd docs && python3 -m http.server 8000
+# open http://localhost:8000/sanitize-test.html
+```
+
+All rows must be green. If any are red, the sanitizer regressed — fix before opening the PR. The test harness lives at `docs/sanitize-test.html` and covers the standard XSS surface (script/iframe/img/svg, `javascript:`/`data:`/`vbscript:` schemes with case + whitespace + entity-encoded bypasses, `on*` handler injection, nested elements, comment nodes).
+
 ---
 
 ## Security
