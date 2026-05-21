@@ -28,10 +28,15 @@ function Initialize-Autorunsc {
     }
     $script:AutorunscPath = Join-Path $ToolsDir 'autorunsc.exe'
 
-    if (Test-Path $script:AutorunscPath) {
+    # 캐시 hit이라도 매번 Authenticode 재검증. sigcheck-helper.ps1과 동일한 위협
+    # 모델: user-writable 경로의 PE는 다른 user-mode 악성코드가 변조 가능.
+    if (Test-CachedSysinternalsBinary -FilePath $script:AutorunscPath -Quiet:$Quiet) {
         $script:AutorunscReady = $true
-        if (-not $Quiet) { Write-Host "autorunsc.exe 확인됨" -ForegroundColor DarkGray }
+        if (-not $Quiet) { Write-Host "autorunsc.exe 확인됨 (서명 재검증 통과)" -ForegroundColor DarkGray }
         return $true
+    }
+    if (Test-Path $script:AutorunscPath) {
+        if (-not $Quiet) { Write-Host "캐시된 autorunsc.exe 서명 검증 실패 → 재다운로드 시도" -ForegroundColor Yellow }
     }
 
     if (-not $AutoDownload) {

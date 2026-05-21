@@ -51,7 +51,7 @@ Out of scope:
 ## Trust model
 
 - This project ships as readable source (~3,000 lines PowerShell / Python / Bash). No compiled binaries are bundled.
-- The only external binaries the tool executes are Sysinternals `sigcheck.exe` and `autorunsc.exe`, both downloaded from `https://live.sysinternals.com/` and **verified via `Get-AuthenticodeSignature`** against a Microsoft signer subject. If the signature check fails, the binary is deleted and the tool aborts.
+- The only external binaries the tool executes are Sysinternals `sigcheck.exe` and `autorunsc.exe`, both downloaded from `https://live.sysinternals.com/` and **verified via `Get-AuthenticodeSignature`** against a Microsoft signer subject. Verification runs **on every invocation**, not only at first download — the cache directory under `%LOCALAPPDATA%` is user-writable, so a cached `.exe` is re-validated each run to defend against post-cache tampering by other user-mode malware (the scenario this tool exists to detect). If the signature check fails, the binary is deleted and the tool falls back to a fresh download (which is itself re-verified).
 - All outbound network calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.py`. Grep `Invoke-RestMethod` and `urlopen` to audit.
 
 ## Hall of thanks

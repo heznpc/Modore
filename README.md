@@ -225,7 +225,7 @@ Whitelist contributions are especially welcome. See [`CONTRIBUTING.md`](./CONTRI
 
 Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new) or `wantcongz@gmail.com` — see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
 
-This project verifies all downloaded Sysinternals binaries via `Get-AuthenticodeSignature` against a Microsoft signer subject before executing them. If a CDN or DNS were compromised, the tool refuses to run the binary rather than silently trusting TLS.
+This project verifies all Sysinternals binaries via `Get-AuthenticodeSignature` against a Microsoft signer subject **on every invocation** — not only at first download — before executing them. The cached `.exe` under `%LOCALAPPDATA%` is re-validated each run because that directory is user-writable and the threat model this tool exists in (other user-mode malware may be present) requires treating the cache as untrusted between runs.
 
 ## License
 

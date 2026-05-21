@@ -38,3 +38,26 @@ function Assert-MicrosoftSignature {
     }
     return $false
 }
+
+function Test-CachedSysinternalsBinary {
+    <#
+    .SYNOPSIS
+      디스크에 캐시된 sysinternals 바이너리가 (1) 존재하고 (2) Microsoft
+      Authenticode 서명을 통과하는지 확인. 검증 실패 시 Assert가 파일을 삭제하므로
+      호출자는 다운로드 분기로 fallback 가능.
+
+    .DESCRIPTION
+      매 실행마다 검증해야 하는 이유: pc-health-check는 *다른 user-mode 악성코드의
+      존재를 전제*로 하는 진단 도구. 캐시된 .exe가 변조됐을 시나리오를 위협 모델에
+      포함하지 않으면, pc-health-check 자체가 그 코드를 신뢰 실행하는 launcher가 됨.
+    .OUTPUTS
+      [bool] 캐시 hit + 검증 통과면 $true, 그 외 $false (호출자는 다운로드로 진행)
+    #>
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [switch]$Quiet
+    )
+
+    if (-not (Test-Path $FilePath)) { return $false }
+    return (Assert-MicrosoftSignature -FilePath $FilePath -Quiet:$Quiet)
+}
