@@ -73,16 +73,16 @@ const ALLOWED_ATTRS = {
 const DANGEROUS_URL = /^\s*(javascript|data|vbscript):/i;
 
 function sanitizeHTML(input) {
+  // <template>은 파싱하더라도 <script>를 실행하지 않으므로 안전한 파싱 컨테이너.
   const tmpl = document.createElement('template');
   tmpl.innerHTML = String(input);
 
   function walk(node) {
-    // 자식을 뒤에서부터 순회 (안전한 in-place 제거)
+    // 역순 순회: removeChild가 인덱스를 무효화하지 않도록.
     for (let i = node.childNodes.length - 1; i >= 0; i--) {
       const child = node.childNodes[i];
       if (child.nodeType === Node.ELEMENT_NODE) {
         if (!ALLOWED_TAGS.has(child.tagName)) {
-          // 허용되지 않은 태그: 내용만 텍스트로 살리고 껍데기 제거
           node.replaceChild(document.createTextNode(child.textContent || ''), child);
           continue;
         }
@@ -97,12 +97,16 @@ function sanitizeHTML(input) {
             child.removeAttribute('href');
           }
         }
+        // target=_blank + 외부 링크 → opener를 통한 tabnabbing 방지.
         if (child.tagName === 'A' && child.getAttribute('target') === '_blank') {
           child.setAttribute('rel', 'noopener noreferrer');
         }
+        // TODO(2nd-pass-audit-2026-05-21): target 없는 외부 링크에는 rel noopener
+        // 강제 안 함. 같은 탭 이동이라 tabnabbing 위험은 낮지만, 차후 일관성
+        // 차원에서 모든 cross-origin <a>에 rel 보강 검토.
         walk(child);
       } else if (child.nodeType !== Node.TEXT_NODE) {
-        // 코멘트/CDATA 등 모두 제거
+        // 코멘트 노드 등을 통한 조건부 컴파일/HTML 파서 트릭 차단.
         node.removeChild(child);
       }
     }

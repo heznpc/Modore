@@ -8,6 +8,11 @@
 #  - 공식 주소: https://live.sysinternals.com/sigcheck.exe
 # ============================================================
 
+# 단독 dot-source 케이스 대비 (보통 scanner.ps1이 먼저 로드함)
+if (-not (Get-Command Assert-MicrosoftSignature -ErrorAction SilentlyContinue)) {
+    . "$PSScriptRoot\_sysinternals-verify.ps1"
+}
+
 $script:SigcheckPath = $null
 $script:SigcheckReady = $false
 
@@ -23,10 +28,17 @@ function Initialize-Sigcheck {
     }
     $script:SigcheckPath = Join-Path $ToolsDir 'sigcheck.exe'
 
-    if (Test-Path $script:SigcheckPath) {
+    # 캐시 hit이라도 매번 Authenticode 재검증. user-writable LOCALAPPDATA에 있는
+    # PE이므로, 다른 user-mode 악성코드가 변조했을 가능성을 전제로 함. 실패 시
+    # Assert가 파일을 삭제하므로 아래 다운로드 분기가 자연스럽게 재실행됨.
+    if (Test-CachedSysinternalsBinary -FilePath $script:SigcheckPath -Quiet:$Quiet) {
         $script:SigcheckReady = $true
-        if (-not $Quiet) { Write-Host "sigcheck.exe 확인됨: $script:SigcheckPath" -ForegroundColor DarkGray }
+        if (-not $Quiet) { Write-Host "sigcheck.exe 확인됨 (서명 재검증 통과)" -ForegroundColor DarkGray }
         return $true
+    }
+    if (Test-Path $script:SigcheckPath) {
+        # 여기 도달 = 파일은 있었으나 Assert가 검증 실패로 삭제했음. 사용자에게 알림.
+        if (-not $Quiet) { Write-Host "캐시된 sigcheck.exe 서명 검증 실패 → 재다운로드 시도" -ForegroundColor Yellow }
     }
 
     if (-not $AutoDownload) {
@@ -50,16 +62,7 @@ function Initialize-Sigcheck {
         $url = 'https://live.sysinternals.com/sigcheck.exe'
         Invoke-WebRequest -Uri $url -OutFile $script:SigcheckPath -UseBasicParsing -ErrorAction Stop
 
-        # ===== Authenticode 검증 (필수) =====
-        # 다운로드된 바이너리가 Microsoft 서명 + 유효 상태가 아니면 즉시 삭제.
-        # TLS만 신뢰하지 않고 코드사이닝까지 강제하여 CDN/DNS 침해 시나리오를 차단.
-        $sig = Get-AuthenticodeSignature -FilePath $script:SigcheckPath
-        $okStatus = $sig.Status -eq 'Valid'
-        $okSigner = $sig.SignerCertificate -and ($sig.SignerCertificate.Subject -match 'O=Microsoft Corporation')
-        if (-not ($okStatus -and $okSigner)) {
-            Remove-Item -Path $script:SigcheckPath -Force -ErrorAction SilentlyContinue
-            $reason = if (-not $okStatus) { "서명 상태=$($sig.Status)" } else { "서명자=$($sig.SignerCertificate.Subject)" }
-            if (-not $Quiet) { Write-Host " 실패: Microsoft 서명 검증 거부 ($reason)" -ForegroundColor Red }
+        if (-not (Assert-MicrosoftSignature -FilePath $script:SigcheckPath -Quiet:$Quiet)) {
             return $false
         }
 

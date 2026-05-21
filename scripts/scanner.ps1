@@ -30,6 +30,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 
 # ---------- 헬퍼 로드 ----------
+. "$PSScriptRoot\_sysinternals-verify.ps1"
 . "$PSScriptRoot\vt-lookup.ps1"
 . "$PSScriptRoot\sigcheck-helper.ps1"
 . "$PSScriptRoot\autorunsc-helper.ps1"

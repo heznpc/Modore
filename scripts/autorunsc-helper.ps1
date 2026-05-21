@@ -8,6 +8,11 @@
 #  - 공식 주소: https://live.sysinternals.com/autorunsc.exe
 # ============================================================
 
+# 단독 dot-source 케이스 대비 (보통 scanner.ps1이 먼저 로드함)
+if (-not (Get-Command Assert-MicrosoftSignature -ErrorAction SilentlyContinue)) {
+    . "$PSScriptRoot\_sysinternals-verify.ps1"
+}
+
 $script:AutorunscPath = $null
 $script:AutorunscReady = $false
 
@@ -23,10 +28,15 @@ function Initialize-Autorunsc {
     }
     $script:AutorunscPath = Join-Path $ToolsDir 'autorunsc.exe'
 
-    if (Test-Path $script:AutorunscPath) {
+    # 캐시 hit이라도 매번 Authenticode 재검증. sigcheck-helper.ps1과 동일한 위협
+    # 모델: user-writable 경로의 PE는 다른 user-mode 악성코드가 변조 가능.
+    if (Test-CachedSysinternalsBinary -FilePath $script:AutorunscPath -Quiet:$Quiet) {
         $script:AutorunscReady = $true
-        if (-not $Quiet) { Write-Host "autorunsc.exe 확인됨" -ForegroundColor DarkGray }
+        if (-not $Quiet) { Write-Host "autorunsc.exe 확인됨 (서명 재검증 통과)" -ForegroundColor DarkGray }
         return $true
+    }
+    if (Test-Path $script:AutorunscPath) {
+        if (-not $Quiet) { Write-Host "캐시된 autorunsc.exe 서명 검증 실패 → 재다운로드 시도" -ForegroundColor Yellow }
     }
 
     if (-not $AutoDownload) {
@@ -50,16 +60,7 @@ function Initialize-Autorunsc {
         $url = 'https://live.sysinternals.com/autorunsc.exe'
         Invoke-WebRequest -Uri $url -OutFile $script:AutorunscPath -UseBasicParsing -ErrorAction Stop
 
-        # ===== Authenticode 검증 (필수) =====
-        # 다운로드된 바이너리가 Microsoft 서명 + 유효 상태가 아니면 즉시 삭제.
-        # TLS만 신뢰하지 않고 코드사이닝까지 강제하여 CDN/DNS 침해 시나리오를 차단.
-        $sig = Get-AuthenticodeSignature -FilePath $script:AutorunscPath
-        $okStatus = $sig.Status -eq 'Valid'
-        $okSigner = $sig.SignerCertificate -and ($sig.SignerCertificate.Subject -match 'O=Microsoft Corporation')
-        if (-not ($okStatus -and $okSigner)) {
-            Remove-Item -Path $script:AutorunscPath -Force -ErrorAction SilentlyContinue
-            $reason = if (-not $okStatus) { "서명 상태=$($sig.Status)" } else { "서명자=$($sig.SignerCertificate.Subject)" }
-            if (-not $Quiet) { Write-Host " 실패: Microsoft 서명 검증 거부 ($reason)" -ForegroundColor Red }
+        if (-not (Assert-MicrosoftSignature -FilePath $script:AutorunscPath -Quiet:$Quiet)) {
             return $false
         }
 

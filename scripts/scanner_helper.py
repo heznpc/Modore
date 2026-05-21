@@ -55,7 +55,8 @@ def _read_plist(path: Path) -> dict:
     try:
         with open(path, "rb") as f:
             return plistlib.load(f) or {}
-    except Exception:
+    except Exception as e:
+        _debug_log(f"_read_plist({path})", e)
         return {}
 
 
@@ -76,6 +77,10 @@ from rule_engine import RuleEngine, apply_rules_to_raw  # noqa: E402
 # ============================================================
 # 환경변수
 # ============================================================
+# TODO(2nd-pass-audit-2026-05-21): PCH_* 경로 env에 sanity check 없음 — 잘못된
+# 값(예: 쓰기 불가 경로, 디렉터리 vs 파일)이 와도 후속 파일 IO에서야 실패함.
+# 사용자 의도와 실제 동작이 silent하게 어긋날 수 있음. 다음 sweep에서 명시적
+# validate + 의미 있는 메시지로 fail-fast 추가 검토.
 TMP_DIR = Path(os.environ.get("PCH_TMP_DIR", "/tmp"))
 OUTPUT = Path(os.environ.get("PCH_OUTPUT", "scan_result.json"))
 RAW_PATH = Path(os.environ.get("PCH_RAW_PATH", OUTPUT.parent / "raw_facts.json"))
@@ -83,11 +88,23 @@ CONFIG_PATH = Path(os.environ.get("PCH_CONFIG_PATH", "data/config.json"))
 WHITELIST_PATH = Path(os.environ.get("PCH_WHITELIST_PATH", "data/whitelist.json"))
 RULES_DIR = Path(os.environ.get("PCH_RULES_DIR", SCRIPT_DIR.parent / "rules"))
 NO_VT = os.environ.get("PCH_NO_VT", "false").lower() == "true"
+# PCH_DEBUG=1 이면 silent fallback(except Exception: pass) 지점에서 traceback을
+# stderr로 흘림. 일반 사용자 출력에는 영향이 없고, 사용자 PC에서 silent fail이
+# 의심될 때 디버깅 가능.
+PCH_DEBUG = os.environ.get("PCH_DEBUG", "").lower() in ("1", "true", "yes")
 
 SCANNED_AT = os.environ.get("PCH_SCANNED_AT", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 COMPUTER_NAME = os.environ.get("PCH_COMPUTER_NAME", "unknown")
 USER_NAME = os.environ.get("PCH_USER_NAME", "unknown")
 OS_VERSION = os.environ.get("PCH_OS_VERSION", "macOS")
+
+
+def _debug_log(where: str, exc: BaseException) -> None:
+    """PCH_DEBUG=1 일 때만 stderr로 traceback 1줄 로깅. 그 외 noop."""
+    if PCH_DEBUG:
+        import traceback
+        print(f"[PCH_DEBUG] {where}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
 
 
 config = load_json(CONFIG_PATH, default={}) or {}
@@ -98,15 +115,14 @@ config = load_json(CONFIG_PATH, default={}) or {}
 # ============================================================
 class VtLookup:
     def __init__(self, cfg, cache_dir):
-        self.cfg = dict((cfg or {}).get("virustotal") or {})
-        # 환경변수 우선: VT_API_KEY가 설정돼 있으면 config.json의 apiKey를 무시.
-        # 공유/CI 환경에서 키를 디스크에 평문 저장하지 않아도 되는 옵션.
+        self.cfg = (cfg or {}).get("virustotal") or {}
+        # 환경변수 우선: VT_API_KEY가 있으면 config.json의 apiKey를 무시 (공유/CI에서
+        # 키를 디스크에 평문 저장하지 않게 함). env로 키를 넘긴다는 것 자체가
+        # 명시적 옵트인이므로 enabled도 자동 True 처리.
         env_key = os.environ.get("VT_API_KEY")
         if env_key:
             self.cfg["apiKey"] = env_key
-            # env 키가 있으면 명시적으로 활성화 (config.enabled가 false여도 사용자가 env로 옵트인했다고 간주)
-            if not self.cfg.get("enabled"):
-                self.cfg["enabled"] = True
+            self.cfg["enabled"] = True
         self.enabled = bool(self.cfg.get("enabled")) and bool(self.cfg.get("apiKey")) and not NO_VT
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -120,8 +136,8 @@ class VtLookup:
         if self.cache_path.exists():
             try:
                 self.cache = json.loads(self.cache_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+            except Exception as e:
+                _debug_log("VtLookup.cache_load", e)
 
     def _cached(self, key):
         entry = self.cache.get(key)
@@ -129,7 +145,8 @@ class VtLookup:
             return None
         try:
             cached_at = datetime.fromisoformat(entry["cachedAt"])
-        except Exception:
+        except Exception as e:
+            _debug_log("VtLookup._cached.parse", e)
             return None
         age = (datetime.now() - cached_at).total_seconds() / 3600
         if age > self.cache_hours:
@@ -158,8 +175,10 @@ class VtLookup:
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return {"ok": True, "notFound": True}
+            _debug_log(f"VtLookup._request.http_{e.code}", e)
             return {"error": f"http_{e.code}"}
         except Exception as e:
+            _debug_log("VtLookup._request.network", e)
             return {"error": f"api: {e}"}
 
     def file(self, path):
@@ -167,7 +186,8 @@ class VtLookup:
             return None
         try:
             h = _sha256_stream(Path(path))
-        except Exception:
+        except Exception as e:
+            _debug_log(f"VtLookup.file.sha256({path})", e)
             return None
         key = f"file:{h}"
         cached = self._cached(key)
@@ -240,8 +260,8 @@ def is_local_ip(ip):
             octet = int(ip.split(".")[1])
             if 16 <= octet <= 31:
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            _debug_log(f"is_local_ip.172_octet({ip})", e)
     return False
 
 
@@ -275,7 +295,8 @@ def _codesign_info(path: str) -> Optional[dict]:
             ["codesign", "-dv", path],
             capture_output=True, text=True, timeout=5
         )
-    except Exception:
+    except Exception as e:
+        _debug_log(f"_codesign_info({path})", e)
         return None
     verified = ("Signature=adhoc" not in cs.stderr) and ("not signed" not in cs.stderr) and (cs.returncode == 0)
     publisher = ""
@@ -293,8 +314,8 @@ try:
         parts = row.strip().split(None, 1)
         if len(parts) == 2:
             _pid_path_map[parts[0]] = parts[1]
-except Exception:
-    pass
+except Exception as e:
+    _debug_log("ps_pid_path_map", e)
 
 cpu_list = []
 for line in _read_tmp("ps.txt").strip().split("\n"):
@@ -541,7 +562,8 @@ if apps_dir.exists():
                 ("name", app.stem),
                 ("publisher", publisher),
             ]))
-        except Exception:
+        except Exception as e:
+            _debug_log(f"recentInstalls({app})", e)
             continue
 recent.sort(key=lambda x: x["installDate"], reverse=True)
 raw["sections"]["recentInstalls"] = recent

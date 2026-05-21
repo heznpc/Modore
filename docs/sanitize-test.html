@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>sanitizeHTML smoke test · pc-health-check</title>
+<style>
+  body { font-family: ui-monospace, Menlo, Consolas, monospace; max-width: 1000px; margin: 2rem auto; padding: 0 1rem; color: #1f2937; }
+  h1 { font-size: 18px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 1rem; }
+  th, td { border: 1px solid #d1d5db; padding: 6px 8px; vertical-align: top; text-align: left; }
+  th { background: #f3f4f6; font-weight: 600; }
+  td.input { white-space: pre-wrap; font-family: inherit; max-width: 320px; word-break: break-all; }
+  td.output { white-space: pre-wrap; font-family: inherit; max-width: 320px; word-break: break-all; background: #fafafa; }
+  td.expected { color: #6b7280; max-width: 200px; }
+  td.pass { background: #ecfdf5; color: #065f46; }
+  td.fail { background: #fef2f2; color: #991b1b; font-weight: 700; }
+  .summary { font-size: 16px; margin: 1rem 0; padding: 12px; border-radius: 6px; }
+  .summary.ok { background: #ecfdf5; color: #065f46; border-left: 4px solid #10b981; }
+  .summary.bad { background: #fef2f2; color: #991b1b; border-left: 4px solid #ef4444; }
+  code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<h1>sanitizeHTML smoke test</h1>
+<p>
+  <code>docs/script.js</code>의 <code>sanitizeHTML</code>이 i18n JSON에 섞여 들어올 수 있는
+  악의적 입력을 제거하는지 확인하는 수동 harness.
+  CONTRIBUTING.md의 i18n 기여 규칙(허용 태그: <code>em / strong / code / a / span / br</code>)이
+  실제로 적용되는지 검증.
+</p>
+<p><strong>사용법:</strong> <code>docs/index.html</code>이 있는 폴더에서 <code>python3 -m http.server 8000</code>로
+서빙한 뒤 <code>http://localhost:8000/sanitize-test.html</code>를 연다. sanitizer가 깨지면 빨간 셀이 보인다.
+sanitizer를 수정했으면 이 페이지를 다시 열어 모두 초록인지 확인.</p>
+
+<div id="summary" class="summary"></div>
+<table id="results">
+  <thead><tr><th>#</th><th>Input</th><th>Output (sanitized)</th><th>Expected invariant</th><th>Pass</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<!-- 실제 sanitizer 코드를 로드 -->
+<script src="script.js"></script>
+<script>
+// sanitizeHTML이 export되어 있지 않으면 동일 정의를 여기 미러링 — script.js와 drift되지 않도록
+// CONTRIBUTING.md에 "sanitizer 수정 시 이 harness도 같이 본다"는 룰을 둠.
+//
+// script.js의 sanitizeHTML이 전역 함수이므로 그대로 호출 가능.
+
+const cases = [
+  // ---- allowed tags pass through ----
+  {
+    name: "allowed: em / strong / code",
+    input: "<em>italic</em> <strong>bold</strong> <code>mono</code>",
+    invariants: [
+      o => o.includes("<em>italic</em>"),
+      o => o.includes("<strong>bold</strong>"),
+      o => o.includes("<code>mono</code>"),
+    ],
+    expected: "통과: em / strong / code 그대로",
+  },
+  {
+    name: "allowed: a[href, target, rel]",
+    input: '<a href="https://example.com" target="_blank">link</a>',
+    invariants: [
+      o => o.includes("https://example.com"),
+      o => /rel="noopener noreferrer"/.test(o),  // target=_blank 강제
+    ],
+    expected: "target=_blank → rel 자동 추가",
+  },
+
+  // ---- script-like tags must be stripped ----
+  {
+    name: "blocked: <script>",
+    input: '<script>alert(1)</script>',
+    invariants: [
+      o => !/<script/i.test(o),
+      o => !o.includes("alert(1)") || o === "alert(1)",  // 텍스트로 살아남는 건 OK (실행 안 됨)
+    ],
+    expected: "<script> 제거, 텍스트는 살아도 무방",
+  },
+  {
+    name: "blocked: <img onerror>",
+    input: '<img src=x onerror="alert(1)">',
+    invariants: [
+      o => !/<img/i.test(o),
+      o => !/onerror/i.test(o),
+    ],
+    expected: "<img> 자체 제거",
+  },
+  {
+    name: "blocked: <iframe>",
+    input: '<iframe src="javascript:alert(1)"></iframe>',
+    invariants: [ o => !/<iframe/i.test(o) ],
+    expected: "<iframe> 제거",
+  },
+  {
+    name: "blocked: <svg onload>",
+    input: '<svg onload="alert(1)"><circle/></svg>',
+    invariants: [
+      o => !/<svg/i.test(o),
+      o => !/onload/i.test(o),
+    ],
+    expected: "<svg> 제거",
+  },
+
+  // ---- dangerous href schemes ----
+  {
+    name: "blocked: javascript: href",
+    input: '<a href="javascript:alert(1)">x</a>',
+    invariants: [ o => !/href="javascript:/i.test(o) ],
+    expected: "href 제거 (텍스트 'x'는 남아도 OK)",
+  },
+  {
+    name: "blocked: JaVaScRiPt: (case-insensitive)",
+    input: '<a href="JaVaScRiPt:alert(1)">x</a>',
+    invariants: [ o => !/javascript:/i.test(o) ],
+    expected: "대소문자 무관 차단",
+  },
+  {
+    name: "blocked: javascript with leading whitespace",
+    input: '<a href="   javascript:alert(1)">x</a>',
+    invariants: [ o => !/javascript:/i.test(o) ],
+    expected: "공백 우회 차단",
+  },
+  {
+    name: "blocked: data: URL",
+    input: '<a href="data:text/html,<script>alert(1)</script>">x</a>',
+    invariants: [ o => !/href="data:/i.test(o) ],
+    expected: "data: 차단",
+  },
+  {
+    name: "blocked: vbscript: URL",
+    input: '<a href="vbscript:msgbox(1)">x</a>',
+    invariants: [ o => !/href="vbscript:/i.test(o) ],
+    expected: "vbscript: 차단",
+  },
+
+  // ---- attribute injection ----
+  {
+    name: "blocked: onclick on allowed tag",
+    input: '<a href="https://x" onclick="alert(1)">x</a>',
+    invariants: [ o => !/onclick/i.test(o) ],
+    expected: "허용 태그에도 on* 속성 제거",
+  },
+  {
+    name: "blocked: arbitrary span attr",
+    input: '<span style="x" data-evil="1" onmouseover="alert(1)">x</span>',
+    invariants: [
+      o => !/onmouseover/i.test(o),
+      o => !/data-evil/i.test(o),
+      o => !/style=/i.test(o),
+    ],
+    expected: "span에서 class만 허용",
+  },
+  {
+    name: "allowed: span[class]",
+    input: '<span class="arrow">→</span>',
+    invariants: [ o => o.includes('class="arrow"'), o => o.includes("→") ],
+    expected: "span class 통과",
+  },
+
+  // ---- entity decoding ----
+  {
+    name: "entity-encoded javascript: in href",
+    input: '<a href="javas&#99;ript:alert(1)">x</a>',
+    invariants: [ o => !/javascript:/i.test(o) ],
+    expected: "HTML entity 디코드 후에도 차단",
+  },
+
+  // ---- mixed / nested ----
+  {
+    name: "nested: script inside em",
+    input: '<em>safe<script>alert(1)</script>text</em>',
+    invariants: [
+      o => !/<script/i.test(o),
+      o => o.includes("<em>"),
+    ],
+    expected: "허용 부모 유지, script 자식만 제거",
+  },
+  {
+    name: "comment node",
+    input: '<!-- <script>alert(1)</script> -->',
+    invariants: [
+      o => !/<!--/.test(o),
+      o => !/<script/i.test(o),
+    ],
+    expected: "comment 노드 자체 제거",
+  },
+
+  // ---- plain text passes through ----
+  {
+    name: "plain text unchanged",
+    input: "hello world & friends",
+    invariants: [ o => o.includes("hello world") ],
+    expected: "텍스트는 그대로",
+  },
+];
+
+function runOne(c) {
+  let output;
+  let invariantResults;
+  try {
+    output = sanitizeHTML(c.input);
+    invariantResults = c.invariants.map(fn => {
+      try { return !!fn(output); } catch (e) { return false; }
+    });
+  } catch (e) {
+    output = `THREW: ${e}`;
+    invariantResults = c.invariants.map(() => false);
+  }
+  const pass = invariantResults.every(Boolean);
+  return { ...c, output, invariantResults, pass };
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const tbody = document.querySelector("#results tbody");
+  let passCount = 0;
+  cases.forEach((c, i) => {
+    const r = runOne(c);
+    if (r.pass) passCount++;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${i + 1}. ${r.name}</td>
+      <td class="input"></td>
+      <td class="output"></td>
+      <td class="expected">${r.expected}</td>
+      <td class="${r.pass ? "pass" : "fail"}">${r.pass ? "PASS" : "FAIL"}</td>
+    `;
+    // textContent로 넣어야 raw HTML이 그대로 표시됨 (이게 사실상 이 페이지의 sanitizer)
+    tr.children[1].textContent = r.input;
+    tr.children[2].textContent = r.output;
+    tbody.appendChild(tr);
+  });
+
+  const summary = document.getElementById("summary");
+  if (passCount === cases.length) {
+    summary.className = "summary ok";
+    summary.textContent = `✓ ${passCount} / ${cases.length} 모두 통과`;
+  } else {
+    summary.className = "summary bad";
+    summary.textContent = `✗ ${cases.length - passCount}건 실패 — sanitizer 회귀. 빨간 셀 확인.`;
+  }
+});
+</script>
+</body>
+</html>
