@@ -27,25 +27,28 @@ jobs:
       - name: Install pytest (pinned via requirements-dev.txt)
         run: pip install -r requirements-dev.txt
 
-      - name: Validate rule JSON files (parse + structure)
+      - name: Validate rule JSON files (parse + structure + per-category presence)
         # Parse 만으로는 {} 같은 빈 객체도 통과하므로 RuleEngine.from_dir 로
         # structural validation까지 강제 (id/when/then/risk 필수, regex 컴파일 가능
-        # 여부 등). 통과하면 production 로딩과 동일한 검증을 거친 것.
+        # 여부 등). 또한 각 카테고리에 최소 1개 룰이 있어야 통과 — 단일 카테고리만
+        # 살아남은 부분적 회귀 (예: 4개 룰 파일 삭제)도 차단.
         run: |
           python3 - <<'PY'
           import sys
           from pathlib import Path
           sys.path.insert(0, 'scripts')
-          from rule_engine import RuleEngine
+          from rule_engine import RuleEngine, CATEGORY_FILES
 
           engine = RuleEngine.from_dir(
               Path('rules'),
               whitelist_path=Path('data/whitelist.json'),
           )
+          missing = [c for c in CATEGORY_FILES if not engine.rules_by_category.get(c)]
+          if missing:
+              print(f"FAIL categories with 0 rules: {missing}")
+              sys.exit(1)
           total = sum(len(v) for v in engine.rules_by_category.values())
-          cats = sum(1 for v in engine.rules_by_category.values() if v)
-          print(f"✓ {total} rules loaded across {cats} categories")
-          assert total > 0, "rules/ contained no valid rules — likely a regression"
+          print(f"OK {total} rules across {len(CATEGORY_FILES)} categories (all populated)")
           PY
 
       - name: Python syntax check

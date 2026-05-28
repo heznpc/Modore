@@ -67,6 +67,15 @@ const cases = [
     ],
     expected: "target=_blank → rel 자동 추가",
   },
+  {
+    // 회귀 방지: target 키워드는 case-insensitive (브라우저 동작과 일치).
+    name: "allowed: a[target='_BLANK'] (uppercase) still gets rel",
+    input: '<a href="https://example.com" target="_BLANK">link</a>',
+    invariants: [
+      o => /rel="noopener noreferrer"/.test(o),
+    ],
+    expected: "_BLANK도 _blank와 동일하게 rel 강제",
+  },
 
   // ---- script-like tags must be stripped ----
   {

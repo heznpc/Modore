@@ -98,12 +98,14 @@ function sanitizeHTML(input) {
           }
         }
         // target=_blank + 외부 링크 → opener를 통한 tabnabbing 방지.
-        if (child.tagName === 'A' && child.getAttribute('target') === '_blank') {
-          child.setAttribute('rel', 'noopener noreferrer');
+        // 브라우저는 target 키워드를 case-insensitive로 해석(_blank, _BLANK 동일).
+        // getAttribute는 원본 문자열을 그대로 반환하므로 비교 전에 소문자화.
+        if (child.tagName === 'A') {
+          const target = (child.getAttribute('target') || '').toLowerCase();
+          if (target === '_blank') {
+            child.setAttribute('rel', 'noopener noreferrer');
+          }
         }
-        // TODO(2nd-pass-audit-2026-05-21): target 없는 외부 링크에는 rel noopener
-        // 강제 안 함. 같은 탭 이동이라 tabnabbing 위험은 낮지만, 차후 일관성
-        // 차원에서 모든 cross-origin <a>에 rel 보강 검토.
         walk(child);
       } else if (child.nodeType !== Node.TEXT_NODE) {
         // 코멘트 노드 등을 통한 조건부 컴파일/HTML 파서 트릭 차단.

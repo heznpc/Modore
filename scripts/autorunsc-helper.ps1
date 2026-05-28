@@ -8,8 +8,9 @@
 #  - 공식 주소: https://live.sysinternals.com/autorunsc.exe
 # ============================================================
 
-# 단독 dot-source 케이스 대비 (보통 scanner.ps1이 먼저 로드함)
-if (-not (Get-Command Assert-MicrosoftSignature -ErrorAction SilentlyContinue)) {
+# 단독 dot-source 케이스 대비 (보통 scanner.ps1이 먼저 로드함).
+# sentinel 변수로 확인 — Get-Command는 user PS profile의 동명 함수에 속을 수 있음.
+if (-not (Get-Variable -Name SysinternalsVerifyLoaded -Scope Script -ErrorAction SilentlyContinue)) {
     . "$PSScriptRoot\_sysinternals-verify.ps1"
 }
 
@@ -30,13 +31,14 @@ function Initialize-Autorunsc {
 
     # 캐시 hit이라도 매번 Authenticode 재검증. sigcheck-helper.ps1과 동일한 위협
     # 모델: user-writable 경로의 PE는 다른 user-mode 악성코드가 변조 가능.
-    if (Test-CachedSysinternalsBinary -FilePath $script:AutorunscPath -Quiet:$Quiet) {
+    $cacheCheck = Test-CachedSysinternalsBinary -FilePath $script:AutorunscPath -Quiet:$Quiet
+    if ($cacheCheck.ok) {
         $script:AutorunscReady = $true
         if (-not $Quiet) { Write-Host "autorunsc.exe 확인됨 (서명 재검증 통과)" -ForegroundColor DarkGray }
         return $true
     }
-    if (Test-Path $script:AutorunscPath) {
-        if (-not $Quiet) { Write-Host "캐시된 autorunsc.exe 서명 검증 실패 → 재다운로드 시도" -ForegroundColor Yellow }
+    if ($cacheCheck.reason -eq 'tampered' -and -not $Quiet) {
+        Write-Host "캐시된 autorunsc.exe 서명 검증 실패 → 재다운로드 시도" -ForegroundColor Yellow
     }
 
     if (-not $AutoDownload) {
