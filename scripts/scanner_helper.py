@@ -115,14 +115,19 @@ config = load_json(CONFIG_PATH, default={}) or {}
 # ============================================================
 class VtLookup:
     def __init__(self, cfg, cache_dir):
-        self.cfg = (cfg or {}).get("virustotal") or {}
+        # 얕은 복사로 caller의 config dict와 분리. 이후 env 키 주입이 caller의
+        # 원본 객체를 mutate하지 않도록 — 향후 누가 config를 disk로 다시 쓸 경우
+        # VT_API_KEY가 평문으로 누출되는 것을 방지.
+        self.cfg = dict((cfg or {}).get("virustotal") or {})
         # 환경변수 우선: VT_API_KEY가 있으면 config.json의 apiKey를 무시 (공유/CI에서
-        # 키를 디스크에 평문 저장하지 않게 함). env로 키를 넘긴다는 것 자체가
-        # 명시적 옵트인이므로 enabled도 자동 True 처리.
+        # 키를 디스크에 평문 저장하지 않게 함).
         env_key = os.environ.get("VT_API_KEY")
         if env_key:
             self.cfg["apiKey"] = env_key
-            self.cfg["enabled"] = True
+            # 명시적 enabled=false는 사용자 의도이므로 env 키가 있어도 존중.
+            # enabled가 *설정되지 않았을* 때만 env-injection을 옵트인으로 간주.
+            if "enabled" not in self.cfg:
+                self.cfg["enabled"] = True
         self.enabled = bool(self.cfg.get("enabled")) and bool(self.cfg.get("apiKey")) and not NO_VT
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)

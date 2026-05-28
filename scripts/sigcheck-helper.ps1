@@ -8,8 +8,9 @@
 #  - 공식 주소: https://live.sysinternals.com/sigcheck.exe
 # ============================================================
 
-# 단독 dot-source 케이스 대비 (보통 scanner.ps1이 먼저 로드함)
-if (-not (Get-Command Assert-MicrosoftSignature -ErrorAction SilentlyContinue)) {
+# 단독 dot-source 케이스 대비 (보통 scanner.ps1이 먼저 로드함).
+# sentinel 변수로 확인 — Get-Command는 user PS profile의 동명 함수에 속을 수 있음.
+if (-not (Get-Variable -Name SysinternalsVerifyLoaded -Scope Script -ErrorAction SilentlyContinue)) {
     . "$PSScriptRoot\_sysinternals-verify.ps1"
 }
 
@@ -29,16 +30,16 @@ function Initialize-Sigcheck {
     $script:SigcheckPath = Join-Path $ToolsDir 'sigcheck.exe'
 
     # 캐시 hit이라도 매번 Authenticode 재검증. user-writable LOCALAPPDATA에 있는
-    # PE이므로, 다른 user-mode 악성코드가 변조했을 가능성을 전제로 함. 실패 시
-    # Assert가 파일을 삭제하므로 아래 다운로드 분기가 자연스럽게 재실행됨.
-    if (Test-CachedSysinternalsBinary -FilePath $script:SigcheckPath -Quiet:$Quiet) {
+    # PE이므로, 다른 user-mode 악성코드가 변조했을 가능성을 전제로 함.
+    $cacheCheck = Test-CachedSysinternalsBinary -FilePath $script:SigcheckPath -Quiet:$Quiet
+    if ($cacheCheck.ok) {
         $script:SigcheckReady = $true
         if (-not $Quiet) { Write-Host "sigcheck.exe 확인됨 (서명 재검증 통과)" -ForegroundColor DarkGray }
         return $true
     }
-    if (Test-Path $script:SigcheckPath) {
-        # 여기 도달 = 파일은 있었으나 Assert가 검증 실패로 삭제했음. 사용자에게 알림.
-        if (-not $Quiet) { Write-Host "캐시된 sigcheck.exe 서명 검증 실패 → 재다운로드 시도" -ForegroundColor Yellow }
+    if ($cacheCheck.reason -eq 'tampered' -and -not $Quiet) {
+        # 캐시 파일이 있었으나 서명 검증 실패 — Assert가 이미 삭제함. 사용자에게 알림.
+        Write-Host "캐시된 sigcheck.exe 서명 검증 실패 → 재다운로드 시도" -ForegroundColor Yellow
     }
 
     if (-not $AutoDownload) {
