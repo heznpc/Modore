@@ -131,6 +131,66 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
         }
     }
 
+    /// Regression for the source-inside-archiveDir case (audit finding #2).
+    /// User points the archive root at a directory whose subtree contains
+    /// the repo they then ask to archive — tar would otherwise recursively
+    /// read the tree it's simultaneously writing into.
+    func test_archive_refusesSourceInsideArchiveDir() async throws {
+        // Build a repo *inside* the archive directory.
+        let nested = archiveDir.appending(path: "nested-repo", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data("hi".utf8).write(to: nested.appending(path: "README.md"))
+
+        let fake = RepoInfo(
+            path: nested,
+            sizeBytes: 2,
+            lastFileMTime: Date(),
+            git: GitMetadata(
+                lastCommitDate: nil, isDirty: false, aheadOfOrigin: nil,
+                originURL: nil, currentBranch: nil, headSHA: nil
+            )
+        )
+        do {
+            _ = try await makeOrchestrator().archive(fake)
+            XCTFail("expected sourcePathRefused for source inside archive dir")
+        } catch ArchiveOrchestrator.ArchiveError.sourcePathRefused {
+            // expected
+        } catch {
+            XCTFail("wrong error: \(error)")
+        }
+    }
+
+    /// Regression for the tar `--` separator (audit finding #1). A repo
+    /// whose basename starts with `-` (legitimate: extracted from a
+    /// tarball, scratch dir) must archive cleanly. Without the `--`
+    /// separator tar parses the basename as a flag and either fails to
+    /// create the archive or silently skips files.
+    func test_archive_handlesDashPrefixedRepoName() async throws {
+        // Build a repo whose lastPathComponent starts with `-`. Can't use
+        // TempGitRepo for this — its name is UUID-shaped. Spin up a
+        // sibling alongside repo.url.
+        let parent = repo.url.deletingLastPathComponent()
+        let dashy = parent.appending(path: "--exclude-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dashy, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dashy) }
+        try Data("hi".utf8).write(to: dashy.appending(path: "README.md"))
+
+        let fake = RepoInfo(
+            path: dashy,
+            sizeBytes: 2,
+            lastFileMTime: Date(),
+            git: GitMetadata(
+                lastCommitDate: nil, isDirty: false, aheadOfOrigin: nil,
+                originURL: nil, currentBranch: nil, headSHA: nil
+            )
+        )
+        let result = try await makeOrchestrator().archive(fake)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.archive.path),
+                      "tar must produce the archive even when basename starts with `-`")
+        XCTAssertGreaterThan(result.archiveBytes, 0,
+                             "archive must contain content, not be an empty zero-byte file")
+    }
+
     func test_archive_originalSizeIsRecordedInResult() async throws {
         let info = try await singleRepoInfo()
         let result = try await makeOrchestrator().archive(info)

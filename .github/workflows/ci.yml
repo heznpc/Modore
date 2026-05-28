@@ -7,7 +7,12 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel only on PR pushes (rebase / force-push iterations). Back-to-back
+  # `main` pushes from auto-merge land within seconds of each other and
+  # share `github.ref = refs/heads/main`; an unconditional cancel-in-progress
+  # would silently kill the earlier merge's post-merge CI, leaving main
+  # without a green check for that commit.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Default to least-privilege at the workflow level. Individual jobs may
 # escalate one scope at a time if they need it. This build/test only
@@ -41,12 +46,17 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .build
-          # No external SPM deps → no Package.resolved. Key on Package.swift
-          # and the workflow itself so cache invalidates on either a package
-          # edit or a runner image / toolchain pin bump.
-          key: ${{ runner.os }}-spm-${{ hashFiles('Package.swift') }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          # Cache invalidation triggers:
+          #   - ImageOS    : runner image (and its bundled Swift toolchain) rotates
+          #   - Package.swift / Package.resolved : declared or resolved deps change
+          #   - this workflow file : tool versions or build flags change
+          # Package.resolved is hashed even though it currently does not exist
+          # (zero external SPM deps) — hashFiles returns the empty string in
+          # that case, and the moment a dependency is added the file appears
+          # and starts contributing to the key without a workflow edit.
+          key: ${{ env.ImageOS }}-spm-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            ${{ runner.os }}-spm-
+            ${{ env.ImageOS }}-spm-
 
       - name: Build
         run: swift build --build-tests

@@ -1,8 +1,9 @@
 # Mothball — Git-aware Project Archiver
 
-**버전**: v0.1 MVP 스펙 (2026-04-23 고정)
+**버전**: v0.1 MVP 스펙 (2026-04-23 고정, 툴체인 항목 2026-05-21 업데이트)
 **플랫폼**: macOS 13 Ventura 이상 (Apple Silicon + Intel universal)
-**라이선스 예정**: MIT
+**툴체인**: Swift 6.0+ / Xcode 16+ (strict concurrency 기본; `Package.swift` `swiftLanguageModes: [.v6]`). CI는 `macos-latest` 단일이며 macOS 13 floor는 `RELEASING.md`의 수동 게이트로 검증.
+**라이선스**: MIT (`LICENSE` 참조)
 
 ---
 

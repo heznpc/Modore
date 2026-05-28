@@ -1,8 +1,12 @@
 # Mothball
 
-**Status: Lab — not production.** Pre-alpha scaffold for a git-aware
-project archiver on macOS. Compresses dormant repositories to
-`.tar.zst`, writes a sidecar manifest with origin / branch / HEAD,
+> **Status: Lab — pre-alpha. Not yet usable for normal workflows.**
+> Mothball will move directories to the Trash for you. Read the
+> "Design intent" section before you point it at anything you care
+> about.
+
+Git-aware project archiver for macOS. Compresses dormant repositories
+to `.tar.zst`, writes a sidecar manifest with origin / branch / HEAD,
 and moves the original to the trash.
 
 ## What it does
@@ -29,7 +33,11 @@ swift run Mothball
 ```
 
 Integration tests under `Tests/` exercise real `git` and `tar`
-binaries; they auto-skip when those aren't present at `/usr/bin`.
+binaries; individual cases auto-skip when those aren't present at
+`/usr/bin`. Note that the test target itself requires the full Xcode
+XCTest module to compile in the first place — on a machine with only
+Command Line Tools, `swift test` fails with `no such module 'XCTest'`
+before any skip logic runs.
 
 ## Project layout
 
