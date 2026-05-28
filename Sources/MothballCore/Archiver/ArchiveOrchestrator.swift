@@ -187,6 +187,14 @@ public struct ArchiveOrchestrator: Sendable {
         if resolved == archiveResolved || archiveResolved.hasPrefix(resolved + "/") {
             throw ArchiveError.sourcePathRefused(source, reason: "아카이브 저장 위치가 원본 안에 있음 (자기 참조)")
         }
+        // Reverse containment: the source must not live inside the archive
+        // directory either. Otherwise tar would recursively read a tree it
+        // is simultaneously writing into — at best a libarchive
+        // "file changed as we read it" error, at worst unbounded growth as
+        // the in-progress .tar.zst.tmp is itself included in the archive.
+        if resolved.hasPrefix(archiveResolved + "/") {
+            throw ArchiveError.sourcePathRefused(source, reason: "원본이 아카이브 저장 위치 안에 있음 (자기 참조)")
+        }
     }
 
     static func validateArchiveDirectory(_ dir: URL) throws {
@@ -210,6 +218,13 @@ public struct ArchiveOrchestrator: Sendable {
         // Run with -C parent so the archive contains the basename only,
         // not the full absolute path. This makes archives portable and
         // restores cleanly when extracted into any directory.
+        //
+        // The `--` before the basename is load-bearing: without it, a repo
+        // literally named `--exclude` / `--newer` / `--help` (extracted
+        // from a tarball, scratch dir, etc.) is parsed by tar as a flag,
+        // not a path. macOS bsdtar then either fails to create the archive
+        // at all (verified PoC) or silently skips files in it. Argv-array
+        // calling alone does not defend against flag-shaped filenames.
         let result = try await ProcessRunner.run(
             executable: env.tarExecutable,
             arguments: [
@@ -217,6 +232,7 @@ public struct ArchiveOrchestrator: Sendable {
                 "--options", "zstd:compression-level=\(env.zstdLevel)",
                 "-cf", plan.archiveTmp.path,
                 "-C", plan.repoPath.deletingLastPathComponent().path,
+                "--",
                 plan.repoPath.lastPathComponent,
             ],
             timeout: env.compressionTimeout,

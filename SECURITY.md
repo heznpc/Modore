@@ -35,3 +35,23 @@ release. Lab-tier project: there is no SLA.
   is not currently sandboxed.
 - Performance / DoS via deeply nested directories — Lab-tier; will be
   triaged but not gated.
+
+## Automated security tooling — known gap
+
+There is **no automated static analysis** on this repo today. CodeQL
+Swift is the obvious fit, but GitHub Code Scanning requires a GitHub
+Advanced Security license, which is not enabled on this private free-
+plan repository (`security_and_analysis: null` via the REST API).
+Secret scanning and push protection are off for the same reason.
+
+Active automated controls that *are* in place:
+
+- Dependabot vulnerability alerts + automated security fixes.
+- Dependabot GitHub Actions update PRs (weekly, grouped).
+- CI build + integration tests on every push and PR.
+
+Manual control for argv-injection / path-traversal regressions (the
+two in-scope risks above) is contributor review of any new
+`ProcessRunner.run` or `validateSource` call site. Re-evaluate the
+GHAS gap if the repo goes public or if a sponsor enables Advanced
+Security.

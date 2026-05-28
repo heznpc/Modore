@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct ProcessResult: Sendable {
@@ -14,7 +15,7 @@ public enum ProcessError: Error, Sendable {
 
 /// Async wrapper around `Foundation.Process`.
 ///
-/// Two non-obvious things this gets right:
+/// Three non-obvious things this gets right:
 ///
 /// 1. **Pipe-buffer deadlock**: a child writing more than the kernel pipe
 ///    buffer (~64KB on macOS) blocks until the parent drains the pipe.
@@ -22,12 +23,23 @@ public enum ProcessError: Error, Sendable {
 ///    hangs and so does the parent. We read both pipes concurrently with
 ///    waiting for exit using `async let`.
 ///
-/// 2. **Timeout**: `Process` has no built-in timeout. We launch a
-///    cancellable Task that sleeps for the timeout duration and then
-///    sends SIGTERM if the process is still running. We distinguish
-///    timeout-induced termination from normal exit by checking whether
-///    the timeout task fired before being cancelled.
+/// 2. **Timeout with SIGKILL escalation**: `Process` has no built-in
+///    timeout. We launch a cancellable Task that sleeps for the timeout
+///    duration, sends SIGTERM, waits a short grace, then sends SIGKILL
+///    if the child still hasn't exited. Without the SIGKILL fallback a
+///    SIGTERM-ignoring child (e.g. `git fetch` stuck in some network
+///    states) would leave us in the `for await exitStream` loop forever.
+///
+/// 3. **Spawn-failure leak**: `async let` for the pipe readers is started
+///    AFTER `process.run()` succeeds — kicking them off beforehand would
+///    leave detached Tasks blocked on pipes with no writer if spawn
+///    throws, since `Pipe` doesn't close on the synchronous failure path.
 public enum ProcessRunner {
+    /// Grace period between SIGTERM and SIGKILL when a timeout fires.
+    /// Long enough for a well-behaved child to flush + exit, short enough
+    /// that a misbehaving child can't stall the UI for the user.
+    private static let terminateToKillGrace: Duration = .seconds(5)
+
     public static func run(
         executable: URL,
         arguments: [String],
@@ -54,18 +66,21 @@ public enum ProcessRunner {
             process.terminationHandler = { _ in continuation.finish() }
         }
 
-        // Drain pipes concurrently with the wait below — see class doc.
-        async let stdoutBytes: Data = readAll(stdoutPipe.fileHandleForReading)
-        async let stderrBytes: Data = readAll(stderrPipe.fileHandleForReading)
-
         do {
             try process.run()
         } catch {
             throw ProcessError.spawnFailed(underlying: error)
         }
 
+        // Pipe readers are started AFTER successful spawn so a spawn
+        // failure can't strand detached Tasks on writerless pipes.
+        async let stdoutBytes: Data = readAll(stdoutPipe.fileHandleForReading)
+        async let stderrBytes: Data = readAll(stderrPipe.fileHandleForReading)
+
         // Returns true only if it actually fired terminate(); false if
         // it was cancelled because the process exited normally first.
+        // SIGTERM first; if the child ignores it (some `git fetch` paths
+        // do), escalate to SIGKILL after a grace period so we never hang.
         let timeoutTask = Task<Bool, Never> {
             do {
                 try await Task.sleep(for: timeout)
@@ -74,12 +89,21 @@ public enum ProcessRunner {
             }
             guard process.isRunning else { return false }
             process.terminate()
+            do {
+                try await Task.sleep(for: terminateToKillGrace)
+            } catch {
+                return true
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
             return true
         }
 
         // Block until the stream finishes (no values are ever yielded;
         // finish() is the only signal). Yields control of the cooperative
-        // pool, unlike process.waitUntilExit().
+        // pool, unlike process.waitUntilExit(). Bounded by the SIGKILL
+        // escalation above — even an uncooperative child gets reaped.
         for await _ in exitStream { /* drained */ }
 
         // Cancel BEFORE awaiting value, otherwise we'd block until the

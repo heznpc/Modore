@@ -18,6 +18,13 @@ private let relativeDateFormatter: RelativeDateTimeFormatter = {
     return f
 }()
 
+// IMPORTANT: do not drop `@MainActor` here even if a future caller is
+// in a non-MainActor context (e.g. background log/export). The
+// `relativeDateFormatter` above is shared mutable Foundation state;
+// removing the annotation would re-introduce the Sendable hazard the
+// Swift 6 compiler caught us with. The right fix for a background
+// caller is to either hop to `@MainActor` for the format call or
+// instantiate a fresh formatter inside the background context.
 @MainActor
 func relativeDateString(_ date: Date) -> String {
     relativeDateFormatter.localizedString(for: date, relativeTo: Date())
