@@ -28,7 +28,7 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 
 ## Currently implemented
 
-- **Cross-platform scanner**: Windows (PowerShell 5.1+ plus Python 3.11+) and macOS (Bash + Python 3.11+).
+- **Cross-platform scanner**: Windows (PowerShell 5.1+) and macOS (Bash + built-in `osascript`/JXA). No Python install is required to run a release zip.
 - **Eight diagnostic categories**: CPU top processes · GPU usage · active network connections · listening ports · startup entries · scheduled tasks · Windows Defender / macOS Gatekeeper status · recently installed apps.
 - **Locale-aware whitelist**: 71 known-good entries across 7 categories (system, browser, korean_common, banking_security, dev_tools, hardware, cloud), plus 19 miner blacklist entries, 5 RAT blacklist entries, and 13 miner-pool ports. Covers IPinside, nProtect, INISAFE, MagicLine, Veraport, XecureWeb, Ahnlab V3, Alyac, and the rest of the Korean banking/government plugin set.
 - **Traffic-light output** (🟢 safe / 🟡 check / 🔴 danger) so non-technical users can act on the report.
@@ -38,8 +38,8 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 - **macOS equivalents**: `codesign -dv`, `launchctl`, `sfltool dumpbtm`, `spctl --status`, `kmutil showloaded`.
 - **Single-file HTML report**: opens in the user's browser, works offline, includes Google/VirusTotal "investigate" links and collapsible novice-friendly explanations.
 - **i18n**: Korean, English, Japanese — both the landing page (`docs/i18n/`) and the report (`data/report_i18n/`).
-- **Rule engine + tests**: declarative JSON rules in `rules/` (autoruns, defender, installs, network, process) evaluated by `scripts/rule_engine.py`. 61 pytest tests cover report rendering, rule evaluation, whitelist lookups, service contracts, and release smoke.
-- **Read-the-source distribution**: ~3,700 lines of PowerShell/Python/Bash, no compiled binaries, no bundled DLLs, no telemetry.
+- **Rule engine + tests**: declarative JSON rules in `rules/` (autoruns, defender, installs, network, process) evaluated by OS-native runtime engines. 62 pytest tests cover report rendering, rule evaluation, whitelist lookups, service contracts, and release smoke.
+- **Read-the-source distribution**: readable PowerShell/Bash/JXA scripts, no compiled binaries, no bundled DLLs, no telemetry.
 
 ## Planned
 
@@ -54,13 +54,13 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 |---|---|---|
 | Distribution trust | Unsigned EXE triggers SmartScreen/Gatekeeper | Readable source; HTML opens in the user's existing trusted browser |
 | Code-signing cost | $400+/yr (Windows) or $99/yr (Apple) | $0 |
-| User can audit code | Compiled binary — hard | ~3,700 lines plain text |
+| User can audit code | Compiled binary — hard | Plain-text runtime scripts |
 | Antivirus false positives | Common (security tools get flagged) | Rare |
 | Cross-platform | Electron ≈ 200 MB per OS | Same HTML template, OS-specific scanners |
 
 **Locale as a first-class concern.** Generic scanners are built for global users; their false-positive rate on Korean banking PCs is the user-facing problem this project exists to solve. The whitelist is the differentiated layer, not the scanner.
 
-**Privacy-first VirusTotal use.** Hashes only, never file contents. VirusTotal calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.py`; optional Sysinternals downloads live in `scripts/sigcheck-helper.ps1` and `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, and `urlopen` to audit outbound calls.
+**Privacy-first VirusTotal use.** Hashes only, never file contents. VirusTotal calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.jxa.js`; optional Sysinternals downloads live in `scripts/sigcheck-helper.ps1` and `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api` to audit outbound calls.
 
 ## Non-goals
 
@@ -92,8 +92,9 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 3. Follow the menu.
 
 ### Requirements
-- **Windows**: PowerShell 5.1+ (built into Windows 10/11) plus Python 3.11+.
-- **macOS**: Python 3.11+ (`brew install python3` if missing; built-in on macOS 13+). Python 3.7–3.10 are EOL or reaching EOL within months and are no longer supported.
+- **Windows**: PowerShell 5.1+ (built into Windows 10/11).
+- **macOS**: Bash + `osascript` (built into macOS).
+- **Development / tests only**: Python 3.11+ for pytest, release-smoke packaging, and local docs preview.
 
 ## Enabling VirusTotal lookup (optional, recommended)
 
@@ -157,15 +158,16 @@ pc-health-check/
 │   ├── menu.ps1              Windows interactive menu
 │   ├── scanner.ps1           Windows scanner
 │   ├── monitor.ps1           Windows 5-min idle monitor
-│   ├── report.py             Cross-platform HTML generator
-│   ├── rule_engine.py        Rule evaluator (used by report)
+│   ├── report.ps1            Windows HTML generator
+│   ├── rule_engine.ps1       Windows rule evaluator
 │   ├── vt-lookup.ps1         VirusTotal wrapper
 │   ├── sigcheck-helper.ps1   Sysinternals sigcheck wrapper
 │   ├── autorunsc-helper.ps1  Sysinternals autorunsc wrapper
 │   ├── scanner.sh            macOS scanner
-│   ├── scanner_helper.py     macOS data aggregator
+│   ├── scanner_helper.jxa.js macOS data aggregator + rule evaluator
+│   ├── report.jxa.js         macOS HTML generator
 │   └── modules/macos/        macOS scanner sub-modules
-├── tests/                    pytest suite (61 tests)
+├── tests/                    pytest suite (62 tests)
 └── docs/                     GitHub Pages landing (multilingual)
     ├── index.html
     ├── style.css
@@ -188,10 +190,10 @@ python3 -m http.server 8000
 
 ```bash
 python3 -m pytest tests/ -q
-# 61 passed
+# 62 passed
 ```
 
-CI runs rule-JSON validation, Python syntax checks, PowerShell parser checks, and the pytest suite on every push.
+CI runs rule-JSON validation, development-tool Python syntax checks, PowerShell parser checks, and the pytest suite on every push.
 
 ## Release smoke
 
@@ -222,7 +224,7 @@ The smoke checks fail if `scan_result.json`, `raw_facts.json`, `monitor_result.j
 - **No telemetry.** The tool never sends usage analytics or error reports.
 - **No file uploads.** VirusTotal integration uses SHA-256 hashes only.
 - **Local cache only.** VT response cache lives in `%LOCALAPPDATA%/PC건강검진/` (Windows) or `~/Library/Caches/PC건강검진/` (macOS).
-- **Auditable.** VirusTotal calls are in `scripts/vt-lookup.ps1` / `scripts/scanner_helper.py`; optional Sysinternals downloads are in `scripts/sigcheck-helper.ps1` / `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, and `urlopen`.
+- **Auditable.** VirusTotal calls are in `scripts/vt-lookup.ps1` / `scripts/scanner_helper.jxa.js`; optional Sysinternals downloads are in `scripts/sigcheck-helper.ps1` / `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api`.
 
 ## Contributing
 

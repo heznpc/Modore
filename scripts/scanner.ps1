@@ -2,12 +2,12 @@
 # PC 건강검진 - 스캐너 오케스트레이터 (v0.3)
 #
 # 역할: 각 섹션 모듈을 순차 호출해 raw facts를 수집하고,
-#       Python rule_engine에 넘겨 최종 scan_result.json 생성.
+#       PowerShell rule_engine에 넘겨 최종 scan_result.json 생성.
 #
 # 파이프라인:
-#   scanner.ps1 → raw_facts.json → rule_engine.py → scan_result.json
+#   scanner.ps1 → raw_facts.json → rule_engine.ps1 → scan_result.json
 #                                                 ↓
-#                                            report.py → HTML
+#                                            report.ps1 → HTML
 #
 # 섹션 추가 방법:
 #   1) modules/내섹션.ps1 에 Get-<Name>Facts 함수 작성
@@ -163,24 +163,12 @@ if ($NoRuleEngine) {
 
 Write-Host ""
 Write-Host "규칙 엔진 실행 중..." -NoNewline
-$py = $null
-foreach ($cmd in @('py', 'python3', 'python')) {
-    $p = Get-Command $cmd -ErrorAction SilentlyContinue
-    if ($p) { $py = $p.Source; break }
-}
-if (-not $py) {
-    Write-Host " 실패 (Python 없음)" -ForegroundColor Red
-    Write-Host "  Python 3 설치 필요: https://www.python.org/downloads/" -ForegroundColor Yellow
-    Write-Host "  raw facts는 저장됐지만 최종 scan_result.json은 만들지 않았습니다: $RawPath" -ForegroundColor Yellow
-    $global:LASTEXITCODE = 2
-    return
-}
-
-& $py "$PSScriptRoot\rule_engine.py" --raw $RawPath --rules $RulesDir --whitelist $WhitelistPath --output $OutputPath
-if ($LASTEXITCODE -ne 0) {
+& "$PSScriptRoot\rule_engine.ps1" -Raw $RawPath -Rules $RulesDir -Whitelist $WhitelistPath -Output $OutputPath
+$ruleEngineOk = $?
+if (-not $ruleEngineOk) {
     Write-Host " 실패" -ForegroundColor Red
     Write-Host "  raw facts는 저장됐지만 최종 scan_result.json은 만들지 않았습니다: $RawPath" -ForegroundColor Yellow
-    $global:LASTEXITCODE = 3
+    $global:LASTEXITCODE = 2
     return
 }
 

@@ -3,7 +3,7 @@
 # PC 건강검진 - macOS 스캐너 오케스트레이터 (v0.3)
 #
 # 각 모듈(modules/macos/*.sh)을 순차 호출해 raw 데이터를 수집한 뒤,
-# scanner_helper.py가 rule_engine을 적용해 scan_result.json을 생성.
+# scanner_helper.jxa.js가 rule engine을 적용해 scan_result.json을 생성.
 #
 # 사용법:
 #   bash scanner.sh [--output scan_result.json] [--no-vt]
@@ -78,7 +78,7 @@ collect_system_load
 echo "  → 결과 집계 및 rule engine 실행..."
 
 # ------------------------------------------------------------
-# Python 헬퍼에 위임 (raw_facts 생성 + rule_engine 적용)
+# JXA 헬퍼에 위임 (raw_facts 생성 + rule_engine 적용)
 # ------------------------------------------------------------
 export PCH_SCANNED_AT="$SCANNED_AT"
 export PCH_COMPUTER_NAME="$COMPUTER_NAME"
@@ -91,7 +91,7 @@ export PCH_WHITELIST_PATH="$WHITELIST_PATH"
 export PCH_RULES_DIR="$RULES_DIR"
 export PCH_NO_VT="$NO_VT"
 
-python3 "$SCRIPT_DIR/scanner_helper.py"
+osascript -l JavaScript "$SCRIPT_DIR/scanner_helper.jxa.js"
 status=$?
 if [[ $status -ne 0 ]]; then
     echo ""

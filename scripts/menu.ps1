@@ -8,26 +8,10 @@ $root = Split-Path -Parent $PSScriptRoot
 chcp 65001 | Out-Null
 $Host.UI.RawUI.WindowTitle = "PC 건강검진"
 
-function Find-Python {
-    # Windows에서 Python 실행 파일 탐색: py > python3 > python
-    foreach ($cmd in @('py', 'python3', 'python')) {
-        $p = Get-Command $cmd -ErrorAction SilentlyContinue
-        if ($p) { return $p.Source }
-    }
-    return $null
-}
-
-function Invoke-ReportPy {
-    $py = Find-Python
-    if (-not $py) {
-        Write-Host ""
-        Write-Host "  ❌ Python 3가 설치되어 있지 않습니다." -ForegroundColor Red
-        Write-Host "     설치: https://www.python.org/downloads/" -ForegroundColor Yellow
-        Write-Host "     설치 시 'Add Python to PATH' 체크박스를 꼭 켜세요." -ForegroundColor Yellow
-        return $false
-    }
-    & $py "$PSScriptRoot\report.py"
-    if ($LASTEXITCODE -ne 0) {
+function Invoke-Report {
+    & "$PSScriptRoot\report.ps1"
+    $reportOk = $?
+    if (-not $reportOk) {
         Write-Host "  ⚠️  리포트 생성 중 문제가 발생했습니다." -ForegroundColor Yellow
         return $false
     }
@@ -83,7 +67,7 @@ function Run-QuickScan {
 
     Write-Host ""
     Write-Host "  리포트를 생성합니다..." -ForegroundColor Cyan
-    if (-not (Invoke-ReportPy)) {
+    if (-not (Invoke-Report)) {
         Wait-MenuReturn
         return
     }
@@ -122,7 +106,7 @@ function Run-FullScan {
 
     Write-Host ""
     Write-Host "  [3/3] HTML 리포트 생성..." -ForegroundColor Cyan
-    if (-not (Invoke-ReportPy)) {
+    if (-not (Invoke-Report)) {
         Wait-MenuReturn
         return
     }
