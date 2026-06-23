@@ -69,13 +69,25 @@ That's it. No build step.
 
 When you cut a new release, the download links in `docs/index.html` already point to `releases/latest` so they auto-update.
 
-To make a release:
+Build and verify the release artifacts first:
+
 ```bash
-git tag v0.3
-git push origin v0.3
+python3 scripts/release_smoke.py
+cat dist/release-manifest.json
 ```
 
-Then on GitHub: Releases → Draft new release → select tag → attach the zip.
+The smoke build creates:
+- `dist/pch-v0.3.0-win.zip`
+- `dist/pch-v0.3.0-mac.zip`
+- `dist/release-manifest.json` with SHA-256 checksums
+
+To publish a release:
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+Then on GitHub: Releases → Draft new release → select tag → attach both zips and paste the checksums from `dist/release-manifest.json`.
 
 ## SEO tips (optional)
 

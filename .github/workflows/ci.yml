@@ -54,6 +54,9 @@ jobs:
       - name: Python syntax check
         run: python3 -m compileall -q scripts/
 
+      - name: Release artifact smoke
+        run: python3 scripts/release_smoke.py --check-only
+
       - name: Pytest
         run: python3 -m pytest tests/ -q
 

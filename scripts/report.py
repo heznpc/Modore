@@ -181,6 +181,15 @@ td.links a:hover { text-decoration: underline; }
 .vt-summary { background: #eff6ff; padding: 12px 16px; border-radius: 8px; border-left: 4px solid #3b82f6; margin: 12px 0; font-size: 14px; color: #1e40af; }
 .vt-summary.off { background: #f9fafb; color: #6b7280; border-left-color: #9ca3af; }
 
+.action-panel { background: white; padding: 18px 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin: 16px 0 24px; border-left: 5px solid #3b82f6; }
+.action-panel.danger { border-left-color: #ef4444; }
+.action-panel.warning { border-left-color: #f59e0b; }
+.action-panel.safe { border-left-color: #10b981; }
+.action-panel h2 { margin: 0 0 10px; border: 0; padding: 0; font-size: 18px; }
+.action-panel ol { margin: 0; padding-left: 22px; }
+.action-panel li { margin: 6px 0; }
+.share-warning { margin-top: 12px; padding: 10px 12px; background: #fff7ed; color: #9a3412; border-radius: 6px; font-size: 13px; }
+
 .muted { color: #6b7280; font-style: italic; }
 .footer { text-align: center; color: #9ca3af; font-size: 12px; margin-top: 40px; }
 """
@@ -491,6 +500,28 @@ def language_switcher_html(current: str) -> str:
     return '<div class="lang-switcher">' + " · ".join(parts) + "</div>"
 
 
+def render_action_plan(i18n: I18n, overall: str, findings) -> str:
+    h = i18n.t
+    level = overall if overall in ("danger", "warning", "safe") else "warning"
+    if level == "danger":
+        keys = ("actions.danger.1", "actions.danger.2", "actions.danger.3")
+    elif level == "warning":
+        keys = ("actions.warning.1", "actions.warning.2", "actions.warning.3")
+    else:
+        keys = ("actions.safe.1", "actions.safe.2", "actions.safe.3")
+    items = [h(k) for k in keys]
+    if findings:
+        items.append(h("actions.common.review_findings", count=len(findings)))
+    body = "".join(f"<li>{esc(item)}</li>" for item in items)
+    return (
+        f'<div class="action-panel {level}">'
+        f'<h2>{esc(h("sections.actions"))}</h2>'
+        f"<ol>{body}</ol>"
+        f'<div class="share-warning">{esc(h("actions.common.share_warning"))}</div>'
+        "</div>"
+    )
+
+
 # ============================================================
 # 메인 리포트 조립
 # ============================================================
@@ -526,6 +557,8 @@ def build_report(i18n: I18n, scan, monitor) -> str:
                          f'<div class="finding-title">{esc(f.get("title"))}</div>'
                          f'<div class="finding-detail">{esc(f.get("detail"))}</div></div>')
         findings_html = "".join(parts)
+
+    actions_html = render_action_plan(i18n, overall, d_f + w_f)
 
     sections = scan.get("sections") or {}
     load = sections.get("systemLoad") or {}
@@ -609,6 +642,8 @@ def build_report(i18n: I18n, scan, monitor) -> str:
 
 {vt_summary}
 
+{actions_html}
+
 <div class="cards">
   <div class="card danger"><div class="count">{summary.get('dangerCount', 0)}</div><div class="label">{esc(h("cards.danger"))}</div></div>
   <div class="card warning"><div class="count">{summary.get('warningCount', 0)}</div><div class="label">{esc(h("cards.warning"))}</div></div>
@@ -691,6 +726,14 @@ def main():
     if schema not in SUPPORTED_SCHEMA:
         print(f"경고: scan_result.json의 schemaVersion={schema} 은 호환되지 않을 수 있습니다. "
               f"지원: {sorted(SUPPORTED_SCHEMA)}", file=sys.stderr)
+
+    if not isinstance(scan.get("summary"), dict):
+        print(
+            "ERROR: scan_result.json에 summary가 없습니다. raw_facts.json이 아니라 "
+            "rule_engine을 통과한 최종 결과를 입력해야 합니다.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     try:
         monitor = load_json(Path(args.monitor))

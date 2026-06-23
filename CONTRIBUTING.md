@@ -13,7 +13,7 @@ python3 -m pip install -r requirements-dev.txt
 python3 -m pytest tests/ -q
 ```
 
-If 55 tests pass, you're set.
+If 61 tests pass, you're set.
 
 ---
 
@@ -60,7 +60,7 @@ This is the highest-value contribution: adding a legitimate local app that curre
 
 ### Pre-PR checklist
 
-- [ ] `python3 -m pytest tests/ -q` passes (all 55 tests).
+- [ ] `python3 -m pytest tests/ -q` passes (all 61 tests).
 - [ ] If you touched a PowerShell script, run a parse check:
       `pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('scripts/<file>.ps1', [ref]\$null, [ref]\$null)"`.
 - [ ] If you touched `rules/*.json`, validate JSON:

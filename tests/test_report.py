@@ -64,3 +64,38 @@ def test_findings_are_well_formed(sample_windows_scan):
         assert f["level"] in ("danger", "warning", "info", "safe")
         assert "title" in f
         assert "detail" in f
+
+
+def test_platform_scan_contracts(fixtures_dir):
+    """Windows/macOS 최종 scan_result가 report.py가 기대하는 공통 계약을 지킨다."""
+    for name in ("sample_scan_windows.json", "sample_scan_macos.json"):
+        scan = __import__("json").loads((fixtures_dir / name).read_text(encoding="utf-8-sig"))
+        assert scan["schemaVersion"] == "1.0"
+        assert isinstance(scan["summary"], dict)
+        assert scan["summary"]["overall"] in ("safe", "warning", "danger")
+        assert isinstance(scan["sections"], dict)
+        for section in ("cpu", "network", "recentInstalls", "systemLoad", "virustotal"):
+            assert section in scan["sections"], f"{name}: missing {section}"
+
+
+def test_report_includes_next_actions(fixtures_dir, project_root, tmp_path):
+    scan_path = fixtures_dir / "sample_scan_macos.json"
+    output_path = tmp_path / "mac-report.html"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(project_root / "scripts" / "report.py"),
+            "--scan", str(scan_path),
+            "--explain", str(project_root / "data" / "explain.json"),
+            "--output", str(output_path),
+            "--lang", "ko",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    html = output_path.read_text(encoding="utf-8")
+    assert "다음 행동" in html
+    assert "개인 정보" in html

@@ -43,9 +43,25 @@ while true; do
             echo "  [빠른 검사] 시작합니다..."
             echo ""
             bash "./scripts/scanner.sh"
+            scan_status=$?
+            if [[ $scan_status -ne 0 ]]; then
+                echo ""
+                echo "  ❌ 검사 결과를 완성하지 못했습니다. 위 오류를 먼저 해결하세요."
+                read -p "  아무 키나 누르면 메뉴로 돌아갑니다..." _
+                clear
+                continue
+            fi
             echo ""
             echo "  리포트 생성 중..."
             python3 "./scripts/report.py"
+            report_status=$?
+            if [[ $report_status -ne 0 ]]; then
+                echo ""
+                echo "  ❌ 리포트 생성에 실패했습니다."
+                read -p "  아무 키나 누르면 메뉴로 돌아갑니다..." _
+                clear
+                continue
+            fi
 
             if [[ -f "./검사결과.html" ]]; then
                 echo ""

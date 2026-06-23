@@ -42,7 +42,7 @@
     <div>
       <div class="hero-tag">
         <span class="pulse"></span>
-        <span data-i18n="hero.tag">v0.2 · Windows &amp; macOS</span>
+        <span data-i18n="hero.tag">v0.3 · Windows &amp; macOS</span>
       </div>
       <h1 data-i18n="hero.title">내 PC를 <em>설명해주는</em> 보안 진단 도구.</h1>
       <p class="hero-subtitle" data-i18n="hero.subtitle">
@@ -59,7 +59,7 @@
         <span class="dot">·</span>
         <span><span data-i18n="hero.meta.no_install">설치 없음</span></span>
         <span class="dot">·</span>
-        <span data-i18n="hero.meta.loc">~1,500 LoC</span>
+        <span data-i18n="hero.meta.loc">~3,700 LoC</span>
       </div>
     </div>
 
@@ -226,7 +226,7 @@
     <div class="section-kicker" data-i18n="privacy.kicker">PRIVACY · AUDITABLE</div>
     <h2 data-i18n="privacy.heading">"개인정보 안전합니다"라는 <em>말 대신, 코드로 증명</em>.</h2>
     <p class="lead" data-i18n="privacy.lead">
-      모든 네트워크 호출은 소스 코드에 있습니다. VirusTotal 조회는 <strong>SHA-256 해시만</strong> 전송하고, 파일 본문은 컴퓨터를 떠나지 않습니다. 아래가 실제 호출부입니다.
+      모든 네트워크 호출은 소스 코드에 있습니다. VirusTotal 조회는 <strong>SHA-256 해시만</strong> 전송하고, 파일 본문은 컴퓨터를 떠나지 않습니다. 선택적 Sysinternals 다운로드도 별도 helper에 격리되어 있습니다.
     </p>
 
     <div class="privacy-block">
@@ -237,7 +237,7 @@
         </div>
         <div class="privacy-point">
           <h4 data-i18n="privacy.points.telemetry.title">텔레메트리 0건</h4>
-          <p data-i18n="privacy.points.telemetry.desc">사용 통계·에러 리포트 어떤 것도 수집하지 않습니다. 네트워크 호출은 VirusTotal 하나뿐이며 옵트인입니다.</p>
+          <p data-i18n="privacy.points.telemetry.desc">사용 통계·에러 리포트 어떤 것도 수집하지 않습니다. 외부 호출은 옵트인 VirusTotal 조회와 선택적 Sysinternals 다운로드뿐입니다.</p>
         </div>
         <div class="privacy-point">
           <h4 data-i18n="privacy.points.local.title">로컬 캐시만</h4>
@@ -245,7 +245,7 @@
         </div>
         <div class="privacy-point">
           <h4 data-i18n="privacy.points.audit.title">읽을 수 있는 소스</h4>
-          <p data-i18n="privacy.points.audit.desc">컴파일된 바이너리 0개. PowerShell · Python · Bash 약 1,500줄. <code>grep Invoke-RestMethod scripts/</code>로 모든 네트워크 호출 확인 가능.</p>
+          <p data-i18n="privacy.points.audit.desc">컴파일된 바이너리 0개. PowerShell · Python · Bash 약 3,700줄. <code>grep -R "Invoke-RestMethod\|Invoke-WebRequest\|urlopen" scripts/</code>로 모든 외부 호출 확인 가능.</p>
         </div>
       </div>
 
@@ -294,18 +294,18 @@
         <span class="os-mark">WIN</span>
         <h3 data-i18n="download.windows.title">Windows</h3>
         <p data-i18n="download.windows.desc">Windows 10 / 11 · PowerShell 5.1 기본 포함. <code>검사하기.bat</code> 더블클릭.</p>
-        <span class="dl-link" data-i18n="download.windows.btn">pch-v0.2-win.zip →</span>
+        <span class="dl-link" data-i18n="download.windows.btn">pch-v0.3.0-win.zip →</span>
       </a>
       <a href="https://github.com/heznpc/pc-health-check/releases/latest" target="_blank" rel="noopener" class="dl-card">
         <span class="os-mark">MAC</span>
         <h3 data-i18n="download.macos.title">macOS</h3>
         <p data-i18n="download.macos.desc">macOS 10.15+ · Python 3 (12+ 기본). <code>검사하기.command</code> 우클릭 → 열기.</p>
-        <span class="dl-link" data-i18n="download.macos.btn">pch-v0.2-mac.zip →</span>
+        <span class="dl-link" data-i18n="download.macos.btn">pch-v0.3.0-mac.zip →</span>
       </a>
     </div>
 
     <p class="github-side" data-i18n="download.github_side">
-      클론이나 포크: <a href="https://github.com/heznpc/pc-health-check" target="_blank" rel="noopener">github.com/heznpc/pc-health-check</a>. 1,500줄 읽고 직접 확인.
+      클론이나 포크: <a href="https://github.com/heznpc/pc-health-check" target="_blank" rel="noopener">github.com/heznpc/pc-health-check</a>. 약 3,700줄 읽고 직접 확인.
     </p>
   </div>
 </section>
@@ -330,7 +330,7 @@
       &nbsp;·&nbsp;
       <span data-i18n="footer.license">MIT License</span>
       &nbsp;·&nbsp;
-      <span data-i18n="footer.version">v0.2</span>
+      <span data-i18n="footer.version">v0.3.0</span>
     </div>
     <div class="credits" data-i18n="footer.credits">
       Microsoft Sysinternals · Objective-See · Malware Zero 커뮤니티에 감사.

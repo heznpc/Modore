@@ -92,6 +92,13 @@ export PCH_RULES_DIR="$RULES_DIR"
 export PCH_NO_VT="$NO_VT"
 
 python3 "$SCRIPT_DIR/scanner_helper.py"
+status=$?
+if [[ $status -ne 0 ]]; then
+    echo ""
+    echo "ERROR: 결과 집계 또는 rule engine 실행 실패 (status=$status)" >&2
+    echo "raw facts 경로: $RAW_PATH" >&2
+    exit $status
+fi
 
 echo ""
 echo "검사 완료: $OUTPUT"

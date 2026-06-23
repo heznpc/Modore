@@ -68,10 +68,11 @@ Windows와 macOS 모두 지원합니다.
 
 [ Sysinternals 도구 (Windows, 선택) ]
 
+  기본값은 첫 실행 시 다운로드 여부를 확인합니다.
   data/config.json 에서:
     "sysinternals": { "autoDownload": true }
-  로 바꾸면 첫 실행 시 Microsoft 공식 도구(sigcheck, autorunsc)를
-  자동 다운로드하여 훨씬 상세한 자동실행 분석을 제공합니다.
+  로 바꾸면 Microsoft 공식 도구(sigcheck, autorunsc)를
+  Microsoft 서명 검증 후 자동 다운로드하여 훨씬 상세한 자동실행 분석을 제공합니다.
 
   저장 위치: %LOCALAPPDATA%\PC건강검진\tools\
 
@@ -107,7 +108,6 @@ Windows와 macOS 모두 지원합니다.
      ├─ scanner.sh        ← macOS 스캐너
      ├─ scanner_helper.py ← macOS 데이터 집계
      ├─ monitor.ps1       ← 5분 CPU 관찰 (Windows)
-     ├─ report.ps1        ← HTML 생성 (Windows)
      ├─ report.py         ← HTML 생성 (크로스플랫폼)
      ├─ vt-lookup.ps1     ← VirusTotal 조회
      ├─ sigcheck-helper.ps1  ← Sysinternals sigcheck
@@ -140,6 +140,6 @@ A. 이 도구는 '진단 리포터'이지 백신이 아닙니다.
 
 
 [ 버전 ]
-  v0.2 - Windows + macOS + VirusTotal API + Sysinternals 통합
+  v0.3 - Windows + macOS + VirusTotal API + Sysinternals 통합
 
 ======================================================

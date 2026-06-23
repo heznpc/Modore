@@ -13,7 +13,7 @@
     "download": "Download"
   },
   "hero": {
-    "tag": "v0.2 · Windows & macOS",
+    "tag": "v0.3 · Windows & macOS",
     "title": "A security scanner that <em>explains</em> your PC.",
     "subtitle": "Generic antivirus tools flag legitimate Korean banking plugins as malware. PC Health Check recognizes IPinside, nProtect, MagicLine, V3, and surfaces only the real threats.",
     "cta_primary": "Download zip <span class='arrow'>→</span>",
@@ -22,7 +22,7 @@
       "free": "Free",
       "oss": "MIT open source",
       "no_install": "No install",
-      "loc": "~1,500 LoC"
+      "loc": "~3,700 LoC"
     }
   },
   "preview": {
@@ -89,7 +89,7 @@
       },
       "telemetry": {
         "title": "Zero telemetry",
-        "desc": "No usage stats, no error reports, nothing sent to us. The only outbound call is to VirusTotal, and it's opt-in."
+        "desc": "No usage stats, no error reports, nothing sent to us. Outbound calls are limited to opt-in VirusTotal lookups and optional Sysinternals downloads."
       },
       "local": {
         "title": "Local cache only",
@@ -97,7 +97,7 @@
       },
       "audit": {
         "title": "Source you can read",
-        "desc": "Zero compiled binaries. ~1,500 lines of PowerShell · Python · Bash. <code>grep Invoke-RestMethod scripts/</code> finds every network call."
+        "desc": "Zero compiled binaries. ~3,700 lines of PowerShell · Python · Bash. <code>grep -R 'Invoke-RestMethod\\|Invoke-WebRequest\\|urlopen' scripts/</code> finds every outbound call."
       }
     }
   },
@@ -108,14 +108,14 @@
     "windows": {
       "title": "Windows",
       "desc": "Windows 10 / 11 · PowerShell 5.1 preinstalled. Double-click <code>검사하기.bat</code>.",
-      "btn": "pch-v0.2-win.zip →"
+      "btn": "pch-v0.3.0-win.zip →"
     },
     "macos": {
       "title": "macOS",
       "desc": "macOS 10.15+ · Python 3 (pre-installed on 12+). Right-click <code>검사하기.command</code> → Open.",
-      "btn": "pch-v0.2-mac.zip →"
+      "btn": "pch-v0.3.0-mac.zip →"
     },
-    "github_side": "Clone or fork: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>. Read all 1,500 lines yourself."
+    "github_side": "Clone or fork: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>. Read the ~3,700 lines yourself."
   },
   "final": {
     "heading": "Suspicious right now? <em>6 minutes to answers.</em>",
@@ -124,7 +124,7 @@
   },
   "footer": {
     "license": "MIT License",
-    "version": "v0.2",
+    "version": "v0.3.0",
     "credits": "Thanks to Microsoft Sysinternals · Objective-See · the Malware Zero community."
   }
 }
