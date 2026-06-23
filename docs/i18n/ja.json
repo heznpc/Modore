@@ -22,7 +22,7 @@
       "free": "無料",
       "oss": "MITオープンソース",
       "no_install": "インストール不要",
-      "loc": "~3,700行"
+      "loc": "読めるソース"
     }
   },
   "preview": {
@@ -73,7 +73,7 @@
   "how": {
     "kicker": "HOW IT WORKS",
     "heading": "8種の診断 → 1つのHTMLレポート。",
-    "lead": "フレームワーク不要。バイナリ不要。OS別スクリプトがシステムを収集し、クロスプラットフォームのPythonジェネレータがブラウザで開けるHTMLレポートに組み立てます。",
+    "lead": "フレームワーク不要。バイナリ不要。OS別スクリプトがシステムを収集し、OS標準ランタイムでブラウザで開けるHTMLレポートに組み立てます。",
     "p1": { "title": "収集", "desc": "プロセス・ネットワーク・ポート・自動実行・セキュリティ状態。Sysinternals + launchd + VirusTotalハッシュ照会。" },
     "p2": { "title": "正規化", "desc": "韓国SWホワイトリストと照合してシグナル判定。OS非依存の共通スキーマ。" },
     "p3": { "title": "レンダリング", "desc": "ブラウザで開く単一HTML。実行ファイルなし、署名なし、追跡なし。" }
@@ -97,7 +97,7 @@
       },
       "audit": {
         "title": "読めるソース",
-        "desc": "コンパイル済みバイナリ0個。PowerShell · Python · Bashで約3,700行。<code>grep -R 'Invoke-RestMethod\\|Invoke-WebRequest\\|urlopen' scripts/</code>ですべての外部呼び出しを確認できます。"
+        "desc": "コンパイル済みバイナリ0個。読みやすいPowerShell · Bash · JXAソース。<code>grep -R 'Invoke-RestMethod\\|Invoke-WebRequest\\|curl\\|virustotal.com/api' scripts/</code>で外部呼び出しを確認できます。"
       }
     }
   },
@@ -112,10 +112,10 @@
     },
     "macos": {
       "title": "macOS",
-      "desc": "macOS 10.15+ · Python 3(12+は標準搭載)。<code>검사하기.command</code> を右クリック → 開く。",
+      "desc": "macOS 10.15+ · Bashとosascript標準搭載。<code>검사하기.command</code> を右クリック → 開く。",
       "btn": "pch-v0.3.0-mac.zip →"
     },
-    "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>。約3,700行を自分で確認できます。"
+    "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>。読めるソースを自分で確認できます。"
   },
   "final": {
     "heading": "疑わしい今、<em>6分で答えが出ます。</em>",

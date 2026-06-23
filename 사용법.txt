@@ -27,10 +27,7 @@ Windows와 macOS 모두 지원합니다.
   1. 터미널을 열거나, "검사하기.command" 더블클릭
      - 처음에는 "열기 권한이 없다"고 뜰 수 있어요.
      - 해결: 파일 우클릭 → "열기" 선택 (한 번만 하면 됨)
-  2. Python 3가 필요합니다. 없으면 안내 메시지가 뜸
-     - brew install python3  또는
-     - https://www.python.org/downloads/
-  3. 메뉴에서 숫자 입력
+  2. 메뉴에서 숫자 입력
 
 
 [ 리포트 보는 법 ]
@@ -106,9 +103,10 @@ Windows와 macOS 모두 지원합니다.
      ├─ menu.ps1          ← Windows 메뉴
      ├─ scanner.ps1       ← Windows 스캐너
      ├─ scanner.sh        ← macOS 스캐너
-     ├─ scanner_helper.py ← macOS 데이터 집계
+     ├─ scanner_helper.jxa.js ← macOS 데이터 집계
      ├─ monitor.ps1       ← 5분 CPU 관찰 (Windows)
-     ├─ report.py         ← HTML 생성 (크로스플랫폼)
+     ├─ report.ps1        ← Windows HTML 생성
+     ├─ report.jxa.js     ← macOS HTML 생성
      ├─ vt-lookup.ps1     ← VirusTotal 조회
      ├─ sigcheck-helper.ps1  ← Sysinternals sigcheck
      └─ autorunsc-helper.ps1 ← Sysinternals autorunsc

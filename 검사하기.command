@@ -18,11 +18,10 @@ echo "  ║                                              ║"
 echo "  ╚══════════════════════════════════════════════╝"
 echo ""
 
-# Python 3 확인
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "  ⚠️  Python 3가 필요합니다."
-    echo "      설치: https://www.python.org/downloads/"
-    echo "      또는: brew install python"
+# macOS 기본 osascript 확인
+if ! command -v osascript >/dev/null 2>&1; then
+    echo "  ⚠️  macOS 기본 osascript를 찾을 수 없습니다."
+    echo "      시스템 환경을 확인한 뒤 다시 실행해 주세요."
     echo ""
     read -p "  엔터를 누르면 종료합니다..." _
     exit 1
@@ -53,7 +52,7 @@ while true; do
             fi
             echo ""
             echo "  리포트 생성 중..."
-            python3 "./scripts/report.py"
+            PCH_PROJECT_DIR="$PWD" osascript -l JavaScript "./scripts/report.jxa.js"
             report_status=$?
             if [[ $report_status -ne 0 ]]; then
                 echo ""

@@ -41,15 +41,14 @@ COMMON_FILES = [
     "rules/installs.json",
     "rules/network.json",
     "rules/process.json",
-    "scripts/_jsonutil.py",
-    "scripts/report.py",
-    "scripts/rule_engine.py",
 ]
 
 WINDOWS_FILES = COMMON_FILES + [
     "검사하기.bat",
     "scripts/menu.ps1",
     "scripts/scanner.ps1",
+    "scripts/report.ps1",
+    "scripts/rule_engine.ps1",
     "scripts/monitor.ps1",
     "scripts/vt-lookup.ps1",
     "scripts/_sysinternals-verify.ps1",
@@ -65,7 +64,8 @@ WINDOWS_FILES = COMMON_FILES + [
 MACOS_FILES = COMMON_FILES + [
     "검사하기.command",
     "scripts/scanner.sh",
-    "scripts/scanner_helper.py",
+    "scripts/report.jxa.js",
+    "scripts/scanner_helper.jxa.js",
     "scripts/modules/macos/cpu.sh",
     "scripts/modules/macos/network.sh",
     "scripts/modules/macos/autoruns.sh",

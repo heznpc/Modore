@@ -22,7 +22,7 @@
       "free": "Free",
       "oss": "MIT open source",
       "no_install": "No install",
-      "loc": "~3,700 LoC"
+      "loc": "Readable source"
     }
   },
   "preview": {
@@ -73,7 +73,7 @@
   "how": {
     "kicker": "HOW IT WORKS",
     "heading": "8 diagnostics → 1 HTML report.",
-    "lead": "No framework. No binary. OS-specific scripts collect system state, then a cross-platform Python generator assembles a single HTML report you open in your browser.",
+    "lead": "No framework. No binary. OS-specific scripts collect system state, then OS-native runtimes assemble a single HTML report you open in your browser.",
     "p1": { "title": "Collect", "desc": "Processes, network, ports, autoruns, security posture. Sysinternals + launchd + VirusTotal hash lookup." },
     "p2": { "title": "Normalize", "desc": "Match against Korean software whitelist, assign traffic-light verdict. OS-agnostic schema." },
     "p3": { "title": "Render", "desc": "A single HTML file opened by the browser. No executable, no signing, no tracking." }
@@ -97,7 +97,7 @@
       },
       "audit": {
         "title": "Source you can read",
-        "desc": "Zero compiled binaries. ~3,700 lines of PowerShell · Python · Bash. <code>grep -R 'Invoke-RestMethod\\|Invoke-WebRequest\\|urlopen' scripts/</code> finds every outbound call."
+        "desc": "Zero compiled binaries. Readable PowerShell · Bash · JXA source. <code>grep -R 'Invoke-RestMethod\\|Invoke-WebRequest\\|curl\\|virustotal.com/api' scripts/</code> finds outbound calls."
       }
     }
   },
@@ -112,10 +112,10 @@
     },
     "macos": {
       "title": "macOS",
-      "desc": "macOS 10.15+ · Python 3 (pre-installed on 12+). Right-click <code>검사하기.command</code> → Open.",
+      "desc": "macOS 10.15+ · Bash and osascript included. Right-click <code>검사하기.command</code> → Open.",
       "btn": "pch-v0.3.0-mac.zip →"
     },
-    "github_side": "Clone or fork: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>. Read the ~3,700 lines yourself."
+    "github_side": "Clone or fork: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>. Inspect the readable source yourself."
   },
   "final": {
     "heading": "Suspicious right now? <em>6 minutes to answers.</em>",

@@ -1,6 +1,7 @@
 """Service-loop contracts that unit tests alone used to miss."""
 
 import importlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -68,6 +69,30 @@ def test_release_smoke_check_only(project_root):
     assert payload["ok"] is True
     assert payload["windows_entries"] > 0
     assert payload["macos_entries"] > 0
+
+
+def test_release_artifacts_exclude_runtime_python(project_root):
+    spec = importlib.util.spec_from_file_location(
+        "release_smoke",
+        project_root / "scripts" / "release_smoke.py",
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    runtime_files = set(module.WINDOWS_FILES + module.MACOS_FILES)
+    forbidden = {
+        "scripts/_jsonutil.py",
+        "scripts/report.py",
+        "scripts/rule_engine.py",
+        "scripts/scanner_helper.py",
+    }
+
+    assert runtime_files.isdisjoint(forbidden)
+    assert "scripts/report.ps1" in module.WINDOWS_FILES
+    assert "scripts/rule_engine.ps1" in module.WINDOWS_FILES
+    assert "scripts/report.jxa.js" in module.MACOS_FILES
+    assert "scripts/scanner_helper.jxa.js" in module.MACOS_FILES
 
 
 def test_macos_launcher_is_executable(project_root):
