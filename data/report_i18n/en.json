@@ -17,6 +17,7 @@
   "sections": {
     "findings": "🔍 Key findings",
     "findings_none": "No items require your attention. 🎉",
+    "actions": "Next actions",
     "monitor": "⏱️ 5-minute idle monitor (find the real CPU culprit)",
     "monitor_none": "5-minute monitor not yet run. The idle test catches the 'real culprit'.",
     "cpu": "🖥️ Top CPU processes (instant snapshot)",
@@ -97,6 +98,27 @@
     "virustotal":      { "title": "Check suspicious files", "desc_key": "explain_tips_virustotal" },
     "full_scan":       { "title": "Run a full scan", "desc_key": "explain_tips_full_scan" },
     "hardware_noise":  { "title": "Hardware noise", "desc_key": "explain_tips_hardware_noise" }
+  },
+  "actions": {
+    "danger": {
+      "1": "Do not delete suspicious items immediately; first verify the program name and path.",
+      "2": "Run a full scan with Windows Defender or your primary antivirus.",
+      "3": "If banking, work, or government sessions are open, close sensitive browser sessions before investigating."
+    },
+    "warning": {
+      "1": "Compare each check item against recent installs, publisher names, and expected local software.",
+      "2": "Use the Google and VirusTotal report links to understand unknown items before acting.",
+      "3": "If you have not run the 5-minute idle monitor yet, run the full scan."
+    },
+    "safe": {
+      "1": "This report does not show items that need immediate action.",
+      "2": "Keep antivirus definitions and OS security updates current.",
+      "3": "If the PC still feels slow or noisy, run the full scan to inspect idle CPU usage."
+    },
+    "common": {
+      "review_findings": "Review {count} attention item(s) below, including path and explanation.",
+      "share_warning": "Before sharing this report for help, redact personal details in PC name, user name, and file paths."
+    }
   },
   "footer": "PC Health Check v0.3 · Generated {now}",
   "hidden_rows_note": "{count} verified-signed safe items hidden.",

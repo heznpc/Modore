@@ -157,6 +157,7 @@ $rawJson = $raw | ConvertTo-Json -Depth 10
 if ($NoRuleEngine) {
     Write-Host ""
     Write-Host "raw facts 저장됨 (규칙 엔진 건너뜀): $RawPath" -ForegroundColor Cyan
+    $global:LASTEXITCODE = 0
     return
 }
 
@@ -170,14 +171,16 @@ foreach ($cmd in @('py', 'python3', 'python')) {
 if (-not $py) {
     Write-Host " 실패 (Python 없음)" -ForegroundColor Red
     Write-Host "  Python 3 설치 필요: https://www.python.org/downloads/" -ForegroundColor Yellow
-    [System.IO.File]::WriteAllText($OutputPath, $rawJson, (New-Object System.Text.UTF8Encoding($true)))
+    Write-Host "  raw facts는 저장됐지만 최종 scan_result.json은 만들지 않았습니다: $RawPath" -ForegroundColor Yellow
+    $global:LASTEXITCODE = 2
     return
 }
 
 & $py "$PSScriptRoot\rule_engine.py" --raw $RawPath --rules $RulesDir --whitelist $WhitelistPath --output $OutputPath
 if ($LASTEXITCODE -ne 0) {
     Write-Host " 실패" -ForegroundColor Red
-    [System.IO.File]::WriteAllText($OutputPath, $rawJson, (New-Object System.Text.UTF8Encoding($true)))
+    Write-Host "  raw facts는 저장됐지만 최종 scan_result.json은 만들지 않았습니다: $RawPath" -ForegroundColor Yellow
+    $global:LASTEXITCODE = 3
     return
 }
 
@@ -187,3 +190,4 @@ Write-Host ""
 Write-Host "검사 완료! 결과: $OutputPath" -ForegroundColor Cyan
 Write-Host "  - 위험: $($scan.summary.dangerCount) 건" -ForegroundColor $(if ($scan.summary.dangerCount -gt 0) {'Red'} else {'Gray'})
 Write-Host "  - 확인: $($scan.summary.warningCount) 건" -ForegroundColor $(if ($scan.summary.warningCount -gt 0) {'Yellow'} else {'Gray'})
+$global:LASTEXITCODE = 0

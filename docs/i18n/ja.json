@@ -13,7 +13,7 @@
     "download": "ダウンロード"
   },
   "hero": {
-    "tag": "v0.2 · Windows & macOS",
+    "tag": "v0.3 · Windows & macOS",
     "title": "PCを<em>説明してくれる</em>セキュリティ診断。",
     "subtitle": "一般的なアンチウイルスは、韓国の銀行プラグインをマルウェアと誤判定します。PCヘルスチェックは IPinside、nProtect、MagicLine、V3 を認識し、本当の脅威だけを浮き彫りにします。",
     "cta_primary": "zipをダウンロード <span class='arrow'>→</span>",
@@ -22,7 +22,7 @@
       "free": "無料",
       "oss": "MITオープンソース",
       "no_install": "インストール不要",
-      "loc": "~1,500行"
+      "loc": "~3,700行"
     }
   },
   "preview": {
@@ -89,7 +89,7 @@
       },
       "telemetry": {
         "title": "テレメトリー0件",
-        "desc": "使用統計・エラーレポートなど、いかなるデータも収集しません。ネットワーク呼び出しはVirusTotalのみ、それもオプトインです。"
+        "desc": "使用統計・エラーレポートなど、いかなるデータも収集しません。外部呼び出しはオプトインのVirusTotal照会と任意のSysinternalsダウンロードのみです。"
       },
       "local": {
         "title": "ローカルキャッシュのみ",
@@ -97,7 +97,7 @@
       },
       "audit": {
         "title": "読めるソース",
-        "desc": "コンパイル済みバイナリ0個。PowerShell · Python · Bashで約1,500行。<code>grep Invoke-RestMethod scripts/</code>ですべてのネットワーク呼び出しを確認できます。"
+        "desc": "コンパイル済みバイナリ0個。PowerShell · Python · Bashで約3,700行。<code>grep -R 'Invoke-RestMethod\\|Invoke-WebRequest\\|urlopen' scripts/</code>ですべての外部呼び出しを確認できます。"
       }
     }
   },
@@ -108,14 +108,14 @@
     "windows": {
       "title": "Windows",
       "desc": "Windows 10 / 11 · PowerShell 5.1 標準搭載。<code>검사하기.bat</code> をダブルクリック。",
-      "btn": "pch-v0.2-win.zip →"
+      "btn": "pch-v0.3.0-win.zip →"
     },
     "macos": {
       "title": "macOS",
       "desc": "macOS 10.15+ · Python 3(12+は標準搭載)。<code>검사하기.command</code> を右クリック → 開く。",
-      "btn": "pch-v0.2-mac.zip →"
+      "btn": "pch-v0.3.0-mac.zip →"
     },
-    "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>。1,500行を自分で確認できます。"
+    "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>。約3,700行を自分で確認できます。"
   },
   "final": {
     "heading": "疑わしい今、<em>6分で答えが出ます。</em>",
@@ -124,7 +124,7 @@
   },
   "footer": {
     "license": "MIT License",
-    "version": "v0.2",
+    "version": "v0.3.0",
     "credits": "Microsoft Sysinternals · Objective-See · Malware Zeroコミュニティに感謝。"
   }
 }

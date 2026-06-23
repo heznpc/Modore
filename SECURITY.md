@@ -7,7 +7,7 @@ Only the latest `main` and the most recent release tag receive security fixes. O
 | Version | Supported |
 |---|---|
 | `main` (latest commit) | ✅ |
-| `v0.3.x` | ✅ |
+| most recent release tag | ✅ |
 | `v0.2.x` and earlier | ❌ |
 
 ## Reporting a vulnerability
@@ -50,9 +50,9 @@ Out of scope:
 
 ## Trust model
 
-- This project ships as readable source (~3,000 lines PowerShell / Python / Bash). No compiled binaries are bundled.
+- This project ships as readable source (~3,700 lines PowerShell / Python / Bash). No compiled binaries are bundled.
 - The only external binaries the tool executes are Sysinternals `sigcheck.exe` and `autorunsc.exe`, both downloaded from `https://live.sysinternals.com/` and **verified via `Get-AuthenticodeSignature`** against a Microsoft signer subject. Verification runs **on every invocation**, not only at first download — the cache directory under `%LOCALAPPDATA%` is user-writable, so a cached `.exe` is re-validated each run to defend against post-cache tampering by other user-mode malware (the scenario this tool exists to detect). If the signature check fails, the binary is deleted and the tool falls back to a fresh download (which is itself re-verified).
-- All outbound network calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.py`. Grep `Invoke-RestMethod` and `urlopen` to audit.
+- VirusTotal outbound calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.py`. Optional Sysinternals downloads live in `scripts/sigcheck-helper.ps1` and `scripts/autorunsc-helper.ps1`. Grep `Invoke-RestMethod`, `Invoke-WebRequest`, and `urlopen` to audit.
 
 ## Hall of thanks
 

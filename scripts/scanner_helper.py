@@ -270,352 +270,359 @@ def is_local_ip(ip):
     return False
 
 
-# ============================================================
-# raw_facts 구조 (판정 없음)
-# ============================================================
-raw = OrderedDict([
-    ("schemaVersion", "1.0"),
-    ("scannedAt", SCANNED_AT),
-    ("computerName", COMPUTER_NAME),
-    ("userName", USER_NAME),
-    ("osVersion", OS_VERSION),
-    ("platform", "macos"),
-    ("scannerVersion", "0.3"),
-    ("findings", []),
-    ("sections", OrderedDict()),
-])
+def main() -> int:
+    # ============================================================
+    # raw_facts 구조 (판정 없음)
+    # ============================================================
+    raw = OrderedDict([
+        ("schemaVersion", "1.0"),
+        ("scannedAt", SCANNED_AT),
+        ("computerName", COMPUTER_NAME),
+        ("userName", USER_NAME),
+        ("osVersion", OS_VERSION),
+        ("platform", "macos"),
+        ("scannerVersion", "0.3"),
+        ("findings", []),
+        ("sections", OrderedDict()),
+    ])
 
-vt = VtLookup(config, Path.home() / "Library" / "Caches" / "PC건강검진")
-if vt.enabled:
-    print("  VirusTotal 조회 활성화")
+    vt = VtLookup(config, Path.home() / "Library" / "Caches" / "PC건강검진")
+    if vt.enabled:
+        print("  VirusTotal 조회 활성화")
 
 
-# ============================================================
-# 1. CPU 상위 프로세스
-# ============================================================
-def _codesign_info(path: str) -> Optional[dict]:
-    """codesign -dv 결과를 dict로. 실패 시 None."""
+    # ============================================================
+    # 1. CPU 상위 프로세스
+    # ============================================================
+    def _codesign_info(path: str) -> Optional[dict]:
+        """codesign -dv 결과를 dict로. 실패 시 None."""
+        try:
+            cs = subprocess.run(
+                ["codesign", "-dv", path],
+                capture_output=True, text=True, timeout=5
+            )
+        except Exception as e:
+            _debug_log(f"_codesign_info({path})", e)
+            return None
+        verified = ("Signature=adhoc" not in cs.stderr) and ("not signed" not in cs.stderr) and (cs.returncode == 0)
+        publisher = ""
+        m = re.search(r"Authority=([^\n]+)", cs.stderr)
+        if m:
+            publisher = m.group(1).strip()
+        return {"verified": verified, "publisher": publisher, "rawStatus": "Signed" if verified else "NotSigned"}
+
+
+    # pid → full path 맵을 한 번에 구축 (N+1 제거)
+    _pid_path_map: Dict[str, str] = {}
     try:
-        cs = subprocess.run(
-            ["codesign", "-dv", path],
-            capture_output=True, text=True, timeout=5
-        )
+        pp = subprocess.run(["ps", "-Ao", "pid=,comm="], capture_output=True, text=True, timeout=5)
+        for row in pp.stdout.splitlines():
+            parts = row.strip().split(None, 1)
+            if len(parts) == 2:
+                _pid_path_map[parts[0]] = parts[1]
     except Exception as e:
-        _debug_log(f"_codesign_info({path})", e)
-        return None
-    verified = ("Signature=adhoc" not in cs.stderr) and ("not signed" not in cs.stderr) and (cs.returncode == 0)
-    publisher = ""
-    m = re.search(r"Authority=([^\n]+)", cs.stderr)
-    if m:
-        publisher = m.group(1).strip()
-    return {"verified": verified, "publisher": publisher, "rawStatus": "Signed" if verified else "NotSigned"}
+        _debug_log("ps_pid_path_map", e)
 
-
-# pid → full path 맵을 한 번에 구축 (N+1 제거)
-_pid_path_map: Dict[str, str] = {}
-try:
-    pp = subprocess.run(["ps", "-Ao", "pid=,comm="], capture_output=True, text=True, timeout=5)
-    for row in pp.stdout.splitlines():
-        parts = row.strip().split(None, 1)
-        if len(parts) == 2:
-            _pid_path_map[parts[0]] = parts[1]
-except Exception as e:
-    _debug_log("ps_pid_path_map", e)
-
-cpu_list = []
-for line in _read_tmp("ps.txt").strip().split("\n"):
-    parts = line.split(None, 5)
-    if len(parts) < 6:
-        continue
-    pid_, user, pcpu, pmem, rss, comm = parts
-    try:
-        pcpu = float(pcpu)
-        rss_mb = round(int(rss) / 1024, 1)
-    except ValueError:
-        continue
-    full_path = _pid_path_map.get(pid_, comm)
-    name = Path(full_path).name or comm
-    exists = bool(full_path) and Path(full_path).exists()
-
-    vt_result = None
-    if vt.enabled and exists and not _should_skip_vt(full_path):
-        vt_result = vt.file(full_path)
-
-    sig = _codesign_info(full_path) if exists else None
-
-    cpu_list.append(OrderedDict([
-        ("name", name),
-        ("pid_", int(pid_)),
-        ("cpu", pcpu),
-        ("memoryMB", rss_mb),
-        ("path", full_path),
-        ("sig", sig),
-        ("vt", vt_result),
-    ]))
-
-cpu_list.sort(key=lambda x: x["cpu"], reverse=True)
-raw["sections"]["cpu"] = cpu_list[:15]
-
-
-# ============================================================
-# 2. GPU (macOS 제한적)
-# ============================================================
-raw["sections"]["gpu"] = []
-
-
-# ============================================================
-# 3. 외부 네트워크 연결
-# ============================================================
-net_list = []
-net_txt = _read_tmp("net.txt")
-unique_ips = set()
-connections_raw = []
-for line in net_txt.split("\n"):
-    if "->" not in line or "ESTABLISHED" not in line:
-        continue
-    parts = line.split()
-    if len(parts) < 9:
-        continue
-    command = parts[0]
-    pid_ = parts[1]
-    m = re.search(r"->([\d.]+|\[?[0-9a-fA-F:]+\]?):(\d+)", line)
-    if not m:
-        continue
-    remote_ip = m.group(1).strip("[]")
-    remote_port = int(m.group(2))
-    if is_local_ip(remote_ip):
-        continue
-    connections_raw.append({"command": command, "pid": pid_, "ip": remote_ip, "port": remote_port})
-    unique_ips.add(remote_ip)
-
-ip_vt_cache = {ip: vt.ip(ip) for ip in unique_ips} if vt.enabled else {}
-
-seen = set()
-for c in connections_raw:
-    key = (c["command"], c["ip"], c["port"])
-    if key in seen:
-        continue
-    seen.add(key)
-    net_list.append(OrderedDict([
-        ("process", c["command"]),
-        ("pid_", int(c["pid"])),
-        ("remoteAddress", c["ip"]),
-        ("remotePort", c["port"]),
-        ("path", ""),
-        ("vtIp", ip_vt_cache.get(c["ip"])),
-    ]))
-raw["sections"]["network"] = net_list
-
-
-# ============================================================
-# 4. LISTEN 포트
-# ============================================================
-port_list = []
-listen_txt = _read_tmp("listen.txt")
-seen_ports = set()
-for line in listen_txt.split("\n"):
-    if "LISTEN" not in line:
-        continue
-    parts = line.split()
-    if len(parts) < 9:
-        continue
-    command = parts[0]
-    pid_ = parts[1]
-    m = re.search(r":(\d+)\s*\(LISTEN\)", line)
-    if not m:
-        continue
-    port = int(m.group(1))
-    if port in seen_ports:
-        continue
-    seen_ports.add(port)
-    port_list.append(OrderedDict([
-        ("port", port),
-        ("name", command),
-        ("process", command),
-        ("pid_", int(pid_)),
-        ("path", ""),
-    ]))
-raw["sections"]["listeningPorts"] = sorted(port_list, key=lambda p: p["port"])
-
-
-# ============================================================
-# 5. 자동 실행 (launchd + LaunchAgents/Daemons plist)
-# ============================================================
-startup_list = []
-autoruns_list = []
-
-for plist_path in _read_tmp("plists.txt").strip().split("\n"):
-    if not plist_path:
-        continue
-    p = Path(plist_path)
-    if not p.exists():
-        continue
-    pl = _read_plist(p)
-    label = str(pl.get("Label") or "").strip()
-    prog = ""
-    prog_args = pl.get("ProgramArguments")
-    if isinstance(prog_args, list) and prog_args:
-        prog = str(prog_args[0]).strip()
-    if not prog:
-        prog = str(pl.get("Program") or "").strip()
-    if not prog:
-        continue
-
-    name = label or p.stem
-
-    # 서명 검증 (실행파일 존재할 때만)
-    prog_exists = Path(prog).exists()
-    sig_info = _codesign_info(prog) if prog_exists else None
-    verified = bool(sig_info and sig_info.get("verified"))
-    signer = (sig_info or {}).get("publisher", "")
-
-    # VT (서명 없을 때만, OS 소유 경로 스킵)
-    vt_result = None
-    if vt.enabled and prog_exists and not verified and not _should_skip_vt(prog):
-        vt_result = vt.file(prog)
-
-    # 기본 startup (레거시 섹션)
-    startup_list.append(OrderedDict([
-        ("location", str(p.parent)),
-        ("name", name),
-        ("command", prog),
-        ("launchString", prog),
-    ]))
-
-    # 풍부 autorun 섹션
-    category = ("User LaunchAgent" if str(p).startswith(str(Path.home()))
-                else ("System LaunchDaemon" if "Daemons" in str(p) else "LaunchAgent"))
-    autoruns_list.append(OrderedDict([
-        ("category", category),
-        ("entry", name),
-        ("image", prog),
-        ("signer", signer),
-        ("verified", verified),
-        ("launchString", prog),
-        ("sha256", (vt_result or {}).get("hash", "")),
-        ("vt", vt_result),
-    ]))
-
-# 로그인 항목
-loginitems_txt = _read_tmp("loginitems.txt").strip()
-if loginitems_txt:
-    for item in loginitems_txt.split(", "):
-        if not item.strip():
+    cpu_list = []
+    for line in _read_tmp("ps.txt").strip().split("\n"):
+        parts = line.split(None, 5)
+        if len(parts) < 6:
             continue
-        autoruns_list.append(OrderedDict([
-            ("category", "Login Item"),
-            ("entry", item.strip()),
-            ("image", ""),
-            ("signer", ""),
-            ("verified", False),
-            ("launchString", ""),
-            ("sha256", ""),
-            ("vt", None),
+        pid_, user, pcpu, pmem, rss, comm = parts
+        try:
+            pcpu = float(pcpu)
+            rss_mb = round(int(rss) / 1024, 1)
+        except ValueError:
+            continue
+        full_path = _pid_path_map.get(pid_, comm)
+        name = Path(full_path).name or comm
+        exists = bool(full_path) and Path(full_path).exists()
+
+        vt_result = None
+        if vt.enabled and exists and not _should_skip_vt(full_path):
+            vt_result = vt.file(full_path)
+
+        sig = _codesign_info(full_path) if exists else None
+
+        cpu_list.append(OrderedDict([
+            ("name", name),
+            ("pid_", int(pid_)),
+            ("cpu", pcpu),
+            ("memoryMB", rss_mb),
+            ("path", full_path),
+            ("sig", sig),
+            ("vt", vt_result),
         ]))
 
-raw["sections"]["startup"] = startup_list
-raw["sections"]["autoruns"] = autoruns_list
+    cpu_list.sort(key=lambda x: x["cpu"], reverse=True)
+    raw["sections"]["cpu"] = cpu_list[:15]
 
 
-# ============================================================
-# 6. 예약 작업 (macOS는 launchd 통합)
-# ============================================================
-raw["sections"]["scheduledTasks"] = []
+    # ============================================================
+    # 2. GPU (macOS 제한적)
+    # ============================================================
+    raw["sections"]["gpu"] = []
 
 
-# ============================================================
-# 7. 보안 상태 (Gatekeeper, SIP, XProtect)
-# ============================================================
-security_txt = _read_tmp("security.txt")
-security = {}
-for line in security_txt.split("\n"):
-    if "=" not in line:
-        continue
-    k, v = line.split("=", 1)
-    security[k.strip()] = v.strip()
-
-raw["sections"]["macosSecurity"] = OrderedDict([
-    ("gatekeeper", security.get("GATEKEEPER", "").lower()),
-    ("sip", security.get("SIP", "").lower()),
-    ("xprotectVersion", security.get("XPROTECT_VERSION", "")),
-])
-# defender 섹션도 통일성 위해 (Windows와 같은 키 이름)
-raw["sections"]["defender"] = {}
-
-
-# ============================================================
-# 8. 최근 설치 앱 - /Applications 기반
-# ============================================================
-recent = []
-thirty_days_ago = time.time() - 30 * 86400
-apps_dir = Path("/Applications")
-if apps_dir.exists():
-    for app in apps_dir.iterdir():
-        if app.suffix != ".app":
+    # ============================================================
+    # 3. 외부 네트워크 연결
+    # ============================================================
+    net_list = []
+    net_txt = _read_tmp("net.txt")
+    unique_ips = set()
+    connections_raw = []
+    for line in net_txt.split("\n"):
+        if "->" not in line or "ESTABLISHED" not in line:
             continue
-        try:
-            ctime = app.stat().st_ctime
-            if ctime < thirty_days_ago:
+        parts = line.split()
+        if len(parts) < 9:
+            continue
+        command = parts[0]
+        pid_ = parts[1]
+        m = re.search(r"->([\d.]+|\[?[0-9a-fA-F:]+\]?):(\d+)", line)
+        if not m:
+            continue
+        remote_ip = m.group(1).strip("[]")
+        remote_port = int(m.group(2))
+        if is_local_ip(remote_ip):
+            continue
+        connections_raw.append({"command": command, "pid": pid_, "ip": remote_ip, "port": remote_port})
+        unique_ips.add(remote_ip)
+
+    ip_vt_cache = {ip: vt.ip(ip) for ip in unique_ips} if vt.enabled else {}
+
+    seen = set()
+    for c in connections_raw:
+        key = (c["command"], c["ip"], c["port"])
+        if key in seen:
+            continue
+        seen.add(key)
+        net_list.append(OrderedDict([
+            ("process", c["command"]),
+            ("pid_", int(c["pid"])),
+            ("remoteAddress", c["ip"]),
+            ("remotePort", c["port"]),
+            ("path", ""),
+            ("vtIp", ip_vt_cache.get(c["ip"])),
+        ]))
+    raw["sections"]["network"] = net_list
+
+
+    # ============================================================
+    # 4. LISTEN 포트
+    # ============================================================
+    port_list = []
+    listen_txt = _read_tmp("listen.txt")
+    seen_ports = set()
+    for line in listen_txt.split("\n"):
+        if "LISTEN" not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 9:
+            continue
+        command = parts[0]
+        pid_ = parts[1]
+        m = re.search(r":(\d+)\s*\(LISTEN\)", line)
+        if not m:
+            continue
+        port = int(m.group(1))
+        if port in seen_ports:
+            continue
+        seen_ports.add(port)
+        port_list.append(OrderedDict([
+            ("port", port),
+            ("name", command),
+            ("process", command),
+            ("pid_", int(pid_)),
+            ("path", ""),
+        ]))
+    raw["sections"]["listeningPorts"] = sorted(port_list, key=lambda p: p["port"])
+
+
+    # ============================================================
+    # 5. 자동 실행 (launchd + LaunchAgents/Daemons plist)
+    # ============================================================
+    startup_list = []
+    autoruns_list = []
+
+    for plist_path in _read_tmp("plists.txt").strip().split("\n"):
+        if not plist_path:
+            continue
+        p = Path(plist_path)
+        if not p.exists():
+            continue
+        pl = _read_plist(p)
+        label = str(pl.get("Label") or "").strip()
+        prog = ""
+        prog_args = pl.get("ProgramArguments")
+        if isinstance(prog_args, list) and prog_args:
+            prog = str(prog_args[0]).strip()
+        if not prog:
+            prog = str(pl.get("Program") or "").strip()
+        if not prog:
+            continue
+
+        name = label or p.stem
+
+        # 서명 검증 (실행파일 존재할 때만)
+        prog_exists = Path(prog).exists()
+        sig_info = _codesign_info(prog) if prog_exists else None
+        verified = bool(sig_info and sig_info.get("verified"))
+        signer = (sig_info or {}).get("publisher", "")
+
+        # VT (서명 없을 때만, OS 소유 경로 스킵)
+        vt_result = None
+        if vt.enabled and prog_exists and not verified and not _should_skip_vt(prog):
+            vt_result = vt.file(prog)
+
+        # 기본 startup (레거시 섹션)
+        startup_list.append(OrderedDict([
+            ("location", str(p.parent)),
+            ("name", name),
+            ("command", prog),
+            ("launchString", prog),
+        ]))
+
+        # 풍부 autorun 섹션
+        category = ("User LaunchAgent" if str(p).startswith(str(Path.home()))
+                    else ("System LaunchDaemon" if "Daemons" in str(p) else "LaunchAgent"))
+        autoruns_list.append(OrderedDict([
+            ("category", category),
+            ("entry", name),
+            ("image", prog),
+            ("signer", signer),
+            ("verified", verified),
+            ("launchString", prog),
+            ("sha256", (vt_result or {}).get("hash", "")),
+            ("vt", vt_result),
+        ]))
+
+    # 로그인 항목
+    loginitems_txt = _read_tmp("loginitems.txt").strip()
+    if loginitems_txt:
+        for item in loginitems_txt.split(", "):
+            if not item.strip():
                 continue
-            install_date = datetime.fromtimestamp(ctime).strftime("%Y-%m-%d")
-            info_plist = app / "Contents" / "Info.plist"
-            publisher = ""
-            if info_plist.exists():
-                publisher = str(_read_plist(info_plist).get("CFBundleIdentifier") or "")
-            recent.append(OrderedDict([
-                ("installDate", install_date),
-                ("name", app.stem),
-                ("publisher", publisher),
+            autoruns_list.append(OrderedDict([
+                ("category", "Login Item"),
+                ("entry", item.strip()),
+                ("image", ""),
+                ("signer", ""),
+                ("verified", False),
+                ("launchString", ""),
+                ("sha256", ""),
+                ("vt", None),
             ]))
-        except Exception as e:
-            _debug_log(f"recentInstalls({app})", e)
+
+    raw["sections"]["startup"] = startup_list
+    raw["sections"]["autoruns"] = autoruns_list
+
+
+    # ============================================================
+    # 6. 예약 작업 (macOS는 launchd 통합)
+    # ============================================================
+    raw["sections"]["scheduledTasks"] = []
+
+
+    # ============================================================
+    # 7. 보안 상태 (Gatekeeper, SIP, XProtect)
+    # ============================================================
+    security_txt = _read_tmp("security.txt")
+    security = {}
+    for line in security_txt.split("\n"):
+        if "=" not in line:
             continue
-recent.sort(key=lambda x: x["installDate"], reverse=True)
-raw["sections"]["recentInstalls"] = recent
-
-
-# ============================================================
-# 시스템 부하
-# ============================================================
-load_txt = _read_tmp("load.txt")
-load = {}
-for line in load_txt.split("\n"):
-    if "=" in line:
         k, v = line.split("=", 1)
-        load[k.strip()] = v.strip()
+        security[k.strip()] = v.strip()
 
-raw["sections"]["systemLoad"] = OrderedDict([
-    ("cpuPercent", float(load.get("CPU_PCT") or 0)),
-    ("memoryPercent", float(load.get("MEM_PCT") or 0)),
-    ("totalMemoryGB", float(load.get("MEM_TOTAL_GB") or 0)),
-])
-
-raw["sections"]["virustotal"] = OrderedDict([
-    ("enabled", vt.enabled),
-    ("callsThisScan", vt.calls),
-    ("cacheHours", vt.cache_hours if vt.enabled else 0),
-])
-raw["sections"]["sysinternals"] = OrderedDict([
-    ("sigcheckEnabled", False),
-    ("autorunscEnabled", False),
-    ("note", "macOS는 codesign + launchctl 사용"),
-])
+    raw["sections"]["macosSecurity"] = OrderedDict([
+        ("gatekeeper", security.get("GATEKEEPER", "").lower()),
+        ("sip", security.get("SIP", "").lower()),
+        ("xprotectVersion", security.get("XPROTECT_VERSION", "")),
+    ])
+    # defender 섹션도 통일성 위해 (Windows와 같은 키 이름)
+    raw["sections"]["defender"] = {}
 
 
-# ============================================================
-# raw_facts 저장 + 규칙 엔진 적용
-# ============================================================
-vt.save()
+    # ============================================================
+    # 8. 최근 설치 앱 - /Applications 기반
+    # ============================================================
+    recent = []
+    thirty_days_ago = time.time() - 30 * 86400
+    apps_dir = Path("/Applications")
+    if apps_dir.exists():
+        for app in apps_dir.iterdir():
+            if app.suffix != ".app":
+                continue
+            try:
+                ctime = app.stat().st_ctime
+                if ctime < thirty_days_ago:
+                    continue
+                install_date = datetime.fromtimestamp(ctime).strftime("%Y-%m-%d")
+                info_plist = app / "Contents" / "Info.plist"
+                publisher = ""
+                if info_plist.exists():
+                    publisher = str(_read_plist(info_plist).get("CFBundleIdentifier") or "")
+                recent.append(OrderedDict([
+                    ("installDate", install_date),
+                    ("name", app.stem),
+                    ("publisher", publisher),
+                ]))
+            except Exception as e:
+                _debug_log(f"recentInstalls({app})", e)
+                continue
+    recent.sort(key=lambda x: x["installDate"], reverse=True)
+    raw["sections"]["recentInstalls"] = recent
 
-dump_json(RAW_PATH, raw)
 
-# 규칙 엔진 실행
-engine = RuleEngine.from_dir(RULES_DIR, WHITELIST_PATH if WHITELIST_PATH.exists() else None)
-result = apply_rules_to_raw(engine, raw)
+    # ============================================================
+    # 시스템 부하
+    # ============================================================
+    load_txt = _read_tmp("load.txt")
+    load = {}
+    for line in load_txt.split("\n"):
+        if "=" in line:
+            k, v = line.split("=", 1)
+            load[k.strip()] = v.strip()
 
-dump_json(OUTPUT, result)
+    raw["sections"]["systemLoad"] = OrderedDict([
+        ("cpuPercent", float(load.get("CPU_PCT") or 0)),
+        ("memoryPercent", float(load.get("MEM_PCT") or 0)),
+        ("totalMemoryGB", float(load.get("MEM_TOTAL_GB") or 0)),
+    ])
 
-print(f"  - 위험: {result['summary']['dangerCount']} 건")
-print(f"  - 확인: {result['summary']['warningCount']} 건")
-if vt.enabled:
-    print(f"  - VT 조회: {vt.calls} 건")
+    raw["sections"]["virustotal"] = OrderedDict([
+        ("enabled", vt.enabled),
+        ("callsThisScan", vt.calls),
+        ("cacheHours", vt.cache_hours if vt.enabled else 0),
+    ])
+    raw["sections"]["sysinternals"] = OrderedDict([
+        ("sigcheckEnabled", False),
+        ("autorunscEnabled", False),
+        ("note", "macOS는 codesign + launchctl 사용"),
+    ])
+
+
+    # ============================================================
+    # raw_facts 저장 + 규칙 엔진 적용
+    # ============================================================
+    vt.save()
+
+    dump_json(RAW_PATH, raw)
+
+    # 규칙 엔진 실행
+    engine = RuleEngine.from_dir(RULES_DIR, WHITELIST_PATH if WHITELIST_PATH.exists() else None)
+    result = apply_rules_to_raw(engine, raw)
+
+    dump_json(OUTPUT, result)
+
+    print(f"  - 위험: {result['summary']['dangerCount']} 건")
+    print(f"  - 확인: {result['summary']['warningCount']} 건")
+    if vt.enabled:
+        print(f"  - VT 조회: {vt.calls} 건")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

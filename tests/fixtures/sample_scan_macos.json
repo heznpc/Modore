@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "1.0",
+  "scannedAt": "2026-06-23 12:00:00",
+  "computerName": "sample-mac",
+  "userName": "sample",
+  "osVersion": "macOS 15.0 (Darwin 24.0.0)",
+  "platform": "macos",
+  "scannerVersion": "0.3",
+  "findings": [
+    {
+      "level": "warning",
+      "title": "확인 필요 항목",
+      "detail": "샘플 경고"
+    }
+  ],
+  "summary": {
+    "overall": "warning",
+    "dangerCount": 0,
+    "warningCount": 1,
+    "message": "확인이 필요한 항목이 있습니다."
+  },
+  "sections": {
+    "cpu": [
+      {
+        "name": "Example.app",
+        "pid_": 123,
+        "cpu": 5.2,
+        "memoryMB": 128.0,
+        "path": "/Applications/Example.app/Contents/MacOS/Example",
+        "risk": "warning",
+        "note": "샘플"
+      }
+    ],
+    "network": [
+      {
+        "process": "Example",
+        "pid_": 123,
+        "remoteAddress": "203.0.113.10",
+        "remotePort": 443,
+        "path": "",
+        "risk": "unknown",
+        "note": ""
+      }
+    ],
+    "listeningPorts": [],
+    "startup": [],
+    "autoruns": [],
+    "scheduledTasks": [],
+    "recentInstalls": [
+      {
+        "installDate": "2026-06-20",
+        "name": "Example",
+        "publisher": "com.example.app"
+      }
+    ],
+    "macosSecurity": {
+      "gatekeeper": "enabled",
+      "sip": "enabled",
+      "xprotectVersion": "1"
+    },
+    "defender": {},
+    "systemLoad": {
+      "cpuPercent": 12.0,
+      "memoryPercent": 55.0,
+      "totalMemoryGB": 16.0
+    },
+    "virustotal": {
+      "enabled": false,
+      "callsThisScan": 0,
+      "cacheHours": 0
+    },
+    "sysinternals": {
+      "sigcheckEnabled": false,
+      "autorunscEnabled": false,
+      "note": "macOS는 codesign + launchctl 사용"
+    }
+  }
+}

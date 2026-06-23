@@ -28,18 +28,18 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 
 ## Currently implemented
 
-- **Cross-platform scanner**: Windows (PowerShell 5.1+) and macOS (Bash + Python 3.7+).
+- **Cross-platform scanner**: Windows (PowerShell 5.1+ plus Python 3.11+) and macOS (Bash + Python 3.11+).
 - **Eight diagnostic categories**: CPU top processes · GPU usage · active network connections · listening ports · startup entries · scheduled tasks · Windows Defender / macOS Gatekeeper status · recently installed apps.
-- **Locale-aware whitelist**: 113 entries across 7 categories (system, browser, korean_common, banking_security, dev_tools, hardware, cloud) plus a miner blacklist. Covers IPinside, nProtect, INISAFE, MagicLine, Veraport, XecureWeb, Ahnlab V3, Alyac, and the rest of the Korean banking/government plugin set.
+- **Locale-aware whitelist**: 71 known-good entries across 7 categories (system, browser, korean_common, banking_security, dev_tools, hardware, cloud), plus 19 miner blacklist entries, 5 RAT blacklist entries, and 13 miner-pool ports. Covers IPinside, nProtect, INISAFE, MagicLine, Veraport, XecureWeb, Ahnlab V3, Alyac, and the rest of the Korean banking/government plugin set.
 - **Traffic-light output** (🟢 safe / 🟡 check / 🔴 danger) so non-technical users can act on the report.
 - **5-minute idle monitor (Windows)**: records who actually burns CPU while the user is idle — the most reliable cryptominer tell.
 - **VirusTotal lookup (opt-in)**: SHA-256 hash query only. 48h local cache, 16s rate-limit, respects the public API quota (4 req/min, 500/day).
-- **Sysinternals integration (Windows)**: first-run downloads `sigcheck` and `autorunsc` from Microsoft for signature verification and ~20 persistence-mechanism coverage.
+- **Sysinternals integration (Windows)**: optional first-run download of `sigcheck` and `autorunsc` from Microsoft for signature verification and ~20 persistence-mechanism coverage.
 - **macOS equivalents**: `codesign -dv`, `launchctl`, `sfltool dumpbtm`, `spctl --status`, `kmutil showloaded`.
 - **Single-file HTML report**: opens in the user's browser, works offline, includes Google/VirusTotal "investigate" links and collapsible novice-friendly explanations.
 - **i18n**: Korean, English, Japanese — both the landing page (`docs/i18n/`) and the report (`data/report_i18n/`).
-- **Rule engine + tests**: declarative JSON rules in `rules/` (autoruns, defender, installs, network, process) evaluated by `scripts/rule_engine.py`. 55 pytest tests cover report rendering, rule evaluation, and whitelist lookups.
-- **Read-the-source distribution**: ~3,000 lines of PowerShell/Python/Bash, no compiled binaries, no bundled DLLs, no telemetry.
+- **Rule engine + tests**: declarative JSON rules in `rules/` (autoruns, defender, installs, network, process) evaluated by `scripts/rule_engine.py`. 61 pytest tests cover report rendering, rule evaluation, whitelist lookups, service contracts, and release smoke.
+- **Read-the-source distribution**: ~3,700 lines of PowerShell/Python/Bash, no compiled binaries, no bundled DLLs, no telemetry.
 
 ## Planned
 
@@ -54,13 +54,13 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 |---|---|---|
 | Distribution trust | Unsigned EXE triggers SmartScreen/Gatekeeper | Readable source; HTML opens in the user's existing trusted browser |
 | Code-signing cost | $400+/yr (Windows) or $99/yr (Apple) | $0 |
-| User can audit code | Compiled binary — hard | ~3,000 lines plain text |
+| User can audit code | Compiled binary — hard | ~3,700 lines plain text |
 | Antivirus false positives | Common (security tools get flagged) | Rare |
 | Cross-platform | Electron ≈ 200 MB per OS | Same HTML template, OS-specific scanners |
 
 **Locale as a first-class concern.** Generic scanners are built for global users; their false-positive rate on Korean banking PCs is the user-facing problem this project exists to solve. The whitelist is the differentiated layer, not the scanner.
 
-**Privacy-first VirusTotal use.** Hashes only, never file contents. Every network call is in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.py` — grep for `Invoke-RestMethod` and `urlopen` to audit.
+**Privacy-first VirusTotal use.** Hashes only, never file contents. VirusTotal calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.py`; optional Sysinternals downloads live in `scripts/sigcheck-helper.ps1` and `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, and `urlopen` to audit outbound calls.
 
 ## Non-goals
 
@@ -82,17 +82,17 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 ## Installation
 
 ### Windows
-1. Download the latest [release zip](https://github.com/heznpc/pc-health-check/releases).
+1. Download the latest release zip from [GitHub Releases](https://github.com/heznpc/pc-health-check/releases/latest).
 2. Extract anywhere (USB, Desktop, Downloads — no installer needed).
 3. Double-click `검사하기.bat`.
 
 ### macOS
-1. Download and extract the same zip.
+1. Download the macOS release zip from [GitHub Releases](https://github.com/heznpc/pc-health-check/releases/latest).
 2. Right-click `검사하기.command` → **Open** (required once for unsigned scripts).
 3. Follow the menu.
 
 ### Requirements
-- **Windows**: PowerShell 5.1+ (built into Windows 10/11).
+- **Windows**: PowerShell 5.1+ (built into Windows 10/11) plus Python 3.11+.
 - **macOS**: Python 3.11+ (`brew install python3` if missing; built-in on macOS 13+). Python 3.7–3.10 are EOL or reaching EOL within months and are no longer supported.
 
 ## Enabling VirusTotal lookup (optional, recommended)
@@ -165,7 +165,7 @@ pc-health-check/
 │   ├── scanner.sh            macOS scanner
 │   ├── scanner_helper.py     macOS data aggregator
 │   └── modules/macos/        macOS scanner sub-modules
-├── tests/                    pytest suite (55 tests)
+├── tests/                    pytest suite (61 tests)
 └── docs/                     GitHub Pages landing (multilingual)
     ├── index.html
     ├── style.css
@@ -188,10 +188,21 @@ python3 -m http.server 8000
 
 ```bash
 python3 -m pytest tests/ -q
-# 55 passed
+# 61 passed
 ```
 
 CI runs rule-JSON validation, Python syntax checks, PowerShell parser checks, and the pytest suite on every push.
+
+## Release smoke
+
+Release zips are built from explicit allowlists so scan artifacts and caches cannot be included by accident:
+
+```bash
+python3 scripts/release_smoke.py
+# writes dist/pch-v0.3.0-win.zip, dist/pch-v0.3.0-mac.zip, dist/release-manifest.json
+```
+
+The smoke checks fail if `scan_result.json`, `raw_facts.json`, `monitor_result.json`, `검사결과.html`, `vt-cache.json`, `__pycache__`, or a non-executable macOS launcher appears in the release artifact.
 
 ## Comparison with similar tools
 
@@ -208,10 +219,10 @@ CI runs rule-JSON validation, Python syntax checks, PowerShell parser checks, an
 
 ## Privacy
 
-- **No telemetry.** The tool never phones home.
+- **No telemetry.** The tool never sends usage analytics or error reports.
 - **No file uploads.** VirusTotal integration uses SHA-256 hashes only.
 - **Local cache only.** VT response cache lives in `%LOCALAPPDATA%/PC건강검진/` (Windows) or `~/Library/Caches/PC건강검진/` (macOS).
-- **Auditable.** Every outbound network call is in `scripts/vt-lookup.ps1` / `scripts/scanner_helper.py` — grep for `Invoke-RestMethod` and `urlopen`.
+- **Auditable.** VirusTotal calls are in `scripts/vt-lookup.ps1` / `scripts/scanner_helper.py`; optional Sysinternals downloads are in `scripts/sigcheck-helper.ps1` / `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, and `urlopen`.
 
 ## Contributing
 
@@ -225,7 +236,7 @@ Whitelist contributions are especially welcome. See [`CONTRIBUTING.md`](./CONTRI
 
 Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new) or `wantcongz@gmail.com` — see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
 
-This project verifies all Sysinternals binaries via `Get-AuthenticodeSignature` against a Microsoft signer subject **on every invocation** — not only at first download — before executing them. The cached `.exe` under `%LOCALAPPDATA%` is re-validated each run because that directory is user-writable and the threat model this tool exists in (other user-mode malware may be present) requires treating the cache as untrusted between runs.
+This project verifies all Sysinternals binaries via `Get-AuthenticodeSignature` against a Microsoft signer subject **on every invocation** — not only at first download — before executing them. The cached `.exe` under `%LOCALAPPDATA%` is re-validated each run because that directory is user-writable and the threat model this tool exists in (other user-mode malware may be present) requires treating the cache as untrusted between runs. By default, Sysinternals download prompts for user confirmation; setting `sysinternals.autoDownload` to `true` enables quiet download with the same signature gate.
 
 ## License
 

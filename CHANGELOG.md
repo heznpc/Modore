@@ -7,6 +7,9 @@ All notable changes to this project are documented here. Format loosely follows 
 ### Fixed (adversarial second-pass audit — 2026-05-21)
 - **Sysinternals Authenticode verification now runs on cached binaries.** Previous implementation only verified at first download; cached `.exe` under `%LOCALAPPDATA%` was trusted without re-verification on subsequent runs. Tools the project exists to detect (other user-mode malware) could have replaced the cached binary between runs.
 - **CodeQL workflow removed.** Repository is private + free tier, which does not include GitHub Advanced Security. CodeQL runs failed every invocation with `Code scanning is not enabled for this repository`. The workflow was also wired into branch protection as a required check, silently blocking every PR from auto-merging. Workflow removed; required checks updated to `validate` + `powershell` only. PowerShell analysis remains covered by the existing parser check in `ci.yml`.
+- **Result contract hardened.** Scanner failures no longer write raw facts into `scan_result.json`, and `report.py` rejects raw facts that do not contain the classified `summary`.
+- **Release smoke gate added.** OS-specific release zips are built from explicit allowlists and reject local scan artifacts, caches, and non-executable macOS launchers.
+- **Report next actions added.** HTML reports now show immediate next steps and a reminder to redact local identifiers before sharing.
 
 ### Security
 - **Sysinternals Authenticode verification on every invocation.** `sigcheck.exe` and `autorunsc.exe` are verified via `Get-AuthenticodeSignature` against `O=Microsoft Corporation` not only at first download but **on every run**. The cache directory under `%LOCALAPPDATA%` is user-writable, so a cached `.exe` could be replaced post-cache by other user-mode malware (the scenario this tool exists to detect). Verification failure deletes the binary and falls back to fresh download.
@@ -19,7 +22,7 @@ All notable changes to this project are documented here. Format loosely follows 
 - `CONTRIBUTING.md` — whitelist contribution guide, pre-PR checklist, i18n contribution rules.
 - `.github/CODEOWNERS` — trust-asset routing.
 - `.github/dependabot.yml` — weekly grouped updates for GitHub Actions + pip.
-- `requirements-dev.txt` — pinned dev/CI dependencies (`pytest==8.3.4`).
+- `requirements-dev.txt` — pinned dev/CI dependencies (`pytest==9.0.3`).
 - `.python-version` — pyenv/asdf consistency hint.
 
 ### Changed
@@ -31,14 +34,14 @@ All notable changes to this project are documented here. Format loosely follows 
 
 ### Added
 - Cross-platform HTML report (`scripts/report.py`) — replaces the older PowerShell-only `report.ps1`.
-- 55-test pytest suite covering rule engine, whitelist integrity, report rendering.
+- 61-test pytest suite covering rule engine, whitelist integrity, report rendering, service contracts, and release smoke.
 - Declarative rule JSON in `rules/` (autoruns, defender, installs, network, process) evaluated by `scripts/rule_engine.py`.
 - i18n: Korean / English / Japanese for both landing page and report.
 - macOS scanner modules (`scripts/modules/macos/`).
 - Sysinternals `sigcheck` + `autorunsc` integration (`scripts/sigcheck-helper.ps1`, `scripts/autorunsc-helper.ps1`).
 - 5-minute idle CPU monitor (`scripts/monitor.ps1`).
 - VirusTotal SHA-256-only lookup with 48h cache, 16s rate-limit (`scripts/vt-lookup.ps1`, `scripts/scanner_helper.py`).
-- 113 locale-aware whitelist entries across 7 categories + miner blacklist.
+- 71 locale-aware known-good whitelist entries across 7 categories, plus miner/RAT blacklist and miner-pool ports.
 
 ## [0.2.x] — 2026 (pre-history)
 

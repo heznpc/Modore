@@ -24,12 +24,20 @@ function Invoke-ReportPy {
         Write-Host "  ❌ Python 3가 설치되어 있지 않습니다." -ForegroundColor Red
         Write-Host "     설치: https://www.python.org/downloads/" -ForegroundColor Yellow
         Write-Host "     설치 시 'Add Python to PATH' 체크박스를 꼭 켜세요." -ForegroundColor Yellow
-        return
+        return $false
     }
     & $py "$PSScriptRoot\report.py"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ⚠️  리포트 생성 중 문제가 발생했습니다." -ForegroundColor Yellow
+        return $false
     }
+    return $true
+}
+
+function Wait-MenuReturn {
+    Write-Host ""
+    Write-Host "  아무 키나 누르면 메뉴로 돌아갑니다..." -ForegroundColor Gray
+    [void][System.Console]::ReadKey($true)
 }
 
 function Show-Banner {
@@ -66,10 +74,19 @@ function Run-QuickScan {
     Write-Host ""
 
     & "$PSScriptRoot\scanner.ps1"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "  ❌ 검사 결과를 완성하지 못했습니다. 위 오류를 먼저 해결하세요." -ForegroundColor Red
+        Wait-MenuReturn
+        return
+    }
 
     Write-Host ""
     Write-Host "  리포트를 생성합니다..." -ForegroundColor Cyan
-    Invoke-ReportPy
+    if (-not (Invoke-ReportPy)) {
+        Wait-MenuReturn
+        return
+    }
 
     Open-Report
 }
@@ -92,6 +109,12 @@ function Run-FullScan {
     Write-Host ""
     Write-Host "  [1/3] 기본 검사 실행..." -ForegroundColor Cyan
     & "$PSScriptRoot\scanner.ps1"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "  ❌ 기본 검사 결과를 완성하지 못했습니다. 정밀 검사를 중단합니다." -ForegroundColor Red
+        Wait-MenuReturn
+        return
+    }
 
     Write-Host ""
     Write-Host "  [2/3] 5분 유휴 관찰 시작 (Ctrl+C로 취소 가능)..." -ForegroundColor Cyan
@@ -99,7 +122,10 @@ function Run-FullScan {
 
     Write-Host ""
     Write-Host "  [3/3] HTML 리포트 생성..." -ForegroundColor Cyan
-    Invoke-ReportPy
+    if (-not (Invoke-ReportPy)) {
+        Wait-MenuReturn
+        return
+    }
 
     Open-Report
 }
@@ -115,9 +141,7 @@ function Open-Report {
     } else {
         Write-Host "  ❌ 리포트 파일을 찾을 수 없습니다." -ForegroundColor Red
     }
-    Write-Host ""
-    Write-Host "  아무 키나 누르면 메뉴로 돌아갑니다..." -ForegroundColor Gray
-    [void][System.Console]::ReadKey($true)
+    Wait-MenuReturn
 }
 
 # ---------- 메인 루프 ----------
