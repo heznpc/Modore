@@ -18,7 +18,7 @@ struct ProgressOverlay: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            .liquidGlassCard(cornerRadius: 10)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
@@ -37,7 +37,7 @@ struct ProgressOverlay: View {
                 }
             }
             .frame(maxHeight: 200)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            .liquidGlassCard(cornerRadius: 10)
         }
         .padding(20)
         .frame(width: 520)

@@ -35,15 +35,16 @@ struct ConfirmView: View {
                 }
             }
             .frame(maxHeight: 240)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            .liquidGlassCard(cornerRadius: 10)
 
             HStack {
                 Spacer()
                 Button("취소") { model.cancelConfirmation() }
                     .keyboardShortcut(.cancelAction)
+                    .liquidSecondaryActionStyle()
                 Button("아카이브 실행") { model.confirmAndStartArchive() }
                     .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
+                    .liquidProminentActionStyle()
             }
         }
         .padding(20)
@@ -72,6 +73,6 @@ struct CautionBanner: View {
             }
         }
         .padding(10)
-        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .liquidCautionCard(cornerRadius: 10)
     }
 }
