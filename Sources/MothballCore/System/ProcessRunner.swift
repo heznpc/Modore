@@ -106,6 +106,13 @@ public enum ProcessRunner {
         // escalation above — even an uncooperative child gets reaped.
         for await _ in exitStream { /* drained */ }
 
+        // terminationHandler can fire a hair before NSTask flips its
+        // internal "running" flag, and terminationStatus throws
+        // NSInvalidArgumentException ("task still running") in that window.
+        // The process is already dead here, so this returns immediately —
+        // it only synchronizes NSTask's state, it does not wait on the child.
+        process.waitUntilExit()
+
         // Cancel BEFORE awaiting value, otherwise we'd block until the
         // sleep naturally completes.
         timeoutTask.cancel()
