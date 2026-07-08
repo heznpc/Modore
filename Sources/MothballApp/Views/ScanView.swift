@@ -138,7 +138,7 @@ struct ScanView: View {
             }
             .keyboardShortcut(.defaultAction)
             .controlSize(.large)
-            .buttonStyle(.borderedProminent)
+            .liquidProminentActionStyle()
             .disabled(model.selectedRepos.isEmpty)
         }
         .padding(12)
@@ -178,7 +178,7 @@ struct LocationChip: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(.quaternary, in: Capsule())
+        .liquidGlassChip()
     }
 }
 
@@ -191,7 +191,7 @@ struct TierBadge: View {
             .font(.caption.bold())
             .padding(.horizontal, 8)
             .padding(.vertical, 2)
-            .background(color.opacity(0.18), in: Capsule())
+            .liquidTintedChip(color)
             .foregroundStyle(color)
             .help(verdict.reasons.map(\.humanDescription).joined(separator: "\n"))
     }

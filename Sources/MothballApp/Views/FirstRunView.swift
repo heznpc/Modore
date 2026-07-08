@@ -29,7 +29,7 @@ struct FirstRunView: View {
             }
             .frame(maxWidth: 540, alignment: .leading)
             .padding(20)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+            .liquidGlassCard(cornerRadius: 12)
 
             Spacer()
 
@@ -41,7 +41,7 @@ struct FirstRunView: View {
             }
             .keyboardShortcut(.defaultAction)
             .controlSize(.large)
-            .buttonStyle(.borderedProminent)
+            .liquidProminentActionStyle()
         }
         .padding(40)
     }
