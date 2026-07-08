@@ -13,7 +13,7 @@ GitHub issue.
 
 - Preferred: GitHub Security Advisory — "Report a vulnerability" tab
   on this repository.
-- Fallback: email `wantcongz@gmail.com` with subject prefix
+- Fallback: email `heznpc@gmail.com` with subject prefix
   `[mothball-security]`.
 
 I will acknowledge within 7 days and aim to ship a fix on the next
