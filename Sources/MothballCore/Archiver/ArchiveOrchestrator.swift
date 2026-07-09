@@ -71,10 +71,10 @@ public struct ArchiveOrchestrator: Sendable {
     /// are both at their final paths and verified.
     public func archive(
         _ repo: RepoInfo,
-        progress: (@Sendable (Step) -> Void)? = nil
+        progress: (@Sendable (Step) async -> Void)? = nil
     ) async throws -> ArchiveResult {
         let env = configuration
-        progress?(.starting(repo: repo.path))
+        await progress?(.starting(repo: repo.path))
 
         try Self.validateSource(repo.path, archiveDirectory: env.archiveDirectory)
         try Self.validateArchiveDirectory(env.archiveDirectory)
@@ -99,17 +99,17 @@ public struct ArchiveOrchestrator: Sendable {
         }
 
         // 1. Compress.
-        progress?(.compressing(estimatedSourceBytes: repo.sizeBytes))
+        await progress?(.compressing(estimatedSourceBytes: repo.sizeBytes))
         try await runTarCreate(plan: plan, env: env)
 
         // 2. Verify the archive is structurally readable. Catches truncation
         //    or zstd corruption before we trust it enough to delete the
         //    original.
-        progress?(.verifying)
+        await progress?(.verifying)
         try await runTarVerify(archive: plan.archiveTmp, env: env)
 
         // 3. Manifest.
-        progress?(.writingManifest)
+        await progress?(.writingManifest)
         let archiveBytes = Self.fileSize(at: plan.archiveTmp) ?? 0
         let manifest = makeManifest(
             repo: repo,
@@ -145,7 +145,7 @@ public struct ArchiveOrchestrator: Sendable {
         // 5. Trash the original. If THIS fails, we still have a valid
         //    archive + manifest — leave the original in place and let
         //    the caller decide. Don't roll back the archive.
-        progress?(.movingOriginalToTrash)
+        await progress?(.movingOriginalToTrash)
         let trashedURL: URL?
         do {
             var resulting: NSURL?
@@ -155,7 +155,7 @@ public struct ArchiveOrchestrator: Sendable {
             throw ArchiveError.trashFailed(repo.path, underlying: error)
         }
 
-        progress?(.completed(
+        await progress?(.completed(
             archive: plan.archiveFinal,
             manifest: plan.manifestFinal,
             archiveBytes: archiveBytes
@@ -283,34 +283,5 @@ public struct ArchiveOrchestrator: Sendable {
 
     static func removeIfExists(_ url: URL) {
         try? FileManager.default.removeItem(at: url)
-    }
-}
-
-/// All path planning collected in one place so it's easy to inspect
-/// and unit-test independently of the orchestrator.
-struct ArchivePlan {
-    let repoPath: URL
-    let archiveTmp: URL
-    let archiveFinal: URL
-    let manifestTmp: URL
-    let manifestFinal: URL
-
-    init(repo: RepoInfo, archiveDirectory: URL, now: Date = Date()) {
-        self.repoPath = repo.path
-        let stamp = ArchivePlan.timestamp(now)
-        let base = "\(repo.path.lastPathComponent)_\(stamp)"
-        self.archiveFinal   = archiveDirectory.appending(path: "\(base).tar.zst")
-        self.manifestFinal  = archiveDirectory.appending(path: "\(base).json")
-        self.archiveTmp     = archiveDirectory.appending(path: "\(base).tar.zst.tmp")
-        self.manifestTmp    = archiveDirectory.appending(path: "\(base).json.tmp")
-    }
-
-    private static func timestamp(_ date: Date) -> String {
-        // Filesystem-safe: no colons, no spaces. Sortable.
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withYear, .withMonth, .withDay, .withDashSeparatorInDate,
-                           .withTime, .withColonSeparatorInTime]
-        let raw = f.string(from: date)
-        return raw.replacingOccurrences(of: ":", with: "-")
     }
 }

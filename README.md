@@ -54,13 +54,14 @@ before any skip logic runs.
 - Git inspector: last commit date, dirty state, ahead-of-upstream, fully-pushed check.
 - Safety classifier: `safe` / `caution` / `unsafe` based on push state, dirty state, and recency.
 - Archive pipeline: `tar` + `zstd` to `.tar.zst`, sidecar JSON manifest, integrity verify, trash move.
+- Core restore round-trip: sidecar manifest + `.tar.zst` → verified staged restore.
 - SwiftUI shell: first-run consent, scan view, confirm sheet, progress overlay, settings screen, activity log.
 - Optional `git fetch` before classification (off by default).
 - Integration tests against real `git` / `tar` binaries; green on macOS CI.
 
 ## Planned
 
-- Restore command (read sidecar manifest → `git clone` for pushed repos).
+- Restore UI / command surface on top of the implemented core restorer.
 - Archive history browser inside the app.
 - Time-series growth analysis (which paths grew the most between scans).
 - See `SPEC.md` v0.2+ backlog for the full list.

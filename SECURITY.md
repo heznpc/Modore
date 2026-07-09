@@ -2,8 +2,9 @@
 
 Mothball is a Lab-tier macOS app (see `README.md` — pre-alpha scaffold,
 not production-ready). The security surface is intentionally narrow:
-no network I/O, no external dependencies, no remote services, no user
-accounts. The only privileged operations are `git`, `tar`, and `mv to
+no external dependencies, no remote services, no user accounts, and no
+network I/O unless the user explicitly enables the optional `git fetch`
+preflight. The only privileged operations are `git`, `tar`, and `mv to
 Trash` against directories the user explicitly selected.
 
 ## Reporting a vulnerability
@@ -13,8 +14,6 @@ GitHub issue.
 
 - Preferred: GitHub Security Advisory — "Report a vulnerability" tab
   on this repository.
-- Fallback: email `heznpc@gmail.com` with subject prefix
-  `[mothball-security]`.
 
 I will acknowledge within 7 days and aim to ship a fix on the next
 release. Lab-tier project: there is no SLA.

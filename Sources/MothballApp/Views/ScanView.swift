@@ -61,10 +61,17 @@ struct ScanView: View {
             placeholder("스캔할 폴더를 추가하고 스캔 버튼을 누르세요")
         case .running where model.inspectedRepos.isEmpty:
             placeholder("스캔 중...")
+        case .done where model.inspectedRepos.isEmpty && !model.scanFailures.isEmpty:
+            ScanFailureList(failures: model.scanFailures)
         case .done where model.inspectedRepos.isEmpty:
             placeholder("발견된 git 저장소가 없습니다")
         default:
-            repoTable
+            VStack(spacing: 0) {
+                if !model.scanFailures.isEmpty {
+                    ScanFailureBanner(failures: model.scanFailures)
+                }
+                repoTable
+            }
         }
     }
 
@@ -193,7 +200,7 @@ struct TierBadge: View {
             .padding(.vertical, 2)
             .liquidTintedChip(color)
             .foregroundStyle(color)
-            .help(verdict.reasons.map(\.humanDescription).joined(separator: "\n"))
+            .help(SafetyReasonFormatter().string(for: verdict))
     }
 
     private var display: (String, Color) {
@@ -205,3 +212,54 @@ struct TierBadge: View {
     }
 }
 
+struct ScanFailureBanner: View {
+    let failures: [ScanFailure]
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text("분석하지 못한 저장소 \(failures.count)개")
+                .font(.callout)
+            Spacer()
+            Text(failures.map { $0.path.lastPathComponent }.prefix(3).joined(separator: ", "))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .liquidCautionCard(cornerRadius: 0)
+    }
+}
+
+struct ScanFailureList: View {
+    let failures: [ScanFailure]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("분석하지 못한 저장소")
+                .font(.headline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(failures) { failure in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(failure.path.path)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(failure.reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                    }
+                }
+            }
+            .liquidGlassCard(cornerRadius: 10)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}

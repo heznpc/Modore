@@ -183,9 +183,7 @@ public struct Restorer: Sendable {
     /// directory + stripped base name rather than string-replacing the
     /// extension so a manifest named oddly can't smuggle in a surprise.
     static func siblingArchiveURL(for manifestURL: URL) -> URL {
-        let dir = manifestURL.deletingLastPathComponent()
-        let base = manifestURL.deletingPathExtension().lastPathComponent
-        return dir.appending(path: "\(base).tar.zst")
+        ArchiveArtifactPair(manifestURL: manifestURL).archive
     }
 
     // MARK: - Validation

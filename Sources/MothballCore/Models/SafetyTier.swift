@@ -24,27 +24,6 @@ public enum SafetyReason: Sendable, Hashable {
     case noCommitsYet
     case dormant(daysAgo: Int)
     case fullyPushed
-
-    public var humanDescription: String {
-        switch self {
-        case .recentActivity(let d):
-            return "마지막 활동 \(d)일 전 (30일 미만)"
-        case .dirtyWorkingTree:
-            return "커밋되지 않은 변경 사항 있음"
-        case .unpushedCommits(let n):
-            return "origin에 push되지 않은 커밋 \(n)개"
-        case .noRemoteConfigured:
-            return "origin remote 설정 없음 (복원 불가)"
-        case .noUpstreamConfigured:
-            return "현재 브랜치에 upstream 추적 없음"
-        case .noCommitsYet:
-            return "커밋이 하나도 없는 빈 저장소"
-        case .dormant(let d):
-            return "휴면 상태 (\(d)일 전 마지막 활동)"
-        case .fullyPushed:
-            return "origin에 모두 push됨"
-        }
-    }
 }
 
 public struct SafetyVerdict: Sendable, Hashable {
