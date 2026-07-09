@@ -38,5 +38,8 @@ struct RootView: View {
         .sheet(item: $model.activeArchiveRun) { run in
             ProgressOverlay(run: run)
         }
+        .sheet(item: $model.lastArchiveSummary) { summary in
+            ArchiveSummaryView(summary: summary)
+        }
     }
 }

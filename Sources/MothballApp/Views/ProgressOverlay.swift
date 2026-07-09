@@ -28,8 +28,11 @@ struct ProgressOverlay: View {
                             Text(result.repoPath.lastPathComponent).lineLimit(1)
                             Spacer()
                             if let err = result.failure {
-                                Text(String(describing: err))
+                                Text(err.localizedDescription)
                                     .font(.caption).foregroundStyle(.red).lineLimit(1)
+                            } else if result.wasSkipped {
+                                Text("중단됨")
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
                         .padding(.horizontal, 12).padding(.vertical, 4)
@@ -38,15 +41,32 @@ struct ProgressOverlay: View {
             }
             .frame(maxHeight: 200)
             .liquidGlassCard(cornerRadius: 10)
+
+            HStack {
+                if run.isCancellationRequested {
+                    Text("현재 저장소 처리 후 중단합니다.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(run.isCancellationRequested ? "중단 대기 중" : "현재 저장소 후 중단") {
+                    run.requestCancellation()
+                }
+                .disabled(run.isCancellationRequested || run.isFinished)
+                .liquidSecondaryActionStyle()
+            }
         }
         .padding(20)
         .frame(width: 520)
+        .interactiveDismissDisabled(!run.isFinished)
     }
 
     @ViewBuilder
     private func statusIcon(for result: PerRepoResult) -> some View {
         if result.success != nil {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        } else if result.wasSkipped {
+            Image(systemName: "minus.circle.fill").foregroundStyle(.secondary)
         } else if result.failure != nil {
             Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
         } else {

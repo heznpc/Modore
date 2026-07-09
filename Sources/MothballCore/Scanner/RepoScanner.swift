@@ -1,5 +1,27 @@
 import Foundation
 
+public struct ScanReport: Sendable, Equatable {
+    public let repos: [RepoInfo]
+    public let failures: [ScanFailure]
+
+    public init(repos: [RepoInfo], failures: [ScanFailure]) {
+        self.repos = repos
+        self.failures = failures
+    }
+}
+
+public struct ScanFailure: Identifiable, Sendable, Hashable {
+    public let path: URL
+    public let reason: String
+
+    public var id: URL { path }
+
+    public init(path: URL, reason: String) {
+        self.path = path
+        self.reason = reason
+    }
+}
+
 public struct RepoScanner: Sendable {
     public let inspector: GitInspector
 
@@ -31,10 +53,17 @@ public struct RepoScanner: Sendable {
     /// Walks `roots` looking for git repositories, then inspects each
     /// in parallel (bounded by `maxConcurrentInspections`).
     ///
-    /// Repos that fail inspection (corrupt .git, permission denied, etc.)
-    /// are silently dropped. They will need a separate UI surface in v0.2;
-    /// for v0.1 we err on the side of "show only what we can fully analyse".
     public func scan(roots: [URL]) async -> [RepoInfo] {
+        await scanReport(roots: roots).repos
+    }
+
+    /// Walks `roots` looking for git repositories, then inspects each
+    /// in parallel (bounded by `maxConcurrentInspections`).
+    ///
+    /// Repos that fail inspection (corrupt .git, permission denied, timeout,
+    /// etc.) are returned as failures so callers do not accidentally present
+    /// "nothing found" when the truth is "found, but could not inspect."
+    public func scanReport(roots: [URL]) async -> ScanReport {
         var discovered: [URL] = []
         for root in roots {
             findRepositories(under: root, into: &discovered)
@@ -44,24 +73,30 @@ public struct RepoScanner: Sendable {
         // then for every completion add one more from the iterator. The
         // group's natural backpressure keeps at most `limit` tasks in
         // flight without needing a hand-rolled counter.
-        return await withTaskGroup(of: RepoInfo?.self) { group in
+        return await withTaskGroup(of: InspectionOutcome.self) { group in
             var iterator = discovered.makeIterator()
 
             for _ in 0..<maxConcurrentInspections {
                 guard let next = iterator.next() else { break }
                 let repoURL = next
-                group.addTask { await self.inspectSafely(at: repoURL) }
+                group.addTask { await self.inspect(at: repoURL) }
             }
 
             var results: [RepoInfo] = []
+            var failures: [ScanFailure] = []
             while let value = await group.next() {
-                if let info = value { results.append(info) }
+                switch value {
+                case .success(let info):
+                    results.append(info)
+                case .failure(let failure):
+                    failures.append(failure)
+                }
                 if let next = iterator.next() {
                     let repoURL = next
-                    group.addTask { await self.inspectSafely(at: repoURL) }
+                    group.addTask { await self.inspect(at: repoURL) }
                 }
             }
-            return results
+            return ScanReport(repos: results, failures: failures)
         }
     }
 
@@ -115,21 +150,26 @@ public struct RepoScanner: Sendable {
 
     // MARK: - Per-repo inspection
 
-    private func inspectSafely(at url: URL) async -> RepoInfo? {
+    private enum InspectionOutcome: Sendable {
+        case success(RepoInfo)
+        case failure(ScanFailure)
+    }
+
+    private func inspect(at url: URL) async -> InspectionOutcome {
         async let measurements = SizeAndActivity.measure(at: url)
         let metadata: GitMetadata
         do {
             metadata = try await inspector.inspect(repoAt: url)
         } catch {
-            return nil
+            return .failure(ScanFailure(path: url, reason: String(describing: error)))
         }
         let (size, mtime) = await measurements
-        return RepoInfo(
+        return .success(RepoInfo(
             path: url,
             sizeBytes: size,
             lastFileMTime: mtime,
             git: metadata
-        )
+        ))
     }
 }
 
