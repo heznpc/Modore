@@ -44,9 +44,9 @@
         <span class="pulse"></span>
         <span data-i18n="hero.tag">v0.3 · Windows Edition / Mac Edition</span>
       </div>
-      <h1 data-i18n="hero.title">내 PC를 <em>설명해주는</em> 보안 진단 도구.</h1>
+      <h1 data-i18n="hero.title">내 PC가 <em>몰래 일하는지</em> 설명해주는 로컬 진단 도구.</h1>
       <p class="hero-subtitle" data-i18n="hero.subtitle">
-        범용 백신은 한국 뱅킹 플러그인을 악성코드로 오판합니다. PC 건강검진은 IPinside·nProtect·MagicLine·V3를 알아보고, 진짜 위험만 골라냅니다.
+        팬이 돌고 CPU/GPU가 튀고 모르는 프로세스가 보일 때, PC 건강검진은 채굴기 신호·자동실행·네트워크·한국 보안 플러그인 맥락을 모아 삭제 전 판단 근거를 보여줍니다.
       </p>
       <div class="hero-actions">
         <a href="#download" class="btn btn-primary" data-i18n="hero.cta_primary">zip 다운로드 <span class="arrow">→</span></a>
@@ -147,9 +147,9 @@
 <section id="problem" class="section">
   <div class="container">
     <div class="section-kicker" data-i18n="problem.kicker">PROBLEM</div>
-    <h2 data-i18n="problem.heading">"수상한 항목 30건"이 떴을 때, <em>무엇이 진짜 위협인가?</em></h2>
+    <h2 data-i18n="problem.heading">"내 PC가 몰래 채굴 중인가?" 싶을 때, <em>무엇을 먼저 확인해야 하나?</em></h2>
     <p class="lead" data-i18n="problem.lead">
-      한국 PC는 뱅킹·공공기관·쇼핑몰 보안 플러그인으로 가득합니다. 이것들은 전부 범용 스캐너에는 수상해 보이지만, 실제로는 정상입니다. 컴퓨터에 익숙하지 않은 사용자는 구분할 길이 없어 "전부 무시"하거나 "전부 삭제"하는 양극단을 택하게 됩니다.
+      느려진 PC, 멈추지 않는 팬, 높은 CPU/GPU, 모르는 자동실행 항목은 불안을 만듭니다. 한국 PC에는 뱅킹·공공기관·쇼핑몰 보안 플러그인도 많아 정상 항목과 진짜 확인 대상을 구분하기 어렵습니다. PC 건강검진은 바로 삭제하기 전에 근거를 모읍니다.
     </p>
 
     <div class="compare">
@@ -190,7 +190,7 @@
     <div class="section-kicker" data-i18n="how.kicker">HOW IT WORKS</div>
     <h2 data-i18n="how.heading">8가지 진단 &rarr; 1개의 HTML 리포트.</h2>
     <p class="lead" data-i18n="how.lead">
-      프레임워크 없음. 바이너리 없음. OS별 스크립트가 시스템을 수집하면, OS 기본 런타임으로 브라우저에서 바로 열 수 있는 HTML 리포트로 조립합니다.
+      설치형 추적기 없음. OS별 스크립트가 시스템을 수집하면, Windows는 브라우저에서 열 수 있는 HTML 리포트로, Mac은 SwiftUI 대시보드와 HTML 내보내기로 조립합니다.
     </p>
 
     <div class="pipeline">
@@ -237,7 +237,7 @@
         </div>
         <div class="privacy-point">
           <h4 data-i18n="privacy.points.telemetry.title">텔레메트리 0건</h4>
-          <p data-i18n="privacy.points.telemetry.desc">사용 통계·에러 리포트 어떤 것도 수집하지 않습니다. 외부 호출은 옵트인 VirusTotal 조회와 선택적 Sysinternals 다운로드뿐입니다.</p>
+          <p data-i18n="privacy.points.telemetry.desc">사용 통계·에러 리포트 어떤 것도 수집하지 않습니다. 진단 런타임의 외부 호출은 옵트인 VirusTotal 조회와 선택적 Sysinternals 다운로드뿐입니다.</p>
         </div>
         <div class="privacy-point">
           <h4 data-i18n="privacy.points.local.title">로컬 캐시만</h4>
@@ -245,7 +245,7 @@
         </div>
         <div class="privacy-point">
           <h4 data-i18n="privacy.points.audit.title">읽을 수 있는 소스</h4>
-          <p data-i18n="privacy.points.audit.desc">컴파일된 바이너리 0개. PowerShell · Bash · JXA 소스. <code>grep -R "Invoke-RestMethod\|Invoke-WebRequest\|curl\|virustotal.com/api" scripts/</code>로 외부 호출 확인 가능.</p>
+          <p data-i18n="privacy.points.audit.desc">읽을 수 있는 PowerShell · Bash · JXA 소스. 릴리스 zip에는 사전 컴파일된 진단 바이너리를 넣지 않습니다. <code>grep -R "Invoke-RestMethod\|Invoke-WebRequest\|curl\|virustotal.com/api" scripts/</code>로 외부 호출 확인 가능.</p>
         </div>
       </div>
 

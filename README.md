@@ -1,7 +1,7 @@
 # PC 건강검진 — PC Health Check
 
-> A locale-aware security diagnostic tool that **explains your PC in plain language**.
-> Built for Korean users whose legitimate banking and government software gets flagged by generic scanners.
+> A local diagnostic reporter for the moment you wonder: **is my PC doing something behind my back?**
+> It turns miner, autorun, network, Korean security-plugin, and macOS storage signals into plain-language evidence before you delete anything.
 
 [🌐 **Website**](https://heznpc.github.io/pc-health-check/) · [📥 Download](https://github.com/heznpc/pc-health-check/releases) · [🇰🇷 한국어 가이드](./사용법.txt)
 
@@ -10,6 +10,8 @@
 ---
 
 ## The problem
+
+The first symptom is usually not a clear malware alert. It is a fan that will not stop, CPU/GPU load while the PC is idle, an unknown process in Task Manager, a strange network connection, or disk space disappearing overnight. The natural question is: **is this computer secretly mining, infected, or just running normal local software?**
 
 Generic malware scanners are great at detection but terrible at **context**. For Korean users, running any reputable scanner typically produces something like:
 
@@ -20,9 +22,9 @@ Generic malware scanners are great at detection but terrible at **context**. For
 > - `WIZVERA.exe` — browser helper, always on
 > - … 26 more
 
-**29 of those are legitimate banking/government security plugins.** Users can't tell which is which, so they either panic and uninstall critical software, or learn to ignore warnings entirely — both dangerous outcomes.
+**29 of those may be legitimate banking/government security plugins.** Users can't tell which is which, so they either panic and uninstall critical software, or learn to ignore warnings entirely — both dangerous outcomes.
 
-This project is a **second-opinion diagnostic reporter** that recognizes Korean software and explains each finding in plain Korean (or English/Japanese).
+This project is a **second-opinion diagnostic reporter** that recognizes Korean software, checks miner-like runtime signals, and explains each finding in plain Korean (or English/Japanese).
 
 ---
 
@@ -30,7 +32,8 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 
 - **Two OS editions under one brand**: PC Health Check for Windows and PC Health Check for Mac share the same promise — explain local PC state in plain language without deleting anything automatically.
 - **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
-- **Mac Edition**: Bash + JXA scanner focused on macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, recent apps, and a macOS storage bar decoder for the vague System Data / Developer / macOS categories. It translates caches, temporary files, Xcode Simulator assets, Android SDK components, language toolchains, and Chrome code-sign clones into practical "review / preserve / cleanup" context. It includes a SwiftUI frontend with a native diagnostic dashboard, scanner logs, Finder actions, cleanup-guide copy, and HTML export for browser/share workflows.
+- **Mac Edition**: Bash + JXA scanner focused on macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, recent apps, and a macOS storage bar decoder for the vague System Data / Developer / macOS categories. It translates caches, temporary files, Xcode Simulator assets, Android SDK components, language toolchains, and Chrome code-sign clones into practical "review / preserve / hand off to cleanup tools" context. It includes a SwiftUI frontend with a native diagnostic dashboard, scanner logs, Finder actions, cleanup-guide copy, and HTML export for browser/share workflows.
+- **Suspicion-to-evidence workflow**: CPU/GPU load, idle CPU samples, miner process names, miner-pool ports, network endpoints, autoruns, signatures, and optional VirusTotal hash lookups are shown together so a user can decide what deserves a closer look before removing anything.
 - **Locale-aware whitelist**: 71 known-good entries across 7 categories (system, browser, korean_common, banking_security, dev_tools, hardware, cloud), plus 19 miner blacklist entries, 5 RAT blacklist entries, and 13 miner-pool ports. Covers IPinside, nProtect, INISAFE, MagicLine, Veraport, XecureWeb, Ahnlab V3, Alyac, and the rest of the Korean banking/government plugin set.
 - **Traffic-light output** (🟢 safe / 🟡 check / 🔴 danger) so non-technical users can act on the report.
 - **VirusTotal lookup (opt-in)**: SHA-256 hash query only. 48h local cache, 16s rate-limit, respects the public API quota (4 req/min, 500/day).
@@ -38,11 +41,11 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 - **Local-only by default**: the Mac SwiftUI app and script mode run local scanners only. There is no AI/LLM integration, no OpenAI/Claude/Codex API call, no token spend, no account login, and no report upload. Optional VirusTotal lookup is the only external lookup path and sends hashes only.
 - **i18n**: Korean, English, Japanese landing page strings (`docs/i18n/`) and Python development report strings (`data/report_i18n/`). The release runtime reports are OS-native and Korean-first.
 - **Rule engine + tests**: declarative JSON rules in `rules/` (autoruns, defender, installs, network, process) evaluated by OS-native runtime engines. 70 pytest tests cover report rendering, rule evaluation, whitelist lookups, service contracts, and release smoke.
-- **Read-the-source distribution**: readable PowerShell/Bash/JXA scripts, no compiled binaries, no bundled DLLs, no telemetry.
+- **Read-the-source distribution**: readable PowerShell/Bash/JXA scripts, no prebuilt diagnostic binaries in the release zips, no bundled DLLs, no telemetry.
 
 ## Planned
 
-- **Mac Edition Swift app** — continue turning the SwiftUI frontend into the primary Mac experience: local-first decoding of macOS's vague storage categories, developer-toolchain context, redaction-aware reports, and safer review flows before cleanup.
+- **Mac Edition Swift app** — continue turning the SwiftUI frontend into the primary Mac experience: local-first decoding of macOS's vague storage categories, developer-toolchain context, redaction-aware reports, and safer review flows before AppCleaner/Finder cleanup.
 - **Windows Edition maintenance** — Windows remains under the same PC Health Check brand, but new Windows-only storage features wait for real-device validation.
 - **Additional locales** beyond ko/en/ja — community PRs welcome; the i18n loader already supports arbitrary codes.
 
@@ -72,6 +75,8 @@ Shared rules, whitelist data, i18n strings, and report vocabulary can be reused 
 The Windows Edition keeps the script + HTML shape for broad compatibility. The Mac Edition now uses a SwiftUI dashboard for day-to-day diagnosis, while still generating normal and redacted HTML reports for export and sharing.
 
 **Locale as a first-class concern.** Generic scanners are built for global users; their false-positive rate on Korean banking PCs is the user-facing problem this project exists to solve. The whitelist is the differentiated layer, not the scanner.
+
+**Removal tools are downstream.** PC Health Check is the pause before deletion, not the deletion button. On Windows, Korean plugin removers can uninstall unwanted banking/security modules after the report explains what they are. On macOS, AppCleaner or Finder can remove apps after the report separates apps, caches, SDKs, Simulator assets, and rebuildable residue.
 
 **Privacy-first VirusTotal use.** Hashes only, never file contents. VirusTotal calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.jxa.js`; optional Sysinternals downloads live in `scripts/sigcheck-helper.ps1` and `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api` to audit outbound calls.
 
@@ -237,10 +242,12 @@ The smoke checks fail if `scan_result.json`, `raw_facts.json`, `monitor_result.j
 | Windows Defender | Win | Everyone | Real-time protection | Complementary |
 | Sysinternals Autoruns | Win | Experts | Exhaustive autoruns | We wrap it and explain in plain language |
 | Objective-See tools | Mac | Prosumer+ | Native UX | English only, fragmented across many tools |
+| Hoax Eliminator / 구라제거기 | Win | Korean users | Removes unwanted Korean banking/security modules | This explains which entries are normal, noisy, or suspicious before removal |
+| AppCleaner | Mac | Mac users | Removes an app and related files | This explains whether the app/cache/SDK path should be reviewed before AppCleaner/Finder cleanup |
 | Malware Zero (malzero.xyz) | Win | Korean users | PUP removal | Older UX, no per-finding explanations |
 | HijackThis / FRST | Win | Tech-savvy | Log analysis | Not novice-friendly |
 
-**The gap this fills**: plain-Korean explanations + locale-aware whitelist for banking software + privacy-safe VT lookup, all in one opt-in HTML report.
+**The gap this fills**: suspicion-to-evidence triage for "is my PC secretly doing something?", with plain-Korean explanations, locale-aware banking software context, miner/runtime signals, storage context, and privacy-safe VT lookup.
 
 ## Privacy
 
@@ -259,7 +266,7 @@ Whitelist contributions are especially welcome. See [`CONTRIBUTING.md`](./CONTRI
 
 ## Security
 
-Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new) or `wantcongz@gmail.com` — see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
+Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new). If that is unavailable, use a private maintainer-approved channel — see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
 
 This project verifies all Sysinternals binaries via `Get-AuthenticodeSignature` against a Microsoft signer subject **on every invocation** — not only at first download — before executing them. The cached `.exe` under `%LOCALAPPDATA%` is re-validated each run because that directory is user-writable and the threat model this tool exists in (other user-mode malware may be present) requires treating the cache as untrusted between runs. By default, Sysinternals download prompts for user confirmation; setting `sysinternals.autoDownload` to `true` enables quiet download with the same signature gate.
 
