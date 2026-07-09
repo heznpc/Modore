@@ -8,6 +8,7 @@
   - 바이러스/악성코드에 감염되었는지
   - 해커에게 원격 조종당하고 있는지
   - 몰래 비트코인 채굴기로 쓰이고 있는지
+  - macOS가 System Data/Developer로 뭉뚱그린 저장공간의 정체가 무엇인지
 를 검사해 신호등(🟢🟡🔴)으로 알려주는 도구입니다.
 
 Windows와 macOS 모두 지원합니다.
@@ -24,10 +25,21 @@ Windows와 macOS 모두 지원합니다.
 
 [ macOS 사용법 ]
 
+  SwiftUI 앱으로 실행:
+  1. "Mac앱실행.command" 우클릭 → "열기"
+  2. 처음 실행 시 SwiftUI 앱을 빌드한 뒤 자동으로 엽니다.
+  3. 앱에서 [빠른 검사 실행]을 누르면 네이티브 대시보드에 결과가 바로 표시됩니다.
+  4. HTML/공유용 버튼은 브라우저로 열거나 다른 사람에게 보여줄 때만 사용하세요.
+
+  스크립트 메뉴로 실행:
   1. 터미널을 열거나, "검사하기.command" 더블클릭
      - 처음에는 "열기 권한이 없다"고 뜰 수 있어요.
      - 해결: 파일 우클릭 → "열기" 선택 (한 번만 하면 됨)
-  2. 메뉴에서 숫자 입력
+  2. 메뉴에서 숫자 입력:
+     [1] 빠른 검사 (Mac Edition)
+     [2] 이전 결과 다시 보기
+     [3] 공유용 결과 열기
+  3. 검사가 끝나면 일반 리포트와 공유용 리포트가 함께 생성됨
 
 
 [ 리포트 보는 법 ]
@@ -37,6 +49,24 @@ Windows와 macOS 모두 지원합니다.
   🔴 위험   = 즉시 조치가 필요합니다.
 
   각 항목 옆 [구글 검색], [VirusTotal] 버튼으로 바로 조사.
+
+  macOS 공유용 리포트:
+  - 검사결과_공유용.html
+  - PC 이름, 사용자 이름, 홈 디렉터리 경로를 자동으로 가립니다.
+  - 공유 전에는 내용을 한 번 더 확인하세요.
+
+
+[ 로컬 전용 / 보안 원칙 ]
+
+  - 기본 검사는 이 Mac 안에서만 실행됩니다.
+  - AI 연동, OpenAI/Claude/Codex API 호출, 토큰 사용은 없습니다.
+  - 검사 결과를 서버로 업로드하지 않습니다.
+  - VirusTotal 조회를 직접 켠 경우에만 SHA-256 해시가 외부 조회됩니다.
+  - SwiftUI 앱은 삭제를 자동 실행하지 않고, Finder 열기와 정리 가이드 복사까지만 제공합니다.
+  - SwiftUI 앱의 기본 화면은 웹뷰가 아니라 네이티브 진단 대시보드입니다.
+  - macOS가 Mail/Messages/Safari/앱 컨테이너를 숨기면 Full Disk Access 안내가 표시됩니다.
+  - SwiftUI 빠른 검사는 큰 Simulator/SDK 폴더에서 오래 멈추지 않도록 크기 측정 시간을 제한합니다.
+    정확한 용량까지 다시 재고 싶으면 터미널에서 PCH_STORAGE_DU_TIMEOUT=0 bash scripts/scanner.sh 로 실행하세요.
 
 
 [ VirusTotal 자동 조회 켜기 (선택) ]
@@ -93,8 +123,10 @@ Windows와 macOS 모두 지원합니다.
   PC건강검진/
   ├─ 검사하기.bat         ← Windows 실행
   ├─ 검사하기.command     ← macOS 실행
+  ├─ Mac앱실행.command    ← macOS SwiftUI 앱 실행
   ├─ 사용법.txt           ← 이 파일
   ├─ 검사결과.html         ← 검사 후 자동 생성
+  ├─ 검사결과_공유용.html  ← macOS 공유용 결과
   ├─ data/
   │  ├─ whitelist.json    ← 한국 프로그램 DB
   │  ├─ explain.json      ← 쉬운 설명
@@ -104,6 +136,7 @@ Windows와 macOS 모두 지원합니다.
      ├─ scanner.ps1       ← Windows 스캐너
      ├─ scanner.sh        ← macOS 스캐너
      ├─ scanner_helper.jxa.js ← macOS 데이터 집계
+     ├─ build_macos_swift_app.sh ← macOS SwiftUI 앱 빌드
      ├─ monitor.ps1       ← 5분 CPU 관찰 (Windows)
      ├─ report.ps1        ← Windows HTML 생성
      ├─ report.jxa.js     ← macOS HTML 생성

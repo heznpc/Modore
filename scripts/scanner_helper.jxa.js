@@ -4,7 +4,8 @@ ObjC.import("Foundation");
 function unwrap(v) { return ObjC.unwrap(v); }
 function env(name, fallback) {
   const v = $.NSProcessInfo.processInfo.environment.objectForKey(name);
-  return v ? unwrap(v) : fallback;
+  const value = v ? unwrap(v) : null;
+  return value == null ? fallback : String(value);
 }
 function readText(path) {
   const s = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null);
@@ -23,6 +24,8 @@ function run(cmd) {
 }
 function tmp(name) { return readText(TMP_DIR + "/" + name); }
 function basename(path) { return String(path || "").split("/").filter(Boolean).pop() || String(path || ""); }
+function round1(n) { return Math.round(Number(n || 0) * 10) / 10; }
+function kbToGb(kb) { return round1(Number(kb || 0) / 1048576); }
 function escapeShell(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
 function isLocalIp(ip) {
   if (!ip) return true;
@@ -46,7 +49,7 @@ function vtLookup(config, disabled) {
   const envKey = env("VT_API_KEY", "");
   if (envKey) {
     cfg.apiKey = envKey;
-    if (!Object.prototype.hasOwnProperty.call(cfg, "enabled")) cfg.enabled = true;
+    cfg.enabled = true;
   }
   const enabled = !!cfg.enabled && !!cfg.apiKey && !disabled;
   const cacheHours = Number(cfg.cacheHours || 48);
@@ -56,8 +59,6 @@ function vtLookup(config, disabled) {
   ensureDir(cacheDir);
   let cache = readJson(cachePath, {});
   let calls = 0, lastCall = 0;
-  const headerPath = TMP_DIR + "/vt_headers.txt";
-  if (enabled) writeText(headerPath, "x-apikey: " + cfg.apiKey + "\naccept: application/json\n");
   function cached(key) {
     const entry = cache[key];
     if (!entry) return null;
@@ -78,7 +79,7 @@ function vtLookup(config, disabled) {
     lastCall = Date.now();
     calls += 1;
     const url = "https://www.virustotal.com/api/v3/" + path;
-    const out = run("/usr/bin/curl -sS --max-time 15 -H @" + escapeShell(headerPath) + " -w '\\n%{http_code}' " + escapeShell(url));
+    const out = run("/usr/bin/curl -sS --max-time 15 -H " + escapeShell("x-apikey: " + cfg.apiKey) + " -H 'accept: application/json' -w '\\n%{http_code}' " + escapeShell(url));
     const lines = out.split(/\r?\n/);
     const code = lines.pop();
     const body = lines.join("\n");
@@ -264,6 +265,132 @@ function applyRules(raw, rules, wl) {
   return result;
 }
 
+function parseStorageDf(text) {
+  const line = String(text || "").trim().split(/\r?\n/).filter(Boolean).pop() || "";
+  const parts = line.trim().split(/\s+/);
+  if (parts.length < 5) {
+    return { mount: "", totalGB: 0, usedGB: 0, freeGB: 0, usePercent: 0, risk: "unknown", note: "저장공간 정보를 읽지 못했습니다." };
+  }
+  const totalKb = Number(parts[1] || 0);
+  const usedKb = Number(parts[2] || 0);
+  const freeKb = Number(parts[3] || 0);
+  const usePercent = Number(String(parts[4] || "0").replace("%", ""));
+  const mount = parts.slice(5).join(" ") || "/";
+  const freeGB = kbToGb(freeKb);
+  const risk = (freeGB < 5 || usePercent >= 95) ? "danger" :
+    (freeGB < 15 || usePercent >= 90) ? "warning" : "safe";
+  const note = risk === "danger" ? "남은 공간이 매우 적습니다. 캐시/임시파일 후보를 먼저 확인하세요." :
+    risk === "warning" ? "macOS 저장공간 막대 뒤에 숨은 큰 캐시와 개발 도구 구성요소를 검토하세요." :
+    "저장공간 압박은 낮지만, macOS가 뭉뚱그린 항목의 정체를 확인할 수 있습니다.";
+  return { mount, totalGB: kbToGb(totalKb), usedGB: kbToGb(usedKb), freeGB, usePercent, risk, note };
+}
+
+function storageNote(kind, label) {
+  if (kind === "cache") return "재생성 가능한 캐시입니다. 삭제 전 관련 앱/빌드 도구를 종료하고, 재다운로드 시간이 생길 수 있음을 감안하세요.";
+  if (kind === "temp") return "임시파일입니다. 실행 중인 앱이 잡고 있을 수 있으므로 오래된 항목 위주로 정리하세요.";
+  if (kind === "trash") return "휴지통입니다. 복구할 파일이 없을 때 비우면 즉시 공간을 회수할 수 있습니다.";
+  if (kind === "build_cache") return "Xcode 빌드 산출물입니다. 프로젝트 재빌드 시간이 늘 수 있지만 보통 재생성 가능합니다.";
+  if (kind === "archive") return "Xcode 보관 빌드입니다. 배포/증빙에 필요한 아카이브인지 확인한 뒤 정리하세요.";
+  if (kind === "simulator_devices") return "iOS Simulator 기기 데이터입니다. 현재 개발 대상 기기는 남기고 불필요한 기기만 삭제하세요.";
+  if (kind === "simulator_cache") return "CoreSimulator 캐시입니다. 실행 중인 Simulator/Xcode를 닫고 정리하는 편이 안전합니다.";
+  if (kind === "simulator_runtime") return "iOS Simulator 런타임 자산입니다. 앱 검증에 필요한 런타임이면 삭제하지 마세요.";
+  if (kind === "android_sdk") return "Android SDK 루트입니다. 모바일 Android 빌드에 필요할 수 있어 통째 삭제하지 마세요.";
+  if (kind === "android_component" && /system images|emulator/i.test(label || "")) return "Android Emulator 구성요소입니다. 에뮬레이터 QA를 하지 않는다면 정리 후보가 될 수 있습니다.";
+  if (kind === "android_component" && /NDK/i.test(label || "")) return "Android NDK입니다. React Native/Flutter 네이티브 빌드가 특정 버전을 요구할 수 있습니다.";
+  if (kind === "android_component") return "Android 빌드 구성요소입니다. compileSdk/build-tools 요구 버전을 확인한 뒤 정리하세요.";
+  if (kind === "toolchain") return "언어 런타임/패키지 도구체인입니다. 여러 프로젝트가 공유할 수 있으므로 버전 의존성을 확인하세요.";
+  if (kind === "chrome_clone") return "Chrome 앱 번들 code-sign 임시 clone입니다. Chrome/브라우저 자동화가 실행 중이면 현재 사용 중인 항목이 있을 수 있습니다.";
+  if (kind === "application") return "설치된 앱입니다. 앱 본체 삭제 전 AppCleaner/Finder에서 관련 데이터까지 검토하세요.";
+  return "저장공간 점검 항목입니다.";
+}
+
+function storageAction(kind, label) {
+  if (kind === "cache") return "캐시 정리 후보";
+  if (kind === "temp") return "오래된 임시파일 확인";
+  if (kind === "trash") return "휴지통 비우기 후보";
+  if (kind === "build_cache") return "필요 시 DerivedData 정리";
+  if (kind === "archive") return "필요한 아카이브 보존 후 정리";
+  if (kind === "simulator_devices") return "필수 Simulator 기기만 유지";
+  if (kind === "simulator_cache") return "Xcode/Simulator 종료 후 검토";
+  if (kind === "simulator_runtime") return "필요 런타임 보존";
+  if (kind === "android_sdk") return "통째 삭제 금지";
+  if (kind === "android_component" && /system images|emulator/i.test(label || "")) return "에뮬레이터 사용 여부 확인";
+  if (kind === "android_component") return "빌드 요구 버전 확인";
+  if (kind === "toolchain") return "프로젝트 버전 의존성 확인";
+  if (kind === "chrome_clone") return "Chrome 종료 후 stale clone 확인";
+  if (kind === "application") return "앱 사용 여부 확인";
+  return "수동 확인";
+}
+
+function classifyStorageRow(kind, label, sizeGB, volumeRisk) {
+  const disposable = ["cache", "temp", "trash", "build_cache", "chrome_clone"];
+  if (disposable.includes(kind)) {
+    if (sizeGB >= 2 || (volumeRisk !== "safe" && sizeGB >= 1)) return "warning";
+    return sizeGB >= 0.5 ? "info" : "safe";
+  }
+  if (kind === "archive") return sizeGB >= 2 && volumeRisk !== "safe" ? "warning" : "info";
+  if (kind === "application") return sizeGB >= 1 ? "info" : "safe";
+  if (/^(android_|simulator_|toolchain)/.test(kind)) return sizeGB >= 1 ? "info" : "safe";
+  return "info";
+}
+
+function parseStoragePaths(text, volumeRisk) {
+  return String(text || "").trim().split(/\r?\n/).filter(Boolean).map(line => {
+    const parts = line.split("\t");
+    if (parts.length < 4) return null;
+    const kind = parts[0];
+    const label = parts[1];
+    const path = parts[2];
+    const sizeGB = kbToGb(parts[3]);
+    const measureStatus = parts[4] || "ok";
+    const measureNote = parts[5] || "";
+    return {
+      risk: measureStatus === "timed_out" ? "info" : classifyStorageRow(kind, label, sizeGB, volumeRisk),
+      kind,
+      label,
+      sizeGB,
+      path,
+      measureStatus,
+      note: measureNote || storageNote(kind, label),
+      action: storageAction(kind, label)
+    };
+  }).filter(Boolean).sort((a, b) => b.sizeGB - a.sizeGB);
+}
+
+function parseStorageAccess(text) {
+  const rows = String(text || "").trim().split(/\r?\n/).filter(Boolean).map(line => {
+    const parts = line.split("\t");
+    if (parts.length < 5) return null;
+    return {
+      risk: parts[3] === "blocked" ? "warning" : "info",
+      kind: parts[0],
+      label: parts[1],
+      path: parts[2],
+      status: parts[3],
+      note: parts[4]
+    };
+  }).filter(Boolean);
+  return {
+    checks: rows,
+    issues: rows.filter(row => row.status === "blocked")
+  };
+}
+
+function parseStorageRuntime(text) {
+  return String(text || "").trim().split(/\r?\n/).filter(Boolean).map(line => {
+    const parts = line.split("\t");
+    if (parts.length < 6) return null;
+    return {
+      kind: parts[0],
+      label: parts[1],
+      count: Number(parts[2] || 0),
+      risk: parts[3] || "info",
+      action: parts[4],
+      note: parts[5]
+    };
+  }).filter(Boolean);
+}
+
 const TMP_DIR = env("TMP_DIR", "/tmp");
 const OUTPUT = env("PCH_OUTPUT", "scan_result.json");
 const RAW_PATH = env("PCH_RAW_PATH", "raw_facts.json");
@@ -355,6 +482,65 @@ tmp("load.txt").split(/\r?\n/).forEach(line => {
   if (idx > 0) load[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
 });
 raw.sections.systemLoad = { cpuPercent: Number(load.CPU_PCT || 0), memoryPercent: Number(load.MEM_PCT || 0), totalMemoryGB: Number(load.MEM_TOTAL_GB || 0) };
+const storageVolume = parseStorageDf(tmp("storage_df.txt"));
+const storageItems = parseStoragePaths(tmp("storage_paths.tsv"), storageVolume.risk);
+const storageAccess = parseStorageAccess(tmp("storage_access.tsv"));
+const storageRuntime = parseStorageRuntime(tmp("storage_runtime.tsv"));
+const cleanupKinds = ["cache", "temp", "trash", "build_cache", "chrome_clone"];
+const cleanupCandidates = storageItems.filter(item => cleanupKinds.includes(item.kind) && item.risk === "warning");
+const developerKinds = ["android_sdk", "android_component", "simulator_devices", "simulator_cache", "simulator_runtime", "toolchain", "archive"];
+raw.sections.storage = {
+  volume: storageVolume,
+  cleanupCandidates: cleanupCandidates.slice(0, 20),
+  developerToolchains: storageItems.filter(item => developerKinds.includes(item.kind)).slice(0, 20),
+  largestItems: storageItems.slice(0, 30),
+  accessChecks: storageAccess.checks,
+  accessIssues: storageAccess.issues,
+  runtimeSignals: storageRuntime
+};
+const bootedSimulators = storageRuntime.filter(item => item.kind === "booted_simulator");
+const warningRuntimeSignals = storageRuntime.filter(item => item.kind === "process_count" && item.risk === "warning");
+if (bootedSimulators.length >= 2) {
+  raw.findings.push({
+    level: "warning",
+    category: "storage",
+    title: "Simulator 여러 대가 Booted 상태",
+    detail: `${bootedSimulators.map(item => item.label).join(", ")}가 동시에 켜져 있습니다. Bitxel/TrashMonster 작업 대상에 맞춰 한 대만 켜두면 CoreSimulator 프로세스와 캐시 재생성을 줄일 수 있습니다.`
+  });
+}
+if (warningRuntimeSignals.length) {
+  raw.findings.push({
+    level: "warning",
+    category: "storage",
+    title: "반복 생성원 정리 필요",
+    detail: warningRuntimeSignals.map(item => `${item.label} ${item.count}개`).join(", ") + "가 감지되었습니다. 공간을 지워도 이 실행원이 남아 있으면 캐시와 임시 clone이 다시 생길 수 있습니다."
+  });
+}
+if (storageAccess.issues.length) {
+  raw.findings.push({
+    level: "warning",
+    category: "storage",
+    title: "Full Disk Access 확인 필요",
+    detail: `macOS 개인정보 보호 설정 때문에 ${storageAccess.issues.length}개 영역을 읽지 못했을 수 있습니다. 리포트가 비어 보이면 시스템 설정 > 개인정보 보호 및 보안 > 전체 디스크 접근 권한에서 앱 또는 Terminal 권한을 확인하세요.`
+  });
+}
+if (storageVolume.risk === "danger" || storageVolume.risk === "warning") {
+  raw.findings.push({
+    level: storageVolume.risk,
+    category: "storage",
+    title: "macOS 저장공간 막대 해석 필요",
+    detail: `남은 공간 ${storageVolume.freeGB}GB, 사용률 ${storageVolume.usePercent}%입니다. macOS가 System Data/Developer로 뭉뚱그린 항목을 삭제 전 실제 경로와 성격으로 구분하세요.`
+  });
+  const cleanupGB = round1(cleanupCandidates.reduce((sum, item) => sum + Number(item.sizeGB || 0), 0));
+  if (cleanupGB >= 2) {
+    raw.findings.push({
+      level: "warning",
+      category: "storage",
+      title: "캐시/임시파일 정리 후보",
+      detail: `재생성 가능한 캐시·임시파일 후보가 약 ${cleanupGB}GB입니다. Developer 항목의 SDK/시뮬레이터/언어 도구체인은 통째 삭제하지 말고 버전 요구사항을 확인하세요.`
+    });
+  }
+}
 raw.sections.virustotal = { enabled: vt.enabled, callsThisScan: vt.calls, cacheHours: vt.enabled ? vt.cacheHours : 0 };
 raw.sections.sysinternals = { sigcheckEnabled: false, autorunscEnabled: false, note: "macOS는 codesign + launchctl 사용" };
 

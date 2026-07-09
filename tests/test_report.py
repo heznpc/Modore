@@ -2,9 +2,13 @@
 
 샘플 scan_result.json을 넣어 HTML이 생성되고 최소 요소를 포함하는지 확인.
 """
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 def test_report_generates_from_sample(fixtures_dir, project_root, tmp_path):
@@ -78,6 +82,20 @@ def test_platform_scan_contracts(fixtures_dir):
             assert section in scan["sections"], f"{name}: missing {section}"
 
 
+def test_macos_storage_contract(fixtures_dir):
+    scan = __import__("json").loads((fixtures_dir / "sample_scan_macos.json").read_text(encoding="utf-8-sig"))
+    storage = scan["sections"].get("storage")
+
+    assert isinstance(storage, dict)
+    assert storage["volume"]["risk"] in ("safe", "warning", "danger", "unknown")
+    assert isinstance(storage["volume"]["freeGB"], (int, float))
+    assert isinstance(storage["cleanupCandidates"], list)
+    assert isinstance(storage["developerToolchains"], list)
+    assert isinstance(storage["accessIssues"], list)
+    assert isinstance(storage["runtimeSignals"], list)
+    assert {"kind", "label", "count", "risk", "action", "note"} <= set(storage["runtimeSignals"][0])
+
+
 def test_report_includes_next_actions(fixtures_dir, project_root, tmp_path):
     scan_path = fixtures_dir / "sample_scan_macos.json"
     output_path = tmp_path / "mac-report.html"
@@ -99,3 +117,73 @@ def test_report_includes_next_actions(fixtures_dir, project_root, tmp_path):
     html = output_path.read_text(encoding="utf-8")
     assert "다음 행동" in html
     assert "개인 정보" in html
+    assert "macOS 저장공간 막대 해석" in html
+    assert "System Data" in html
+    assert "Developer" in html
+    assert "반복 생성원" in html
+    assert "Headless/Playwright Chrome" in html
+    assert "Full Disk Access" in html
+    assert "Android SDK root" in html
+
+
+def test_windows_report_omits_unvalidated_storage_section(fixtures_dir, project_root, tmp_path):
+    scan_path = fixtures_dir / "sample_scan_windows.json"
+    output_path = tmp_path / "win-report.html"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(project_root / "scripts" / "report.py"),
+            "--scan", str(scan_path),
+            "--explain", str(project_root / "data" / "explain.json"),
+            "--output", str(output_path),
+            "--lang", "ko",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    html = output_path.read_text(encoding="utf-8")
+    assert "macOS 저장공간 막대 해석" not in html
+
+
+def test_macos_jxa_report_redacts_share_copy(fixtures_dir, project_root, tmp_path):
+    if sys.platform != "darwin":
+        pytest.skip("JXA report generator is macOS-only")
+    if not shutil.which("osascript"):
+        pytest.skip("osascript is unavailable")
+
+    output_path = tmp_path / "share-report.html"
+    env = os.environ.copy()
+    env.update({
+        "PCH_PROJECT_DIR": str(project_root),
+        "PCH_SCAN": str(fixtures_dir / "sample_scan_macos.json"),
+        "PCH_REPORT_OUTPUT": str(output_path),
+        "PCH_REDACT": "true",
+    })
+    result = subprocess.run(
+        [
+            "osascript",
+            "-l",
+            "JavaScript",
+            str(project_root / "scripts" / "report.jxa.js"),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    html = output_path.read_text(encoding="utf-8")
+    assert "공유용 리포트입니다" in html
+    assert "redacted-mac" in html
+    assert "redacted-user" in html
+    assert "sample-mac" not in html
+    assert "/Users/sample" not in html
+    assert "~/Library/Caches" in html
+    assert "반복 생성원" in html
+    assert "CoreSimulator processes" in html
+    assert "https://www.google.com/search" in html
+    assert "https://www.virustotal.com/gui/ip-address/203.0.113.10" in html

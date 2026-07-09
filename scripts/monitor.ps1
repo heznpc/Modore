@@ -42,7 +42,7 @@ Write-Host ""
 
 # ---------- 샘플 수집 ----------
 $processStats = @{}   # key: procName, value: @{ samples, totalCpuDelta, lastCpu, path }
-$samples = @()
+$samples = [System.Collections.Generic.List[object]]::new()
 
 $prevSnapshot = @{}
 Get-Process | ForEach-Object {
@@ -56,19 +56,19 @@ for ($i = 1; $i -le $totalSamples; $i++) {
     $snapshot = Get-Process | Where-Object { $_.CPU }
 
     # 각 프로세스의 CPU 증분 계산
-    $sampleStats = @()
+    $sampleStats = [System.Collections.Generic.List[object]]::new()
     foreach ($p in $snapshot) {
         $prev = $prevSnapshot[$p.Id]
         $delta = if ($prev) { [math]::Max(0, $p.CPU - $prev.cpu) } else { 0 }
         if ($delta -gt 0) {
             $percentCpu = [math]::Round(($delta / $SampleIntervalSec / $cpuCount) * 100, 1)
-            $sampleStats += [ordered]@{
+            $sampleStats.Add([ordered]@{
                 name = $p.ProcessName
                 pid_ = $p.Id
                 deltaCpu = [math]::Round($delta, 2)
                 percentCpu = $percentCpu
                 path = $p.Path
-            }
+            })
 
             # 누적 통계
             $key = $p.ProcessName.ToLower()
@@ -95,11 +95,11 @@ for ($i = 1; $i -le $totalSamples; $i++) {
     $progress = [int](($i / $totalSamples) * 100)
     Write-Host ("[{0,3}%] 전체CPU:{1,3}% | 상위: {2}" -f $progress, $overallCpu, $topNames)
 
-    $samples += [ordered]@{
+    $samples.Add([ordered]@{
         time = (Get-Date).ToString('HH:mm:ss')
         overallCpu = $overallCpu
         top = @($sampleStats)
-    }
+    })
 
     # 다음 비교를 위한 스냅샷 저장
     $prevSnapshot = @{}
@@ -107,7 +107,7 @@ for ($i = 1; $i -le $totalSamples; $i++) {
 }
 
 # ---------- 집계 ----------
-$aggregate = @()
+$aggregate = [System.Collections.Generic.List[object]]::new()
 foreach ($k in $processStats.Keys) {
     $s = $processStats[$k]
     $avgPercent = [math]::Round(($s.totalDelta / ($totalSamples * $SampleIntervalSec) / $cpuCount) * 100, 1)
@@ -128,7 +128,7 @@ foreach ($k in $processStats.Keys) {
         $note = "평균 ${avgPercent}% CPU 사용 - 확인 필요"
     }
 
-    $aggregate += [ordered]@{
+    $aggregate.Add([ordered]@{
         name = $s.name
         averagePercent = $avgPercent
         maxPercent = $s.maxPercent
@@ -136,7 +136,7 @@ foreach ($k in $processStats.Keys) {
         path = $s.path
         risk = $risk
         note = $note
-    }
+    })
 }
 
 $aggregate = @($aggregate | Sort-Object averagePercent -Descending)
@@ -148,7 +148,7 @@ $result = [ordered]@{
     sampleIntervalSec = $SampleIntervalSec
     cpuCount = $cpuCount
     averageOverallCpu = [math]::Round(($samples | Measure-Object -Property overallCpu -Average).Average, 1)
-    samples = $samples
+    samples = $samples.ToArray()
     aggregate = $aggregate
     suspects = @($aggregate | Where-Object { $_.risk -in 'danger','warning' } | Select-Object -First 10)
 }

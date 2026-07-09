@@ -124,10 +124,7 @@ class VtLookup:
         env_key = os.environ.get("VT_API_KEY")
         if env_key:
             self.cfg["apiKey"] = env_key
-            # 명시적 enabled=false는 사용자 의도이므로 env 키가 있어도 존중.
-            # enabled가 *설정되지 않았을* 때만 env-injection을 옵트인으로 간주.
-            if "enabled" not in self.cfg:
-                self.cfg["enabled"] = True
+            self.cfg["enabled"] = True
         self.enabled = bool(self.cfg.get("enabled")) and bool(self.cfg.get("apiKey")) and not NO_VT
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)

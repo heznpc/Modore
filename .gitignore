@@ -40,6 +40,8 @@ desktop.ini
 # 빌드
 build/
 dist/
+.build/
+.swiftpm/
 *.zip
 !docs/**/*.zip
 

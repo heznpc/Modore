@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "PC Health Check — A security scanner that explains your PC",
-    "description": "A locale-aware diagnostic that knows Korean banking plugins. Traffic-light report, VirusTotal hash lookup, never uploads files. Free, MIT open source. Windows & macOS."
+    "description": "A local diagnostic that explains Korean banking plugins and macOS's vague System Data / Developer storage categories in context. PC Health Check ships as Windows Edition and Mac Edition, with traffic-light reports and hash-only VirusTotal lookup."
   },
   "brand": {
     "name": "PC Health Check"
@@ -13,7 +13,7 @@
     "download": "Download"
   },
   "hero": {
-    "tag": "v0.3 · Windows & macOS",
+    "tag": "v0.3 · Windows Edition / Mac Edition",
     "title": "A security scanner that <em>explains</em> your PC.",
     "subtitle": "Generic antivirus tools flag legitimate Korean banking plugins as malware. PC Health Check recognizes IPinside, nProtect, MagicLine, V3, and surfaces only the real threats.",
     "cta_primary": "Download zip <span class='arrow'>→</span>",
@@ -106,13 +106,13 @@
     "heading": "Get it now.",
     "lead": "A single zip. Carry it on a USB drive — no installer, no admin rights needed for most checks.",
     "windows": {
-      "title": "Windows",
+      "title": "Windows Edition",
       "desc": "Windows 10 / 11 · PowerShell 5.1 preinstalled. Double-click <code>검사하기.bat</code>.",
       "btn": "pch-v0.3.0-win.zip →"
     },
     "macos": {
-      "title": "macOS",
-      "desc": "macOS 10.15+ · Bash and osascript included. Right-click <code>검사하기.command</code> → Open.",
+      "title": "Mac Edition",
+      "desc": "macOS 13+ SwiftUI app via <code>Mac앱실행.command</code>; script mode via <code>검사하기.command</code> → Open. Decoding the System Data / Developer storage bar is a Mac Edition feature.",
       "btn": "pch-v0.3.0-mac.zip →"
     },
     "github_side": "Clone or fork: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>. Inspect the readable source yourself."

@@ -165,6 +165,11 @@ foreach ($p in $rawObj.PSObject.Properties) {
     if ($p.Name -ne 'sections') { $result[$p.Name] = $p.Value }
 }
 if (-not $result.Contains('findings') -or $null -eq $result.findings) { $result.findings = @() }
+$findings = [System.Collections.Generic.List[object]]::new()
+foreach ($finding in @($result.findings)) {
+    $findings.Add($finding)
+}
+$result.findings = $findings
 $outSections = [ordered]@{}
 $sectionToCategory = @{
     cpu = 'process'
@@ -179,18 +184,18 @@ foreach ($sectionProp in $rawObj.sections.PSObject.Properties) {
     $facts = $sectionProp.Value
     if ($facts -is [array]) {
         $category = if ($sectionToCategory.ContainsKey($name)) { $sectionToCategory[$name] } else { 'process' }
-        $cleaned = @()
+        $cleaned = [System.Collections.Generic.List[object]]::new()
         foreach ($fact in @($facts)) {
             $cls = Classify-Fact $fact $category $rulesByCategory $wlIndex
             $fact | Add-Member -NotePropertyName risk -NotePropertyValue $cls.risk -Force
             $fact | Add-Member -NotePropertyName note -NotePropertyValue $cls.note -Force
-            foreach ($finding in $cls.findings) { $result.findings += $finding }
-            $cleaned += $fact
+            foreach ($finding in $cls.findings) { $result.findings.Add($finding) }
+            $cleaned.Add($fact)
         }
-        $outSections[$name] = $cleaned
+        $outSections[$name] = $cleaned.ToArray()
     } elseif ($name -in @('defender','macosSecurity')) {
         $cls = Classify-Fact $facts 'defender' $rulesByCategory $wlIndex
-        foreach ($finding in $cls.findings) { $result.findings += $finding }
+        foreach ($finding in $cls.findings) { $result.findings.Add($finding) }
         $outSections[$name] = $facts
     } else {
         $outSections[$name] = $facts
@@ -198,6 +203,7 @@ foreach ($sectionProp in $rawObj.sections.PSObject.Properties) {
 }
 
 $result.sections = $outSections
+$result.findings = $result.findings.ToArray()
 $danger = @($result.findings | Where-Object { $_.level -eq 'danger' }).Count
 $warning = @($result.findings | Where-Object { $_.level -eq 'warning' }).Count
 $overall = if ($danger -gt 0) { 'danger' } elseif ($warning -gt 0) { 'warning' } else { 'safe' }

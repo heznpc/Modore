@@ -63,13 +63,22 @@ WINDOWS_FILES = COMMON_FILES + [
 
 MACOS_FILES = COMMON_FILES + [
     "검사하기.command",
+    "Mac앱실행.command",
     "scripts/scanner.sh",
     "scripts/report.jxa.js",
     "scripts/scanner_helper.jxa.js",
+    "scripts/build_macos_swift_app.sh",
     "scripts/modules/macos/cpu.sh",
     "scripts/modules/macos/network.sh",
     "scripts/modules/macos/autoruns.sh",
     "scripts/modules/macos/security.sh",
+    "scripts/modules/macos/storage.sh",
+    "macos/PCHealthCheckMac/Package.swift",
+    "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/PCHealthCheckMacApp.swift",
+    "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/ScanModels.swift",
+    "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift",
+    "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ProcessRunState.swift",
+    "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ViewStyles.swift",
 ]
 
 FORBIDDEN_NAMES = {
@@ -77,6 +86,7 @@ FORBIDDEN_NAMES = {
     "raw_facts.json",
     "monitor_result.json",
     "검사결과.html",
+    "검사결과_공유용.html",
     "vt-cache.json",
 }
 
@@ -128,7 +138,7 @@ def validate_zip(path: Path) -> dict:
         forbidden = [n for n in names if Path(n).name in FORBIDDEN_NAMES or "__pycache__" in n]
         if forbidden:
             raise ValueError(f"{path.name} contains forbidden entries: {forbidden}")
-        command_entries = [i for i in zf.infolist() if i.filename.endswith("검사하기.command")]
+        command_entries = [i for i in zf.infolist() if i.filename.endswith(".command")]
         for info in command_entries:
             mode = (info.external_attr >> 16) & 0o777
             if mode & 0o111 == 0:
@@ -148,7 +158,16 @@ def main() -> int:
         return 0
 
     win = build_zip(f"pch-v{VERSION}-win", WINDOWS_FILES, executable_entries=set())
-    mac = build_zip(f"pch-v{VERSION}-mac", MACOS_FILES, executable_entries={"검사하기.command", "scripts/scanner.sh"})
+    mac = build_zip(
+        f"pch-v{VERSION}-mac",
+        MACOS_FILES,
+        executable_entries={
+            "검사하기.command",
+            "Mac앱실행.command",
+            "scripts/scanner.sh",
+            "scripts/build_macos_swift_app.sh",
+        },
+    )
     manifest = {"version": VERSION, "artifacts": [validate_zip(win), validate_zip(mac)]}
     manifest_path = DIST_DIR / "release-manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -10,10 +10,10 @@ clear
 echo ""
 echo "  ╔══════════════════════════════════════════════╗"
 echo "  ║                                              ║"
-echo "  ║         🩺  PC  건 강 검 진  🩺              ║"
+echo "  ║      🩺  PC 건강검진 Mac Edition  🩺          ║"
 echo "  ║                                              ║"
-echo "  ║   내 Mac이 악성코드에 감염됐는지,            ║"
-echo "  ║   몰래 채굴기로 쓰이는지 검사합니다.         ║"
+echo "  ║   macOS가 숨긴 보안·저장공간 원인을          ║"
+echo "  ║   삭제 없이 읽기 전용으로 풀어봅니다.         ║"
 echo "  ║                                              ║"
 echo "  ╚══════════════════════════════════════════════╝"
 echo ""
@@ -30,9 +30,10 @@ fi
 while true; do
     echo "  무엇을 할까요?"
     echo ""
-    echo "    [1] 빠른 검사 (1분)"
+    echo "    [1] 빠른 검사 (Mac Edition)"
     echo "    [2] 이전 결과 다시 보기"
-    echo "    [3] 종료"
+    echo "    [3] 공유용 결과 열기"
+    echo "    [4] 종료"
     echo ""
     read -p "  선택: " choice
 
@@ -52,7 +53,7 @@ while true; do
             fi
             echo ""
             echo "  리포트 생성 중..."
-            PCH_PROJECT_DIR="$PWD" osascript -l JavaScript "./scripts/report.jxa.js"
+            PCH_PROJECT_DIR="$PWD" PCH_REPORT_OUTPUT="$PWD/검사결과.html" osascript -l JavaScript "./scripts/report.jxa.js"
             report_status=$?
             if [[ $report_status -ne 0 ]]; then
                 echo ""
@@ -61,11 +62,20 @@ while true; do
                 clear
                 continue
             fi
+            echo "  공유용 리포트 생성 중..."
+            PCH_PROJECT_DIR="$PWD" PCH_REDACT=true PCH_REPORT_OUTPUT="$PWD/검사결과_공유용.html" osascript -l JavaScript "./scripts/report.jxa.js"
+            share_report_status=$?
+            if [[ $share_report_status -ne 0 ]]; then
+                echo "  ⚠️  공유용 리포트 생성은 실패했습니다. 일반 리포트는 사용할 수 있습니다."
+            fi
 
             if [[ -f "./검사결과.html" ]]; then
                 echo ""
                 echo "  ✅ 완료! 브라우저에서 열립니다..."
                 open "./검사결과.html"
+            fi
+            if [[ -f "./검사결과_공유용.html" ]]; then
+                echo "  공유할 때는 ./검사결과_공유용.html 파일을 사용하세요."
             fi
             echo ""
             read -p "  아무 키나 누르면 메뉴로 돌아갑니다..." _
@@ -81,11 +91,20 @@ while true; do
             clear
             ;;
         3)
+            if [[ -f "./검사결과_공유용.html" ]]; then
+                open "./검사결과_공유용.html"
+            else
+                echo "  ❌ 공유용 결과가 없습니다. 먼저 검사를 실행하세요."
+                read -p "  엔터..." _
+            fi
+            clear
+            ;;
+        4)
             echo "  종료합니다."
             exit 0
             ;;
         *)
-            echo "  1, 2, 3 중 하나를 입력하세요."
+            echo "  1, 2, 3, 4 중 하나를 입력하세요."
             sleep 1
             ;;
     esac

@@ -4,6 +4,7 @@ on: pull_request
 
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 jobs:
@@ -28,7 +29,10 @@ jobs:
 
       - name: Label major updates for manual review
         if: steps.meta.outputs.update-type == 'version-update:semver-major'
-        run: gh pr edit "$PR_URL" --add-label "dependencies,manual-review"
+        run: |
+          gh label create dependencies --color 0366d6 --description "Dependency updates" || true
+          gh label create manual-review --color fbca04 --description "Requires manual review" || true
+          gh pr edit "$PR_URL" --add-label "dependencies,manual-review"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -24,7 +24,7 @@ function Get-StartupFacts {
             }
         }
     }
-    return @($result)
+    return $result.ToArray()
 }
 
 function Get-AutorunscFacts {
@@ -33,7 +33,7 @@ function Get-AutorunscFacts {
     )
 
     $autorunItems = Invoke-Autorunsc -HideMicrosoftSigned -VerifySignatures
-    $result = @()
+    $result = [System.Collections.Generic.List[object]]::new()
     if (-not $autorunItems) { return @() }
 
     foreach ($item in $autorunItems) {
@@ -55,7 +55,7 @@ function Get-AutorunscFacts {
                 $vtResult = Get-VtFileReputation -FilePath $image
             }
         }
-        $result += [ordered]@{
+        $result.Add([ordered]@{
             category = $item.category
             entry = $displayName
             image = $item.image
@@ -64,7 +64,7 @@ function Get-AutorunscFacts {
             launchString = $item.launchString
             sha256 = $item.sha256
             vt = $vtResult
-        }
+        })
     }
     return @($result)
 }

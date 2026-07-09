@@ -59,21 +59,25 @@ export TMP_DIR
 . "$MODULES_DIR/autoruns.sh"
 # shellcheck source=modules/macos/security.sh
 . "$MODULES_DIR/security.sh"
+# shellcheck source=modules/macos/storage.sh
+. "$MODULES_DIR/storage.sh"
 
 # ------------------------------------------------------------
 # 섹션별 수집
 # ------------------------------------------------------------
-echo "  [1/8] CPU 사용량..."
+echo "  [1/7] CPU 사용량..."
 collect_cpu
-echo "  [2/8] 네트워크 연결..."
+echo "  [2/7] 네트워크 연결..."
 collect_network
-echo "  [3/8] 열린 포트..."
+echo "  [3/7] 열린 포트..."
 collect_listening_ports
-echo "  [4/8] 자동 실행..."
+echo "  [4/7] 자동 실행..."
 collect_autoruns
-echo "  [5/8] 보안 상태..."
+echo "  [5/7] 보안 상태..."
 collect_security
-echo "  [6/8] 시스템 부하..."
+echo "  [6/7] 저장공간 압박..."
+collect_storage
+echo "  [7/7] 시스템 부하..."
 collect_system_load
 echo "  → 결과 집계 및 rule engine 실행..."
 

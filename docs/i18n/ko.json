@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "PC 건강검진 — 내 PC를 설명해주는 보안 진단 도구",
-    "description": "한국 뱅킹 플러그인을 오판하지 않는 로캘 특화 진단 도구. 신호등 리포트, VirusTotal 연동, 해시만 전송. 무료·MIT 오픈소스. Windows & macOS."
+    "description": "한국 뱅킹 플러그인과 macOS의 불친절한 System Data/Developer 저장공간 표시를 맥락으로 설명하는 로컬 진단 도구. Windows Edition과 Mac Edition으로 나뉘며, 신호등 리포트와 해시 기반 VirusTotal 조회를 제공합니다."
   },
   "brand": {
     "name": "PC 건강검진"
@@ -13,7 +13,7 @@
     "download": "다운로드"
   },
   "hero": {
-    "tag": "v0.3 · Windows & macOS",
+    "tag": "v0.3 · Windows Edition / Mac Edition",
     "title": "내 PC를 <em>설명해주는</em> 보안 진단 도구.",
     "subtitle": "범용 백신은 한국 뱅킹 플러그인을 악성코드로 오판합니다. PC 건강검진은 IPinside·nProtect·MagicLine·V3를 알아보고, 진짜 위험만 골라냅니다.",
     "cta_primary": "zip 다운로드 <span class='arrow'>→</span>",
@@ -106,13 +106,13 @@
     "heading": "지금 다운로드.",
     "lead": "단일 zip. USB에 담아 다른 PC에서도 바로 실행 가능. 설치 없음, 관리자 권한 없이도 대부분 동작.",
     "windows": {
-      "title": "Windows",
+      "title": "Windows Edition",
       "desc": "Windows 10 / 11 · PowerShell 5.1 기본 포함. <code>검사하기.bat</code> 더블클릭.",
       "btn": "pch-v0.3.0-win.zip →"
     },
     "macos": {
-      "title": "macOS",
-      "desc": "macOS 10.15+ · Bash와 osascript 기본 포함. <code>검사하기.command</code> 우클릭 → 열기.",
+      "title": "Mac Edition",
+      "desc": "macOS 13+ SwiftUI 앱은 <code>Mac앱실행.command</code>, 스크립트 모드는 <code>검사하기.command</code> 우클릭 → 열기. System Data/Developer 저장공간 막대 해석은 Mac Edition 기능입니다.",
       "btn": "pch-v0.3.0-mac.zip →"
     },
     "github_side": "클론이나 포크: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>. 읽을 수 있는 소스로 직접 확인."

@@ -18,6 +18,11 @@
     "findings": "🔍 主な発見",
     "findings_none": "注意が必要な項目は見つかりませんでした。 🎉",
     "actions": "次の対応",
+    "storage": "💾 macOSストレージバーの解釈",
+    "storage_cleanup": "System Dataに隠れがちな整理候補",
+    "storage_developer": "Developer項目にまとめられる開発ツール/シミュレータ",
+    "storage_runtime": "再発生成元",
+    "storage_access": "Full Disk Access確認",
     "monitor": "⏱️ 5分間アイドル監視(本当のCPU使用者を特定)",
     "monitor_none": "5分監視はまだ実行されていません。アイドル検査で「本当の原因」を特定できます。",
     "cpu": "🖥️ CPU使用率トップのプロセス(即時)",
@@ -47,10 +52,15 @@
     "port": "ポート",
     "category": "カテゴリ",
     "entry": "項目",
+    "item": "項目",
+    "size_gb": "サイズ(GB)",
+    "count": "数",
+    "action": "推奨確認",
     "name": "名前",
     "command": "コマンド",
     "execute": "実行ファイル",
     "state": "状態",
+    "status": "状態",
     "install_date": "インストール日",
     "program_name": "プログラム名",
     "publisher": "発行元",
@@ -93,6 +103,12 @@
     "days_ago_suffix": "日前",
     "unknown": "不明"
   },
+  "storage": {
+    "volume": "ディスクボリューム",
+    "volume_line": "空き {free} GB · 使用 {used} / {total} GB · 使用率 {pct}%",
+    "decoder_note": "macOSは大きな使用量をSystem Data、Developer、macOSのような曖昧な名前でまとめて表示します。このセクションでは、そのバーの裏にある実際のパスと意味を読み解きます。",
+    "full_disk_note": "macOSのプライバシー設定により、一部の個人データ/アプリデータ領域を読み取れない場合があります。レポートが空に見える場合は、システム設定 > プライバシーとセキュリティ > フルディスクアクセスを確認してください。"
+  },
   "tips": {
     "defender_update": { "title": "アンチウイルスを更新", "desc_key": "explain_tips_defender_update" },
     "virustotal":      { "title": "疑わしいファイルを検査", "desc_key": "explain_tips_virustotal" },
@@ -124,6 +140,8 @@
   "hidden_rows_note": "署名検証済みの正常項目 {count} 件は非表示。",
   "muted": {
     "autorunsc_disabled": "Sysinternals autorunsc が未インストールか無効です。<code>data/config.json</code>の<code>sysinternals.useAutorunsc</code>を<code>true</code>に設定してください。",
-    "defender_unavailable": "Defender情報を読み取れません。"
+    "defender_unavailable": "Defender情報を読み取れません。",
+    "storage_unavailable": "ストレージ情報を読み取れません。",
+    "storage_empty": "表示する項目はありません。"
   }
 }

@@ -384,6 +384,127 @@ def render_simple_table(i18n: I18n, rows, columns) -> str:
     return f"<table><thead><tr>{headers}</tr></thead><tbody>{''.join(body)}</tbody></table>"
 
 
+def render_storage_table(i18n: I18n, rows) -> str:
+    rows = rows or []
+    if not rows:
+        return f'<p class="muted">{i18n.t("muted.storage_empty")}</p>'
+    h = i18n.t
+    body = []
+    for r in rows:
+        body.append(f"""
+<tr class="risk-{r.get('risk','unknown')}">
+  <td>{i18n.badge(r.get('risk'))}</td>
+  <td>{esc(r.get('kind'))}</td>
+  <td class="proc-name">{esc(r.get('label'))}</td>
+  <td class="num">{esc(r.get('sizeGB'))}</td>
+  <td>{esc(r.get('action'))}</td>
+  <td class="note">{esc(r.get('note'))}</td>
+  <td class="path">{esc(r.get('path'))}</td>
+</tr>""")
+    return f"""
+<table>
+  <thead><tr>
+    <th>{esc(h("table_headers.verdict"))}</th>
+    <th>{esc(h("table_headers.category"))}</th>
+    <th>{esc(h("table_headers.item"))}</th>
+    <th>{esc(h("table_headers.size_gb"))}</th>
+    <th>{esc(h("table_headers.action"))}</th>
+    <th>{esc(h("table_headers.description"))}</th>
+    <th>{esc(h("table_headers.path"))}</th>
+  </tr></thead>
+  <tbody>{''.join(body)}</tbody>
+</table>"""
+
+
+def render_storage_access_table(i18n: I18n, rows) -> str:
+    rows = rows or []
+    if not rows:
+        return ""
+    h = i18n.t
+    body = []
+    for r in rows:
+        body.append(f"""
+<tr class="risk-{r.get('risk','unknown')}">
+  <td>{i18n.badge(r.get('risk'))}</td>
+  <td>{esc(r.get('label'))}</td>
+  <td>{esc(r.get('status'))}</td>
+  <td class="note">{esc(r.get('note'))}</td>
+  <td class="path">{esc(r.get('path'))}</td>
+</tr>""")
+    return f"""
+<p class="muted">{esc(h("storage.full_disk_note"))}</p>
+<table>
+  <thead><tr>
+    <th>{esc(h("table_headers.verdict"))}</th>
+    <th>{esc(h("table_headers.item"))}</th>
+    <th>{esc(h("table_headers.status"))}</th>
+    <th>{esc(h("table_headers.description"))}</th>
+    <th>{esc(h("table_headers.path"))}</th>
+  </tr></thead>
+  <tbody>{''.join(body)}</tbody>
+</table>"""
+
+
+def render_storage_runtime_table(i18n: I18n, rows) -> str:
+    rows = rows or []
+    if not rows:
+        return ""
+    h = i18n.t
+    body = []
+    for r in rows:
+        body.append(f"""
+<tr class="risk-{r.get('risk','unknown')}">
+  <td>{i18n.badge(r.get('risk'))}</td>
+  <td>{esc(r.get('kind'))}</td>
+  <td class="proc-name">{esc(r.get('label'))}</td>
+  <td class="num">{esc(r.get('count'))}</td>
+  <td>{esc(r.get('action'))}</td>
+  <td class="note">{esc(r.get('note'))}</td>
+</tr>""")
+    return f"""
+<table>
+  <thead><tr>
+    <th>{esc(h("table_headers.verdict"))}</th>
+    <th>{esc(h("table_headers.category"))}</th>
+    <th>{esc(h("table_headers.item"))}</th>
+    <th>{esc(h("table_headers.count"))}</th>
+    <th>{esc(h("table_headers.action"))}</th>
+    <th>{esc(h("table_headers.description"))}</th>
+  </tr></thead>
+  <tbody>{''.join(body)}</tbody>
+</table>"""
+
+
+def render_storage(i18n: I18n, storage) -> str:
+    if not storage:
+        return f'<p class="muted">{i18n.t("muted.storage_unavailable")}</p>'
+    h = i18n.t
+    volume = storage.get("volume") or {}
+    overview = f"""
+<div class="findings">
+  <p class="muted">{esc(h("storage.decoder_note"))}</p>
+  <div class="finding {esc(volume.get('risk', 'unknown'))}">
+    <div class="finding-title">{esc(volume.get('mount') or h("storage.volume"))}</div>
+    <div class="finding-detail">
+      {esc(h("storage.volume_line", free=volume.get("freeGB", 0), used=volume.get("usedGB", 0),
+             total=volume.get("totalGB", 0), pct=volume.get("usePercent", 0)))}
+      <br>{esc(volume.get("note"))}
+    </div>
+  </div>
+</div>"""
+    return (
+        overview
+        + f'<h3>{esc(h("sections.storage_cleanup"))}</h3>'
+        + render_storage_table(i18n, storage.get("cleanupCandidates"))
+        + f'<h3>{esc(h("sections.storage_developer"))}</h3>'
+        + render_storage_table(i18n, storage.get("developerToolchains"))
+        + (f'<h3>{esc(h("sections.storage_runtime"))}</h3>' if storage.get("runtimeSignals") else "")
+        + render_storage_runtime_table(i18n, storage.get("runtimeSignals"))
+        + (f'<h3>{esc(h("sections.storage_access"))}</h3>' if storage.get("accessIssues") else "")
+        + render_storage_access_table(i18n, storage.get("accessIssues"))
+    )
+
+
 def render_monitor(i18n: I18n, m) -> str:
     if not m:
         return f'<p class="muted">{i18n.t("sections.monitor_none")}</p>'
@@ -600,6 +721,13 @@ def build_report(i18n: I18n, scan, monitor) -> str:
         {"field": "publisher", "header_key": "table_headers.publisher"},
     ])
     autoruns_html = render_autoruns_table(i18n, sections.get("autoruns"))
+    storage_html = ""
+    if sections.get("storage"):
+        storage_html = (
+            f'<h2>{esc(h("sections.storage"))}</h2>'
+            f"{explain_box(i18n, 'check_storage')}"
+            f"{render_storage(i18n, sections.get('storage'))}"
+        )
 
     # 팁 (explain.json의 tips.* 에서)
     explain_tips = (i18n.explain or {}).get("tips", {})
@@ -652,6 +780,8 @@ def build_report(i18n: I18n, scan, monitor) -> str:
 
 <h2>{esc(h("sections.findings"))}</h2>
 <div class="findings">{findings_html}</div>
+
+{storage_html}
 
 <h2>{esc(h("sections.monitor"))}</h2>
 {explain_box(i18n, 'check_idle_monitor')}

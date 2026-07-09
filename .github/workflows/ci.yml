@@ -85,3 +85,15 @@ jobs:
             }
           }
           if ($errors.Count -gt 0) { exit 1 }
+
+  macos-swift:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Swift toolchain
+        run: swift --version
+
+      - name: Build Mac SwiftUI app
+        run: swift build --package-path macos/PCHealthCheckMac -c release

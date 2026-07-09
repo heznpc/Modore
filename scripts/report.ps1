@@ -18,16 +18,45 @@ function H($Value) {
     return [System.Net.WebUtility]::HtmlEncode([string]$Value)
 }
 
+function U($Value) {
+    return [System.Uri]::EscapeDataString([string]$Value)
+}
+
+function Get-InvestigateLinks($Row) {
+    $label = ''
+    foreach ($field in @('name', 'process', 'entry', 'remoteAddress')) {
+        $prop = $Row.PSObject.Properties[$field]
+        if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+            $label = [string]$prop.Value
+            break
+        }
+    }
+    $links = [System.Collections.Generic.List[string]]::new()
+    $vt = $Row.PSObject.Properties['vt']
+    $sha = $Row.PSObject.Properties['sha256']
+    if ($vt -and $vt.Value -and $vt.Value.PSObject.Properties['hash']) {
+        $links.Add("<a href='https://www.virustotal.com/gui/file/$(U $vt.Value.hash)' target='_blank'>VT</a>")
+    } elseif ($sha -and -not [string]::IsNullOrWhiteSpace([string]$sha.Value)) {
+        $links.Add("<a href='https://www.virustotal.com/gui/file/$(U $sha.Value)' target='_blank'>VT</a>")
+    } elseif ($Row.PSObject.Properties['remoteAddress']) {
+        $links.Add("<a href='https://www.virustotal.com/gui/ip-address/$(U $Row.remoteAddress)' target='_blank'>VT IP</a>")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($label)) {
+        $links.Add("<a href='https://www.google.com/search?q=$(U "$label malware")' target='_blank'>Google</a>")
+    }
+    return ($links -join ' · ')
+}
+
 function Render-ListTable($Rows, [string[]]$Fields) {
     if ($null -eq $Rows -or @($Rows).Count -eq 0) { return '<p class="muted">표시할 항목이 없습니다.</p>' }
-    $head = ($Fields | ForEach-Object { "<th>$(H $_)</th>" }) -join ''
+    $head = (($Fields | ForEach-Object { "<th>$(H $_)</th>" }) -join '') + '<th>조사</th>'
     $body = foreach ($row in @($Rows)) {
         $risk = if ($row.risk) { [string]$row.risk } else { '' }
         $cells = foreach ($f in $Fields) {
             $v = $row.PSObject.Properties[$f]
             if ($null -eq $v) { '<td></td>' } else { "<td>$(H $v.Value)</td>" }
         }
-        "<tr class='risk-$risk'>$($cells -join '')</tr>"
+        "<tr class='risk-$risk'>$($cells -join '')<td>$(Get-InvestigateLinks $row)</td></tr>"
     }
     return "<table><thead><tr>$head</tr></thead><tbody>$($body -join '')</tbody></table>"
 }

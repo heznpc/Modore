@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "PCヘルスチェック — PCを「説明してくれる」セキュリティ診断",
-    "description": "韓国の銀行プラグインを誤検知しないロケール対応診断ツール。シグナル形式のレポート、VirusTotalハッシュ照会、ファイルはアップロードしません。無料・MITオープンソース。Windows & macOS対応。"
+    "description": "韓国の銀行プラグインと、macOSの曖昧なSystem Data/Developerストレージ表示を文脈付きで説明するローカル診断ツール。PCヘルスチェックは Windows Edition と Mac Edition に分かれ、シグナル形式のレポートとハッシュのみのVirusTotal照会を提供します。"
   },
   "brand": {
     "name": "PCヘルスチェック"
@@ -13,7 +13,7 @@
     "download": "ダウンロード"
   },
   "hero": {
-    "tag": "v0.3 · Windows & macOS",
+    "tag": "v0.3 · Windows Edition / Mac Edition",
     "title": "PCを<em>説明してくれる</em>セキュリティ診断。",
     "subtitle": "一般的なアンチウイルスは、韓国の銀行プラグインをマルウェアと誤判定します。PCヘルスチェックは IPinside、nProtect、MagicLine、V3 を認識し、本当の脅威だけを浮き彫りにします。",
     "cta_primary": "zipをダウンロード <span class='arrow'>→</span>",
@@ -106,13 +106,13 @@
     "heading": "いますぐダウンロード。",
     "lead": "単一zip。USBに入れて別PCでもそのまま実行可。インストール不要、ほとんどの診断で管理者権限も不要。",
     "windows": {
-      "title": "Windows",
+      "title": "Windows Edition",
       "desc": "Windows 10 / 11 · PowerShell 5.1 標準搭載。<code>검사하기.bat</code> をダブルクリック。",
       "btn": "pch-v0.3.0-win.zip →"
     },
     "macos": {
-      "title": "macOS",
-      "desc": "macOS 10.15+ · Bashとosascript標準搭載。<code>검사하기.command</code> を右クリック → 開く。",
+      "title": "Mac Edition",
+      "desc": "macOS 13+ SwiftUIアプリは <code>Mac앱실행.command</code>、スクリプトモードは <code>검사하기.command</code> を右クリック → 開く。System Data/Developerストレージバーの解釈は Mac Edition の機能です。",
       "btn": "pch-v0.3.0-mac.zip →"
     },
     "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>。読めるソースを自分で確認できます。"

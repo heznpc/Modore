@@ -18,6 +18,11 @@
     "findings": "🔍 Key findings",
     "findings_none": "No items require your attention. 🎉",
     "actions": "Next actions",
+    "storage": "💾 macOS storage bar decoder",
+    "storage_cleanup": "Cleanup candidates that may be hidden as System Data",
+    "storage_developer": "Developer tools and simulators grouped under Developer",
+    "storage_runtime": "Repeat generators",
+    "storage_access": "Full Disk Access check",
     "monitor": "⏱️ 5-minute idle monitor (find the real CPU culprit)",
     "monitor_none": "5-minute monitor not yet run. The idle test catches the 'real culprit'.",
     "cpu": "🖥️ Top CPU processes (instant snapshot)",
@@ -47,10 +52,15 @@
     "port": "Port",
     "category": "Category",
     "entry": "Entry",
+    "item": "Item",
+    "size_gb": "Size(GB)",
+    "count": "Count",
+    "action": "Suggested check",
     "name": "Name",
     "command": "Command",
     "execute": "Executable",
     "state": "State",
+    "status": "Status",
     "install_date": "Installed",
     "program_name": "Program",
     "publisher": "Publisher",
@@ -93,6 +103,12 @@
     "days_ago_suffix": " days ago",
     "unknown": "Unknown"
   },
+  "storage": {
+    "volume": "Disk volume",
+    "volume_line": "{free} GB free · {used} / {total} GB used · {pct}% used",
+    "decoder_note": "macOS groups large chunks of disk usage under vague labels like System Data, Developer, and macOS. This section translates that bar into real paths and practical meanings.",
+    "full_disk_note": "macOS privacy settings may hide some personal-data or app-data areas. If the report looks empty, check System Settings > Privacy & Security > Full Disk Access."
+  },
   "tips": {
     "defender_update": { "title": "Update antivirus", "desc_key": "explain_tips_defender_update" },
     "virustotal":      { "title": "Check suspicious files", "desc_key": "explain_tips_virustotal" },
@@ -124,6 +140,8 @@
   "hidden_rows_note": "{count} verified-signed safe items hidden.",
   "muted": {
     "autorunsc_disabled": "Sysinternals autorunsc not installed or disabled. Set <code>sysinternals.useAutorunsc</code> to <code>true</code> in <code>data/config.json</code>.",
-    "defender_unavailable": "Defender info unavailable."
+    "defender_unavailable": "Defender info unavailable.",
+    "storage_unavailable": "Storage information unavailable.",
+    "storage_empty": "No items to show."
   }
 }

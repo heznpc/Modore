@@ -93,8 +93,58 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     assert "scripts/rule_engine.ps1" in module.WINDOWS_FILES
     assert "scripts/report.jxa.js" in module.MACOS_FILES
     assert "scripts/scanner_helper.jxa.js" in module.MACOS_FILES
+    assert "scripts/modules/macos/storage.sh" in module.MACOS_FILES
+    assert "scripts/build_macos_swift_app.sh" in module.MACOS_FILES
+    assert "Mac앱실행.command" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Package.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/PCHealthCheckMacApp.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/ScanModels.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ProcessRunState.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ViewStyles.swift" in module.MACOS_FILES
 
 
 def test_macos_launcher_is_executable(project_root):
     mode = (project_root / "검사하기.command").stat().st_mode
     assert mode & 0o111
+
+
+def test_macos_swift_launcher_is_executable(project_root):
+    for rel in ("Mac앱실행.command", "scripts/build_macos_swift_app.sh"):
+        mode = (project_root / rel).stat().st_mode
+        assert mode & 0o111, f"{rel} must be executable"
+
+
+def test_vt_env_key_contract_is_runtime_backed(project_root, tmp_path, monkeypatch):
+    monkeypatch.setenv("VT_API_KEY", "dummy-key")
+    module = importlib.import_module("scanner_helper")
+
+    vt = module.VtLookup({"virustotal": {"enabled": False, "apiKey": ""}}, tmp_path)
+
+    assert vt.enabled is True
+    assert vt.cfg["apiKey"] == "dummy-key"
+
+
+def test_macos_jxa_vt_does_not_write_api_key_header_file(project_root):
+    helper = (project_root / "scripts" / "scanner_helper.jxa.js").read_text(encoding="utf-8")
+
+    assert "vt_headers" not in helper
+    assert "-H @" not in helper
+    assert "cfg.enabled = true" in helper
+
+
+def test_powershell_vt_env_key_auto_enables(project_root):
+    helper = (project_root / "scripts" / "vt-lookup.ps1").read_text(encoding="utf-8-sig")
+
+    assert "NotePropertyName enabled -NotePropertyValue $true" in helper
+    assert "hasExplicitEnabled" not in helper
+
+
+def test_release_report_generators_have_investigation_links(project_root):
+    jxa = (project_root / "scripts" / "report.jxa.js").read_text(encoding="utf-8")
+    ps1 = (project_root / "scripts" / "report.ps1").read_text(encoding="utf-8-sig")
+
+    for source in (jxa, ps1):
+        assert "https://www.google.com/search" in source
+        assert "https://www.virustotal.com/gui/ip-address" in source
+        assert "https://www.virustotal.com/gui/file" in source

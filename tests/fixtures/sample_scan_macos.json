@@ -64,6 +64,86 @@
       "memoryPercent": 55.0,
       "totalMemoryGB": 16.0
     },
+    "storage": {
+      "volume": {
+        "mount": "/System/Volumes/Data",
+        "totalGB": 228.0,
+        "usedGB": 204.0,
+        "freeGB": 24.0,
+        "usePercent": 89,
+        "risk": "safe",
+        "note": "저장공간 압박은 낮습니다."
+      },
+      "cleanupCandidates": [
+        {
+          "risk": "warning",
+          "kind": "cache",
+          "label": "User caches",
+          "sizeGB": 2.4,
+          "path": "/Users/sample/Library/Caches",
+          "note": "재생성 가능한 캐시입니다.",
+          "action": "캐시 정리 후보"
+        }
+      ],
+      "developerToolchains": [
+        {
+          "risk": "info",
+          "kind": "android_sdk",
+          "label": "Android SDK root",
+          "sizeGB": 11.0,
+          "path": "/opt/homebrew/share/android-commandlinetools",
+          "note": "Android SDK 루트입니다. 모바일 Android 빌드에 필요할 수 있어 통째 삭제하지 마세요.",
+          "action": "통째 삭제 금지"
+        }
+      ],
+      "accessChecks": [
+        {
+          "risk": "warning",
+          "kind": "privacy_area",
+          "label": "Messages data",
+          "path": "/Users/sample/Library/Messages",
+          "status": "blocked",
+          "note": "Operation not permitted"
+        }
+      ],
+    "accessIssues": [
+      {
+        "risk": "warning",
+        "kind": "privacy_area",
+        "label": "Messages data",
+          "path": "/Users/sample/Library/Messages",
+          "status": "blocked",
+        "note": "Operation not permitted"
+      }
+    ],
+    "runtimeSignals": [
+      {
+        "risk": "warning",
+        "kind": "process_count",
+        "label": "Headless/Playwright Chrome",
+        "count": 3,
+        "action": "브라우저 자동화 종료",
+        "note": "headless Chrome이 살아 있으면 /var/folders 임시 clone을 붙잡을 수 있습니다."
+      },
+      {
+        "risk": "warning",
+        "kind": "process_count",
+        "label": "CoreSimulator processes",
+        "count": 148,
+        "action": "필요한 Simulator만 Booted",
+        "note": "부팅된 Simulator는 런타임 프로세스를 대량으로 띄웁니다."
+      },
+      {
+        "risk": "warning",
+        "kind": "booted_simulator",
+        "label": "iPad Pro 13-inch (M5)",
+        "count": 1,
+        "action": "켜진 Simulator 확인",
+        "note": "iOS 26.3 / 00000000-0000-0000-0000-000000000000"
+      }
+    ],
+    "largestItems": []
+  },
     "virustotal": {
       "enabled": false,
       "callsThisScan": 0,

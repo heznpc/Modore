@@ -116,9 +116,9 @@ function Invoke-Autorunsc {
         if ([string]::IsNullOrWhiteSpace($xmlText)) { return @() }
 
         [xml]$xml = $xmlText
-        $items = @()
+        $items = [System.Collections.Generic.List[object]]::new()
         foreach ($item in $xml.autoruns.item) {
-            $items += [PSCustomObject]@{
+            $items.Add([PSCustomObject]@{
                 category = [string]$item.category
                 entry = [string]$item.entry
                 enabled = [string]$item.enabled
@@ -132,9 +132,9 @@ function Invoke-Autorunsc {
                 sha1 = [string]$item.sha1
                 sha256 = [string]$item.sha256
                 verified = ($item.signer -match '^\(Verified\)')
-            }
+            })
         }
-        return $items
+        return $items.ToArray()
     } catch {
         Write-Host "autorunsc XML 파싱 실패: $($_.Exception.Message)" -ForegroundColor Red
         return $null

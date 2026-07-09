@@ -42,16 +42,10 @@ function Initialize-VtLookup {
 
     # 환경변수 우선: VT_API_KEY가 있으면 config.json의 apiKey를 덮어씀.
     # 공유/CI 환경에서 키를 디스크 평문으로 저장하지 않아도 되는 경로.
-    # 단, 명시적 enabled=false는 사용자 의도이므로 env 키가 있어도 존중함 —
-    # enabled 속성이 *없거나 null일 때*만 env 주입을 옵트인으로 간주.
     $envKey = [System.Environment]::GetEnvironmentVariable('VT_API_KEY')
     if (-not [string]::IsNullOrWhiteSpace($envKey)) {
         $script:VtConfig.virustotal.apiKey = $envKey
-        $hasExplicitEnabled = $script:VtConfig.virustotal.PSObject.Properties['enabled'] -and
-                              ($null -ne $script:VtConfig.virustotal.enabled)
-        if (-not $hasExplicitEnabled) {
-            $script:VtConfig.virustotal | Add-Member -NotePropertyName enabled -NotePropertyValue $true -Force
-        }
+        $script:VtConfig.virustotal | Add-Member -NotePropertyName enabled -NotePropertyValue $true -Force
     }
 
     # 캐시 로드
@@ -230,4 +224,3 @@ function Get-VtIpReputation {
     Set-CachedVt $cacheKey $result
     return $result
 }
-
