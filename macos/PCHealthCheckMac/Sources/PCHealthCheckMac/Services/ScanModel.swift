@@ -1,24 +1,26 @@
-import AppKit
 import Foundation
 import SwiftUI
 
 @MainActor
 final class ScanModel: ObservableObject {
     @Published var state: ScanState = .idle
-    @Published var logText = ""
-    @Published var summary: ScanSummary?
-    @Published var storage: StorageSnapshot?
-    @Published var findings: [ScanFinding] = []
-    @Published var cpuRows: [CpuRow] = []
-    @Published var networkRows: [NetworkRow] = []
-    @Published var autorunRows: [AutorunRow] = []
-    @Published var recentInstalls: [RecentInstallRow] = []
+    @Published private(set) var content = ScanContent.empty
     @Published var selectedReportURL: URL?
     @Published var selectedReportTitle = "리포트"
     @Published var errorMessage: String?
     @Published var reportRevision = 0
     @Published var virusTotalEnabled = false
+    @Published var cleanupPreview: CleanupPreview?
+    @Published var cleanupInFlight = false
+    @Published private(set) var storageHistory: [StorageHistoryEntry] = []
+    @Published private(set) var storageChange: StorageChangeSummary?
+    @Published private(set) var freeSpaceSamples: [FreeSpaceSample] = []
+    @Published private(set) var simulatorKeepNames: Set<String> = []
+    @Published var storageWatchEnabled = false
+    @Published var storageWatchDetail = "상태 확인 중"
+    @Published var storageWatchInFlight = false
 
+    let logStore = ScanLogStore()
     let projectRoot: URL
     private let normalReportName = "검사결과.html"
     private let shareReportName = "검사결과_공유용.html"
@@ -26,27 +28,52 @@ final class ScanModel: ObservableObject {
     init() {
         self.projectRoot = Self.detectProjectRoot()
         self.virusTotalEnabled = Self.loadVirusTotalEnabled(projectRoot: projectRoot)
+        self.simulatorKeepNames = Self.loadSimulatorKeepNames()
         refreshExistingResults()
+        Task { await refreshStorageWatchStatus() }
     }
 
     var isRunning: Bool { state == .running }
+    var isBusy: Bool { isRunning || cleanupInFlight || storageWatchInFlight }
+    var logText: String { logStore.text }
+    var summary: ScanSummary? { content.summary }
+    var macOSSecurity: MacOSSecurityStatus? { content.macOSSecurity }
+    var storage: StorageSnapshot? { content.storage }
+    var findings: [ScanFinding] { content.findings }
+    var cpuRows: [CpuRow] { content.cpuRows }
+    var networkRows: [NetworkRow] { content.networkRows }
+    var autorunRows: [AutorunRow] { content.autorunRows }
+    var recentInstalls: [RecentInstallRow] { content.recentInstalls }
     var normalReportURL: URL { projectRoot.appendingPathComponent(normalReportName) }
     var shareReportURL: URL { projectRoot.appendingPathComponent(shareReportName) }
     var hasNormalReport: Bool { FileManager.default.fileExists(atPath: normalReportURL.path) }
     var hasShareReport: Bool { FileManager.default.fileExists(atPath: shareReportURL.path) }
     var hasAnyReport: Bool { hasNormalReport || hasShareReport }
+    var lastStorageScanAt: Date? { storageHistory.last?.capturedAt }
+    var storageSnapshotIsStale: Bool {
+        guard let lastStorageScanAt else { return true }
+        return Date().timeIntervalSince(lastStorageScanAt) >= 30 * 60
+    }
+    var storageSnapshotAgeText: String {
+        guard let lastStorageScanAt else { return "검사 기록 없음" }
+        let seconds = max(0, Date().timeIntervalSince(lastStorageScanAt))
+        if seconds < 60 { return "방금 검사" }
+        if seconds < 3600 { return "\(Int(seconds / 60))분 전 검사" }
+        if seconds < 86_400 { return "\(Int(seconds / 3600))시간 전 검사" }
+        return lastStorageScanAt.formatted(date: .abbreviated, time: .shortened)
+    }
 
     func runScan() {
-        guard !isRunning else { return }
+        guard !isBusy else { return }
         state = .running
         errorMessage = nil
-        logText = ""
+        logStore.clear()
         appendLog("PC 건강검진 Mac Edition 시작")
         appendLog("프로젝트: \(projectRoot.path)")
 
         let root = projectRoot
         Task {
-            let ok = await Self.runPipeline(projectRoot: root) { line in
+            let ok = await ScanPipeline.run(projectRoot: root) { line in
                 Task { @MainActor in
                     self.appendLog(line)
                 }
@@ -55,135 +82,12 @@ final class ScanModel: ObservableObject {
         }
     }
 
-    func showNormalReport() {
-        guard hasNormalReport else { return }
-        selectedReportURL = normalReportURL
-        selectedReportTitle = "일반 리포트"
-        reportRevision += 1
-    }
-
-    func showShareReport() {
-        guard hasShareReport else { return }
-        selectedReportURL = shareReportURL
-        selectedReportTitle = "공유용 리포트"
-        reportRevision += 1
-    }
-
-    func openNormalReportInBrowser() {
-        guard hasNormalReport else { return }
-        selectedReportURL = normalReportURL
-        selectedReportTitle = "일반 리포트"
-        NSWorkspace.shared.open(normalReportURL)
-    }
-
-    func openShareReportInBrowser() {
-        guard hasShareReport else { return }
-        selectedReportURL = shareReportURL
-        selectedReportTitle = "공유용 리포트"
-        NSWorkspace.shared.open(shareReportURL)
-    }
-
-    func openCurrentReportInBrowser() {
-        guard let url = selectedReportURL else { return }
-        NSWorkspace.shared.open(url)
-    }
-
-    func revealReportsInFinder() {
-        let target = selectedReportURL ?? (hasNormalReport ? normalReportURL : projectRoot)
-        NSWorkspace.shared.activateFileViewerSelecting([target])
-    }
-
-    func openConfigInFinder() {
-        NSWorkspace.shared.activateFileViewerSelecting([projectRoot.appendingPathComponent("data/config.json")])
-    }
-
-    func openFullDiskAccessSettings() {
-        let candidates = [
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
-            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles"
-        ]
-        for value in candidates {
-            if let url = URL(string: value), NSWorkspace.shared.open(url) {
-                return
-            }
-        }
-    }
-
-    func revealStorageItem(_ item: StorageItem) {
-        let url = URL(fileURLWithPath: item.path)
-        if FileManager.default.fileExists(atPath: url.path) {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        } else {
-            errorMessage = "경로를 찾을 수 없어 클립보드에 복사했습니다: \(item.path)"
-            copyToPasteboard(item.path)
-        }
-    }
-
-    func copyGuide(for item: StorageItem) {
-        copyToPasteboard(cleanupGuide(for: item))
-    }
-
-    func copyCleanupGuide() {
-        guard let storage else { return }
-        let candidates = (storage.cleanupCandidates + storage.developerToolchains).prefix(12)
-        let lines = candidates.map { cleanupGuide(for: $0) }
-        let text = """
-        PC 건강검진 Mac Edition 정리 가이드
-
-        원칙:
-        - 삭제는 자동 실행하지 않습니다.
-        - Finder에서 위치를 확인하고, 실행 중인 앱/Xcode/Simulator/브라우저를 먼저 종료하세요.
-        - Android SDK, Simulator runtime, 언어 toolchain은 프로젝트 요구 버전을 확인하기 전 통째 삭제하지 마세요.
-
-        \(lines.joined(separator: "\n\n"))
-        """
-        copyToPasteboard(text)
-    }
-
-    func copyFullDiskAccessGuide() {
-        let text = """
-        PC 건강검진 Mac Edition - Full Disk Access 안내
-
-        macOS는 Mail, Messages, Safari, 앱 컨테이너 같은 일부 영역을 개인정보 보호 설정으로 숨길 수 있습니다.
-        리포트가 비어 보이거나 일부 앱 데이터가 빠진다면:
-
-        1. 시스템 설정을 엽니다.
-        2. 개인정보 보호 및 보안 > 전체 디스크 접근 권한으로 이동합니다.
-        3. PC Health Check Mac 앱 또는 Terminal을 허용합니다.
-        4. 앱을 다시 실행한 뒤 검사를 다시 돌립니다.
-
-        이 권한은 읽기 범위를 넓히기 위한 것이며, PC Health Check는 삭제를 자동 실행하지 않습니다.
-        """
-        copyToPasteboard(text)
-    }
-
-    func clearLog() {
-        logText = ""
-    }
-
-    private func cleanupGuide(for item: StorageItem) -> String {
-        """
-        \(item.label) (\(item.sizeText))
-        경로: \(item.path)
-        분류: \(item.kind)
-        권장 확인: \(item.action)
-        설명: \(item.note)
-        """
-    }
-
-    private func copyToPasteboard(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        appendLog("클립보드에 복사했습니다.")
-    }
-
-    private func finishRun(success: Bool) {
+    func finishRun(success: Bool) {
         refreshExistingResults()
         if success {
             state = .finished
             reportRevision += 1
             appendLog("완료: 일반 리포트와 공유용 리포트를 생성했습니다.")
-            showNormalReport()
         } else {
             state = .failed
             errorMessage = "검사 또는 리포트 생성 중 오류가 발생했습니다. 실행 로그를 확인하세요."
@@ -205,168 +109,86 @@ final class ScanModel: ObservableObject {
         let url = projectRoot.appendingPathComponent("scan_result.json")
         guard let data = try? Data(contentsOf: url),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            summary = nil
-            storage = nil
-            findings = []
-            cpuRows = []
-            networkRows = []
-            autorunRows = []
-            recentInstalls = []
+            content = .empty
+            storageHistory = StorageHistoryStore.load()
+            storageChange = StorageChangeSummary(entries: storageHistory)
+            freeSpaceSamples = StorageHistoryStore.loadFreeSpaceSamples()
             return
         }
-        summary = ScanSummary(json: root["summary"] as? [String: Any])
-        let sections = root["sections"] as? [String: Any]
-        storage = StorageSnapshot(json: sections?["storage"] as? [String: Any])
-        findings = Self.array(root["findings"]).compactMap(ScanFinding.init(json:))
-        cpuRows = Self.array(sections?["cpu"]).compactMap(CpuRow.init(json:))
-        networkRows = Self.array(sections?["network"]).compactMap(NetworkRow.init(json:))
-        autorunRows = Self.array(sections?["autoruns"]).compactMap(AutorunRow.init(json:))
-        recentInstalls = Self.array(sections?["recentInstalls"]).compactMap(RecentInstallRow.init(json:))
+        content = ScanContent(root: root)
+        recordStorageHistory(scanRoot: root, scanURL: url)
+        freeSpaceSamples = StorageHistoryStore.loadFreeSpaceSamples()
     }
 
-    private func appendLog(_ text: String) {
-        if logText.isEmpty {
-            logText = text
-        } else {
-            logText += "\n" + text
+    private func recordStorageHistory(scanRoot: [String: Any], scanURL: URL) {
+        guard let storage else {
+            storageHistory = StorageHistoryStore.load()
+            storageChange = StorageChangeSummary(entries: storageHistory)
+            return
         }
+
+        let sourceText = JsonRead.string(scanRoot, "scannedAt")
+        let fileDate = (try? scanURL.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate ?? Date()
+        let capturedAt = Self.scanDate(from: sourceText) ?? fileDate
+        let sourceID = sourceText.isEmpty
+            ? String(Int(capturedAt.timeIntervalSince1970))
+            : sourceText
+        let entry = StorageHistoryEntry(sourceID: sourceID, capturedAt: capturedAt, storage: storage)
+
+        do {
+            storageHistory = try StorageHistoryStore.record(entry)
+        } catch {
+            storageHistory = StorageHistoryStore.load()
+            appendLog("저장공간 이력을 기록하지 못했습니다: \(error.localizedDescription)")
+        }
+        storageChange = StorageChangeSummary(entries: storageHistory)
     }
 
-    private static func runPipeline(projectRoot: URL, onOutput: @escaping @Sendable (String) -> Void) async -> Bool {
-        let scanner = await runProcess(
+    func appendLog(_ text: String) {
+        logStore.append(text)
+    }
+
+    func replaceSimulatorKeepNames(with names: Set<String>) {
+        simulatorKeepNames = names
+    }
+
+    private func refreshStorageWatchStatus() async {
+        let result = await LocalProcessRunner.capture(
             executable: "/bin/bash",
-            arguments: ["./scripts/scanner.sh"],
-            currentDirectory: projectRoot,
-            environment: [
-                "PCH_STORAGE_DU_TIMEOUT": "4",
-                "PCH_STORAGE_TOTAL_DU_BUDGET": "24"
-            ],
-            onOutput: onOutput
+            arguments: ["./scripts/schedule.sh", "--status"],
+            currentDirectory: projectRoot
         )
-        guard scanner == 0 else {
-            onOutput("scanner.sh 실패: \(scanner)")
-            return false
-        }
-
-        let normal = await runReport(
-            projectRoot: projectRoot,
-            output: projectRoot.appendingPathComponent("검사결과.html"),
-            redacted: false,
-            onOutput: onOutput
-        )
-        guard normal == 0 else {
-            onOutput("일반 리포트 생성 실패: \(normal)")
-            return false
-        }
-
-        let share = await runReport(
-            projectRoot: projectRoot,
-            output: projectRoot.appendingPathComponent("검사결과_공유용.html"),
-            redacted: true,
-            onOutput: onOutput
-        )
-        if share != 0 {
-            onOutput("공유용 리포트 생성 실패: \(share)")
-            return false
-        }
-        return true
+        let values = Self.protocolValues(result.output)
+        storageWatchEnabled = result.status == 0 && values["enabled"] == "true"
+        storageWatchDetail = storageWatchEnabled
+            ? "매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림"
+            : "꺼짐 · 자동 삭제 없음"
+        freeSpaceSamples = StorageHistoryStore.loadFreeSpaceSamples()
     }
 
-    private static func runReport(
-        projectRoot: URL,
-        output: URL,
-        redacted: Bool,
-        onOutput: @escaping @Sendable (String) -> Void
-    ) async -> Int32 {
-        var env = [
-            "PCH_PROJECT_DIR": projectRoot.path,
-            "PCH_REPORT_OUTPUT": output.path
-        ]
-        if redacted {
-            env["PCH_REDACT"] = "true"
-        }
-        return await runProcess(
-            executable: "/usr/bin/osascript",
-            arguments: ["-l", "JavaScript", projectRoot.appendingPathComponent("scripts/report.jxa.js").path],
-            currentDirectory: projectRoot,
-            environment: env,
-            onOutput: onOutput
-        )
+    private static func scanDate(from value: String) -> Date? {
+        guard !value.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.date(from: value)
     }
 
-    private static func runProcess(
-        executable: String,
-        arguments: [String],
-        currentDirectory: URL,
-        environment: [String: String],
-        onOutput: @escaping @Sendable (String) -> Void
-    ) async -> Int32 {
-        await withCheckedContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: executable)
-            process.arguments = arguments
-            process.currentDirectoryURL = currentDirectory
-            var mergedEnvironment = ProcessInfo.processInfo.environment
-            environment.forEach { mergedEnvironment[$0.key] = $0.value }
-            process.environment = mergedEnvironment
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            let runState = ProcessRunState()
-
-            pipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-                text.split(whereSeparator: \.isNewline).forEach { onOutput(String($0)) }
-            }
-
-            process.terminationHandler = { terminated in
-                pipe.fileHandleForReading.readabilityHandler = nil
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if !data.isEmpty, let text = String(data: data, encoding: .utf8) {
-                    text.split(whereSeparator: \.isNewline).forEach { onOutput(String($0)) }
-                }
-                runState.resume(continuation, returning: terminated.terminationStatus)
-            }
-
-            do {
-                try process.run()
-            } catch {
-                onOutput("실행 실패: \(executable) \(arguments.joined(separator: " "))")
-                onOutput(error.localizedDescription)
-                runState.resume(continuation, returning: -1)
+    static func protocolValues(_ text: String) -> [String: String] {
+        var values: [String: String] = [:]
+        for line in text.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            if parts.count == 2 {
+                values[String(parts[0])] = String(parts[1])
             }
         }
+        return values
     }
 
     private static func detectProjectRoot() -> URL {
-        let fm = FileManager.default
-        let env = ProcessInfo.processInfo.environment
-        if let path = env["PCH_PROJECT_DIR"], hasScanner(at: URL(fileURLWithPath: path)) {
-            return URL(fileURLWithPath: path)
-        }
-        if let resourceURL = Bundle.main.resourceURL {
-            let marker = resourceURL.appendingPathComponent("project-root.txt")
-            if let text = try? String(contentsOf: marker, encoding: .utf8) {
-                let path = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if hasScanner(at: URL(fileURLWithPath: path)) {
-                    return URL(fileURLWithPath: path)
-                }
-            }
-        }
-        var current = URL(fileURLWithPath: fm.currentDirectoryPath)
-        for _ in 0..<8 {
-            if hasScanner(at: current) {
-                return current
-            }
-            current.deleteLastPathComponent()
-        }
-        return URL(fileURLWithPath: fm.currentDirectoryPath)
-    }
-
-    private static func hasScanner(at url: URL) -> Bool {
-        FileManager.default.fileExists(atPath: url.appendingPathComponent("scripts/scanner.sh").path)
+        RuntimeWorkspace.resolve()
     }
 
     private static func loadVirusTotalEnabled(projectRoot: URL) -> Bool {
@@ -382,7 +204,27 @@ final class ScanModel: ObservableObject {
         return enabled && !apiKey.isEmpty
     }
 
-    private static func array(_ value: Any?) -> [[String: Any]] {
-        value as? [[String: Any]] ?? []
+    private static var simulatorKeepURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/PC Health Check/simulator-keep.txt")
+    }
+
+    private static func loadSimulatorKeepNames() -> Set<String> {
+        guard let text = try? String(contentsOf: simulatorKeepURL, encoding: .utf8) else { return [] }
+        return Set(text.split(whereSeparator: \.isNewline).map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty })
+    }
+
+    static func saveSimulatorKeepNames(_ names: Set<String>) throws {
+        let url = simulatorKeepURL
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let text = names.sorted().joined(separator: "\n") + (names.isEmpty ? "" : "\n")
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

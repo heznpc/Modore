@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "PC Health Check — A security scanner that explains your PC",
-    "description": "A local diagnostic that explains Korean banking plugins and macOS's vague System Data / Developer storage categories in context. PC Health Check ships as Windows Edition and Mac Edition, with traffic-light reports and hash-only VirusTotal lookup."
+    "title": "PC Health Check — A local diagnostic for the PC that feels busy behind your back",
+    "description": "A local diagnostic that explains hidden-miner suspicion, Korean banking-plugin false positives, and macOS's vague System Data / Developer storage categories in context. PC Health Check ships as Windows Edition and Mac Edition, with traffic-light reports and hash-only VirusTotal lookup."
   },
   "brand": {
     "name": "PC Health Check"
@@ -14,8 +14,8 @@
   },
   "hero": {
     "tag": "v0.3 · Windows Edition / Mac Edition",
-    "title": "A security scanner that <em>explains</em> your PC.",
-    "subtitle": "Generic antivirus tools flag legitimate Korean banking plugins as malware. PC Health Check recognizes IPinside, nProtect, MagicLine, V3, and surfaces only the real threats.",
+    "title": "A local diagnostic for the PC that feels <em>busy behind your back</em>.",
+    "subtitle": "When fans spin, CPU/GPU spikes, or unknown processes appear, PC Health Check gathers miner signals, autoruns, network context, and Korean security-plugin explanations before you delete anything.",
     "cta_primary": "Download zip <span class='arrow'>→</span>",
     "cta_secondary": "Read the source",
     "meta": {
@@ -44,8 +44,8 @@
   },
   "problem": {
     "kicker": "PROBLEM",
-    "heading": "When \"30 suspicious items\" are flagged, <em>which are actually threats?</em>",
-    "lead": "A Korean PC is full of banking, government, and e-commerce security plugins. They all look suspicious to generic scanners, but they're legitimate. Non-technical users can't tell the difference, so they either ignore all warnings or uninstall critical software — both dangerous.",
+    "heading": "When you wonder \"is my PC secretly mining?\", <em>what should you check first?</em>",
+    "lead": "A slow PC, spinning fans, high CPU/GPU, and unknown startup entries create real anxiety. A Korean PC also carries banking, government, and e-commerce security plugins that often look suspicious. PC Health Check gathers evidence before you ignore everything or delete the wrong thing.",
     "generic": {
       "label": "Generic scanner",
       "quote": "\"30 suspicious items detected.\""
@@ -73,10 +73,10 @@
   "how": {
     "kicker": "HOW IT WORKS",
     "heading": "8 diagnostics → 1 HTML report.",
-    "lead": "No framework. No binary. OS-specific scripts collect system state, then OS-native runtimes assemble a single HTML report you open in your browser.",
+    "lead": "No tracking installer. OS-specific scripts collect system state, then Windows assembles a browser HTML report while Mac uses a SwiftUI dashboard plus HTML export.",
     "p1": { "title": "Collect", "desc": "Processes, network, ports, autoruns, security posture. Sysinternals + launchd + VirusTotal hash lookup." },
     "p2": { "title": "Normalize", "desc": "Match against Korean software whitelist, assign traffic-light verdict. OS-agnostic schema." },
-    "p3": { "title": "Render", "desc": "A single HTML file opened by the browser. No executable, no signing, no tracking." }
+    "p3": { "title": "Render", "desc": "Windows gets a single HTML report. Mac gets a SwiftUI dashboard plus HTML export. No tracking installer or report upload." }
   },
   "privacy": {
     "kicker": "PRIVACY · AUDITABLE",
@@ -89,7 +89,7 @@
       },
       "telemetry": {
         "title": "Zero telemetry",
-        "desc": "No usage stats, no error reports, nothing sent to us. Outbound calls are limited to opt-in VirusTotal lookups and optional Sysinternals downloads."
+        "desc": "No usage stats, no error reports, nothing sent to us. Diagnostic runtime outbound calls are limited to opt-in VirusTotal lookups and optional Sysinternals downloads."
       },
       "local": {
         "title": "Local cache only",
@@ -97,7 +97,7 @@
       },
       "audit": {
         "title": "Source you can read",
-        "desc": "Zero compiled binaries. Readable PowerShell · Bash · JXA source. <code>grep -R 'Invoke-RestMethod\\|Invoke-WebRequest\\|curl\\|virustotal.com/api' scripts/</code> finds outbound calls."
+        "desc": "Readable PowerShell · Bash · JXA source. Release zips do not bundle prebuilt diagnostic binaries. <code>grep -R 'Invoke-RestMethod\\|Invoke-WebRequest\\|curl\\|virustotal.com/api' scripts/</code> finds outbound calls."
       }
     }
   },

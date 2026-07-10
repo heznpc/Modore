@@ -3,9 +3,6 @@
    다크 에디토리얼 + 터미널. GitHub dark 계열 팔레트.
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
-@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
-
 :root {
   --bg: #0a0e14;
   --bg-1: #0d1117;
@@ -28,11 +25,10 @@
   --red: #f85149;
   --red-soft: #f8514920;
 
-  --font-sans: 'Inter', 'Pretendard', 'Apple SD Gothic Neo',
-               -apple-system, BlinkMacSystemFont, 'Segoe UI',
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Segoe UI',
                'Hiragino Sans', 'Noto Sans JP', sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
-  --font-korean: 'Pretendard', 'Inter', -apple-system, sans-serif;
+  --font-mono: 'SF Mono', Menlo, Consolas, monospace;
+  --font-korean: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

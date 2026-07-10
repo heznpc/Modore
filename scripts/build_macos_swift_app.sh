@@ -16,6 +16,7 @@ APP_NAME="PC Health Check Mac.app"
 APP_DIR="$BUILD_DIR/$APP_NAME"
 EXECUTABLE_NAME="PCHealthCheckMac"
 IDENTIFIER="me.heznpc.pchealthcheck.mac"
+APP_VERSION="${PCH_APP_VERSION:-0.3.0}"
 
 if [[ "$(uname)" != "Darwin" ]]; then
     echo "ERROR: SwiftUI Mac app build is macOS-only." >&2
@@ -41,21 +42,71 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$EXECUTABLE" "$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
 chmod +x "$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
-printf "%s\n" "$ROOT_DIR" > "$APP_DIR/Contents/Resources/project-root.txt"
+
+RUNTIME_DIR="$APP_DIR/Contents/Resources/runtime"
+RUNTIME_FILES=(
+    "scripts/scanner.sh"
+    "scripts/cleanup.sh"
+    "scripts/storage_watch.sh"
+    "scripts/schedule.sh"
+    "scripts/report.jxa.js"
+    "scripts/scanner_helper.jxa.js"
+    "scripts/modules/macos/cpu.sh"
+    "scripts/modules/macos/network.sh"
+    "scripts/modules/macos/autoruns.sh"
+    "scripts/modules/macos/security.sh"
+    "scripts/modules/macos/storage.sh"
+    "data/config.json"
+    "data/explain.json"
+    "data/whitelist.json"
+    "data/report_i18n/ko.json"
+    "data/report_i18n/en.json"
+    "data/report_i18n/ja.json"
+    "rules/README.md"
+    "rules/autoruns.json"
+    "rules/defender.json"
+    "rules/installs.json"
+    "rules/network.json"
+    "rules/process.json"
+)
+
+for relative_path in "${RUNTIME_FILES[@]}"; do
+    source_path="$ROOT_DIR/$relative_path"
+    destination_path="$RUNTIME_DIR/$relative_path"
+    if [[ ! -f "$source_path" ]]; then
+        echo "ERROR: runtime file missing: $source_path" >&2
+        exit 1
+    fi
+    mkdir -p "$(dirname "$destination_path")"
+    cp "$source_path" "$destination_path"
+done
+find "$RUNTIME_DIR/scripts" -type f -name '*.sh' -exec chmod +x {} \;
+
+runtime_hash="$({
+    cd "$RUNTIME_DIR"
+    find . -type f | LC_ALL=C sort | while IFS= read -r relative_path; do
+        /usr/bin/shasum -a 256 "$relative_path"
+    done
+} | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+printf "%s:%s\n" "$APP_VERSION" "$runtime_hash" > "$RUNTIME_DIR/runtime-manifest.txt"
+
+if [[ "${PCH_STANDALONE_BUNDLE:-0}" != "1" ]]; then
+    printf "%s\n" "$ROOT_DIR" > "$APP_DIR/Contents/Resources/project-root.txt"
+fi
 
 /usr/bin/plutil -create xml1 "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleName string PC Health Check Mac" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string PC Health Check Mac" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $IDENTIFIER" "$APP_DIR/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 0.3.0" "$APP_DIR/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.3.0" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $APP_VERSION" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $APP_VERSION" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string $EXECUTABLE_NAME" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 13.0" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :NSHighResolutionCapable bool true" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :NSHumanReadableCopyright string Heznpc" "$APP_DIR/Contents/Info.plist"
 
-if command -v codesign >/dev/null 2>&1; then
+if command -v codesign >/dev/null 2>&1 && [[ "${PCH_SKIP_ADHOC_SIGN:-0}" != "1" ]]; then
     codesign --force --deep --sign - "$APP_DIR" >/dev/null
 fi
 

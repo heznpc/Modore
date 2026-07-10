@@ -94,14 +94,40 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     assert "scripts/report.jxa.js" in module.MACOS_FILES
     assert "scripts/scanner_helper.jxa.js" in module.MACOS_FILES
     assert "scripts/modules/macos/storage.sh" in module.MACOS_FILES
+    assert "scripts/cleanup.sh" in module.MACOS_FILES
+    assert "scripts/storage_watch.sh" in module.MACOS_FILES
+    assert "scripts/schedule.sh" in module.MACOS_FILES
     assert "scripts/build_macos_swift_app.sh" in module.MACOS_FILES
+    assert "scripts/package_macos_release.sh" in module.MACOS_FILES
     assert "Mac앱실행.command" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Package.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/PCHealthCheckMacApp.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/ScanModels.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/ScanContent.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/StorageModels.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/CleanupModels.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/StorageHistory.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/WorkspaceSelection.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/RuntimeWorkspace.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModelActions.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanPipeline.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/LocalProcessRunner.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/CleanupPresentation.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ProcessRunState.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ScanLogStore.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ViewStyles.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/AppShell.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/CleanupView.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/CleanupInspectorView.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/DevelopmentView.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/DevelopmentInspectorView.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/InventoryView.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/InventoryInspectorView.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/NativeSettingsComponents.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/NativeSourceIcons.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/StorageVolumeCard.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Tests/PCHealthCheckMacTests/PCHealthCheckMacTests.swift" in module.MACOS_FILES
 
 
 def test_macos_launcher_is_executable(project_root):
@@ -110,9 +136,63 @@ def test_macos_launcher_is_executable(project_root):
 
 
 def test_macos_swift_launcher_is_executable(project_root):
-    for rel in ("Mac앱실행.command", "scripts/build_macos_swift_app.sh"):
+    for rel in (
+        "Mac앱실행.command",
+        "scripts/build_macos_swift_app.sh",
+        "scripts/package_macos_release.sh",
+    ):
         mode = (project_root / rel).stat().st_mode
         assert mode & 0o111, f"{rel} must be executable"
+
+
+def test_macos_distribution_script_requires_explicit_credentials(project_root):
+    source = (project_root / "scripts/package_macos_release.sh").read_text(encoding="utf-8")
+
+    assert "PCH_CODESIGN_IDENTITY" in source
+    assert "PCH_NOTARY_PROFILE" in source
+    assert "--keychain-profile" in source
+    assert "PCH_STANDALONE_BUNDLE=1" in source
+    assert "project-root marker" in source
+
+
+def test_macos_scan_completion_does_not_open_browser_automatically(project_root):
+    source = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift"
+    ).read_text(encoding="utf-8")
+    finish_run = source.split("func finishRun", 1)[1].split(
+        "private func refreshExistingResults", 1
+    )[0]
+
+    assert "showNormalReport()" not in finish_run
+
+
+def test_macos_high_frequency_log_state_is_isolated(project_root):
+    source = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift"
+    ).read_text(encoding="utf-8")
+    overview = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/StorageOverviewView.swift"
+    ).read_text(encoding="utf-8")
+
+    assert "@Published var logText" not in source
+    assert "let logStore = ScanLogStore()" in source
+    assert "@Published private(set) var content = ScanContent.empty" in source
+    assert "LocalProcessRunner.capture" in source
+    assert "struct StorageOverviewPage: View" not in overview
+
+
+def test_macos_timed_out_cleanup_measurements_remain_visible(project_root):
+    helper = (project_root / "scripts/scanner_helper.jxa.js").read_text(encoding="utf-8")
+    history = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/StorageHistory.swift"
+    ).read_text(encoding="utf-8")
+
+    assert 'item.measureStatus === "timed_out"' in helper
+    assert "intersection(after.keys)" in history
 
 
 def test_vt_env_key_contract_is_runtime_backed(project_root, tmp_path, monkeypatch):

@@ -26,10 +26,18 @@ Windows와 macOS 모두 지원합니다.
 [ macOS 사용법 ]
 
   SwiftUI 앱으로 실행:
-  1. "Mac앱실행.command" 우클릭 → "열기"
-  2. 처음 실행 시 SwiftUI 앱을 빌드한 뒤 자동으로 엽니다.
-  3. 앱에서 [빠른 검사 실행]을 누르면 네이티브 대시보드에 결과가 바로 표시됩니다.
-  4. HTML/공유용 버튼은 브라우저로 열거나 다른 사람에게 보여줄 때만 사용하세요.
+  1. 공증된 DMG가 배포된 버전이면 앱을 Applications로 옮겨 바로 실행합니다.
+     소스 ZIP 버전은 "Mac앱실행.command" 우클릭 → "열기"로 빌드합니다.
+  2. 소스 모드는 처음 실행 시 SwiftUI 앱을 빌드한 뒤 자동으로 엽니다.
+  3. 앱에서 [지금 검사]를 누르면 요약 화면에 남은 공간과 직전 검사 이후 변화가 표시됩니다.
+  4. [왜 변했나]에서 증가한 경로와 추적되지 않은 APFS/swap/임시 파일 변화를 구분해 확인합니다.
+  5. [공간 정리]에서 항목을 선택하고 오른쪽 [정리 검토]를 누르면 미리보기가 열립니다.
+  6. 대상 경로, 예상 크기, 종료해야 할 프로세스와 재다운로드 비용을 확인한 뒤 개별 승인하세요.
+  7. 설치 앱은 번들 ID로 다시 확인한 뒤 앱과 정확히 귀속되는 데이터만 휴지통으로 이동합니다.
+  8. Simulator는 항목을 선택한 뒤 오른쪽 [보존]/[보존 해제]로 관리합니다.
+     Shutdown 상태이며 보존되지 않은 기기만 [삭제 검토]가 나타납니다.
+  9. "매시간 확인"을 켜면 로컬 용량 표본을 제한된 개수만 기록하고 위험할 때 알림을 보냅니다.
+  10. 툴바의 리포트 메뉴는 브라우저로 열거나 다른 사람에게 보여줄 때만 사용하세요.
 
   스크립트 메뉴로 실행:
   1. 터미널을 열거나, "검사하기.command" 더블클릭
@@ -62,7 +70,15 @@ Windows와 macOS 모두 지원합니다.
   - AI 연동, OpenAI/Claude/Codex API 호출, 토큰 사용은 없습니다.
   - 검사 결과를 서버로 업로드하지 않습니다.
   - VirusTotal 조회를 직접 켠 경우에만 SHA-256 해시가 외부 조회됩니다.
-  - SwiftUI 앱은 삭제를 자동 실행하지 않고, Finder 열기와 정리 가이드 복사까지만 제공합니다.
+  - SwiftUI 앱은 삭제를 자동 실행하지 않습니다.
+  - 지원되는 캐시 정리는 고정된 로컬 레시피만 사용하며 미리보기와 개별 승인을 거칩니다.
+  - 관련 Codex/Claude/Chrome/Xcode/Simulator 작업이 실행 중이면 정리를 차단합니다.
+  - Codex 세션 JSONL, Claude 로컬 에이전트 작업공간, SDK, Simulator 런타임에는 정리 버튼이 생기지 않습니다.
+  - 정리 후에는 다시 검사하며 영수증을 ~/Library/Application Support/PC Health Check/cleanup-receipts/ 에 남깁니다.
+  - 앱 제거는 즉시 영구 삭제하지 않고 ~/.Trash/PC Health Check-... 폴더로 이동합니다.
+  - 저장공간 감시는 자동 정리를 하지 않으며 20GB 미만 또는 직전보다 8GB 이상 줄 때만 알립니다.
+  - 검사별 경로 크기 이력은 최대 180개, 시간별 여유 공간 표본은 최대 336개만 로컬에 보관합니다.
+  - 이력 파일은 ~/Library/Application Support/PC Health Check/ 아래에 600 권한으로 저장되며 외부로 전송되지 않습니다.
   - SwiftUI 앱의 기본 화면은 웹뷰가 아니라 네이티브 진단 대시보드입니다.
   - macOS가 Mail/Messages/Safari/앱 컨테이너를 숨기면 Full Disk Access 안내가 표시됩니다.
   - SwiftUI 빠른 검사는 큰 Simulator/SDK 폴더에서 오래 멈추지 않도록 크기 측정 시간을 제한합니다.
@@ -135,6 +151,9 @@ Windows와 macOS 모두 지원합니다.
      ├─ menu.ps1          ← Windows 메뉴
      ├─ scanner.ps1       ← Windows 스캐너
      ├─ scanner.sh        ← macOS 스캐너
+     ├─ cleanup.sh        ← macOS 정리 미리보기/승인 실행
+     ├─ storage_watch.sh  ← 저장공간 급감 감시
+     ├─ schedule.sh       ← 감시 LaunchAgent 켜기/끄기
      ├─ scanner_helper.jxa.js ← macOS 데이터 집계
      ├─ build_macos_swift_app.sh ← macOS SwiftUI 앱 빌드
      ├─ monitor.ps1       ← 5분 CPU 관찰 (Windows)

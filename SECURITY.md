@@ -40,6 +40,7 @@ In scope:
 - The Sysinternals binary download + verification path (`scripts/sigcheck-helper.ps1`, `scripts/autorunsc-helper.ps1`).
 - The VirusTotal integration (`scripts/scanner_helper.jxa.js`, `scripts/vt-lookup.ps1`).
 - The HTML report generator's escaping logic (`scripts/report.ps1`, `scripts/report.jxa.js`, `scripts/report.py` for development parity tests).
+- The macOS maintenance boundary (`scripts/cleanup.sh`, `scripts/storage_watch.sh`, `scripts/schedule.sh`), including recipe allowlisting, process preconditions, path canonicalization, symlink rejection, approval gating, LaunchAgent generation, and local receipts.
 - The landing page's i18n loader (`docs/script.js`) — including XSS via translation JSON.
 
 Out of scope:
@@ -50,9 +51,16 @@ Out of scope:
 
 ## Trust model
 
-- This project ships runtime releases as readable PowerShell / Bash / JXA source. No compiled binaries are bundled.
+- Source release ZIPs ship readable PowerShell / Bash / JXA / Swift source and no compiled diagnostic binary. An optional separately published notarized DMG contains a compiled SwiftUI app plus the same allowlisted readable Mac runtime resources; its hash is published with the release.
 - The only external binaries the tool executes are Sysinternals `sigcheck.exe` and `autorunsc.exe`, both downloaded from `https://live.sysinternals.com/` and **verified via `Get-AuthenticodeSignature`** against a Microsoft signer subject. Verification runs **on every invocation**, not only at first download — the cache directory under `%LOCALAPPDATA%` is user-writable, so a cached `.exe` is re-validated each run to defend against post-cache tampering by other user-mode malware (the scenario this tool exists to detect). If the signature check fails, the binary is deleted and the tool falls back to a fresh download (which is itself re-verified).
 - VirusTotal outbound calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.jxa.js`. Optional Sysinternals downloads live in `scripts/sigcheck-helper.ps1` and `scripts/autorunsc-helper.ps1`. Grep `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api` to audit.
+- The Mac cleanup harness never accepts a caller-supplied filesystem path. It resolves a fixed recipe ID to targets under the current user's home or Chrome's temporary clone directory, rejects symlinked/non-canonical targets, and requires `--owner-approved` for execution. Preview is read-only.
+- Protected histories (`~/.codex/sessions`, Claude local-agent workspaces), SDKs, Simulator runtimes, and Codex log databases have no executable cleanup recipe. Cleanup receipts are mode `0600` inside a mode `0700` local directory.
+- Dynamic app recipes accept a validated bundle ID, independently rediscover matching bundles under `/Applications` or `~/Applications`, block running bundles, and move only exact bundle-ID residue to a unique Trash folder. They never accept an app path from scan output.
+- Simulator recipes accept a UUID only after `simctl` reports that exact available device. Booted devices and exact names in the owner-only keep list are rejected; runtime assets are never a target.
+- The optional hourly LaunchAgent runs the read-only free-space watcher. Installing or removing it requires explicit approval, and the watcher has no cleanup command.
+- Before reusing the staged standalone runtime, the app compares every bundled immutable runtime file byte-for-byte. A missing, symlinked, or modified script/rule is replaced from the signed app bundle; only the user's `data/config.json` is preserved across refreshes.
+- The SwiftUI app contains no LLM client. MCP, skills, plugins, and external AI models are not required for scanning or cleanup and cannot authorize a cleanup action through this release runtime.
 
 ## Hall of thanks
 

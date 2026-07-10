@@ -4,7 +4,7 @@
 # Finder에서 더블클릭하면 터미널이 열리고 메뉴가 실행됩니다.
 # ============================================================
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 clear
 echo ""
@@ -23,7 +23,7 @@ if ! command -v osascript >/dev/null 2>&1; then
     echo "  ⚠️  macOS 기본 osascript를 찾을 수 없습니다."
     echo "      시스템 환경을 확인한 뒤 다시 실행해 주세요."
     echo ""
-    read -p "  엔터를 누르면 종료합니다..." _
+    read -r -p "  엔터를 누르면 종료합니다..." _
     exit 1
 fi
 
@@ -35,7 +35,7 @@ while true; do
     echo "    [3] 공유용 결과 열기"
     echo "    [4] 종료"
     echo ""
-    read -p "  선택: " choice
+    read -r -p "  선택: " choice
 
     case "$choice" in
         1)
@@ -47,7 +47,7 @@ while true; do
             if [[ $scan_status -ne 0 ]]; then
                 echo ""
                 echo "  ❌ 검사 결과를 완성하지 못했습니다. 위 오류를 먼저 해결하세요."
-                read -p "  아무 키나 누르면 메뉴로 돌아갑니다..." _
+                read -r -p "  아무 키나 누르면 메뉴로 돌아갑니다..." _
                 clear
                 continue
             fi
@@ -58,7 +58,7 @@ while true; do
             if [[ $report_status -ne 0 ]]; then
                 echo ""
                 echo "  ❌ 리포트 생성에 실패했습니다."
-                read -p "  아무 키나 누르면 메뉴로 돌아갑니다..." _
+                read -r -p "  아무 키나 누르면 메뉴로 돌아갑니다..." _
                 clear
                 continue
             fi
@@ -78,7 +78,7 @@ while true; do
                 echo "  공유할 때는 ./검사결과_공유용.html 파일을 사용하세요."
             fi
             echo ""
-            read -p "  아무 키나 누르면 메뉴로 돌아갑니다..." _
+            read -r -p "  아무 키나 누르면 메뉴로 돌아갑니다..." _
             clear
             ;;
         2)
@@ -86,7 +86,7 @@ while true; do
                 open "./검사결과.html"
             else
                 echo "  ❌ 이전 결과가 없습니다. 먼저 검사를 실행하세요."
-                read -p "  엔터..." _
+                read -r -p "  엔터..." _
             fi
             clear
             ;;
@@ -95,7 +95,7 @@ while true; do
                 open "./검사결과_공유용.html"
             else
                 echo "  ❌ 공유용 결과가 없습니다. 먼저 검사를 실행하세요."
-                read -p "  엔터..." _
+                read -r -p "  엔터..." _
             fi
             clear
             ;;

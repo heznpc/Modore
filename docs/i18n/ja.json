@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "PCヘルスチェック — PCを「説明してくれる」セキュリティ診断",
-    "description": "韓国の銀行プラグインと、macOSの曖昧なSystem Data/Developerストレージ表示を文脈付きで説明するローカル診断ツール。PCヘルスチェックは Windows Edition と Mac Edition に分かれ、シグナル形式のレポートとハッシュのみのVirusTotal照会を提供します。"
+    "title": "PCヘルスチェック — PCが裏で動いていないか説明するローカル診断",
+    "description": "隠れたマイニングの疑い、韓国の銀行プラグインの誤判定、macOSの曖昧なSystem Data/Developerストレージ表示を文脈付きで説明するローカル診断ツール。PCヘルスチェックは Windows Edition と Mac Edition に分かれ、シグナル形式のレポートとハッシュのみのVirusTotal照会を提供します。"
   },
   "brand": {
     "name": "PCヘルスチェック"
@@ -14,8 +14,8 @@
   },
   "hero": {
     "tag": "v0.3 · Windows Edition / Mac Edition",
-    "title": "PCを<em>説明してくれる</em>セキュリティ診断。",
-    "subtitle": "一般的なアンチウイルスは、韓国の銀行プラグインをマルウェアと誤判定します。PCヘルスチェックは IPinside、nProtect、MagicLine、V3 を認識し、本当の脅威だけを浮き彫りにします。",
+    "title": "PCが<em>裏で勝手に動いていないか</em>説明するローカル診断。",
+    "subtitle": "ファンが回り続ける、CPU/GPUが跳ねる、知らないプロセスがある。PCヘルスチェックはマイニングの兆候、自動実行、ネットワーク、韓国セキュリティプラグインの文脈を集め、削除前の判断材料を示します。",
     "cta_primary": "zipをダウンロード <span class='arrow'>→</span>",
     "cta_secondary": "ソースを読む",
     "meta": {
@@ -44,8 +44,8 @@
   },
   "problem": {
     "kicker": "PROBLEM",
-    "heading": "「怪しい項目が30件」と表示された時、<em>本当の脅威はどれ?</em>",
-    "lead": "韓国のPCには銀行・公的機関・ECサイトのセキュリティプラグインが大量にインストールされています。汎用スキャナにはすべて怪しく見えますが、実際は正常です。PCに詳しくないユーザーは見分けがつかず、「全部無視」か「全部削除」の両極端に走ってしまいがちです。",
+    "heading": "「PCが勝手にマイニングしている?」と思った時、<em>まず何を確認するべきか?</em>",
+    "lead": "遅くなったPC、止まらないファン、高いCPU/GPU、知らない自動実行項目は不安を生みます。韓国のPCには銀行・公的機関・ECサイトのセキュリティプラグインも多く、正常な項目と確認すべき項目の区別が難しいものです。PCヘルスチェックは削除の前に根拠を集めます。",
     "generic": {
       "label": "汎用スキャナ",
       "quote": "「不審な項目が30件検出されました」"
@@ -73,10 +73,10 @@
   "how": {
     "kicker": "HOW IT WORKS",
     "heading": "8種の診断 → 1つのHTMLレポート。",
-    "lead": "フレームワーク不要。バイナリ不要。OS別スクリプトがシステムを収集し、OS標準ランタイムでブラウザで開けるHTMLレポートに組み立てます。",
+    "lead": "追跡型インストーラなし。OS別スクリプトがシステムを収集し、Windowsはブラウザで開けるHTMLレポート、MacはSwiftUIダッシュボードとHTML書き出しに組み立てます。",
     "p1": { "title": "収集", "desc": "プロセス・ネットワーク・ポート・自動実行・セキュリティ状態。Sysinternals + launchd + VirusTotalハッシュ照会。" },
     "p2": { "title": "正規化", "desc": "韓国SWホワイトリストと照合してシグナル判定。OS非依存の共通スキーマ。" },
-    "p3": { "title": "レンダリング", "desc": "ブラウザで開く単一HTML。実行ファイルなし、署名なし、追跡なし。" }
+    "p3": { "title": "レンダリング", "desc": "Windowsは単一HTMLレポート。MacはSwiftUIダッシュボードとHTML書き出し。追跡型インストーラやレポートアップロードはありません。" }
   },
   "privacy": {
     "kicker": "PRIVACY · AUDITABLE",
@@ -89,7 +89,7 @@
       },
       "telemetry": {
         "title": "テレメトリー0件",
-        "desc": "使用統計・エラーレポートなど、いかなるデータも収集しません。外部呼び出しはオプトインのVirusTotal照会と任意のSysinternalsダウンロードのみです。"
+        "desc": "使用統計・エラーレポートなど、いかなるデータも収集しません。診断ランタイムの外部呼び出しはオプトインのVirusTotal照会と任意のSysinternalsダウンロードのみです。"
       },
       "local": {
         "title": "ローカルキャッシュのみ",
@@ -97,7 +97,7 @@
       },
       "audit": {
         "title": "読めるソース",
-        "desc": "コンパイル済みバイナリ0個。読みやすいPowerShell · Bash · JXAソース。<code>grep -R 'Invoke-RestMethod\\|Invoke-WebRequest\\|curl\\|virustotal.com/api' scripts/</code>で外部呼び出しを確認できます。"
+        "desc": "読みやすいPowerShell · Bash · JXAソース。リリースzipには事前コンパイル済み診断バイナリを同梱しません。<code>grep -R 'Invoke-RestMethod\\|Invoke-WebRequest\\|curl\\|virustotal.com/api' scripts/</code>で外部呼び出しを確認できます。"
       }
     }
   },

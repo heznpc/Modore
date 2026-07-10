@@ -26,6 +26,24 @@ function tmp(name) { return readText(TMP_DIR + "/" + name); }
 function basename(path) { return String(path || "").split("/").filter(Boolean).pop() || String(path || ""); }
 function round1(n) { return Math.round(Number(n || 0) * 10) / 10; }
 function kbToGb(kb) { return round1(Number(kb || 0) / 1048576); }
+function appKbToGb(kb) { return Math.round((Number(kb || 0) / 1048576) * 10000) / 10000; }
+function uniqueStorageTotal(items) {
+  const roots = [];
+  let total = 0;
+  (items || [])
+    .filter(item => item && item.measureStatus !== "timed_out" && Number(item.sizeGB || 0) > 0 && item.path)
+    .slice()
+    .sort((a, b) => String(a.path).length - String(b.path).length)
+    .forEach(item => {
+      const path = String(item.path).replace(/\/+$/, "") || "/";
+      const covered = roots.some(root => path === root || path.indexOf(root + "/") === 0);
+      if (!covered) {
+        roots.push(path);
+        total += Number(item.sizeGB || 0);
+      }
+    });
+  return round1(total);
+}
 function escapeShell(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
 function isLocalIp(ip) {
   if (!ip) return true;
@@ -300,7 +318,15 @@ function storageNote(kind, label) {
   if (kind === "android_component") return "Android 빌드 구성요소입니다. compileSdk/build-tools 요구 버전을 확인한 뒤 정리하세요.";
   if (kind === "toolchain") return "언어 런타임/패키지 도구체인입니다. 여러 프로젝트가 공유할 수 있으므로 버전 의존성을 확인하세요.";
   if (kind === "chrome_clone") return "Chrome 앱 번들 code-sign 임시 clone입니다. Chrome/브라우저 자동화가 실행 중이면 현재 사용 중인 항목이 있을 수 있습니다.";
-  if (kind === "application") return "설치된 앱입니다. 앱 본체 삭제 전 AppCleaner/Finder에서 관련 데이터까지 검토하세요.";
+  if (kind === "ai_vm_cache") return "Claude Cowork/로컬 에이전트용 VM 이미지입니다. 세션 기록과 분리된 재생성 가능 런타임이지만 Claude를 완전히 종료한 뒤 정리하세요.";
+  if (kind === "ai_cache") return "AI 개발 도구 런타임/임시 캐시입니다. 삭제하면 다음 실행 때 다시 받을 수 있습니다.";
+  if (kind === "ai_review" && /Codex/i.test(label || "")) return "Codex 내부 이벤트/진단 로그 SQLite DB입니다. .codex/sessions의 세션 jsonl은 아니며, Codex 종료 후 VACUUM/수동 검토 대상으로 분리합니다.";
+  if (kind === "ai_review") return "AI 도구 내부 로그 DB입니다. 세션 jsonl은 아니지만 앱 동작/진단에 쓰일 수 있어 실행 중 삭제하지 마세요.";
+  if (kind === "protected_history" && /Claude/i.test(label || "")) return "Claude 로컬 에이전트/Cowork 작업공간입니다. audit 로그, uploads, outputs가 포함될 수 있어 자동 정리 대상에서 제외합니다.";
+  if (kind === "protected_history" && /Codex/i.test(label || "")) return "Codex 대화/session jsonl 기록입니다. 사용자가 되살려 볼 수 있는 실제 세션 기록이라 자동 정리 대상에서 제외합니다.";
+  if (kind === "protected_history") return "대화/작업 세션 기록입니다. 공간은 보이지만 자동 정리 대상에서 제외합니다.";
+  if (kind === "known_app" && /INNORIX/i.test(label || "")) return "사용자 영역에 설치되는 웹 파일 전송 모듈입니다. 시스템 보호 앱이 아니며 LaunchAgent와 프로세스를 함께 검토해야 합니다.";
+  if (kind === "application") return "설치된 앱입니다. 번들 ID로 다시 검증한 앱 본체와 정확히 귀속되는 사용자 데이터만 휴지통 이동 대상으로 제시합니다.";
   return "저장공간 점검 항목입니다.";
 }
 
@@ -318,16 +344,31 @@ function storageAction(kind, label) {
   if (kind === "android_component") return "빌드 요구 버전 확인";
   if (kind === "toolchain") return "프로젝트 버전 의존성 확인";
   if (kind === "chrome_clone") return "Chrome 종료 후 stale clone 확인";
-  if (kind === "application") return "앱 사용 여부 확인";
+  if (kind === "ai_vm_cache") return "Claude 종료 후 VM bundle 정리";
+  if (kind === "ai_cache") return "다음 실행 재다운로드 감안";
+  if (kind === "ai_review" && /Codex/i.test(label || "")) return "Codex 종료 후 VACUUM/수동 검토";
+  if (kind === "ai_review") return "앱 종료 후 수동 검토";
+  if (kind === "protected_history" && /Claude/i.test(label || "")) return "작업공간 보존";
+  if (kind === "protected_history") return "세션 기록 보존";
+  if (kind === "known_app" && /INNORIX/i.test(label || "")) return "LaunchAgent 포함 승인형 제거";
+  if (kind === "application") return "미리보기 후 휴지통 이동";
   return "수동 확인";
 }
 
 function classifyStorageRow(kind, label, sizeGB, volumeRisk) {
-  const disposable = ["cache", "temp", "trash", "build_cache", "chrome_clone"];
+  if (kind === "ai_vm_cache") return sizeGB >= 1 ? "warning" : "safe";
+  if (kind === "ai_cache") return sizeGB >= 1 ? "warning" : (sizeGB >= 0.5 ? "info" : "safe");
+  if (kind === "cache" && /Playwright|pnpm|npm/i.test(label || "")) {
+    return sizeGB >= 1 ? "warning" : (sizeGB >= 0.5 ? "info" : "safe");
+  }
+  const disposable = ["cache", "temp", "trash", "build_cache", "chrome_clone", "ai_vm_cache", "ai_cache"];
   if (disposable.includes(kind)) {
     if (sizeGB >= 2 || (volumeRisk !== "safe" && sizeGB >= 1)) return "warning";
     return sizeGB >= 0.5 ? "info" : "safe";
   }
+  if (kind === "ai_review") return sizeGB >= 1 ? "warning" : "info";
+  if (kind === "protected_history") return sizeGB >= 1 ? "info" : "safe";
+  if (kind === "known_app") return "warning";
   if (kind === "archive") return sizeGB >= 2 && volumeRisk !== "safe" ? "warning" : "info";
   if (kind === "application") return sizeGB >= 1 ? "info" : "safe";
   if (/^(android_|simulator_|toolchain)/.test(kind)) return sizeGB >= 1 ? "info" : "safe";
@@ -341,7 +382,7 @@ function parseStoragePaths(text, volumeRisk) {
     const kind = parts[0];
     const label = parts[1];
     const path = parts[2];
-    const sizeGB = kbToGb(parts[3]);
+    const sizeGB = kind === "application" ? appKbToGb(parts[3]) : kbToGb(parts[3]);
     const measureStatus = parts[4] || "ok";
     const measureNote = parts[5] || "";
     return {
@@ -351,6 +392,7 @@ function parseStoragePaths(text, volumeRisk) {
       sizeGB,
       path,
       measureStatus,
+      cleanupId: parts[6] || "",
       note: measureNote || storageNote(kind, label),
       action: storageAction(kind, label)
     };
@@ -391,6 +433,30 @@ function parseStorageRuntime(text) {
   }).filter(Boolean);
 }
 
+function parseSimulatorDevices(text, keepNames) {
+  const keep = new Set(keepNames || []);
+  return String(text || "").trim().split(/\r?\n/).filter(Boolean).map(line => {
+    const parts = line.split("\t");
+    if (parts.length < 4 || !/^[0-9A-Fa-f-]{36}$/.test(parts[1])) return null;
+    const name = parts[0];
+    const state = parts[3];
+    const isBooted = state === "Booted";
+    const isKept = keep.has(name);
+    return {
+      name,
+      uuid: parts[1],
+      runtime: parts[2],
+      state,
+      sizeGB: Math.round((Number(parts[4] || 0) / 1048576) * 10) / 10,
+      measureStatus: parts[5] || "ok",
+      risk: isBooted || isKept ? "safe" : "info",
+      protected: isBooted || isKept,
+      protectionReason: isBooted ? "현재 Booted 상태" : (isKept ? "사용자 보존 목록" : ""),
+      cleanupId: `simulator_delete:${parts[1]}`
+    };
+  }).filter(Boolean);
+}
+
 const TMP_DIR = env("TMP_DIR", "/tmp");
 const OUTPUT = env("PCH_OUTPUT", "scan_result.json");
 const RAW_PATH = env("PCH_RAW_PATH", "raw_facts.json");
@@ -398,6 +464,8 @@ const WHITELIST_PATH = env("PCH_WHITELIST_PATH", "data/whitelist.json");
 const RULES_DIR = env("PCH_RULES_DIR", "rules");
 const CONFIG_PATH = env("PCH_CONFIG_PATH", "data/config.json");
 const NO_VT = /^true$/i.test(env("PCH_NO_VT", "false"));
+const SIMULATOR_KEEP_PATH = env("PCH_SIMULATOR_KEEP_PATH", homeDir() + "/Library/Application Support/PC Health Check/simulator-keep.txt");
+const simulatorKeepNames = readText(SIMULATOR_KEEP_PATH).split(/\r?\n/).map(value => value.trim()).filter(Boolean);
 const config = readJson(CONFIG_PATH, {});
 const vt = vtLookup(config, NO_VT);
 if (vt.enabled) console.log("  VirusTotal 조회 활성화");
@@ -486,20 +554,45 @@ const storageVolume = parseStorageDf(tmp("storage_df.txt"));
 const storageItems = parseStoragePaths(tmp("storage_paths.tsv"), storageVolume.risk);
 const storageAccess = parseStorageAccess(tmp("storage_access.tsv"));
 const storageRuntime = parseStorageRuntime(tmp("storage_runtime.tsv"));
-const cleanupKinds = ["cache", "temp", "trash", "build_cache", "chrome_clone"];
-const cleanupCandidates = storageItems.filter(item => cleanupKinds.includes(item.kind) && item.risk === "warning");
+const simulatorDevices = parseSimulatorDevices(tmp("storage_simulators.tsv"), simulatorKeepNames);
+const cleanupKinds = ["cache", "temp", "trash", "build_cache", "chrome_clone", "ai_vm_cache", "ai_cache", "known_app"];
+const cleanupCandidates = storageItems.filter(item =>
+  cleanupKinds.includes(item.kind) && (item.risk === "warning" || item.measureStatus === "timed_out")
+);
+const reviewKinds = ["ai_review", "protected_history"];
 const developerKinds = ["android_sdk", "android_component", "simulator_devices", "simulator_cache", "simulator_runtime", "toolchain", "archive"];
 raw.sections.storage = {
   volume: storageVolume,
   cleanupCandidates: cleanupCandidates.slice(0, 20),
+  reviewCandidates: storageItems.filter(item => reviewKinds.includes(item.kind)).slice(0, 20),
   developerToolchains: storageItems.filter(item => developerKinds.includes(item.kind)).slice(0, 20),
+  applications: storageItems.filter(item => item.kind === "application").slice(0, 20),
   largestItems: storageItems.slice(0, 30),
   accessChecks: storageAccess.checks,
   accessIssues: storageAccess.issues,
-  runtimeSignals: storageRuntime
+  runtimeSignals: storageRuntime,
+  simulatorDevices
 };
 const bootedSimulators = storageRuntime.filter(item => item.kind === "booted_simulator");
 const warningRuntimeSignals = storageRuntime.filter(item => item.kind === "process_count" && item.risk === "warning");
+const claudeVm = storageItems.find(item => item.kind === "ai_vm_cache" && Number(item.sizeGB || 0) >= 5);
+const codexLogDb = storageItems.find(item => item.kind === "ai_review" && /Codex/i.test(item.label || "") && Number(item.sizeGB || 0) >= 1);
+if (claudeVm) {
+  raw.findings.push({
+    level: "warning",
+    category: "storage",
+    title: "Claude VM bundle 정리 후보",
+    detail: `${claudeVm.sizeGB}GB 규모의 Claude Cowork/로컬 에이전트 VM 이미지가 있습니다. 세션 기록과 분리된 재생성 가능 런타임이지만 Claude를 완전히 종료한 뒤 지우세요.`
+  });
+}
+if (codexLogDb) {
+  raw.findings.push({
+    level: "warning",
+    category: "storage",
+    title: "Codex 로그 DB 수동 검토",
+    detail: `${codexLogDb.sizeGB}GB 규모의 Codex 내부 이벤트 로그 DB가 있습니다. 세션 jsonl은 아니며, Codex 실행 중 삭제하지 말고 필요하면 앱 종료 후 VACUUM/수동 검토로 줄이세요.`
+  });
+}
 if (bootedSimulators.length >= 2) {
   raw.findings.push({
     level: "warning",
@@ -531,7 +624,7 @@ if (storageVolume.risk === "danger" || storageVolume.risk === "warning") {
     title: "macOS 저장공간 막대 해석 필요",
     detail: `남은 공간 ${storageVolume.freeGB}GB, 사용률 ${storageVolume.usePercent}%입니다. macOS가 System Data/Developer로 뭉뚱그린 항목을 삭제 전 실제 경로와 성격으로 구분하세요.`
   });
-  const cleanupGB = round1(cleanupCandidates.reduce((sum, item) => sum + Number(item.sizeGB || 0), 0));
+  const cleanupGB = uniqueStorageTotal(cleanupCandidates);
   if (cleanupGB >= 2) {
     raw.findings.push({
       level: "warning",

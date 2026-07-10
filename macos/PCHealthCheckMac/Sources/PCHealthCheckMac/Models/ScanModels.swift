@@ -50,6 +50,27 @@ struct ScanSummary {
     }
 }
 
+struct MacOSSecurityStatus {
+    let gatekeeper: String
+    let sip: String
+    let xprotectVersion: String
+
+    init?(json: [String: Any]?) {
+        guard let json else { return nil }
+        gatekeeper = JsonRead.string(json, "gatekeeper", "unknown")
+        sip = JsonRead.string(json, "sip", "unknown")
+        xprotectVersion = JsonRead.string(json, "xprotectVersion")
+    }
+
+    var gatekeeperEnabled: Bool {
+        gatekeeper.localizedCaseInsensitiveContains("enabled")
+    }
+
+    var sipEnabled: Bool {
+        sip.localizedCaseInsensitiveContains("enabled")
+    }
+}
+
 enum JsonRead {
     static func string(_ json: [String: Any], _ key: String, _ fallback: String = "") -> String {
         if let value = json[key] as? String { return value }
@@ -148,168 +169,5 @@ struct RecentInstallRow: Identifiable {
         publisher = JsonRead.string(json, "publisher")
         note = JsonRead.string(json, "note")
         risk = JsonRead.string(json, "risk", "unknown")
-    }
-}
-
-struct StorageSnapshot {
-    let mount: String
-    let freeGB: Double
-    let usedGB: Double
-    let totalGB: Double
-    let usePercent: Double
-    let risk: String
-    let cleanupCandidates: [StorageItem]
-    let developerToolchains: [StorageItem]
-    let accessIssues: [StorageAccessIssue]
-    let runtimeSignals: [RuntimeSignal]
-
-    init?(json: [String: Any]?) {
-        guard let json, let volume = json["volume"] as? [String: Any] else { return nil }
-        mount = volume["mount"] as? String ?? "/"
-        freeGB = Self.double(volume["freeGB"])
-        usedGB = Self.double(volume["usedGB"])
-        totalGB = Self.double(volume["totalGB"])
-        usePercent = Self.double(volume["usePercent"])
-        risk = volume["risk"] as? String ?? "unknown"
-        cleanupCandidates = Self.items(json["cleanupCandidates"])
-        developerToolchains = Self.items(json["developerToolchains"])
-        accessIssues = Self.accessItems(json["accessIssues"])
-        runtimeSignals = Self.runtimeItems(json["runtimeSignals"])
-    }
-
-    var riskColor: Color {
-        switch risk {
-        case "danger": return .red
-        case "warning": return .orange
-        case "safe": return .green
-        default: return .secondary
-        }
-    }
-
-    var reclaimableGB: Double {
-        cleanupCandidates.reduce(0.0) { $0 + $1.sizeGB }
-    }
-
-    var developerGB: Double {
-        developerToolchains.reduce(0.0) { $0 + $1.sizeGB }
-    }
-
-    var reclaimableText: String {
-        Self.gbText(reclaimableGB)
-    }
-
-    var developerText: String {
-        Self.gbText(developerGB)
-    }
-
-    var attentionRuntimeSignals: [RuntimeSignal] {
-        let booted = runtimeSignals.filter { $0.kind == "booted_simulator" }
-        let warnings = runtimeSignals.filter { $0.kind != "booted_simulator" && $0.risk == "warning" }
-        if !booted.isEmpty || !warnings.isEmpty {
-            return booted + warnings
-        }
-        return runtimeSignals.filter { $0.kind == "process_count" && $0.count > 0 && $0.risk != "safe" }
-    }
-
-    private static func items(_ value: Any?) -> [StorageItem] {
-        guard let rows = value as? [[String: Any]] else { return [] }
-        return rows.compactMap(StorageItem.init(json:))
-    }
-
-    private static func accessItems(_ value: Any?) -> [StorageAccessIssue] {
-        guard let rows = value as? [[String: Any]] else { return [] }
-        return rows.compactMap(StorageAccessIssue.init(json:))
-    }
-
-    private static func runtimeItems(_ value: Any?) -> [RuntimeSignal] {
-        guard let rows = value as? [[String: Any]] else { return [] }
-        return rows.compactMap(RuntimeSignal.init(json:))
-    }
-
-    private static func double(_ value: Any?) -> Double {
-        if let number = value as? NSNumber { return number.doubleValue }
-        if let string = value as? String { return Double(string) ?? 0 }
-        return 0
-    }
-
-    private static func gbText(_ value: Double) -> String {
-        if value <= 0 {
-            return "0GB"
-        }
-        return String(format: "%.1fGB", value)
-    }
-}
-
-struct StorageItem: Identifiable {
-    let id = UUID()
-    let risk: String
-    let kind: String
-    let label: String
-    let sizeGB: Double
-    let path: String
-    let action: String
-    let note: String
-    let measureStatus: String
-
-    init?(json: [String: Any]) {
-        risk = json["risk"] as? String ?? "unknown"
-        kind = json["kind"] as? String ?? "unknown"
-        label = json["label"] as? String ?? kind
-        if let number = json["sizeGB"] as? NSNumber {
-            sizeGB = number.doubleValue
-        } else if let string = json["sizeGB"] as? String {
-            sizeGB = Double(string) ?? 0
-        } else {
-            sizeGB = 0
-        }
-        path = json["path"] as? String ?? ""
-        action = json["action"] as? String ?? "확인 필요"
-        note = json["note"] as? String ?? ""
-        measureStatus = json["measureStatus"] as? String ?? "ok"
-    }
-
-    var sizeText: String {
-        measureStatus == "timed_out" ? "측정 보류" : String(format: "%.1fGB", sizeGB)
-    }
-}
-
-struct StorageAccessIssue: Identifiable {
-    let id = UUID()
-    let label: String
-    let path: String
-    let status: String
-    let note: String
-
-    init?(json: [String: Any]) {
-        label = json["label"] as? String ?? "읽기 제한 영역"
-        path = json["path"] as? String ?? ""
-        status = json["status"] as? String ?? "blocked"
-        note = json["note"] as? String ?? "읽기 권한이 부족할 수 있습니다."
-    }
-}
-
-struct RuntimeSignal: Identifiable {
-    let id = UUID()
-    let kind: String
-    let label: String
-    let count: Int
-    let risk: String
-    let action: String
-    let note: String
-
-    init?(json: [String: Any]) {
-        kind = JsonRead.string(json, "kind", "process_count")
-        label = JsonRead.string(json, "label", "실행 신호")
-        count = JsonRead.int(json, "count")
-        risk = JsonRead.string(json, "risk", "info")
-        action = JsonRead.string(json, "action", "확인 필요")
-        note = JsonRead.string(json, "note")
-    }
-
-    var countText: String {
-        if kind == "booted_simulator" {
-            return "Booted"
-        }
-        return "\(count)개"
     }
 }

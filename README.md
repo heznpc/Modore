@@ -1,15 +1,17 @@
 # PC 건강검진 — PC Health Check
 
-> A locale-aware security diagnostic tool that **explains your PC in plain language**.
-> Built for Korean users whose legitimate banking and government software gets flagged by generic scanners.
+> A local diagnostic reporter for the moment you wonder: **is my PC doing something behind my back?**
+> It turns miner, autorun, network, Korean security-plugin, and macOS storage signals into plain-language evidence before you delete anything.
 
-[🌐 **Website**](https://heznpc.github.io/pc-health-check/) · [📥 Download](https://github.com/heznpc/pc-health-check/releases) · [🇰🇷 한국어 가이드](./사용법.txt)
+[🌐 **Website**](https://heznpc.github.io/pc-health-check/) · [📥 Download](https://github.com/heznpc/pc-health-check/releases) · [🇰🇷 한국어 가이드](./사용법.txt) · [Architecture](./docs/ARCHITECTURE.md)
 
 *Part of the Heznpc portfolio — Trust tier (Supporting).*
 
 ---
 
 ## The problem
+
+The first symptom is usually not a clear malware alert. It is a fan that will not stop, CPU/GPU load while the PC is idle, an unknown process in Task Manager, a strange network connection, or disk space disappearing overnight. The natural question is: **is this computer secretly mining, infected, or just running normal local software?**
 
 Generic malware scanners are great at detection but terrible at **context**. For Korean users, running any reputable scanner typically produces something like:
 
@@ -20,9 +22,9 @@ Generic malware scanners are great at detection but terrible at **context**. For
 > - `WIZVERA.exe` — browser helper, always on
 > - … 26 more
 
-**29 of those are legitimate banking/government security plugins.** Users can't tell which is which, so they either panic and uninstall critical software, or learn to ignore warnings entirely — both dangerous outcomes.
+**29 of those may be legitimate banking/government security plugins.** Users can't tell which is which, so they either panic and uninstall critical software, or learn to ignore warnings entirely — both dangerous outcomes.
 
-This project is a **second-opinion diagnostic reporter** that recognizes Korean software and explains each finding in plain Korean (or English/Japanese).
+This project is a **second-opinion diagnostic reporter** that recognizes Korean software, checks miner-like runtime signals, and explains each finding in plain Korean (or English/Japanese).
 
 ---
 
@@ -30,19 +32,21 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 
 - **Two OS editions under one brand**: PC Health Check for Windows and PC Health Check for Mac share the same promise — explain local PC state in plain language without deleting anything automatically.
 - **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
-- **Mac Edition**: Bash + JXA scanner focused on macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, recent apps, and a macOS storage bar decoder for the vague System Data / Developer / macOS categories. It translates caches, temporary files, Xcode Simulator assets, Android SDK components, language toolchains, and Chrome code-sign clones into practical "review / preserve / cleanup" context. It includes a SwiftUI frontend with a native diagnostic dashboard, scanner logs, Finder actions, cleanup-guide copy, and HTML export for browser/share workflows.
+- **Mac Edition**: Bash + JXA scanner focused on macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and a macOS storage bar decoder for the vague System Data / Developer / macOS categories. It separates rebuildable caches, protected AI session history, individual Simulator devices, Android SDK components, language toolchains, and Chrome code-sign clones. The native SwiftUI app uses selection-driven inspectors for cleanup, developer assets, and app/Simulator review, compares each scan with the previous local snapshot, and can run from a standalone bundle without a repository checkout.
+- **Local recurrence watch**: an optional hourly LaunchAgent keeps a bounded owner-only free-space timeline. It notifies when free space falls below 20GB or drops by at least 8GB between checks; it never deletes anything.
+- **Suspicion-to-evidence workflow**: CPU/GPU load, idle CPU samples, miner process names, miner-pool ports, network endpoints, autoruns, signatures, and optional VirusTotal hash lookups are shown together so a user can decide what deserves a closer look before removing anything.
 - **Locale-aware whitelist**: 71 known-good entries across 7 categories (system, browser, korean_common, banking_security, dev_tools, hardware, cloud), plus 19 miner blacklist entries, 5 RAT blacklist entries, and 13 miner-pool ports. Covers IPinside, nProtect, INISAFE, MagicLine, Veraport, XecureWeb, Ahnlab V3, Alyac, and the rest of the Korean banking/government plugin set.
 - **Traffic-light output** (🟢 safe / 🟡 check / 🔴 danger) so non-technical users can act on the report.
 - **VirusTotal lookup (opt-in)**: SHA-256 hash query only. 48h local cache, 16s rate-limit, respects the public API quota (4 req/min, 500/day).
 - **Single-file HTML report**: opens in the user's browser and works offline. The shipped OS-native reports include Google/VirusTotal investigation links; the Python development report also includes collapsible novice-friendly explanations. On Mac, HTML is an export/share artifact; the SwiftUI app uses a native dashboard as the primary experience.
 - **Local-only by default**: the Mac SwiftUI app and script mode run local scanners only. There is no AI/LLM integration, no OpenAI/Claude/Codex API call, no token spend, no account login, and no report upload. Optional VirusTotal lookup is the only external lookup path and sends hashes only.
 - **i18n**: Korean, English, Japanese landing page strings (`docs/i18n/`) and Python development report strings (`data/report_i18n/`). The release runtime reports are OS-native and Korean-first.
-- **Rule engine + tests**: declarative JSON rules in `rules/` (autoruns, defender, installs, network, process) evaluated by OS-native runtime engines. 70 pytest tests cover report rendering, rule evaluation, whitelist lookups, service contracts, and release smoke.
-- **Read-the-source distribution**: readable PowerShell/Bash/JXA scripts, no compiled binaries, no bundled DLLs, no telemetry.
+- **Rule engine + tests**: declarative JSON rules in `rules/` (autoruns, defender, installs, network, process) evaluated by OS-native runtime engines. Pytest covers report/rule/cleanup/release contracts; Swift tests cover stable selection, protected data, storage accounting, cleanup protocol parsing, and standalone runtime staging.
+- **Read-the-source distribution**: source release ZIPs contain readable PowerShell/Bash/JXA and Swift code, no bundled DLLs, and no telemetry. A separately produced Developer ID/notarized DMG may contain the compiled Mac app, but its scanner/rules remain bundled as readable resources and the source ZIP remains the audit surface.
 
 ## Planned
 
-- **Mac Edition Swift app** — continue turning the SwiftUI frontend into the primary Mac experience: local-first decoding of macOS's vague storage categories, developer-toolchain context, redaction-aware reports, and safer review flows before cleanup.
+- **Mac Edition Swift app** — deepen project-manifest parsing for SDK/runtime version requirements and expand attributable app-residue mappings without weakening the local approval boundary.
 - **Windows Edition maintenance** — Windows remains under the same PC Health Check brand, but new Windows-only storage features wait for real-device validation.
 - **Additional locales** beyond ko/en/ja — community PRs welcome; the i18n loader already supports arbitrary codes.
 
@@ -53,29 +57,30 @@ PC Health Check is the brand. The OS editions are separate products under that b
 | Edition | Artifact | Focus | Validation rule |
 |---|---|---|---|
 | Windows Edition | `pch-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
-| Mac Edition | `pch-v0.3.x-mac.zip` | macOS security context plus decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
+| Mac Edition | `pch-v0.3.x-mac.zip`, optional notarized DMG | macOS security context plus decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
 
 Shared rules, whitelist data, i18n strings, and report vocabulary can be reused where they genuinely match. OS-specific collectors stay separate.
 
 ## Design intent
 
-**Windows stays scripts + HTML; Mac now has a native dashboard.** This is the load-bearing choice:
+**Windows stays scripts + HTML; Mac uses a native dashboard over the same readable runtime.** This is the load-bearing choice:
 
-| Concern | Native GUI app | Scripts + HTML |
+| Concern | Windows Edition | Mac Edition |
 |---|---|---|
-| Distribution trust | Unsigned EXE triggers SmartScreen/Gatekeeper | Readable source; HTML opens in the user's existing trusted browser |
-| Code-signing cost | $400+/yr (Windows) or $99/yr (Apple) | $0 |
-| User can audit code | Compiled binary — hard | Plain-text runtime scripts |
-| Antivirus false positives | Common (security tools get flagged) | Rare |
-| Cross-platform | Electron ≈ 200 MB per OS | Same HTML template, OS-specific scanners |
+| Primary UI | PowerShell launcher + offline HTML | Native SwiftUI app + offline HTML export |
+| Runtime truth | Readable PowerShell and JSON rules | Readable Bash/JXA, JSON rules, and Swift source |
+| Distribution | Source ZIP | Source ZIP; optional Developer ID/notarized standalone DMG |
+| Network default | Local, except opt-in hash lookup/downloads | Local, except opt-in VirusTotal hash lookup |
 
-The Windows Edition keeps the script + HTML shape for broad compatibility. The Mac Edition now uses a SwiftUI dashboard for day-to-day diagnosis, while still generating normal and redacted HTML reports for export and sharing.
+The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A standalone build copies that runtime to owner-controlled Application Support before scanning, so a signed app does not write inside its own bundle and does not depend on the developer's checkout path.
 
 **Locale as a first-class concern.** Generic scanners are built for global users; their false-positive rate on Korean banking PCs is the user-facing problem this project exists to solve. The whitelist is the differentiated layer, not the scanner.
 
+**Cleanup is local and approval-gated.** PC Health Check remains the pause before deletion, but the Mac Edition can execute audited recipes for rebuildable caches, Claude VM bundles, Xcode DerivedData, stale Chrome clones, and the known INNORIX user module. Installed apps are re-resolved by bundle ID and moved with exactly attributable containers/caches/preferences to a per-run Trash folder. Individual Shutdown Simulator devices can be removed by a UUID revalidated through `simctl`; Booted devices and locally preserved model names are blocked. The engine accepts recipe IDs rather than arbitrary paths, blocks related live processes, rejects symlinked targets, and requires a second explicit approval. SDKs, Simulator runtimes, Codex session JSONL, Claude local-agent workspaces, and the Codex event-log DB have no cleanup recipe.
+
 **Privacy-first VirusTotal use.** Hashes only, never file contents. VirusTotal calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.jxa.js`; optional Sysinternals downloads live in `scripts/sigcheck-helper.ps1` and `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api` to audit outbound calls.
 
-**Mac local-only UX.** The SwiftUI Mac frontend shows whether VirusTotal is enabled, labels the normal state as local-only, links to `data/config.json`, and explains Full Disk Access when macOS privacy settings hide Mail, Messages, Safari, or app-container data. The main pane is a native dashboard for verdicts, storage, findings, CPU, network, autoruns, and installs. Cleanup remains guide-first: it can open Finder and copy a cleanup guide, but it does not delete files automatically.
+**Mac local-only UX.** The SwiftUI Mac frontend shows whether VirusTotal is enabled, labels the normal state as local-only, links to `data/config.json`, and explains Full Disk Access when macOS privacy settings hide Mail, Messages, Safari, or app-container data. The main pane is a native dashboard for verdicts, storage, findings, CPU, network, autoruns, and installs. Cleanup is never automatic: each supported row opens a preview sheet with the logical size, exact fixed targets, process blockers, and rebuild cost before the user can approve it.
 
 **Mac storage scan speed.** The SwiftUI quick scan caps each expensive `du` measurement so huge Simulator or SDK directories do not make the app feel stuck. Timed-out rows are shown as "measurement deferred" instead of a fake size. For an exact CLI pass, run `PCH_STORAGE_DU_TIMEOUT=0 bash scripts/scanner.sh`.
 
@@ -104,15 +109,15 @@ The Windows Edition keeps the script + HTML shape for broad compatibility. The M
 3. Double-click `검사하기.bat`.
 
 ### macOS
-1. Download the macOS release zip from [GitHub Releases](https://github.com/heznpc/pc-health-check/releases/latest).
-2. For the native preview app, right-click `Mac앱실행.command` → **Open**. It builds and opens `build/macos/PC Health Check Mac.app`.
-3. For the script menu, right-click `검사하기.command` → **Open**.
-4. Follow the menu or the SwiftUI app controls.
+1. If the release includes a notarized DMG, open it and drag **PC Health Check Mac** to Applications. No Swift toolchain is required for that artifact.
+2. Otherwise download the macOS source ZIP, then right-click `Mac앱실행.command` → **Open**. It builds and opens `build/macos/PC Health Check Mac.app`.
+3. For script-only mode, right-click `검사하기.command` → **Open**.
+4. Follow the menu or the SwiftUI app controls. Cleanup always requires an item preview and a second explicit approval.
 
 ### Requirements
 - **Windows**: PowerShell 5.1+ (built into Windows 10/11).
 - **macOS script mode**: Bash + `osascript` (built into macOS).
-- **macOS SwiftUI app mode**: Swift toolchain from Xcode or Command Line Tools.
+- **macOS SwiftUI source mode**: Swift toolchain from Xcode or Command Line Tools. A notarized DMG does not require the toolchain.
 - **Development / tests only**: Python 3.11+ for pytest, release-smoke packaging, and local docs preview.
 
 ## Enabling VirusTotal lookup (optional, recommended)
@@ -184,13 +189,17 @@ pc-health-check/
 │   ├── sigcheck-helper.ps1   Sysinternals sigcheck wrapper
 │   ├── autorunsc-helper.ps1  Sysinternals autorunsc wrapper
 │   ├── scanner.sh            macOS scanner
+│   ├── cleanup.sh            allowlisted macOS preview/execute harness
+│   ├── storage_watch.sh      lightweight free-space delta monitor
+│   ├── schedule.sh           local LaunchAgent toggle harness
 │   ├── scanner_helper.jxa.js macOS data aggregator + rule evaluator
 │   ├── report.jxa.js         macOS HTML generator
 │   ├── build_macos_swift_app.sh SwiftUI app builder
+│   ├── package_macos_release.sh standalone DMG/sign/notarize harness
 │   └── modules/macos/        macOS scanner sub-modules
 ├── macos/
-│   └── PCHealthCheckMac/     SwiftUI Mac frontend
-├── tests/                    pytest suite (70 tests)
+│   └── PCHealthCheckMac/     SwiftUI app, feature views, models, and Swift tests
+├── tests/                    pytest service and safety contracts
 └── docs/                     GitHub Pages landing (multilingual)
     ├── index.html
     ├── style.css
@@ -213,10 +222,10 @@ python3 -m http.server 8000
 
 ```bash
 python3 -m pytest tests/ -q
-# 70 passed
+swift test --package-path macos/PCHealthCheckMac
 ```
 
-CI runs rule-JSON validation, development-tool Python syntax checks, PowerShell parser checks, and the pytest suite on every push.
+CI runs rule-JSON validation, Python syntax checks, PowerShell parser checks, pytest, Swift release build/tests, and standalone packaging prerequisite checks on every push.
 
 ## Release smoke
 
@@ -229,6 +238,28 @@ python3 scripts/release_smoke.py
 
 The smoke checks fail if `scan_result.json`, `raw_facts.json`, `monitor_result.json`, `검사결과.html`, `검사결과_공유용.html`, `vt-cache.json`, `__pycache__`, or a non-executable macOS launcher appears in the release artifact.
 
+### Standalone Mac distribution
+
+The local builder embeds an explicit allowlist of Bash/JXA/data/rule files in the app. Public DMG creation requires credentials to be supplied from Keychain/environment; the repository never stores them.
+
+```bash
+scripts/package_macos_release.sh --check
+scripts/package_macos_release.sh --local
+
+PCH_CODESIGN_IDENTITY="Developer ID Application: ..." \
+PCH_NOTARY_PROFILE="pc-health-check-notary" \
+scripts/package_macos_release.sh
+```
+
+Distribution mode enables hardened runtime, verifies the bundle, creates and signs a DMG, submits it with `notarytool --keychain-profile`, staples the ticket, and runs Gatekeeper assessment. `--local` is deliberately labeled local and produces only an ad-hoc signed smoke-test DMG.
+
+## Why open source matters here
+
+- **Trust is inspectable.** Cleanup recipes accept IDs rather than arbitrary paths; contributors can audit every target, process blocker, and outbound network call.
+- **Local false positives need local knowledge.** Whitelist, miner-pool, Korean banking-plugin, app attribution, and translation PRs improve the product without requiring access to anyone's scan history.
+- **Rules and UX can evolve independently.** OS collectors remain separate while shared vocabulary, rules, tests, and explanations can be reviewed in small PRs.
+- **The project publishes its limits.** It is a diagnostic second opinion, not antivirus, real-time protection, or an automatic optimizer.
+
 ## Comparison with similar tools
 
 | Tool | Platform | Target | Strength | vs. This project |
@@ -237,16 +268,20 @@ The smoke checks fail if `scan_result.json`, `raw_facts.json`, `monitor_result.j
 | Windows Defender | Win | Everyone | Real-time protection | Complementary |
 | Sysinternals Autoruns | Win | Experts | Exhaustive autoruns | We wrap it and explain in plain language |
 | Objective-See tools | Mac | Prosumer+ | Native UX | English only, fragmented across many tools |
+| Hoax Eliminator / 구라제거기 | Win | Korean users | Removes unwanted Korean banking/security modules | This explains which entries are normal, noisy, or suspicious before removal |
+| AppCleaner | Mac | Mac users | Removes an app and related files | This adds system/developer context and bundle-ID-verified Trash moves; AppCleaner may still discover app-name-based residue that cannot be attributed safely |
 | Malware Zero (malzero.xyz) | Win | Korean users | PUP removal | Older UX, no per-finding explanations |
 | HijackThis / FRST | Win | Tech-savvy | Log analysis | Not novice-friendly |
 
-**The gap this fills**: plain-Korean explanations + locale-aware whitelist for banking software + privacy-safe VT lookup, all in one opt-in HTML report.
+**The gap this fills**: suspicion-to-evidence triage for "is my PC secretly doing something?", with plain-Korean explanations, locale-aware banking software context, miner/runtime signals, storage context, and privacy-safe VT lookup.
 
 ## Privacy
 
 - **No telemetry.** The tool never sends usage analytics or error reports.
 - **No file uploads.** VirusTotal integration uses SHA-256 hashes only.
 - **Local cache only.** VT response cache lives in `%LOCALAPPDATA%/PC건강검진/` (Windows) or `~/Library/Caches/PC건강검진/` (macOS).
+- **Local cleanup receipts.** Mac cleanup receipts stay under `~/Library/Application Support/PC Health Check/cleanup-receipts/`; they contain local paths and are never uploaded.
+- **Local maintenance state.** Simulator keep names, bounded scan snapshots, and hourly free-space samples stay under `~/Library/Application Support/PC Health Check/` with owner-only permissions. They are never uploaded and can contain local paths, so exported support material should not include them.
 - **Auditable.** VirusTotal calls are in `scripts/vt-lookup.ps1` / `scripts/scanner_helper.jxa.js`; optional Sysinternals downloads are in `scripts/sigcheck-helper.ps1` / `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api`.
 
 ## Contributing
@@ -259,7 +294,7 @@ Whitelist contributions are especially welcome. See [`CONTRIBUTING.md`](./CONTRI
 
 ## Security
 
-Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new) or `wantcongz@gmail.com` — see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
+Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new). If that is unavailable, use a private maintainer-approved channel — see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
 
 This project verifies all Sysinternals binaries via `Get-AuthenticodeSignature` against a Microsoft signer subject **on every invocation** — not only at first download — before executing them. The cached `.exe` under `%LOCALAPPDATA%` is re-validated each run because that directory is user-writable and the threat model this tool exists in (other user-mode malware may be present) requires treating the cache as untrusted between runs. By default, Sysinternals download prompts for user confirmation; setting `sysinternals.autoDownload` to `true` enables quiet download with the same signature gate.
 

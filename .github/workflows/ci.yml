@@ -97,3 +97,11 @@ jobs:
 
       - name: Build Mac SwiftUI app
         run: swift build --package-path macos/PCHealthCheckMac -c release
+
+      - name: Test Mac SwiftUI models and safety state
+        run: swift test --package-path macos/PCHealthCheckMac
+
+      - name: Validate standalone packaging prerequisites
+        run: |
+          bash -n scripts/build_macos_swift_app.sh scripts/package_macos_release.sh
+          scripts/package_macos_release.sh --check

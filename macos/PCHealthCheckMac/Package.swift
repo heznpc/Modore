@@ -14,6 +14,11 @@ let package = Package(
         .executableTarget(
             name: "PCHealthCheckMac",
             path: "Sources/PCHealthCheckMac"
+        ),
+        .testTarget(
+            name: "PCHealthCheckMacTests",
+            dependencies: ["PCHealthCheckMac"],
+            path: "Tests/PCHealthCheckMacTests"
         )
     ]
 )
