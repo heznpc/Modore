@@ -33,11 +33,12 @@ All notable changes to this project are documented here. Format loosely follows 
 - `CONTRIBUTING.md` — whitelist contribution guide, pre-PR checklist, i18n contribution rules.
 - `.github/CODEOWNERS` — trust-asset routing.
 - `.github/dependabot.yml` — weekly grouped updates for GitHub Actions + pip.
-- `requirements-dev.txt` — pinned dev/CI dependencies (`pytest==9.0.3`).
+- `requirements-dev.txt` — pinned dev/CI dependencies (`pytest==9.1.1`).
 - `.python-version` — pyenv/asdf consistency hint.
 
 ### Changed
 - **SwiftUI source split by feature.** The obsolete dashboard implementation was removed and the active app shell, storage, cleanup, development, inventory, security, activity, shared components, models, and services now live in focused files.
+- **Mac rendering and build performance.** Scan output now publishes as one content snapshot, high-frequency logs update an isolated bounded store, immutable storage totals and change ordering are computed once, process execution lives outside the view model and drains large output while commands run, and unused legacy view trees no longer compile.
 - **`actions/checkout` v4 → v5**, **`actions/setup-python` v5 → v6** (Node 24 runtimes).
 - **README** runtime requirements clarified: end users no longer need Python to run Windows or macOS release zips.
 - README documents the `VT_API_KEY` env-var alternative and OS-specific file permission hardening for `data/config.json`.

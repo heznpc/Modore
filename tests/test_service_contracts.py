@@ -103,17 +103,30 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     assert "macos/PCHealthCheckMac/Package.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/PCHealthCheckMacApp.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/ScanModels.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/ScanContent.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/StorageModels.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/CleanupModels.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/StorageHistory.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/WorkspaceSelection.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/RuntimeWorkspace.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModelActions.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanPipeline.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/LocalProcessRunner.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/CleanupPresentation.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ProcessRunState.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ScanLogStore.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ViewStyles.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/AppShell.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/CleanupView.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/CleanupInspectorView.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/DevelopmentView.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/DevelopmentInspectorView.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/InventoryView.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/InventoryInspectorView.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/NativeSettingsComponents.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/NativeSourceIcons.swift" in module.MACOS_FILES
+    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/StorageVolumeCard.swift" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Tests/PCHealthCheckMacTests/PCHealthCheckMacTests.swift" in module.MACOS_FILES
 
 
@@ -147,11 +160,28 @@ def test_macos_scan_completion_does_not_open_browser_automatically(project_root)
         project_root
         / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift"
     ).read_text(encoding="utf-8")
-    finish_run = source.split("private func finishRun", 1)[1].split(
+    finish_run = source.split("func finishRun", 1)[1].split(
         "private func refreshExistingResults", 1
     )[0]
 
     assert "showNormalReport()" not in finish_run
+
+
+def test_macos_high_frequency_log_state_is_isolated(project_root):
+    source = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift"
+    ).read_text(encoding="utf-8")
+    overview = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/StorageOverviewView.swift"
+    ).read_text(encoding="utf-8")
+
+    assert "@Published var logText" not in source
+    assert "let logStore = ScanLogStore()" in source
+    assert "@Published private(set) var content = ScanContent.empty" in source
+    assert "LocalProcessRunner.capture" in source
+    assert "struct StorageOverviewPage: View" not in overview
 
 
 def test_macos_timed_out_cleanup_measurements_remain_visible(project_root):

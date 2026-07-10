@@ -30,10 +30,10 @@ Source builds use `project-root.txt` to run the checked-out scripts. Standalone 
 
 ## Mac source layout
 
-- `Models/`: scan DTOs, history/delta models, stable selection keys.
-- `Services/`: scanner process orchestration and standalone runtime staging.
-- `Views/`: app shell and one file per user-facing destination.
-- `Support/`: small presentation and process-safety helpers.
+- `Models/`: scan DTOs, one published content snapshot, storage/history models, and stable selection keys.
+- `Services/`: process runner, scan pipeline, view-model orchestration, and standalone runtime staging.
+- `Views/`: app shell, destination lists, focused inspectors, and shared native setting components.
+- `Support/`: bounded scan-log state plus small presentation and process-safety helpers.
 - `Tests/`: pure state, parsing, accounting, and runtime-install tests.
 
 ## Cleanup invariants

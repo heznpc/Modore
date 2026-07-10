@@ -55,40 +55,48 @@ struct ActivityPage: View {
                 }
             }
 
-            Section {
-                ScrollView {
-                    Text(model.logText.isEmpty ? "아직 실행 로그가 없습니다." : model.logText)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(model.logText.isEmpty ? .secondary : .primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                }
-                .frame(minHeight: 200, maxHeight: 320)
-                .padding(12)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-            } header: {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("실행 로그")
-                        Text("검사와 승인형 정리의 로컬 출력입니다.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textCase(nil)
-                    }
-                    Spacer()
-                    Button("로그 지우기", systemImage: "trash") {
-                        model.clearLog()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(model.logText.isEmpty)
-                    .textCase(nil)
-                }
-            }
+            ScanLogSection(store: model.logStore, clearAction: model.clearLog)
         }
         .macSettingsFormStyle()
     }
 }
+
+struct ScanLogSection: View {
+    @ObservedObject var store: ScanLogStore
+    let clearAction: () -> Void
+
+    var body: some View {
+        Section {
+            ScrollView {
+                Text(store.isEmpty ? "아직 실행 로그가 없습니다." : store.text)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(store.isEmpty ? .secondary : .primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(minHeight: 200, maxHeight: 320)
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        } header: {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("실행 로그")
+                    Text("검사와 승인형 정리의 로컬 출력입니다.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textCase(nil)
+                }
+                Spacer()
+                Button("로그 지우기", systemImage: "trash", action: clearAction)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(store.isEmpty)
+                    .textCase(nil)
+            }
+        }
+    }
+}
+
 struct RecentScanHistoryRow: View {
     let entry: StorageHistoryEntry
     let previous: StorageHistoryEntry?
@@ -174,25 +182,41 @@ struct FreeSpaceTrendView: View {
             }
             .font(.caption)
 
-            GeometryReader { proxy in
-                let values = samples.map(\.freeGB)
-                let minimum = values.min() ?? 0
-                let maximum = values.max() ?? 1
-                let span = max(maximum - minimum, 0.5)
-                Path { path in
-                    for (index, value) in values.enumerated() {
-                        let x = values.count <= 1
-                            ? 0
-                            : proxy.size.width * CGFloat(index) / CGFloat(values.count - 1)
-                        let y = proxy.size.height * CGFloat(1 - (value - minimum) / span)
-                        if index == 0 {
-                            path.move(to: CGPoint(x: x, y: y))
-                        } else {
-                            path.addLine(to: CGPoint(x: x, y: y))
-                        }
-                    }
+            FreeSpaceSparkline(values: samples.map(\.freeGB))
+        }
+    }
+}
+
+struct FreeSpaceSparkline: View {
+    let values: [Double]
+
+    var body: some View {
+        GeometryReader { proxy in
+            makePath(in: proxy.size)
+                .stroke(
+                    Color.accentColor,
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                )
+        }
+    }
+
+    private func makePath(in size: CGSize) -> Path {
+        let minimum = values.min() ?? 0
+        let maximum = values.max() ?? 1
+        let span = max(maximum - minimum, 0.5)
+        let horizontalStep = values.count <= 1
+            ? 0
+            : size.width / CGFloat(values.count - 1)
+        return Path { path in
+            for (index, value) in values.enumerated() {
+                let x = horizontalStep * CGFloat(index)
+                let normalizedValue = CGFloat((value - minimum) / span)
+                let y = size.height * (1 - normalizedValue)
+                if index == 0 {
+                    path.move(to: CGPoint(x: x, y: y))
+                } else {
+                    path.addLine(to: CGPoint(x: x, y: y))
                 }
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
         }
     }

@@ -227,32 +227,6 @@ struct ModernSidebar: View {
     }
 }
 
-struct SidebarDestinationRow: View {
-    let destination: AppDestination
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                SettingsIcon(symbol: destination.symbol, tint: destination.tint, size: 26)
-                Text(destination.title)
-                    .font(.body.weight(.medium))
-                Spacer()
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 38)
-            .foregroundStyle(isSelected ? Color.white : Color.primary)
-            .background(
-                isSelected ? Color.accentColor : Color.clear,
-                in: RoundedRectangle(cornerRadius: 7)
-            )
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
-    }
-}
-
 struct ModernDetailView: View {
     let destination: AppDestination
     let onNavigate: (AppDestination) -> Void

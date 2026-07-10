@@ -71,30 +71,16 @@ struct StorageChangeSummary: Equatable {
     let previous: StorageHistoryEntry
     let current: StorageHistoryEntry
     let itemChanges: [StorageItemChange]
+    let largestChanges: [StorageItemChange]
+    let growingItems: [StorageItemChange]
+    let shrinkingItems: [StorageItemChange]
+    let observedGrowthGB: Double
+    let observedShrinkGB: Double
+    let trackedNetDeltaGB: Double
 
     var freeDeltaGB: Double { current.freeGB - previous.freeGB }
     var consumedGB: Double { max(0, -freeDeltaGB) }
     var recoveredGB: Double { max(0, freeDeltaGB) }
-
-    var growingItems: [StorageItemChange] {
-        itemChanges.filter { $0.deltaGB >= 0.05 }.sorted { $0.deltaGB > $1.deltaGB }
-    }
-
-    var shrinkingItems: [StorageItemChange] {
-        itemChanges.filter { $0.deltaGB <= -0.05 }.sorted { $0.deltaGB < $1.deltaGB }
-    }
-
-    var observedGrowthGB: Double {
-        growingItems.reduce(0) { $0 + $1.deltaGB }
-    }
-
-    var observedShrinkGB: Double {
-        shrinkingItems.reduce(0) { $0 + abs($1.deltaGB) }
-    }
-
-    var trackedNetDeltaGB: Double {
-        itemChanges.reduce(0) { $0 + $1.deltaGB }
-    }
 
     var unattributedConsumedGB: Double {
         max(0, consumedGB - observedGrowthGB)
@@ -102,10 +88,6 @@ struct StorageChangeSummary: Equatable {
 
     var unattributedRecoveredGB: Double {
         max(0, recoveredGB - observedShrinkGB)
-    }
-
-    var largestChanges: [StorageItemChange] {
-        itemChanges.sorted { abs($0.deltaGB) > abs($1.deltaGB) }
     }
 
     init?(entries: [StorageHistoryEntry]) {
@@ -119,7 +101,7 @@ struct StorageChangeSummary: Equatable {
         // A missing row can mean that the bounded scanner ran out of time, not that
         // the path was created or deleted. Compare only measurements present in both snapshots.
         let keys = Set(before.keys).intersection(after.keys)
-        itemChanges = keys.compactMap { key in
+        let changes: [StorageItemChange] = keys.compactMap { key in
             guard let old = before[key], let row = after[key] else { return nil }
             if before[key]?.measureStatus == "timed_out" || after[key]?.measureStatus == "timed_out" {
                 return nil
@@ -138,6 +120,15 @@ struct StorageChangeSummary: Equatable {
                 afterGB: newSize
             )
         }
+        let growing = changes.filter { $0.deltaGB >= 0.05 }.sorted { $0.deltaGB > $1.deltaGB }
+        let shrinking = changes.filter { $0.deltaGB <= -0.05 }.sorted { $0.deltaGB < $1.deltaGB }
+        itemChanges = changes
+        largestChanges = changes.sorted { abs($0.deltaGB) > abs($1.deltaGB) }
+        growingItems = growing
+        shrinkingItems = shrinking
+        observedGrowthGB = growing.reduce(0) { $0 + $1.deltaGB }
+        observedShrinkGB = shrinking.reduce(0) { $0 + abs($1.deltaGB) }
+        trackedNetDeltaGB = changes.reduce(0) { $0 + $1.deltaGB }
     }
 }
 
@@ -194,7 +185,7 @@ enum StorageHistoryStore {
         return text.split(whereSeparator: \.isNewline).compactMap { line in
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
             guard fields.count >= 4,
-                  let date = isoFormatter.date(from: String(fields[0])),
+                  let date = try? isoFormat.parse(String(fields[0])),
                   let freeKB = Double(fields[1]),
                   let dropKB = Double(fields[2]) else {
                 return nil
@@ -234,9 +225,5 @@ enum StorageHistoryStore {
         return decoder
     }()
 
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
+    private static let isoFormat = Date.ISO8601FormatStyle()
 }

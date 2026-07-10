@@ -52,6 +52,45 @@ final class PCHealthCheckMacTests: XCTestCase {
         XCTAssertEqual(snapshot.reclaimableText, "10.0GB+")
     }
 
+    func testScanContentParsesOneCoherentSnapshot() throws {
+        let content = ScanContent(root: [
+            "summary": ["status": "warning", "message": "확인 필요", "warningCount": 1],
+            "findings": [["level": "warning", "title": "Unknown item", "detail": "Review it"]],
+            "sections": [
+                "storage": ["volume": volume()],
+                "cpu": [["risk": "safe", "name": "kernel_task", "pid": 1, "cpu": 0.1]],
+            ],
+        ])
+
+        XCTAssertEqual(content.summary?.warningCount, 1)
+        XCTAssertEqual(content.findings.count, 1)
+        XCTAssertEqual(content.cpuRows.count, 1)
+        XCTAssertNotNil(content.storage)
+    }
+
+    @MainActor
+    func testScanLogStoreBoundsAndClearsOutput() {
+        let store = ScanLogStore()
+        store.append(String(repeating: "x", count: 210_000))
+
+        XCTAssertEqual(store.text.count, 200_000)
+        XCTAssertFalse(store.isEmpty)
+
+        store.clear()
+        XCTAssertTrue(store.isEmpty)
+    }
+
+    func testCapturedProcessDrainsLargeOutputWhileRunning() async {
+        let result = await LocalProcessRunner.capture(
+            executable: "/bin/bash",
+            arguments: ["-c", "/usr/bin/yes x | /usr/bin/head -c 1048576"],
+            currentDirectory: FileManager.default.temporaryDirectory
+        )
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.output.utf8.count, 1_048_576)
+    }
+
     func testMissingHistoryRowsAreNotReportedAsDeleted() throws {
         let previous = try XCTUnwrap(StorageSnapshot(json: [
             "volume": volume(freeGB: 30),
