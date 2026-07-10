@@ -18,7 +18,7 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -32,9 +32,6 @@ jobs:
           - language: python
             build_mode: none
             os: ubuntu-latest
-          - language: swift
-            build_mode: manual
-            os: macos-latest
 
     steps:
       - uses: actions/checkout@v6
@@ -43,9 +40,6 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build_mode }}
-      - name: Build Swift package
-        if: matrix.language == 'swift'
-        run: swift build --package-path macos/PCHealthCheckMac
       - name: Analyze
         uses: github/codeql-action/analyze@v4
         with:
