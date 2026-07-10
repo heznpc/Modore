@@ -1,0 +1,53 @@
+name: Mac storage attribution
+description: Propose a verifiable Mac cache, toolchain, app, or Simulator attribution.
+title: "[Mac storage] "
+labels: ["macos", "storage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A large path is not automatically safe to delete. This template is for attribution first. Do not attach local scan files or unredacted home paths.
+  - type: input
+    id: owner
+    attributes:
+      label: Owning app or tool
+      placeholder: Xcode, Playwright, Android SDK, Chrome
+    validations:
+      required: true
+  - type: input
+    id: pattern
+    attributes:
+      label: Redacted path pattern
+      placeholder: ~/Library/Caches/example or /private/var/folders/.../X/example
+    validations:
+      required: true
+  - type: dropdown
+    id: behavior
+    attributes:
+      label: Proposed behavior
+      options:
+        - Explain only
+        - Protect as developer/session data
+        - Consider an approval-gated cleanup recipe
+    validations:
+      required: true
+  - type: textarea
+    id: proof
+    attributes:
+      label: Ownership and regeneration evidence
+      description: Link primary documentation or provide a reproducible, non-personal fixture.
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: What breaks if this is removed?
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed usernames, UUIDs, local IPs, hashes, and report attachments.
+          required: true

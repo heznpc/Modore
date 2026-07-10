@@ -75,16 +75,56 @@
         "note": "저장공간 압박은 낮습니다."
       },
       "cleanupCandidates": [
-        {
-          "risk": "warning",
-          "kind": "cache",
-          "label": "User caches",
+      {
+        "risk": "warning",
+        "kind": "cache",
+        "label": "User caches",
           "sizeGB": 2.4,
           "path": "/Users/sample/Library/Caches",
+          "cleanupId": "user_caches",
           "note": "재생성 가능한 캐시입니다.",
-          "action": "캐시 정리 후보"
-        }
-      ],
+        "action": "캐시 정리 후보"
+      },
+      {
+        "risk": "warning",
+        "kind": "ai_vm_cache",
+        "label": "Claude Cowork VM bundles",
+        "sizeGB": 11.0,
+        "path": "/Users/sample/Library/Application Support/Claude/vm_bundles",
+        "cleanupId": "claude_vm_bundles",
+        "note": "Claude Cowork/로컬 에이전트용 VM 이미지입니다. 세션 기록과 분리된 재생성 가능 런타임이지만 Claude를 완전히 종료한 뒤 정리하세요.",
+        "action": "Claude 종료 후 VM bundle 정리"
+      }
+    ],
+    "reviewCandidates": [
+      {
+        "risk": "warning",
+        "kind": "ai_review",
+        "label": "Codex internal event log DB",
+        "sizeGB": 2.2,
+        "path": "/Users/sample/.codex/logs_2.sqlite",
+        "note": "Codex 내부 이벤트/진단 로그 SQLite DB입니다. .codex/sessions의 세션 jsonl은 아니며, Codex 종료 후 VACUUM/수동 검토 대상으로 분리합니다.",
+        "action": "Codex 종료 후 VACUUM/수동 검토"
+      },
+      {
+        "risk": "info",
+        "kind": "protected_history",
+        "label": "Claude local agent workspaces",
+        "sizeGB": 1.7,
+        "path": "/Users/sample/Library/Application Support/Claude/local-agent-mode-sessions",
+        "note": "Claude 로컬 에이전트/Cowork 작업공간입니다. audit 로그, uploads, outputs가 포함될 수 있어 자동 정리 대상에서 제외합니다.",
+        "action": "작업공간 보존"
+      },
+      {
+        "risk": "info",
+        "kind": "protected_history",
+        "label": "Codex session history (jsonl)",
+        "sizeGB": 1.7,
+        "path": "/Users/sample/.codex/sessions",
+        "note": "Codex 대화/session jsonl 기록입니다. 사용자가 되살려 볼 수 있는 실제 세션 기록이라 자동 정리 대상에서 제외합니다.",
+        "action": "세션 기록 보존"
+      }
+    ],
       "developerToolchains": [
         {
           "risk": "info",
@@ -94,6 +134,44 @@
           "path": "/opt/homebrew/share/android-commandlinetools",
           "note": "Android SDK 루트입니다. 모바일 Android 빌드에 필요할 수 있어 통째 삭제하지 마세요.",
           "action": "통째 삭제 금지"
+        }
+      ],
+      "applications": [
+        {
+          "risk": "info",
+          "kind": "application",
+          "label": "Example App",
+          "sizeGB": 1.2,
+          "path": "/Applications/Example App.app",
+          "cleanupId": "app_uninstall:me.example.app",
+          "note": "Bundle ID: me.example.app. 앱 본체와 정확히 귀속되는 사용자 데이터만 승인 후 휴지통으로 이동합니다.",
+          "action": "미리보기 후 휴지통 이동"
+        }
+      ],
+      "simulatorDevices": [
+        {
+          "risk": "safe",
+          "name": "iPad Pro 13-inch (M5)",
+          "uuid": "5C38F92C-B829-4214-9AE9-298C5E2F445C",
+          "runtime": "iOS 26.3",
+          "state": "Booted",
+          "sizeGB": 3.9,
+          "measureStatus": "ok",
+          "protected": true,
+          "protectionReason": "현재 Booted 상태",
+          "cleanupId": "simulator_delete:5C38F92C-B829-4214-9AE9-298C5E2F445C"
+        },
+        {
+          "risk": "info",
+          "name": "iPhone 17 Pro Max",
+          "uuid": "11111111-2222-3333-4444-555555555555",
+          "runtime": "iOS 26.3",
+          "state": "Shutdown",
+          "sizeGB": 2.7,
+          "measureStatus": "ok",
+          "protected": false,
+          "protectionReason": "",
+          "cleanupId": "simulator_delete:11111111-2222-3333-4444-555555555555"
         }
       ],
       "accessChecks": [

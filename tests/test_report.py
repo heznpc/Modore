@@ -90,10 +90,19 @@ def test_macos_storage_contract(fixtures_dir):
     assert storage["volume"]["risk"] in ("safe", "warning", "danger", "unknown")
     assert isinstance(storage["volume"]["freeGB"], (int, float))
     assert isinstance(storage["cleanupCandidates"], list)
+    assert isinstance(storage["reviewCandidates"], list)
     assert isinstance(storage["developerToolchains"], list)
+    assert isinstance(storage["applications"], list)
+    assert isinstance(storage["simulatorDevices"], list)
     assert isinstance(storage["accessIssues"], list)
     assert isinstance(storage["runtimeSignals"], list)
     assert {"kind", "label", "count", "risk", "action", "note"} <= set(storage["runtimeSignals"][0])
+    assert all(item.get("cleanupId") for item in storage["cleanupCandidates"])
+    assert all(not item.get("cleanupId") for item in storage["reviewCandidates"])
+    assert all(item.get("cleanupId", "").startswith("app_uninstall:") for item in storage["applications"])
+    assert all(item.get("cleanupId", "").startswith("simulator_delete:") for item in storage["simulatorDevices"])
+    assert all(isinstance(item.get("sizeGB"), (int, float)) for item in storage["simulatorDevices"])
+    assert all(item.get("measureStatus") in ("ok", "timed_out") for item in storage["simulatorDevices"])
 
 
 def test_report_includes_next_actions(fixtures_dir, project_root, tmp_path):
@@ -119,7 +128,10 @@ def test_report_includes_next_actions(fixtures_dir, project_root, tmp_path):
     assert "개인 정보" in html
     assert "macOS 저장공간 막대 해석" in html
     assert "System Data" in html
+    assert "삭제 전 확인" in html
+    assert "Codex internal event log DB" in html
     assert "Developer" in html
+    assert "설치 앱 크기 및 제거 검토" in html
     assert "반복 생성원" in html
     assert "Headless/Playwright Chrome" in html
     assert "Full Disk Access" in html

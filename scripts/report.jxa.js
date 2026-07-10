@@ -115,8 +115,14 @@ const storageHtml = storage.volume ? `<div class="panel">
   남은 공간 ${esc(storageVolume.freeGB)}GB · 사용률 ${esc(storageVolume.usePercent)}% · ${esc(storageVolume.note || "")}</div>
   <h3>System Data로 숨을 수 있는 정리 후보</h3>
   ${table(storage.cleanupCandidates || [], ["risk","kind","label","sizeGB","action","note","path"])}
+  ${(storage.reviewCandidates || []).length ? "<h3>삭제 전 확인</h3>" : ""}
+  ${(storage.reviewCandidates || []).length ? table(storage.reviewCandidates || [], ["risk","kind","label","sizeGB","action","note","path"]) : ""}
   <h3>Developer 항목으로 뭉친 개발 도구/시뮬레이터</h3>
   ${table(storage.developerToolchains || [], ["risk","kind","label","sizeGB","action","note","path"])}
+  ${(storage.applications || []).length ? "<h3>설치 앱 크기 및 제거 검토</h3>" : ""}
+  ${(storage.applications || []).length ? table(storage.applications || [], ["risk","kind","label","sizeGB","action","note","path"]) : ""}
+  ${(storage.simulatorDevices || []).length ? "<h3>Simulator 기기별 보존 상태</h3>" : ""}
+  ${(storage.simulatorDevices || []).length ? table(storage.simulatorDevices || [], ["risk","name","runtime","state","sizeGB","protectionReason"]) : ""}
   ${runtimeHtml}
   ${accessHtml}
 </div>` : "";

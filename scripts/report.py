@@ -496,8 +496,20 @@ def render_storage(i18n: I18n, storage) -> str:
         overview
         + f'<h3>{esc(h("sections.storage_cleanup"))}</h3>'
         + render_storage_table(i18n, storage.get("cleanupCandidates"))
+        + (f'<h3>{esc(h("sections.storage_review"))}</h3>' if storage.get("reviewCandidates") else "")
+        + render_storage_table(i18n, storage.get("reviewCandidates"))
         + f'<h3>{esc(h("sections.storage_developer"))}</h3>'
         + render_storage_table(i18n, storage.get("developerToolchains"))
+        + (f'<h3>{esc(h("sections.storage_apps"))}</h3>' if storage.get("applications") else "")
+        + render_storage_table(i18n, storage.get("applications"))
+        + (f'<h3>{esc(h("sections.storage_simulators"))}</h3>' if storage.get("simulatorDevices") else "")
+        + render_simple_table(i18n, storage.get("simulatorDevices"), [
+            {"field": "name", "header_key": "table_headers.name"},
+            {"field": "runtime", "header_key": "table_headers.runtime"},
+            {"field": "state", "header_key": "table_headers.state"},
+            {"field": "sizeGB", "header_key": "table_headers.size_gb"},
+            {"field": "protectionReason", "header_key": "table_headers.protection"},
+        ])
         + (f'<h3>{esc(h("sections.storage_runtime"))}</h3>' if storage.get("runtimeSignals") else "")
         + render_storage_runtime_table(i18n, storage.get("runtimeSignals"))
         + (f'<h3>{esc(h("sections.storage_access"))}</h3>' if storage.get("accessIssues") else "")

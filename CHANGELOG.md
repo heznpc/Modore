@@ -19,6 +19,16 @@ All notable changes to this project are documented here. Format loosely follows 
 - **VirusTotal API key — environment variable fallback.** `VT_API_KEY` env var now takes precedence over `data/config.json`. Eliminates the need to commit the key to a writable config file in shared/CI environments.
 
 ### Added
+- **Standalone Mac app runtime.** The app now embeds an explicit allowlist of Bash/JXA/data/rule resources and stages them in owner-controlled Application Support when no repository checkout is present. Immutable staged files are checked byte-for-byte before reuse while the local config is preserved. Local DMG smoke packaging and opt-in Developer ID/notarytool distribution are scripted without storing credentials.
+- **Swift safety tests.** SwiftPM tests now cover stable selection IDs, nested storage accounting, protected histories, cleanup protocol parsing, process-name presentation, and standalone runtime installation/config preservation.
+- **Local Mac cleanup harness.** `scripts/cleanup.sh` provides allowlisted preview/execute recipes for rebuildable caches, Claude VM bundles, Xcode DerivedData, Chrome code-sign clones, and INNORIX-EX. Execute requires explicit approval, validates canonical non-symlink targets, checks related processes, rescans after completion, and writes a local receipt.
+- **Native cleanup approval UX.** Actionable storage rows now open a SwiftUI preview sheet with estimated size, fixed targets, process blockers, and rebuild warnings. Protected AI histories and developer runtimes never receive an action ID.
+- **Bundle-ID app removal review.** Installed app sizes come from Spotlight metadata. A selected app is rediscovered by bundle ID, checked for live processes, and moved with exact-ID residue to a unique Trash folder instead of being permanently deleted.
+- **Simulator keep/delete workflow.** Available devices are listed separately; Booted devices and locally preserved model names are protected, while an approved Shutdown device is revalidated and removed by `simctl` UUID without deleting its runtime.
+- **Hourly storage-drop watch.** The native app can toggle a local LaunchAgent that notifies below 20GB free or after an 8GB drop. It records free-space deltas only and never performs cleanup.
+- **Storage change attribution.** The Mac app stores up to 180 owner-only scan snapshots, compares path sizes with the previous scan, and separates observed logical growth from untracked APFS/swap/temp-file changes.
+- **Native Mac navigation redesign.** The first screen now answers current free space, change since the last scan, likely causes, and immediate actions before exposing cleanup, developer, app/Simulator, security, and activity details in separate native views. The UI uses native sidebar search, grouped forms, user-selected accent color, and a restrained semantic palette aligned with Apple's macOS 27 design resources.
+- **Selection-driven Mac workflows.** Cleanup, developer assets, and app/Simulator inventory now use stable master-detail inspectors. Repeated row buttons and the Simulator protection toggle were replaced with one fixed action area.
 - `SECURITY.md` — vulnerability disclosure policy, response timeline, scope.
 - `CONTRIBUTING.md` — whitelist contribution guide, pre-PR checklist, i18n contribution rules.
 - `.github/CODEOWNERS` — trust-asset routing.
@@ -27,6 +37,7 @@ All notable changes to this project are documented here. Format loosely follows 
 - `.python-version` — pyenv/asdf consistency hint.
 
 ### Changed
+- **SwiftUI source split by feature.** The obsolete dashboard implementation was removed and the active app shell, storage, cleanup, development, inventory, security, activity, shared components, models, and services now live in focused files.
 - **`actions/checkout` v4 → v5**, **`actions/setup-python` v5 → v6** (Node 24 runtimes).
 - **README** runtime requirements clarified: end users no longer need Python to run Windows or macOS release zips.
 - README documents the `VT_API_KEY` env-var alternative and OS-specific file permission hardening for `data/config.json`.

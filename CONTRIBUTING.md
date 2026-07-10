@@ -11,9 +11,10 @@ git clone https://github.com/heznpc/pc-health-check.git
 cd pc-health-check
 python3 -m pip install -r requirements-dev.txt
 python3 -m pytest tests/ -q
+swift test --package-path macos/PCHealthCheckMac
 ```
 
-If 61 tests pass, you're set.
+Both suites should pass before you start changing runtime contracts.
 
 ---
 
@@ -60,7 +61,8 @@ This is the highest-value contribution: adding a legitimate local app that curre
 
 ### Pre-PR checklist
 
-- [ ] `python3 -m pytest tests/ -q` passes (all 61 tests).
+- [ ] `python3 -m pytest tests/ -q` passes.
+- [ ] If you touched the Mac app, `swift test --package-path macos/PCHealthCheckMac` passes.
 - [ ] If you touched a PowerShell script, run a parse check:
       `pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('scripts/<file>.ps1', [ref]\$null, [ref]\$null)"`.
 - [ ] If you touched `rules/*.json`, validate JSON:
@@ -77,7 +79,8 @@ This is the highest-value contribution: adding a legitimate local app that curre
 ### What needs design discussion before a PR
 
 - Adding any external dependency (Python package, npm module, PowerShell module).
-- Adding a GUI layer (the current scripts + HTML report is a deliberate trust choice — see README "Design intent").
+- Changing cleanup approval boundaries, bundle-ID attribution, or protected-history behavior.
+- Adding a new outbound network path or changing standalone runtime packaging/signing.
 - Adding telemetry, analytics, or any phone-home behavior.
 - Changes to the VirusTotal integration that send more than a SHA-256 hash.
 
