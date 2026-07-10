@@ -13,6 +13,7 @@ All notable changes to this project are documented here. Format loosely follows 
 - **Runtime Python dependency removed.** Release zips now run with PowerShell on Windows and Bash + JXA on macOS. Python remains only for development tests, docs preview, and release-smoke packaging.
 
 ### Security
+- **CodeQL restored for the public repository.** Actions, JavaScript/TypeScript, and Python use build-free analysis while Swift uses an explicit nested SwiftPM release build instead of the incompatible default Xcode autobuilder.
 - **Sysinternals Authenticode verification on every invocation.** `sigcheck.exe` and `autorunsc.exe` are verified via `Get-AuthenticodeSignature` against `O=Microsoft Corporation` not only at first download but **on every run**. The cache directory under `%LOCALAPPDATA%` is user-writable, so a cached `.exe` could be replaced post-cache by other user-mode malware (the scenario this tool exists to detect). Verification failure deletes the binary and falls back to fresh download.
 - **CI workflow least-privilege.** `permissions: contents: read` set at workflow root. Default `GITHUB_TOKEN` scope reduced.
 - **Landing page XSS hardening.** `docs/script.js` no longer interpolates raw `innerHTML` from translation JSON. A 30-line allowlist sanitizer keeps `<em>`, `<strong>`, `<code>`, `<a>`, `<br>`, `<span>` and strips everything else, including `on*` handlers and `javascript:` URLs. Defense-in-depth against malicious translation PRs.
