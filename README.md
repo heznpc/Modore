@@ -119,7 +119,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 ### Requirements
 - **Windows**: PowerShell 5.1+ (built into Windows 10/11).
 - **macOS script mode**: Bash + `osascript` (built into macOS).
-- **macOS SwiftUI source mode**: macOS 13 or later plus Swift tools 5.9 or later from the system-selected, root-owned Xcode under `/Applications` or Command Line Tools under `/Library/Developer/CommandLineTools`. A notarized DMG does not require the toolchain.
+- **macOS SwiftUI source mode**: macOS 13 or later plus Swift tools 5.9 or later from the system-selected, root-owned Xcode under `/Applications` or Command Line Tools under `/Library/Developer/CommandLineTools`. The explicitly nonpublishable local/CI packaging check may also use an ephemeral current-user-owned Xcode when it is not group/world writable; public distribution never receives that exception. A notarized DMG does not require the toolchain.
 - **Development / tests only**: Python 3.11+ for pytest, release-smoke packaging, and local docs preview.
 
 ## Enabling VirusTotal lookup (optional, off by default)

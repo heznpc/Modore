@@ -758,6 +758,8 @@ def test_mac_builder_embeds_release_identity_without_local_path(project_root):
     assert "existing_app_is_expected" in source
     assert "Previous app preserved for manual review" in source
     assert '/bin/rm -rf "$backup_app"' not in source
+    assert 'ALLOW_USER_TOOLCHAIN="${PCH_ALLOW_USER_TOOLCHAIN:-0}"' in source
+    assert '"$ALLOW_USER_TOOLCHAIN" == "1" && "${PCH_SKIP_ADHOC_SIGN:-0}" == "1"' in source
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS builder boundary")
@@ -889,6 +891,8 @@ def test_mac_packager_separates_local_and_public_trust(project_root):
     assert "/usr/bin/env -i" in source
     assert "run_clean /usr/bin/python3 -I -B" in source
     assert "run_clean /usr/bin/xcrun swift --version" in source
+    assert 'build_environment+=("PCH_ALLOW_USER_TOOLCHAIN=1")' in source
+    assert '"$MODE" == "distribution" || "$tool_owner" != "$current_uid"' in source
     assert '"swiftVersion": swift_version' in source
     assert "GIT_CONFIG_NOSYSTEM=1" in source
     assert "GIT_CONFIG_GLOBAL=/dev/null" in source

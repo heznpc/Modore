@@ -16,6 +16,7 @@ APP_VERSION="${PCH_APP_VERSION:-0.3.0}"
 MINIMUM_SYSTEM_VERSION="${PCH_MINIMUM_SYSTEM_VERSION:-13.0}"
 ARCH_SPEC="${PCH_BUILD_ARCHS:-native}"
 STRICT_BUILD="${PCH_STRICT_BUILD:-1}"
+ALLOW_USER_TOOLCHAIN="${PCH_ALLOW_USER_TOOLCHAIN:-0}"
 
 if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     /usr/bin/printf 'ERROR: PCH_APP_VERSION must be a numeric X.Y.Z version: %s\n' "$APP_VERSION" >&2
@@ -23,6 +24,14 @@ if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 if [[ ! "$MINIMUM_SYSTEM_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
     /usr/bin/printf 'ERROR: PCH_MINIMUM_SYSTEM_VERSION must look like 13.0.\n' >&2
+    exit 64
+fi
+if [[ "$ALLOW_USER_TOOLCHAIN" != "0" && "$ALLOW_USER_TOOLCHAIN" != "1" ]]; then
+    /usr/bin/printf 'ERROR: PCH_ALLOW_USER_TOOLCHAIN must be 0 or 1.\n' >&2
+    exit 64
+fi
+if [[ "$ALLOW_USER_TOOLCHAIN" == "1" && "${PCH_SKIP_ADHOC_SIGN:-0}" == "1" ]]; then
+    /usr/bin/printf 'ERROR: a user-owned toolchain cannot be used for an unsigned distribution build.\n' >&2
     exit 64
 fi
 if [[ "$BUILD_DIR" != /* || "$BUILD_DIR" == "/" || -L "$BUILD_DIR" ]]; then
@@ -187,8 +196,11 @@ esac
 for trusted_tool_path in "$developer_dir" "$swift_real"; do
     owner_uid="$(/usr/bin/stat -f '%u' "$trusted_tool_path")"
     permissions="$(/usr/bin/stat -f '%Lp' "$trusted_tool_path")"
-    if [[ "$owner_uid" != "0" || $((8#$permissions & 0022)) -ne 0 ]]; then
-        /usr/bin/printf 'ERROR: selected toolchain is not root-owned and write-protected: %s\n' "$trusted_tool_path" >&2
+    if [[ $((8#$permissions & 0022)) -ne 0 \
+        || ( "$owner_uid" != "0" \
+            && ( "$ALLOW_USER_TOOLCHAIN" != "1" || "$owner_uid" != "$current_uid" ) ) ]]; then
+        /usr/bin/printf 'ERROR: selected toolchain owner or permissions are unsafe for this build mode: %s\n' \
+            "$trusted_tool_path" >&2
         exit 1
     fi
 done

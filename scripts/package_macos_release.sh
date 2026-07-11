@@ -295,8 +295,11 @@ esac
 for trusted_tool_path in "$developer_dir" "$swift_real"; do
     tool_owner="$(/usr/bin/stat -f '%u' "$trusted_tool_path")"
     tool_permissions="$(/usr/bin/stat -f '%Lp' "$trusted_tool_path")"
-    if [[ "$tool_owner" != "0" || $((8#$tool_permissions & 0022)) -ne 0 ]]; then
-        /usr/bin/printf 'ERROR: selected toolchain is not root-owned and write-protected: %s\n' "$trusted_tool_path" >&2
+    if [[ $((8#$tool_permissions & 0022)) -ne 0 \
+        || ( "$tool_owner" != "0" \
+            && ( "$MODE" == "distribution" || "$tool_owner" != "$current_uid" ) ) ]]; then
+        /usr/bin/printf 'ERROR: selected toolchain owner or permissions are unsafe for this packaging mode: %s\n' \
+            "$trusted_tool_path" >&2
         exit 1
     fi
 done
@@ -697,6 +700,11 @@ build_environment=(
 )
 if [[ "$MODE" == "distribution" ]]; then
     build_environment+=("PCH_SKIP_ADHOC_SIGN=1")
+else
+    # Hosted macOS CI images can own their preinstalled Xcode as the ephemeral
+    # runner account. This exception is restricted to explicitly nonpublishable
+    # local artifacts; distribution still requires a root-owned toolchain.
+    build_environment+=("PCH_ALLOW_USER_TOOLCHAIN=1")
 fi
 /usr/bin/env -i "${clean_environment[@]}" "${build_environment[@]}" \
     "$BUILD_ROOT/scripts/build_macos_swift_app.sh"
