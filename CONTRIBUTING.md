@@ -10,8 +10,10 @@ Thanks for considering a contribution. The most-wanted PRs are **whitelist addit
 git clone https://github.com/heznpc/pc-health-check.git
 cd pc-health-check
 python3 -m pip install -r requirements-dev.txt
-python3 -m pytest tests/ -q
-swift test --package-path macos/PCHealthCheckMac
+python3 -I -B -m pytest tests/ -q
+swift test --package-path macos/PCHealthCheckMac \
+  -Xswiftc -warnings-as-errors \
+  -Xswiftc -strict-concurrency=complete
 ```
 
 Both suites should pass before you start changing runtime contracts.
@@ -63,9 +65,9 @@ This is the highest-value contribution: adding a legitimate local app that curre
 
 ### Pre-PR checklist
 
-- [ ] `python3 -m pytest tests/ -q` passes.
-- [ ] `python3 scripts/release_smoke.py --check-only` passes.
-- [ ] If you touched the Mac app, `swift test --package-path macos/PCHealthCheckMac` passes.
+- [ ] `python3 -I -B -m pytest tests/ -q` passes.
+- [ ] `python3 -I -B scripts/release_smoke.py --check-only` passes.
+- [ ] If you touched the Mac app, `swift test --package-path macos/PCHealthCheckMac -Xswiftc -warnings-as-errors -Xswiftc -strict-concurrency=complete` passes.
 - [ ] If you touched Mac packaging, `scripts/package_macos_release.sh --local` completes and its app, DMG, and sidecar metadata report the intended architectures/minimum OS. This never creates a publishable release.
 - [ ] If you touched a PowerShell script, run a parse check:
       `pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('scripts/<file>.ps1', [ref]\$null, [ref]\$null)"`.

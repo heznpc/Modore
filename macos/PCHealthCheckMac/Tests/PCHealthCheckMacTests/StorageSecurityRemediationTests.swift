@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import PCHealthCheckMac
 
@@ -135,6 +136,181 @@ final class StorageSecurityRemediationTests: XCTestCase {
 
         XCTAssertNil(loaded.content.storage)
         XCTAssertNotNil(loaded.diagnostic)
+        XCTAssertTrue(loaded.diagnostic?.contains("32MB 제한") == true)
+    }
+
+    func testScanResultLoaderRejectsSymlinkAndFIFOWithoutBlocking() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-unsafe-scan-input-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let scanURL = root.appendingPathComponent("scan_result.json")
+        let target = root.appendingPathComponent("target.json")
+        try "{}".write(to: target, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: scanURL, withDestinationURL: target)
+
+        let symlinked = ScanResultLoader.load(
+            projectRoot: root,
+            historyURL: root.appendingPathComponent("history.json"),
+            sampleURL: root.appendingPathComponent("samples.tsv")
+        )
+        XCTAssertNil(symlinked.content.storage)
+        XCTAssertNotNil(symlinked.diagnostic)
+
+        try FileManager.default.removeItem(at: scanURL)
+        let fifoStatus = scanURL.path.withCString { Darwin.mkfifo($0, 0o600) }
+        XCTAssertEqual(fifoStatus, 0)
+        let started = Date()
+        let fifo = ScanResultLoader.load(
+            projectRoot: root,
+            historyURL: root.appendingPathComponent("history.json"),
+            sampleURL: root.appendingPathComponent("samples.tsv")
+        )
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+        XCTAssertNil(fifo.content.storage)
+        XCTAssertNotNil(fifo.diagnostic)
+    }
+
+    func testVirusTotalConsentConfigRejectsSymlinkAndFIFOWithoutBlocking() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-unsafe-vt-config-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let configuration = root.appendingPathComponent("config.json")
+        let target = root.appendingPathComponent("target.json")
+        try #"{"virustotal":{"enabled":true}}"#.write(
+            to: target,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.createSymbolicLink(at: configuration, withDestinationURL: target)
+
+        var environment = ScanPipeline.scanEnvironment(
+            configurationURL: configuration,
+            processEnvironment: ["VT_API_KEY": "secret"]
+        )
+        XCTAssertNil(environment["VT_API_KEY"])
+
+        try FileManager.default.removeItem(at: configuration)
+        let fifoStatus = configuration.path.withCString { Darwin.mkfifo($0, 0o600) }
+        XCTAssertEqual(fifoStatus, 0)
+        let started = Date()
+        environment = ScanPipeline.scanEnvironment(
+            configurationURL: configuration,
+            processEnvironment: ["VT_API_KEY": "secret"]
+        )
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+        XCTAssertNil(environment["VT_API_KEY"])
+    }
+
+    func testScanResultReadRejectsReplacedParentIdentity() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-scan-parent-identity-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let current = root.appendingPathComponent("current")
+        let replacement = root.appendingPathComponent("replacement")
+        let old = root.appendingPathComponent("old")
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
+        try "{}".write(
+            to: replacement.appendingPathComponent("scan_result.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let identity = try XCTUnwrap(FilesystemIdentity.directory(at: current))
+        try FileManager.default.moveItem(at: current, to: old)
+        try FileManager.default.moveItem(at: replacement, to: current)
+
+        XCTAssertThrowsError(try ScanResultLoader.boundedData(
+            contentsOf: current.appendingPathComponent("scan_result.json"),
+            maximumBytes: ScanResultLoader.maximumScanResultBytes,
+            expectedParentIdentity: identity
+        ))
+    }
+
+    func testStorageHistoryRejectsSymlinkAndFIFOInputs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-unsafe-history-input-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let historyURL = root.appendingPathComponent("history.json")
+        let target = root.appendingPathComponent("target.json")
+        try "sentinel".write(to: target, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: historyURL, withDestinationURL: target)
+
+        XCTAssertEqual(StorageHistoryStore.load(from: historyURL), [])
+        let entry = StorageHistoryEntry(
+            sourceID: "unsafe-history",
+            capturedAt: Date(timeIntervalSince1970: 1),
+            storage: try snapshot(cleanupItems: [])
+        )
+        XCTAssertThrowsError(try StorageHistoryStore.record(entry, at: historyURL))
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "sentinel")
+
+        try FileManager.default.removeItem(at: historyURL)
+        let fifoStatus = historyURL.path.withCString { Darwin.mkfifo($0, 0o600) }
+        XCTAssertEqual(fifoStatus, 0)
+        let started = Date()
+        XCTAssertEqual(StorageHistoryStore.load(from: historyURL), [])
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+    }
+
+    func testSecureLocalFileWriteRejectsReplacedParentIdentity() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-history-parent-identity-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let current = root.appendingPathComponent("current")
+        let replacement = root.appendingPathComponent("replacement")
+        let old = root.appendingPathComponent("old")
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
+        let identity = try XCTUnwrap(FilesystemIdentity.directory(at: current))
+        try FileManager.default.moveItem(at: current, to: old)
+        try FileManager.default.moveItem(at: replacement, to: current)
+        let destination = current.appendingPathComponent("history.json")
+
+        XCTAssertThrowsError(try SecureLocalFileIO.atomicWrite(
+            Data("[]".utf8),
+            to: destination,
+            expectedParentIdentity: identity
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testGeneratedReportIsRepublishedWithOwnerOnlyPermissions() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-private-report-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let report = root.appendingPathComponent("report.html")
+        try Data("<html>private</html>".utf8).write(to: report)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: report.path
+        )
+        let identity = try XCTUnwrap(FilesystemIdentity.directory(at: root))
+
+        XCTAssertTrue(ScanPipeline.finalizeGeneratedReport(
+            at: report,
+            expectedParentIdentity: identity
+        ))
+        XCTAssertEqual(
+            try Data(contentsOf: report),
+            Data("<html>private</html>".utf8)
+        )
+        let permissions = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: report.path)[.posixPermissions]
+                as? NSNumber
+        )
+        XCTAssertEqual(permissions.intValue & 0o777, 0o600)
     }
 
     func testOversizedSecuritySectionReportsVisibleTruncation() {

@@ -8,14 +8,25 @@ function env(name, fallback) {
   return value == null ? fallback : String(value);
 }
 function readText(path) {
-  const s = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null);
-  return s ? unwrap(s) : "";
+  const handle = $.NSFileHandle.fileHandleForReadingAtPath(path);
+  if (!handle) return "";
+  try {
+    const data = handle.readDataOfLength(32 * 1024 * 1024 + 1);
+    if (Number(data.length) > 32 * 1024 * 1024) {
+      throw new Error("scan_result.json 크기가 안전 상한을 초과했습니다.");
+    }
+    const value = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
+    return value ? unwrap(value) : "";
+  } finally {
+    try { handle.closeFile; } catch (_) {}
+  }
 }
 function cwd() {
   return unwrap($.NSFileManager.defaultManager.currentDirectoryPath);
 }
 function writeText(path, text) {
-  $(text).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
+  const ok = !!$(text).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
+  if (!ok) throw new Error("리포트를 안전하게 기록하지 못했습니다: " + path);
 }
 function esc(v) {
   return String(v == null ? "" : v).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));

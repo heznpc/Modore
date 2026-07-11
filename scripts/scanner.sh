@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -p
 # ============================================================
 # PC 건강검진 - macOS 스캐너 오케스트레이터 (v0.3)
 #
@@ -10,16 +10,26 @@
 # ============================================================
 
 set -u
+set -o pipefail
+umask 077
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+unset BASH_ENV ENV CDPATH GLOBIGNORE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="${PCH_PROJECT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 MODULES_DIR="$SCRIPT_DIR/modules/macos"
 
 OUTPUT="${PROJECT_DIR}/scan_result.json"
 RAW_PATH="${PROJECT_DIR}/raw_facts.json"
 CONFIG_PATH="${PCH_CONFIG_PATH:-}"
-WHITELIST_PATH="${PROJECT_DIR}/data/whitelist.json"
+WHITELIST_PATH="${PCH_PINNED_WHITELIST:-${PROJECT_DIR}/data/whitelist.json}"
 RULES_DIR="${PROJECT_DIR}/rules"
+CPU_MODULE="${PCH_PINNED_CPU_MODULE:-$MODULES_DIR/cpu.sh}"
+NETWORK_MODULE="${PCH_PINNED_NETWORK_MODULE:-$MODULES_DIR/network.sh}"
+AUTORUNS_MODULE="${PCH_PINNED_AUTORUNS_MODULE:-$MODULES_DIR/autoruns.sh}"
+SECURITY_MODULE="${PCH_PINNED_SECURITY_MODULE:-$MODULES_DIR/security.sh}"
+STORAGE_MODULE="${PCH_PINNED_STORAGE_MODULE:-$MODULES_DIR/storage.sh}"
+SCANNER_HELPER="${PCH_PINNED_SCANNER_HELPER:-$SCRIPT_DIR/scanner_helper.jxa.js}"
 NO_VT=false
 
 if [[ -z "$CONFIG_PATH" ]]; then
@@ -67,19 +77,19 @@ export TMP_DIR
 # the dynamic prefix without following external sources.
 # shellcheck source=modules/macos/cpu.sh
 # shellcheck disable=SC1091
-. "$MODULES_DIR/cpu.sh"
+. "$CPU_MODULE"
 # shellcheck source=modules/macos/network.sh
 # shellcheck disable=SC1091
-. "$MODULES_DIR/network.sh"
+. "$NETWORK_MODULE"
 # shellcheck source=modules/macos/autoruns.sh
 # shellcheck disable=SC1091
-. "$MODULES_DIR/autoruns.sh"
+. "$AUTORUNS_MODULE"
 # shellcheck source=modules/macos/security.sh
 # shellcheck disable=SC1091
-. "$MODULES_DIR/security.sh"
+. "$SECURITY_MODULE"
 # shellcheck source=modules/macos/storage.sh
 # shellcheck disable=SC1091
-. "$MODULES_DIR/storage.sh"
+. "$STORAGE_MODULE"
 
 # ------------------------------------------------------------
 # 섹션별 수집
@@ -109,12 +119,44 @@ export PCH_USER_NAME="$USER_NAME"
 export PCH_OS_VERSION="$OS_VERSION"
 export PCH_OUTPUT="$OUTPUT"
 export PCH_RAW_PATH="$RAW_PATH"
-export PCH_CONFIG_PATH="$CONFIG_PATH"
 export PCH_WHITELIST_PATH="$WHITELIST_PATH"
 export PCH_RULES_DIR="$RULES_DIR"
 export PCH_NO_VT="$NO_VT"
 
-osascript -l JavaScript "$SCRIPT_DIR/scanner_helper.jxa.js"
+PINNED_CONFIG_SOURCE="${PCH_PINNED_CONFIG:-}"
+if [[ -n "$PINNED_CONFIG_SOURCE" ]]; then
+    CONFIG_PATH=/dev/fd/9
+fi
+export PCH_CONFIG_PATH="$CONFIG_PATH"
+
+if [[ -n "${PCH_PINNED_SCANNER_HELPER:-}" ]]; then
+    PINNED_WHITELIST_SOURCE="$PCH_PINNED_WHITELIST"
+    PINNED_RULE_AUTORUNS_SOURCE="$PCH_PINNED_RULE_AUTORUNS"
+    PINNED_RULE_DEFENDER_SOURCE="$PCH_PINNED_RULE_DEFENDER"
+    PINNED_RULE_INSTALLS_SOURCE="$PCH_PINNED_RULE_INSTALLS"
+    PINNED_RULE_NETWORK_SOURCE="$PCH_PINNED_RULE_NETWORK"
+    PINNED_RULE_PROCESS_SOURCE="$PCH_PINNED_RULE_PROCESS"
+    export PCH_PINNED_WHITELIST=/dev/fd/3
+    export PCH_PINNED_RULE_AUTORUNS=/dev/fd/4
+    export PCH_PINNED_RULE_DEFENDER=/dev/fd/5
+    export PCH_PINNED_RULE_INSTALLS=/dev/fd/6
+    export PCH_PINNED_RULE_NETWORK=/dev/fd/7
+    export PCH_PINNED_RULE_PROCESS=/dev/fd/8
+    /usr/bin/osascript -l JavaScript - \
+        < "$SCANNER_HELPER" \
+        3< "$PINNED_WHITELIST_SOURCE" \
+        4< "$PINNED_RULE_AUTORUNS_SOURCE" \
+        5< "$PINNED_RULE_DEFENDER_SOURCE" \
+        6< "$PINNED_RULE_INSTALLS_SOURCE" \
+        7< "$PINNED_RULE_NETWORK_SOURCE" \
+        8< "$PINNED_RULE_PROCESS_SOURCE" \
+        9< "$PINNED_CONFIG_SOURCE"
+elif [[ -n "$PINNED_CONFIG_SOURCE" ]]; then
+    /usr/bin/osascript -l JavaScript "$SCANNER_HELPER" \
+        9< "$PINNED_CONFIG_SOURCE"
+else
+    /usr/bin/osascript -l JavaScript "$SCANNER_HELPER"
+fi
 status=$?
 if [[ $status -ne 0 ]]; then
     echo ""

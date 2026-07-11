@@ -4,6 +4,196 @@ import XCTest
 @testable import PCHealthCheckMac
 
 final class LocalProcessRunnerTests: XCTestCase {
+    func testEnvironmentIsMinimalAndRejectsInterpreterOverrides() throws {
+        let environment = try LocalProcessRunner.sanitizedEnvironment(overrides: [
+            "PCH_CONFIG_PATH": "/tmp/config.json",
+        ])
+
+        XCTAssertEqual(environment["PATH"], LocalProcessRunner.safeSystemPath)
+        XCTAssertEqual(environment["LANG"], "en_US.UTF-8")
+        XCTAssertEqual(environment["LC_ALL"], "en_US.UTF-8")
+        XCTAssertEqual(environment["PCH_CONFIG_PATH"], "/tmp/config.json")
+        XCTAssertNotNil(environment["HOME"])
+        XCTAssertNotNil(environment["TMPDIR"])
+        XCTAssertNil(environment["BASH_ENV"])
+        XCTAssertNil(environment["PCH_TEST_MODE"])
+        XCTAssertThrowsError(try LocalProcessRunner.sanitizedEnvironment(overrides: [
+            "BASH_ENV": "/tmp/payload.sh",
+        ]))
+        XCTAssertThrowsError(try LocalProcessRunner.sanitizedEnvironment(overrides: [
+            "PATH": "/tmp/attacker",
+        ]))
+    }
+
+    func testAmbientBashEnvironmentCannotRunBeforeChildCommand() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-runner-environment-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let marker = root.appendingPathComponent("injected")
+        let payload = root.appendingPathComponent("payload.sh")
+        try "/usr/bin/touch \"\(marker.path)\"\n".write(
+            to: payload,
+            atomically: true,
+            encoding: .utf8
+        )
+        let previous = ProcessInfo.processInfo.environment["BASH_ENV"]
+        setenv("BASH_ENV", payload.path, 1)
+        defer {
+            if let previous {
+                setenv("BASH_ENV", previous, 1)
+            } else {
+                unsetenv("BASH_ENV")
+            }
+        }
+
+        let result = await LocalProcessRunner.capture(
+            executable: "/bin/bash",
+            arguments: ["-c", "/usr/bin/printf clean"],
+            currentDirectory: root
+        )
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.output, "clean")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testCurrentDirectoryIdentityRejectsAtomicPathReplacement() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-runner-directory-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let current = root.appendingPathComponent("current")
+        let replacement = root.appendingPathComponent("replacement")
+        let old = root.appendingPathComponent("old")
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
+        let identity = try XCTUnwrap(FilesystemIdentity.directory(at: current))
+
+        let accepted = await LocalProcessRunner.capture(
+            executable: "/bin/pwd",
+            arguments: [],
+            currentDirectory: current,
+            expectedCurrentDirectoryIdentity: identity
+        )
+        XCTAssertTrue(accepted.succeeded)
+
+        try FileManager.default.moveItem(at: current, to: old)
+        try FileManager.default.moveItem(at: replacement, to: current)
+        let rejected = await LocalProcessRunner.capture(
+            executable: "/bin/pwd",
+            arguments: [],
+            currentDirectory: current,
+            expectedCurrentDirectoryIdentity: identity
+        )
+        XCTAssertEqual(rejected.endState, .launchFailed)
+    }
+
+    func testRelativeScriptUsesPinnedCurrentDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-relative-script-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let script = root.appendingPathComponent("scripts/probe.sh")
+        try FileManager.default.createDirectory(
+            at: script.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "/usr/bin/printf relative-ok".write(
+            to: script,
+            atomically: true,
+            encoding: .utf8
+        )
+        let identity = try XCTUnwrap(FilesystemIdentity.directory(at: root))
+
+        let result = await LocalProcessRunner.capture(
+            executable: "/bin/bash",
+            arguments: ["scripts/probe.sh"],
+            currentDirectory: root,
+            expectedCurrentDirectoryIdentity: identity
+        )
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.output, "relative-ok")
+    }
+
+    func testAnonymousPinnedScriptsAndSourcedModulesIgnorePathnames() async throws {
+        let entry = Data("""
+        #!/bin/bash -p
+        . "$PCH_PINNED_CPU_MODULE"
+        /usr/bin/printf 'entry-ok'
+        """.utf8)
+        let module = Data("/usr/bin/printf 'module-ok\\n'\n".utf8)
+
+        let result = await LocalProcessRunner.capture(
+            executable: "/bin/bash",
+            arguments: ["@pch-pinned:entry"],
+            currentDirectory: FileManager.default.temporaryDirectory,
+            pinnedFiles: ["entry": entry, "module": module],
+            environment: ["PCH_PINNED_CPU_MODULE": "@pch-pinned:module"]
+        )
+
+        XCTAssertTrue(result.succeeded, result.output)
+        XCTAssertEqual(result.output, "module-ok\nentry-ok")
+    }
+
+    func testPinnedDescriptorsStayReadOnlyWhenHighParentDescriptorsAreOccupied() async throws {
+        let sourceDescriptor = Darwin.open("/dev/null", O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(sourceDescriptor, 0)
+        guard sourceDescriptor >= 0 else { return }
+        defer { Darwin.close(sourceDescriptor) }
+
+        var occupiedDescriptors: [Int32] = []
+        defer { occupiedDescriptors.forEach { Darwin.close($0) } }
+        for _ in 0..<32 {
+            let descriptor = Darwin.fcntl(sourceDescriptor, F_DUPFD_CLOEXEC, 100)
+            XCTAssertGreaterThanOrEqual(descriptor, 100)
+            guard descriptor >= 100 else { break }
+            occupiedDescriptors.append(descriptor)
+        }
+
+        let entry = Data("""
+        #!/bin/bash -p
+        if ( /usr/bin/printf 'mutated' ) 2>/dev/null > "$PCH_PINNED_CPU_MODULE"; then
+            /usr/bin/printf 'unexpectedly-writable'
+            exit 91
+        fi
+        /bin/cat "$PCH_PINNED_CPU_MODULE"
+        """.utf8)
+        let module = Data("sealed-read-only".utf8)
+
+        let result = await LocalProcessRunner.capture(
+            executable: "/bin/bash",
+            arguments: ["@pch-pinned:entry"],
+            currentDirectory: FileManager.default.temporaryDirectory,
+            pinnedFiles: ["entry": entry, "module": module],
+            environment: ["PCH_PINNED_CPU_MODULE": "@pch-pinned:module"]
+        )
+
+        XCTAssertTrue(result.succeeded, result.output)
+        XCTAssertEqual(result.output, "sealed-read-only")
+        for descriptor in occupiedDescriptors {
+            XCTAssertNotEqual(Darwin.fcntl(descriptor, F_GETFD), -1)
+        }
+    }
+
+    func testPinnedJXARemainsAvailableToScannerGrandchild() async throws {
+        let entry = Data("""
+        #!/bin/bash -p
+        /usr/bin/osascript -l JavaScript - < "$PCH_PINNED_SCANNER_HELPER"
+        """.utf8)
+        let helper = Data("console.log('nested-jxa-ok');\n".utf8)
+
+        let result = await LocalProcessRunner.capture(
+            executable: "/bin/bash",
+            arguments: ["@pch-pinned:entry"],
+            currentDirectory: FileManager.default.temporaryDirectory,
+            pinnedFiles: ["entry": entry, "helper": helper],
+            environment: ["PCH_PINNED_SCANNER_HELPER": "@pch-pinned:helper"]
+        )
+
+        XCTAssertTrue(result.succeeded, result.output)
+        XCTAssertEqual(result.output.trimmingCharacters(in: .whitespacesAndNewlines), "nested-jxa-ok")
+    }
+
     func testCaptureTimesOutAndReturnsBoundedStatus() async {
         let started = Date()
         let result = await LocalProcessRunner.capture(

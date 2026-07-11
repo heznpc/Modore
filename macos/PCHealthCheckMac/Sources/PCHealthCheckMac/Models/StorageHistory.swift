@@ -240,7 +240,10 @@ enum StorageHistoryStore {
     }
 
     static func load(from url: URL = historyURL) -> [StorageHistoryEntry] {
-        (try? loadValidated(from: url)) ?? []
+        guard let parentIdentity = FilesystemIdentity.directory(
+            at: url.deletingLastPathComponent()
+        ) else { return [] }
+        return (try? loadValidated(from: url, expectedParentIdentity: parentIdentity)) ?? []
     }
 
     static func changeSummary(
@@ -272,20 +275,35 @@ enum StorageHistoryStore {
         _ entry: StorageHistoryEntry,
         at url: URL = historyURL
     ) throws -> [StorageHistoryEntry] {
+        let parent = url.deletingLastPathComponent()
+        try SecureLocalFileIO.ensurePrivateDirectory(parent)
+        guard let parentIdentity = FilesystemIdentity.directory(at: parent) else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
         var entries = FileManager.default.fileExists(atPath: url.path)
-            ? try loadValidated(from: url).filter { $0.sourceID != entry.sourceID }
+            ? try loadValidated(
+                from: url,
+                expectedParentIdentity: parentIdentity
+              ).filter { $0.sourceID != entry.sourceID }
             : []
         entries.append(sanitizedEntry(entry))
         entries.sort { $0.capturedAt < $1.capturedAt }
         if entries.count > maximumEntries {
             entries.removeFirst(entries.count - maximumEntries)
         }
-        try secureWrite(entries, to: url)
+        try secureWrite(entries, to: url, expectedParentIdentity: parentIdentity)
         return entries
     }
 
     static func loadFreeSpaceSamples(from url: URL = sampleURL) -> [FreeSpaceSample] {
-        guard let data = try? boundedData(contentsOf: url, maximumBytes: maximumSampleBytes),
+        guard let parentIdentity = FilesystemIdentity.directory(
+            at: url.deletingLastPathComponent()
+        ),
+              let data = try? boundedData(
+                contentsOf: url,
+                maximumBytes: maximumSampleBytes,
+                expectedParentIdentity: parentIdentity
+              ),
               let text = String(data: data, encoding: .utf8) else { return [] }
         return text.split(whereSeparator: \.isNewline).suffix(maximumSamples).compactMap { line in
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
@@ -304,17 +322,18 @@ enum StorageHistoryStore {
         }.sorted { $0.checkedAt < $1.checkedAt }
     }
 
-    private static func secureWrite(_ entries: [StorageHistoryEntry], to url: URL) throws {
-        let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+    private static func secureWrite(
+        _ entries: [StorageHistoryEntry],
+        to url: URL,
+        expectedParentIdentity: FilesystemIdentity
+    ) throws {
         let data = try encoder.encode(entries)
-        try data.write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try SecureLocalFileIO.atomicWrite(
+            data,
+            to: url,
+            permissions: 0o600,
+            expectedParentIdentity: expectedParentIdentity
+        )
     }
 
     private static func sanitizedEntry(_ entry: StorageHistoryEntry) -> StorageHistoryEntry {
@@ -329,8 +348,15 @@ enum StorageHistoryStore {
         )
     }
 
-    private static func loadValidated(from url: URL) throws -> [StorageHistoryEntry] {
-        let data = try boundedData(contentsOf: url, maximumBytes: maximumHistoryBytes)
+    private static func loadValidated(
+        from url: URL,
+        expectedParentIdentity: FilesystemIdentity
+    ) throws -> [StorageHistoryEntry] {
+        let data = try boundedData(
+            contentsOf: url,
+            maximumBytes: maximumHistoryBytes,
+            expectedParentIdentity: expectedParentIdentity
+        )
         let entries = try decoder.decode([StorageHistoryEntry].self, from: data)
         return entries
             .sorted { $0.capturedAt < $1.capturedAt }
@@ -338,12 +364,17 @@ enum StorageHistoryStore {
             .map(sanitizedEntry)
     }
 
-    private static func boundedData(contentsOf url: URL, maximumBytes: Int) throws -> Data {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
-        guard data.count <= maximumBytes else { throw CocoaError(.fileReadTooLarge) }
-        return data
+    private static func boundedData(
+        contentsOf url: URL,
+        maximumBytes: Int,
+        expectedParentIdentity: FilesystemIdentity
+    ) throws -> Data {
+        try SecureLocalFileIO.boundedRead(
+            from: url,
+            maximumBytes: maximumBytes,
+            requireCurrentOwner: true,
+            expectedParentIdentity: expectedParentIdentity
+        )
     }
 
     private static let encoder: JSONEncoder = {

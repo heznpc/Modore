@@ -31,12 +31,17 @@ extension ScanModel {
     }
 
     func openCurrentReportInBrowser() {
-        guard let url = selectedReportURL else { return }
+        guard let url = selectedReportURL, reportURLIsSafe(url) else { return }
         NSWorkspace.shared.open(url)
     }
 
     func revealReportsInFinder() {
-        let target = selectedReportURL ?? (hasNormalReport ? normalReportURL : projectRoot)
+        let target: URL
+        if let selectedReportURL, reportURLIsSafe(selectedReportURL) {
+            target = selectedReportURL
+        } else {
+            target = hasNormalReport ? normalReportURL : projectRoot
+        }
         NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
@@ -131,10 +136,20 @@ extension ScanModel {
                 appendLog("정리 미리보기 중단: 런타임 신뢰 검증 실패")
                 return
             }
+            guard let invocation = execution.pinnedInvocation(
+                relativePath: "scripts/cleanup.sh",
+                name: "cleanup"
+            ) else {
+                errorMessage = "봉인한 정리 프로그램을 확인하지 못해 실행하지 않았습니다."
+                return
+            }
             let result = await LocalProcessRunner.capture(
                 executable: "/bin/bash",
-                arguments: [execution.cleanupScriptURL.path, "--preview", recipeID],
+                arguments: [invocation.argument, "--preview", recipeID],
                 currentDirectory: execution.runtimeRoot,
+                expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
+                expectedSignedBundleURL: execution.signedBundleURL,
+                pinnedFiles: invocation.files,
                 timeout: 60,
                 maxOutputBytes: 256_000
             )
@@ -181,13 +196,23 @@ extension ScanModel {
                 appendLog("정리 실행 중단: 런타임 신뢰 검증 실패")
                 return
             }
+            guard let invocation = execution.pinnedInvocation(
+                relativePath: "scripts/cleanup.sh",
+                name: "cleanup"
+            ) else {
+                errorMessage = "봉인한 정리 프로그램을 확인하지 못해 아무것도 정리하지 않았습니다."
+                return
+            }
             let result = await LocalProcessRunner.capture(
                 executable: "/bin/bash",
                 arguments: [
-                    execution.cleanupScriptURL.path, "--execute", preview.recipeID,
+                    invocation.argument, "--execute", preview.recipeID,
                     "--owner-approved", "--approval-token", preview.approvalToken,
                 ],
                 currentDirectory: execution.runtimeRoot,
+                expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
+                expectedSignedBundleURL: execution.signedBundleURL,
+                pinnedFiles: invocation.files,
                 timeout: nil,
                 maxOutputBytes: 512_000
             )
@@ -251,16 +276,37 @@ extension ScanModel {
                 errorMessage = "서명된 감시 런타임을 확인하지 못해 설정을 변경하지 않았습니다."
                 return
             }
+            guard let invocation = execution.pinnedInvocation(
+                relativePath: "scripts/schedule.sh",
+                name: "schedule"
+            ) else {
+                errorMessage = "봉인한 감시 설정 프로그램을 확인하지 못해 변경하지 않았습니다."
+                return
+            }
+            guard let watcherHash = execution.sealedSHA256(
+                relativePath: "scripts/storage_watch.sh"
+            ) else {
+                errorMessage = "봉인한 저장공간 감시 프로그램을 확인하지 못해 변경하지 않았습니다."
+                return
+            }
             let result = await LocalProcessRunner.capture(
                 executable: "/bin/bash",
-                arguments: [execution.scheduleScriptURL.path, command, "--owner-approved"],
-                currentDirectory: execution.runtimeRoot
+                arguments: [invocation.argument, command, "--owner-approved"],
+                currentDirectory: execution.runtimeRoot,
+                expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
+                expectedSignedBundleURL: execution.signedBundleURL,
+                pinnedFiles: invocation.files,
+                environment: [
+                    "PCH_STORAGE_WATCH_SCRIPT": execution.storageWatchScriptURL.path,
+                    "PCH_STORAGE_WATCH_SHA256": watcherHash,
+                ]
             )
             let values = Self.protocolValues(result.output)
             let harnessEnabled = values["enabled"] == "true"
             let runtimeState = Self.storageWatchRuntimeState(
                 protocolValues: values,
-                expectedWatcherURL: execution.storageWatchScriptURL
+                expectedWatcherURL: execution.storageWatchScriptURL,
+                expectedWatcherSHA256: watcherHash
             )
             let stateMatchesRequest = enabled
                 ? harnessEnabled && runtimeState == .current

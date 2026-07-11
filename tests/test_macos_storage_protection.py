@@ -100,8 +100,14 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
         "cache\tExecutable cache\t/Users/test/cache\t3145728\tok\t\tcache_recipe\n",
         encoding="utf-8",
     )
+    executable_with_spaces = (
+        "/tmp/PC Health Check Mac.app/Contents/MacOS/PCHealthCheckMac"
+    )
+    (temp / "ps.txt").write_text(
+        f"999999 test 12.5 1.0 1024 {executable_with_spaces}\n",
+        encoding="utf-8",
+    )
     for name in (
-        "ps.txt",
         "net.txt",
         "listen.txt",
         "plists.txt",
@@ -154,3 +160,6 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
     assert simulator["protectionReason"] == "사용자 보존 목록"
     cleanup = scan["sections"]["storage"]["cleanupCandidates"]
     assert [item["cleanupId"] for item in cleanup] == ["cache_recipe"]
+    raw_facts = json.loads(raw.read_text(encoding="utf-8"))
+    assert raw_facts["sections"]["cpu"][0]["path"] == executable_with_spaces
+    assert raw_facts["sections"]["cpu"][0]["name"] == "PCHealthCheckMac"

@@ -1,17 +1,76 @@
-#!/bin/bash
+#!/bin/bash -p
 # Lightweight local disk-pressure watch. It records free space only and never deletes files.
 
 set -u
 set -o pipefail
+umask 077
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+unset BASH_ENV ENV CDPATH GLOBIGNORE
 
-STATE_DIR="${PCH_STATE_DIR:-${HOME:-}/Library/Application Support/PC Health Check}"
-STATE_FILE="$STATE_DIR/storage-watch.tsv"
-HISTORY_FILE="$STATE_DIR/storage-samples.tsv"
-HISTORY_LIMIT="${PCH_WATCH_HISTORY_LIMIT:-336}"
-FREE_THRESHOLD_GB="${PCH_WATCH_FREE_GB:-20}"
-DROP_THRESHOLD_GB="${PCH_WATCH_DROP_GB:-8}"
-NOTIFY="${PCH_WATCH_NOTIFY:-1}"
+path_owner_uid() {
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        /usr/bin/stat -f '%u' "$1" 2>/dev/null
+    else
+        /usr/bin/stat -c '%u' "$1" 2>/dev/null
+    fi
+}
 
+path_permissions() {
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        /usr/bin/stat -f '%Lp' "$1" 2>/dev/null
+    else
+        /usr/bin/stat -c '%a' "$1" 2>/dev/null
+    fi
+}
+
+path_has_unexpected_symlink() {
+    local path="$1"
+    local current=""
+    local remainder component
+    [[ "$path" == /* && "$path" != *$'\n'* && "$path" != *$'\r'* ]] || return 0
+    remainder="${path#/}"
+    while [[ -n "$remainder" ]]; do
+        component="${remainder%%/*}"
+        if [[ "$remainder" == */* ]]; then
+            remainder="${remainder#*/}"
+        else
+            remainder=""
+        fi
+        [[ -n "$component" ]] || continue
+        current="$current/$component"
+        # macOS exposes these stable system aliases as symlinks.
+        if [[ "$current" != "/var" && "$current" != "/tmp" && -L "$current" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+HOME_ROOT=""
+if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+    STATE_DIR="${PCH_STATE_DIR:-}"
+    HISTORY_LIMIT="${PCH_WATCH_HISTORY_LIMIT:-336}"
+    FREE_THRESHOLD_GB="${PCH_WATCH_FREE_GB:-20}"
+    DROP_THRESHOLD_GB="${PCH_WATCH_DROP_GB:-8}"
+    NOTIFY="${PCH_WATCH_NOTIFY:-1}"
+    [[ "$STATE_DIR" == /tmp/?* || "$STATE_DIR" == /private/tmp/?* \
+        || "$STATE_DIR" == /private/var/folders/?* || "$STATE_DIR" == /var/folders/?* ]] || exit 64
+else
+    uid="$(/usr/bin/id -u)" || exit 64
+    HOME_ROOT="$(/usr/bin/dscacheutil -q user -a uid "$uid" 2>/dev/null \
+        | /usr/bin/awk '$1 == "dir:" {sub(/^[^:]*:[[:space:]]*/, ""); print; exit}')"
+    [[ -n "$HOME_ROOT" && "$HOME_ROOT" == /* && "$HOME_ROOT" != "/" \
+        && -d "$HOME_ROOT" && ! -L "$HOME_ROOT" ]] || exit 64
+    HOME_ROOT="$(cd -P "$HOME_ROOT" && /bin/pwd -P)" || exit 64
+    [[ -d "$HOME_ROOT/Library" && ! -L "$HOME_ROOT/Library" ]] || exit 64
+    [[ -d "$HOME_ROOT/Library/Application Support" \
+        && ! -L "$HOME_ROOT/Library/Application Support" ]] || exit 64
+    STATE_DIR="$HOME_ROOT/Library/Application Support/PC Health Check"
+    HISTORY_LIMIT=336
+    FREE_THRESHOLD_GB=20
+    DROP_THRESHOLD_GB=8
+    NOTIFY=1
+fi
 emit() {
     /usr/bin/printf '%s\t%s\n' "$1" "${2:-}"
 }
@@ -24,10 +83,36 @@ case "$HISTORY_LIMIT" in
 esac
 [[ -n "$STATE_DIR" && "$STATE_DIR" == /* ]] || exit 64
 
-/bin/mkdir -p "$STATE_DIR" || exit 1
-/bin/chmod 700 "$STATE_DIR" 2>/dev/null || true
+STATE_PARENT="$(/usr/bin/dirname "$STATE_DIR")" || exit 1
+STATE_NAME="$(/usr/bin/basename "$STATE_DIR")" || exit 1
+[[ -n "$STATE_NAME" && "$STATE_NAME" != "." && "$STATE_NAME" != ".." \
+    && ! "$STATE_NAME" =~ / ]] || exit 64
+path_has_unexpected_symlink "$STATE_PARENT" && exit 1
+[[ -d "$STATE_PARENT" && ! -L "$STATE_PARENT" \
+    && "$(path_owner_uid "$STATE_PARENT")" == "$(/usr/bin/id -u)" ]] || exit 1
+PARENT_PERMISSIONS="$(path_permissions "$STATE_PARENT")" || exit 1
+[[ $((8#$PARENT_PERMISSIONS & 0022)) -eq 0 ]] || exit 1
+STATE_PARENT="$(cd -P "$STATE_PARENT" && /bin/pwd -P)" || exit 1
+STATE_DIR="$STATE_PARENT/$STATE_NAME"
+if [[ ! -e "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then
+    /bin/mkdir "$STATE_DIR" || exit 1
+fi
+path_has_unexpected_symlink "$STATE_DIR" && exit 1
+[[ -d "$STATE_DIR" && ! -L "$STATE_DIR" \
+    && "$(path_owner_uid "$STATE_DIR")" == "$(/usr/bin/id -u)" ]] || exit 1
+/bin/chmod 700 "$STATE_DIR" 2>/dev/null || exit 1
+cd -P "$STATE_DIR" || exit 1
+[[ "$(/bin/pwd -P)" == "$STATE_DIR" \
+    && "$(path_owner_uid .)" == "$(/usr/bin/id -u)" ]] || exit 1
+STATE_FILE="storage-watch.tsv"
+HISTORY_FILE="storage-samples.tsv"
+for state_path in "$STATE_FILE" "$HISTORY_FILE"; do
+    if [[ -e "$state_path" || -L "$state_path" ]]; then
+        [[ -f "$state_path" && ! -L "$state_path" ]] || exit 1
+    fi
+done
 
-if [[ -n "${PCH_TEST_FREE_KB:-}" ]]; then
+if [[ "${PCH_TEST_MODE:-0}" == "1" && -n "${PCH_TEST_FREE_KB:-}" ]]; then
     FREE_KB="$PCH_TEST_FREE_KB"
 else
     DF_TARGET="/"
@@ -78,7 +163,13 @@ if [[ "$STATUS" == "warning" && "$NOTIFY" == "1" ]]; then
     fi
 fi
 
-TMP_FILE="$STATE_DIR/.storage-watch.$$"
+TMP_FILE="$(/usr/bin/mktemp ./.storage-watch.XXXXXX)" || exit 1
+HISTORY_TMP=""
+cleanup() {
+    [[ -z "$TMP_FILE" ]] || /bin/rm -f "$TMP_FILE"
+    [[ -z "$HISTORY_TMP" ]] || /bin/rm -f "$HISTORY_TMP"
+}
+trap cleanup EXIT
 {
     /usr/bin/printf 'version\t1\n'
     /usr/bin/printf 'checkedAt\t%s\n' "$NOW_ISO"
@@ -90,14 +181,17 @@ TMP_FILE="$STATE_DIR/.storage-watch.$$"
 } > "$TMP_FILE" || exit 1
 /bin/chmod 600 "$TMP_FILE" 2>/dev/null || true
 /bin/mv "$TMP_FILE" "$STATE_FILE" || exit 1
+TMP_FILE=""
 
-HISTORY_TMP="$STATE_DIR/.storage-samples.$$"
+HISTORY_TMP="$(/usr/bin/mktemp ./.storage-samples.XXXXXX)" || exit 1
 {
     [[ -f "$HISTORY_FILE" ]] && /bin/cat "$HISTORY_FILE"
     /usr/bin/printf '%s\t%s\t%s\t%s\n' "$NOW_ISO" "$FREE_KB" "$DROP_KB" "$STATUS"
 } | /usr/bin/tail -n "$HISTORY_LIMIT" > "$HISTORY_TMP" || exit 1
 /bin/chmod 600 "$HISTORY_TMP" 2>/dev/null || true
 /bin/mv "$HISTORY_TMP" "$HISTORY_FILE" || exit 1
+HISTORY_TMP=""
+trap - EXIT
 
 emit "version" "1"
 emit "status" "$STATUS"

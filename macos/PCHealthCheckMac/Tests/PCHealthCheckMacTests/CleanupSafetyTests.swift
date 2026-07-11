@@ -1,8 +1,13 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import PCHealthCheckMac
 
 final class CleanupSafetyTests: XCTestCase {
+    func testRunningCodeIdentityRejectsDifferentValidCode() {
+        XCTAssertFalse(RuntimeWorkspace.codeAtURLMatchesRunningProcess(URL(fileURLWithPath: "/usr/bin/true")))
+    }
+
     func testReadyCleanupRequiresApprovalToken() throws {
         let missingToken = try XCTUnwrap(CleanupPreview(protocolText: """
         version\t1
@@ -50,10 +55,11 @@ final class CleanupSafetyTests: XCTestCase {
             applicationSupportRoot: support
         )
 
-        let expected = support.appendingPathComponent("PC Health Check/runtime")
+        let expected = support.appendingPathComponent("PC Health Check/results")
+        let installedRuntime = support.appendingPathComponent("PC Health Check/runtime")
         XCTAssertEqual(resolved.standardizedFileURL, expected.standardizedFileURL)
         XCTAssertEqual(
-            try String(contentsOf: resolved.appendingPathComponent("runtime-manifest.txt")),
+            try String(contentsOf: installedRuntime.appendingPathComponent("runtime-manifest.txt")),
             "signed"
         )
         let config = RuntimeWorkspace.userConfigURL(applicationSupportRoot: support)
@@ -106,13 +112,14 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertTrue(execution.storageWatchScriptURL.path.hasPrefix(bundled.path + "/"))
         XCTAssertFalse(execution.scannerScriptURL.path.hasPrefix(installed.path + "/"))
 
+        let stagedRuntime = support.appendingPathComponent("PC Health Check/runtime")
         try "#!/bin/bash\n# replaced after validation\nexit 99\n".write(
-            to: installed.appendingPathComponent("scripts/scanner.sh"),
+            to: stagedRuntime.appendingPathComponent("scripts/scanner.sh"),
             atomically: true,
             encoding: .utf8
         )
         try "#!/bin/bash\n# replaced cleanup\nexit 99\n".write(
-            to: installed.appendingPathComponent("scripts/cleanup.sh"),
+            to: stagedRuntime.appendingPathComponent("scripts/cleanup.sh"),
             atomically: true,
             encoding: .utf8
         )
@@ -120,6 +127,20 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: execution.scannerScriptURL).contains("signed"))
         XCTAssertTrue(try String(contentsOf: execution.cleanupScriptURL).contains("cleanup-signed"))
         XCTAssertFalse(try String(contentsOf: execution.scannerScriptURL).contains("replaced"))
+
+        let pinnedBeforeMutation = try XCTUnwrap(execution.pinnedInvocation(
+            relativePath: "scripts/scanner.sh",
+            name: "scanner"
+        ))
+        try "#!/bin/bash\n# attacker bundle replacement\n".write(
+            to: bundled.appendingPathComponent("scripts/scanner.sh"),
+            atomically: true,
+            encoding: .utf8
+        )
+        XCTAssertTrue(String(decoding: try XCTUnwrap(pinnedBeforeMutation.files["scanner"]), as: UTF8.self)
+            .contains("signed"))
+        XCTAssertFalse(String(decoding: try XCTUnwrap(pinnedBeforeMutation.files["scanner"]), as: UTF8.self)
+            .contains("attacker"))
     }
 
     func testInvalidProductionBundleCannotFallThroughToEnvironmentRuntime() throws {
@@ -133,7 +154,7 @@ final class CleanupSafetyTests: XCTestCase {
         let support = root.appendingPathComponent("support")
         try writeRuntime(at: bundled, marker: "tampered-bundle")
         try writeRuntime(at: attacker, marker: "attacker")
-        let expectedInstalled = support.appendingPathComponent("PC Health Check/runtime")
+        let expectedInstalled = support.appendingPathComponent("PC Health Check/results")
         let environment = [
             "PCH_DEVELOPMENT_MODE": "1",
             "PCH_PROJECT_DIR": attacker.path,
@@ -178,10 +199,36 @@ final class CleanupSafetyTests: XCTestCase {
         )
         try "#!/bin/bash\nexit 0\n".write(to: expectedWatcher, atomically: true, encoding: .utf8)
 
-        func writePlist(watcher: URL) throws {
+        func writePlist(watcher: URL, extraEnvironment: Bool = false) throws {
+            let watcherData = (try? Data(contentsOf: watcher)) ?? Data(watcher.path.utf8)
+            let watcherHash = SHA256.hash(data: watcherData)
+                .map { String(format: "%02x", $0) }
+                .joined()
+            var arguments = [
+                "/usr/bin/env",
+                "-i",
+                "HOME=\(root.path)",
+                "PATH=\(LocalProcessRunner.safeSystemPath)",
+                "LANG=en_US.UTF-8",
+                "LC_ALL=en_US.UTF-8",
+                "/bin/bash",
+                "-p",
+                "-c",
+                ScanModel.storageWatchWrapper,
+                "--",
+                watcherHash,
+                watcher.path,
+            ]
+            if extraEnvironment {
+                arguments.insert("BASH_ENV=/tmp/payload", at: 2)
+            }
             let payload: [String: Any] = [
                 "Label": "me.heznpc.pchealthcheck.storage-watch",
-                "ProgramArguments": ["/bin/bash", watcher.path],
+                "ProgramArguments": arguments,
+                "StartInterval": 3600,
+                "RunAtLoad": true,
+                "StandardOutPath": "/dev/null",
+                "StandardErrorPath": "/dev/null",
             ]
             let data = try PropertyListSerialization.data(
                 fromPropertyList: payload,
@@ -197,7 +244,8 @@ final class CleanupSafetyTests: XCTestCase {
         try writePlist(watcher: staleWatcher)
         XCTAssertEqual(ScanModel.storageWatchRuntimeState(
             protocolValues: protocolValues,
-            expectedWatcherURL: expectedWatcher
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
         ), .stale)
 
         // Installing replaces the stale definition with the current signed
@@ -205,14 +253,62 @@ final class CleanupSafetyTests: XCTestCase {
         try writePlist(watcher: expectedWatcher)
         XCTAssertEqual(ScanModel.storageWatchRuntimeState(
             protocolValues: protocolValues,
-            expectedWatcherURL: expectedWatcher
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
         ), .current)
+
+        try "#!/bin/bash\nexit 99\n".write(
+            to: expectedWatcher,
+            atomically: true,
+            encoding: .utf8
+        )
+        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+            protocolValues: protocolValues,
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
+        ), .stale)
+        try "#!/bin/bash\nexit 0\n".write(
+            to: expectedWatcher,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        var mismatchedLoadedValues = protocolValues
+        mismatchedLoadedValues["loaded"] = "true"
+        mismatchedLoadedValues["loadedDefinitionCurrent"] = "false"
+        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+            protocolValues: mismatchedLoadedValues,
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
+        ), .stale)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o666],
+            ofItemAtPath: plistURL.path
+        )
+        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+            protocolValues: protocolValues,
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
+        ), .stale)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: plistURL.path
+        )
+
+        try writePlist(watcher: expectedWatcher, extraEnvironment: true)
+        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+            protocolValues: protocolValues,
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
+        ), .stale)
 
         let mutableWatcher = root.appendingPathComponent("Application Support/PC Health Check/runtime/scripts/storage_watch.sh")
         try writePlist(watcher: mutableWatcher)
         XCTAssertEqual(ScanModel.storageWatchRuntimeState(
             protocolValues: protocolValues,
-            expectedWatcherURL: expectedWatcher
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
         ), .stale)
 
         let outsidePlist = root.appendingPathComponent("outside.plist")
@@ -220,15 +316,56 @@ final class CleanupSafetyTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: plistURL, withDestinationURL: outsidePlist)
         XCTAssertEqual(ScanModel.storageWatchRuntimeState(
             protocolValues: protocolValues,
-            expectedWatcherURL: expectedWatcher
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
         ), .stale)
 
         // Uninstall must remove the entry rather than merely unload it.
         try FileManager.default.removeItem(at: plistURL)
         XCTAssertEqual(ScanModel.storageWatchRuntimeState(
             protocolValues: protocolValues,
-            expectedWatcherURL: expectedWatcher
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
         ), .absent)
+    }
+
+    func testStorageWatchRejectsOversizedPlistAndSymlinkedParent() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-watch-bounds-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let launchAgents = root.appendingPathComponent("Library/LaunchAgents")
+        let expectedWatcher = root.appendingPathComponent("runtime/scripts/storage_watch.sh")
+        let plistURL = launchAgents.appendingPathComponent(
+            "me.heznpc.pchealthcheck.storage-watch.plist"
+        )
+        try FileManager.default.createDirectory(
+            at: expectedWatcher.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: launchAgents, withIntermediateDirectories: true)
+        try "#!/bin/bash\n".write(to: expectedWatcher, atomically: true, encoding: .utf8)
+        try Data(repeating: 0x41, count: 65_537).write(to: plistURL)
+        let values = ["enabled": "false", "loaded": "false", "plist": plistURL.path]
+        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+            protocolValues: values,
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
+        ), .stale)
+
+        try FileManager.default.removeItem(at: launchAgents)
+        let outside = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: launchAgents, withDestinationURL: outside)
+        try "safe".write(
+            to: outside.appendingPathComponent(plistURL.lastPathComponent),
+            atomically: true,
+            encoding: .utf8
+        )
+        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+            protocolValues: values,
+            expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root
+        ), .stale)
     }
 
     @MainActor
@@ -270,7 +407,7 @@ final class CleanupSafetyTests: XCTestCase {
         )
         XCTAssertEqual(
             rejected.standardizedFileURL,
-            support.appendingPathComponent("PC Health Check/runtime").standardizedFileURL
+            support.appendingPathComponent("PC Health Check/results").standardizedFileURL
         )
 
         let accepted = RuntimeWorkspace.resolve(
@@ -282,7 +419,7 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(accepted.standardizedFileURL, source.standardizedFileURL)
     }
 
-    func testExecutionRevalidationRemovesUnexpectedRuntimeFiles() throws {
+    func testExecutionRevalidationPreservesUnexpectedRuntimeFilesOutsideActiveRuntime() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-runtime-revalidate-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -296,7 +433,8 @@ final class CleanupSafetyTests: XCTestCase {
             currentDirectory: root,
             applicationSupportRoot: support
         )
-        let unexpected = installed.appendingPathComponent("sitecustomize.py")
+        let stagedRuntime = support.appendingPathComponent("PC Health Check/runtime")
+        let unexpected = stagedRuntime.appendingPathComponent("sitecustomize.py")
         try "raise SystemExit\n".write(to: unexpected, atomically: true, encoding: .utf8)
 
         XCTAssertTrue(RuntimeWorkspace.prepareForExecution(
@@ -306,6 +444,63 @@ final class CleanupSafetyTests: XCTestCase {
             applicationSupportRoot: support
         ))
         XCTAssertFalse(FileManager.default.fileExists(atPath: unexpected.path))
+        let supportDirectory = support.appendingPathComponent("PC Health Check")
+        let preserved = try FileManager.default.contentsOfDirectory(
+            at: supportDirectory,
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("runtime-backup-") }
+        XCTAssertEqual(preserved.count, 1)
+        XCTAssertEqual(
+            try String(contentsOf: preserved[0].appendingPathComponent("sitecustomize.py")),
+            "raise SystemExit\n"
+        )
+    }
+
+    func testRuntimeRefreshMigratesResultsAndNeverDeletesUnknownFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-runtime-preservation-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("bundle/runtime")
+        let destination = root.appendingPathComponent("support/PC Health Check/runtime")
+        let results = destination.deletingLastPathComponent().appendingPathComponent("results")
+        try writeRuntime(at: source, marker: "v1")
+        try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
+        try "{\"schemaVersion\":\"1.0\"}\n".write(
+            to: destination.appendingPathComponent("scan_result.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "owner data\n".write(
+            to: destination.appendingPathComponent("do-not-delete.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/bin/bash\n# v2\n".write(
+            to: source.appendingPathComponent("scripts/scanner.sh"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "v2".write(
+            to: source.appendingPathComponent("runtime-manifest.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
+
+        XCTAssertEqual(
+            try String(contentsOf: results.appendingPathComponent("scan_result.json")),
+            "{\"schemaVersion\":\"1.0\"}\n"
+        )
+        let preserved = try FileManager.default.contentsOfDirectory(
+            at: destination.deletingLastPathComponent(),
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("runtime-backup-") }
+        XCTAssertEqual(preserved.count, 1)
+        XCTAssertEqual(
+            try String(contentsOf: preserved[0].appendingPathComponent("do-not-delete.txt")),
+            "owner data\n"
+        )
     }
 
     func testRuntimeRootAndSupportSymlinksAreRejected() throws {
@@ -325,7 +520,7 @@ final class CleanupSafetyTests: XCTestCase {
         let supportLink = root.appendingPathComponent("support-link")
         try FileManager.default.createDirectory(at: outsideSupport, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: supportLink, withDestinationURL: outsideSupport)
-        let expectedRuntime = supportLink.appendingPathComponent("PC Health Check/runtime")
+        let expectedRuntime = supportLink.appendingPathComponent("PC Health Check/results")
 
         XCTAssertFalse(RuntimeWorkspace.prepareForExecution(
             projectRoot: expectedRuntime,
@@ -366,6 +561,34 @@ final class CleanupSafetyTests: XCTestCase {
             applicationSupportRoot: support
         ))
         XCTAssertEqual(try String(contentsOf: outside), "keep")
+    }
+
+    func testMatchingWorkspaceBehindIntermediateSymlinkIsRejected() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-workspace-parent-symlink-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resources = root.appendingPathComponent("resources")
+        let bundled = resources.appendingPathComponent("runtime")
+        let support = root.appendingPathComponent("support")
+        try writeRuntime(at: bundled, marker: "signed")
+        let installed = RuntimeWorkspace.resolve(
+            environment: [:],
+            resourceURL: resources,
+            currentDirectory: root,
+            applicationSupportRoot: support
+        )
+        let workspace = installed.deletingLastPathComponent()
+        let outside = root.appendingPathComponent("outside-workspace")
+        try FileManager.default.moveItem(at: workspace, to: outside)
+        try FileManager.default.createSymbolicLink(at: workspace, withDestinationURL: outside)
+
+        XCTAssertFalse(RuntimeWorkspace.prepareForExecution(
+            projectRoot: installed,
+            environment: [:],
+            resourceURL: resources,
+            currentDirectory: root,
+            applicationSupportRoot: support
+        ))
     }
 
     private func writeRuntime(at root: URL, marker: String) throws {

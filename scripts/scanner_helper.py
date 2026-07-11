@@ -119,12 +119,11 @@ class VtLookup:
         # 원본 객체를 mutate하지 않도록 — 향후 누가 config를 disk로 다시 쓸 경우
         # VT_API_KEY가 평문으로 누출되는 것을 방지.
         self.cfg = dict((cfg or {}).get("virustotal") or {})
-        # 환경변수 우선: VT_API_KEY가 있으면 config.json의 apiKey를 무시 (공유/CI에서
-        # 키를 디스크에 평문 저장하지 않게 함).
+        # 환경변수 키는 config.json의 apiKey를 대체하지만 네트워크 조회 동의까지
+        # 암묵적으로 만들지는 않는다. enabled=true는 로컬 config에 명시돼야 한다.
         env_key = os.environ.get("VT_API_KEY")
         if env_key:
             self.cfg["apiKey"] = env_key
-            self.cfg["enabled"] = True
         self.enabled = bool(self.cfg.get("enabled")) and bool(self.cfg.get("apiKey")) and not NO_VT
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)

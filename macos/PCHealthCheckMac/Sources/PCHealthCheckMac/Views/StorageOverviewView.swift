@@ -163,7 +163,7 @@ private struct StatusStorageHeader: View {
             }
             Spacer(minLength: 20)
             VStack(alignment: .trailing, spacing: 3) {
-                Text("Macintosh HD")
+                Text("시동 볼륨")
                     .font(.headline)
                 TimelineView(.periodic(from: .now, by: 60)) { _ in
                     Text(model.storageSnapshotAgeText)
@@ -190,14 +190,19 @@ private struct StatusStorageMeter: View {
             .tint(storage.risk == "danger" ? .red : .secondary)
         HStack {
             Text(snapshotNeedsRefresh
-                ? "검사 당시 \(storage.usedGB, specifier: "%.1f")GB 사용 중"
-                : "\(storage.usedGB, specifier: "%.1f")GB 사용 중")
+                ? "검사 당시 파일 시스템 사용률 \(storage.usePercent, specifier: "%.0f")%"
+                : "파일 시스템 사용률 \(storage.usePercent, specifier: "%.0f")%")
             Spacer()
-            Text("전체 \(storage.totalGB, specifier: "%.1f")GB")
+            Text("사용 중 \(storage.usedGB, specifier: "%.1f")GB")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .monospacedDigit()
+
+        Text("볼륨 크기 \(storage.totalGB, specifier: "%.1f")GB. APFS 공유 공간·스냅샷·예약 영역 때문에 ‘사용 중’과 ‘사용 가능’의 합은 볼륨 크기와 다를 수 있습니다.")
+        .font(.caption2)
+        .foregroundStyle(.tertiary)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

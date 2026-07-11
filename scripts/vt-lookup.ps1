@@ -40,12 +40,11 @@ function Initialize-VtLookup {
         }
     }
 
-    # 환경변수 우선: VT_API_KEY가 있으면 config.json의 apiKey를 덮어씀.
-    # 공유/CI 환경에서 키를 디스크 평문으로 저장하지 않아도 되는 경로.
+    # 환경변수 키는 config.json의 apiKey를 덮어쓰지만 조회 동의까지 만들지는 않음.
+    # virustotal.enabled=true는 로컬 config에 명시돼야 함.
     $envKey = [System.Environment]::GetEnvironmentVariable('VT_API_KEY')
     if (-not [string]::IsNullOrWhiteSpace($envKey)) {
         $script:VtConfig.virustotal.apiKey = $envKey
-        $script:VtConfig.virustotal | Add-Member -NotePropertyName enabled -NotePropertyValue $true -Force
     }
 
     # 캐시 로드

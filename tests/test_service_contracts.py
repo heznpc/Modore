@@ -56,6 +56,8 @@ def test_release_smoke_check_only(project_root):
     result = subprocess.run(
         [
             sys.executable,
+            "-I",
+            "-B",
             str(project_root / "scripts" / "release_smoke.py"),
             "--check-only",
         ],
@@ -178,6 +180,29 @@ def test_macos_ui_reserves_chromatic_status_colors_for_critical_states(project_r
     assert "systemYellow" not in sources
 
 
+def test_macos_scanner_pins_the_exact_config_snapshot_used_for_network_consent(
+    project_root,
+):
+    pipeline = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanPipeline.swift"
+    ).read_text(encoding="utf-8")
+    runner = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/LocalProcessRunner.swift"
+    ).read_text(encoding="utf-8")
+    scanner = (project_root / "scripts/scanner.sh").read_text(encoding="utf-8")
+
+    assert '["configuration": configurationData]' in pipeline
+    assert 'scannerEnvironment["PCH_PINNED_CONFIG"]' in pipeline
+    assert 'virusTotalIsExplicitlyEnabled(in: configurationData)' in pipeline
+    assert '"PCH_PINNED_CONFIG"' in runner
+    assert "CONFIG_PATH=/dev/fd/9" in scanner
+    assert '9< "$PINNED_CONFIG_SOURCE"' in scanner
+    assert 'umask 077; report_source="$1"' in pipeline
+    assert 'umask 077; exec /usr/bin/osascript' in pipeline
+
+
 def test_macos_timed_out_cleanup_measurements_remain_visible(project_root):
     helper = (project_root / "scripts/scanner_helper.jxa.js").read_text(encoding="utf-8")
     history = (
@@ -189,14 +214,17 @@ def test_macos_timed_out_cleanup_measurements_remain_visible(project_root):
     assert "intersection(after.keys)" in history
 
 
-def test_vt_env_key_contract_is_runtime_backed(project_root, tmp_path, monkeypatch):
+def test_vt_env_key_requires_explicit_local_enable(project_root, tmp_path, monkeypatch):
     monkeypatch.setenv("VT_API_KEY", "dummy-key")
     module = importlib.import_module("scanner_helper")
 
     vt = module.VtLookup({"virustotal": {"enabled": False, "apiKey": ""}}, tmp_path)
 
-    assert vt.enabled is True
+    assert vt.enabled is False
     assert vt.cfg["apiKey"] == "dummy-key"
+
+    enabled = module.VtLookup({"virustotal": {"enabled": True, "apiKey": ""}}, tmp_path)
+    assert enabled.enabled is True
 
 
 def test_macos_jxa_vt_does_not_write_api_key_header_file(project_root):
@@ -204,14 +232,14 @@ def test_macos_jxa_vt_does_not_write_api_key_header_file(project_root):
 
     assert "vt_headers" not in helper
     assert "-H @" not in helper
-    assert "cfg.enabled = true" in helper
+    assert "cfg.enabled = true" not in helper
 
 
-def test_powershell_vt_env_key_auto_enables(project_root):
+def test_powershell_vt_env_key_does_not_auto_enable(project_root):
     helper = (project_root / "scripts" / "vt-lookup.ps1").read_text(encoding="utf-8-sig")
 
-    assert "NotePropertyName enabled -NotePropertyValue $true" in helper
-    assert "hasExplicitEnabled" not in helper
+    assert "NotePropertyName enabled -NotePropertyValue $true" not in helper
+    assert "virustotal.enabled=true" in helper
 
 
 def test_release_report_generators_have_investigation_links(project_root):

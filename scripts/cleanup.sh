@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -p
 # PC Health Check Mac Edition - allowlisted local cleanup harness.
 #
 # Preview is read-only. Execute accepts recipe IDs only, requires an explicit
@@ -6,6 +6,9 @@
 
 set -u
 set -o pipefail
+umask 077
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+unset BASH_ENV ENV CDPATH GLOBIGNORE
 
 PROTOCOL_VERSION="1"
 APPROVAL_TTL_SECONDS=900
@@ -1040,6 +1043,12 @@ prepare_transaction_journal() {
     recipe_name="${RECIPE_ID//[^A-Za-z0-9_.-]/_}"
     TRANSACTION_JOURNAL="$RECEIPT_DIR/$(/bin/date -u '+%Y%m%dT%H%M%SZ')-$recipe_name-$$.transaction.tsv"
     [[ ! -e "$TRANSACTION_JOURNAL" && ! -L "$TRANSACTION_JOURNAL" ]] || return 1
+    set -o noclobber
+    if ! exec 9> "$TRANSACTION_JOURNAL"; then
+        set +o noclobber
+        return 1
+    fi
+    set +o noclobber
     {
         /usr/bin/printf 'version\t%s\n' "$PROTOCOL_VERSION"
         /usr/bin/printf 'status\tpending\n'
@@ -1049,8 +1058,7 @@ prepare_transaction_journal() {
             destination="$(trash_destination_for "$target" "$index")"
             /usr/bin/printf 'move\t%s\t%s\n' "$target" "$destination"
         done
-    } > "$TRANSACTION_JOURNAL" || return 1
-    /bin/chmod 600 "$TRANSACTION_JOURNAL" 2>/dev/null || return 1
+    } >&9 || return 1
 }
 
 preflight_trash_transaction() {
@@ -1083,14 +1091,14 @@ rollback_trash_transaction() {
         index=$((index - 1))
     done
     if [[ "$rollback_failed" -eq 0 ]]; then
-        /usr/bin/printf 'status\trolled-back\n' >> "$TRANSACTION_JOURNAL" 2>/dev/null || true
+        /usr/bin/printf 'status\trolled-back\n' >&9 2>/dev/null || true
         MOVED_TARGETS=()
         MOVED_SOURCES=()
         MOVED_DESTINATIONS=()
         MOVED_TARGETS_COUNT=0
         return 0
     fi
-    /usr/bin/printf 'status\trollback-failed\n' >> "$TRANSACTION_JOURNAL" 2>/dev/null || true
+    /usr/bin/printf 'status\trollback-failed\n' >&9 2>/dev/null || true
     return 1
 }
 
@@ -1147,7 +1155,7 @@ move_app_transaction() {
             return 1
         fi
     done
-    /usr/bin/printf 'status\tcommitted\n' >> "$TRANSACTION_JOURNAL" 2>/dev/null || true
+    /usr/bin/printf 'status\tcommitted\n' >&9 2>/dev/null || true
     return 0
 }
 
@@ -1238,8 +1246,14 @@ write_receipt() {
     timestamp="$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
     receipt_recipe="${RECIPE_ID//[^A-Za-z0-9_.-]/_}"
     receipt="$RECEIPT_DIR/$(/bin/date -u '+%Y%m%dT%H%M%SZ')-$receipt_recipe-$$.tsv"
-    /bin/mkdir -p "$RECEIPT_DIR" || return 1
-    /bin/chmod 700 "$RECEIPT_DIR" 2>/dev/null || true
+    prepare_private_directory "$RECEIPT_DIR" || return 1
+    [[ ! -e "$receipt" && ! -L "$receipt" ]] || return 1
+    set -o noclobber
+    if ! exec 8> "$receipt"; then
+        set +o noclobber
+        return 1
+    fi
+    set +o noclobber
     {
         /usr/bin/printf 'version\t%s\n' "$PROTOCOL_VERSION"
         /usr/bin/printf 'timestamp\t%s\n' "$timestamp"
@@ -1264,8 +1278,8 @@ write_receipt() {
                 /usr/bin/printf 'stagedRemainder\t%s\n' "$staged"
             done
         fi
-    } > "$receipt" || return 1
-    /bin/chmod 600 "$receipt" 2>/dev/null || true
+    } >&8 || { exec 8>&-; return 1; }
+    exec 8>&-
     RECEIPT_PATH="$receipt"
     return 0
 }

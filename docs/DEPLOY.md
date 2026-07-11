@@ -67,12 +67,12 @@ That's it. No build step.
 
 ## Updating releases
 
-When you cut a new release, the download links in `docs/index.html` already point to `releases/latest` so they auto-update.
+While the project is in source-preview status, both download cards in `docs/index.html` intentionally point to the repository. When the first public release is published, update and review both card links to `https://github.com/heznpc/pc-health-check/releases/latest`; they do not change automatically.
 
 Build and verify the release artifacts first:
 
 ```bash
-python3 scripts/release_smoke.py
+python3 -I -B scripts/release_smoke.py
 ```
 
 The default smoke build writes commit-labelled, non-publishable ZIPs and a manifest under `dist/local/`. It never uses the canonical public filenames.
@@ -83,19 +83,25 @@ Build an unsigned, non-publishable Universal 2 DMG smoke artifact in its isolate
 scripts/package_macos_release.sh --local
 ```
 
-Public Mac packaging is intentionally fail-closed. First commit and review every change, create the exact signed `v<version>` tag at `HEAD`, and confirm that the worktree/index are clean. Then supply the Developer ID identity and an existing `notarytool` Keychain profile externally:
+Public packaging is intentionally fail-closed. First commit and review every change, create the exact SSH-signed annotated `v<version>` tag at `HEAD`, and confirm that the worktree/index are clean. Both the source ZIP builder and Mac packager verify the immutable tag payload directly with `ssh-keygen` against an anonymous, externally pinned `heznpc` allowed-signers descriptor before and after their isolated build steps. Then supply the Developer ID identity and an existing `notarytool` Keychain profile externally:
 
 ```bash
-python3 scripts/release_smoke.py --release --version 0.3.0
+PCH_RELEASE_SIGNER_PUBLIC_KEY='ssh-ed25519 <reviewed-public-key-base64>' \
+PCH_RELEASE_SIGNER_SHA256='SHA256:<reviewed-fingerprint>' \
+python3 -I -B scripts/release_smoke.py --release --version 0.3.0
 cat dist/release-manifest.json
 
 PCH_APP_VERSION=0.3.0 \
 PCH_CODESIGN_IDENTITY="Developer ID Application identity from Keychain" \
+PCH_CODESIGN_TEAM_ID="ABCDE12345" \
+PCH_CODESIGN_CERT_SHA256="<reviewed-64-hex-leaf-certificate-fingerprint>" \
 PCH_NOTARY_PROFILE="local-keychain-profile" \
+PCH_RELEASE_SIGNER_PUBLIC_KEY='ssh-ed25519 <reviewed-public-key-base64>' \
+PCH_RELEASE_SIGNER_SHA256='SHA256:<reviewed-fingerprint>' \
 scripts/package_macos_release.sh
 ```
 
-The release ZIP builder reads payloads from the verified Git commit, and the Mac packager builds from an isolated `git archive` snapshot. The script validates Universal 2 slices, macOS 13 minimum deployment, app/DMG payload and metadata audit, signing, notarization, stapling, and Gatekeeper before atomically publishing final names. Attach the source ZIPs, notarized DMG, `*.dmg.metadata.json`, and source `release-manifest.json` only after every gate succeeds. This repository currently has no published installer; do not present an artifact from `dist/local/` as a release.
+The release ZIP builder reads payloads from the verified Git commit, and the Mac packager builds from an isolated `git archive` snapshot; both disable and reject Git replace objects. The script validates Universal 2 slices, macOS 13 minimum deployment, app/DMG payload and metadata audit, pinned-signer tag verification, the reviewed Developer ID Team ID and leaf-certificate SHA-256, notarization, stapling, and Gatekeeper before publishing the sidecar and then the DMG completion marker. Metadata records both source-tag and Developer ID trust anchors; local artifacts keep those identity fields null. Attach the source ZIPs, notarized DMG, `*.dmg.metadata.json`, and source `release-manifest.json` only after every gate succeeds. This repository currently has no published installer; do not present an artifact from `dist/local/` as a release.
 
 ## SEO tips (optional)
 

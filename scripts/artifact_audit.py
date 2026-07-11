@@ -13,6 +13,7 @@ import sys
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 
 MAX_FILE_BYTES = 256 * 1024 * 1024
@@ -214,14 +215,23 @@ def _safe_archive_name(name: str) -> bool:
     return bool(name) and not path.is_absolute() and ".." not in path.parts and "\\" not in name
 
 
-def audit_zip(path: Path) -> list[Finding]:
+def audit_zip(
+    source: Path | BinaryIO,
+    *,
+    artifact_name: str | None = None,
+) -> list[Finding]:
     findings: list[Finding] = []
     total_size = 0
     seen: set[str] = set()
-    with zipfile.ZipFile(path) as archive:
+    if isinstance(source, (str, os.PathLike)):
+        display_name = artifact_name or Path(source).name
+    else:
+        display_name = artifact_name or "release.zip"
+        source.seek(0)
+    with zipfile.ZipFile(source) as archive:
         if archive.comment:
-            findings.append(Finding(path.name, "zip-comment", "unexpected archive comment"))
-            findings.extend(inspect_bytes(f"{path.name}:comment", archive.comment))
+            findings.append(Finding(display_name, "zip-comment", "unexpected archive comment"))
+            findings.extend(inspect_bytes(f"{display_name}:comment", archive.comment))
         for info in archive.infolist():
             name = info.filename
             if name in seen:
@@ -231,10 +241,10 @@ def audit_zip(path: Path) -> list[Finding]:
                 findings.append(Finding(name, "unsafe-path", "absolute, traversal, or backslash ZIP path"))
             if info.comment:
                 findings.append(Finding(name, "zip-comment", "unexpected member comment"))
-                findings.extend(inspect_bytes(f"{path.name}:{name}:comment", info.comment))
+                findings.extend(inspect_bytes(f"{display_name}:{name}:comment", info.comment))
             if info.extra:
                 findings.append(Finding(name, "zip-extra", "unexpected member metadata"))
-                findings.extend(inspect_bytes(f"{path.name}:{name}:extra", info.extra))
+                findings.extend(inspect_bytes(f"{display_name}:{name}:extra", info.extra))
 
             mode = info.external_attr >> 16
             if stat.S_ISLNK(mode):
@@ -250,8 +260,10 @@ def audit_zip(path: Path) -> list[Finding]:
             if info.file_size > MAX_FILE_BYTES or total_size > MAX_ZIP_BYTES:
                 findings.append(Finding(name, "size-limit", "release ZIP exceeds audit size limit"))
                 continue
-            inspect_name = f"{path.name}:{name}"
+            inspect_name = f"{display_name}:{name}"
             findings.extend(inspect_bytes(inspect_name, archive.read(info)))
+    if not isinstance(source, (str, os.PathLike)):
+        source.seek(0)
     return findings
 
 
@@ -263,6 +275,9 @@ def audit_tree(root: Path, allowed_symlinks: set[str]) -> list[Finding]:
         return [Finding(str(root), "not-directory", "expected an artifact directory")]
 
     findings.extend(inspect_metadata(".", root))
+    root_mode = root.lstat().st_mode
+    if root_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        findings.append(Finding(".", "unsafe-mode", "group/world-writable artifact root"))
 
     for current, directories, files in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current)
@@ -285,6 +300,10 @@ def audit_tree(root: Path, allowed_symlinks: set[str]) -> list[Finding]:
                 if name in directories:
                     directories.remove(name)
                 continue
+            if mode & (stat.S_IWGRP | stat.S_IWOTH):
+                findings.append(Finding(relative, "unsafe-mode", "group/world-writable artifact entry"))
+            if mode & (stat.S_ISUID | stat.S_ISGID):
+                findings.append(Finding(relative, "privileged-mode", "setuid/setgid artifact entry"))
             if stat.S_ISDIR(mode):
                 continue
             if not stat.S_ISREG(mode):
@@ -305,6 +324,13 @@ def audit_path(path: Path, allowed_symlinks: set[str]) -> list[Finding]:
         return [Finding(str(path), "symlink-root", "artifact path must not be a symlink")]
     if path.suffix.lower() == ".zip":
         return inspect_metadata(path.name, path) + audit_zip(path)
+    if path.suffix.lower() == ".dmg":
+        # Compressed disk-image bytes are not text and can randomly resemble
+        # email/token patterns. A DMG must instead be verified, mounted
+        # read-only, and passed back through audit_tree by the packager.
+        return inspect_metadata(path.name, path) + [
+            Finding(path.name, "unexpanded-disk-image", "mount and audit the DMG payload")
+        ]
     if path.is_dir():
         return audit_tree(path, allowed_symlinks)
     if path.is_file():
@@ -326,13 +352,22 @@ def main() -> int:
         default=[],
         help="Allow an exact relative /Applications link (DMG staging only)",
     )
+    parser.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="Audit filesystem metadata without interpreting the file payload",
+    )
     args = parser.parse_args()
 
     allowed_symlinks = set(args.allow_symlink)
     findings = [
         finding
         for path in args.paths
-        for finding in audit_path(path, allowed_symlinks)
+        for finding in (
+            inspect_metadata(path.name, path)
+            if args.metadata_only
+            else audit_path(path, allowed_symlinks)
+        )
     ]
     payload = {
         "ok": not findings,

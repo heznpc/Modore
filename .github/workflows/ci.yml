@@ -55,10 +55,10 @@ jobs:
         run: python3 -m compileall -q scripts/
 
       - name: Build and audit source release artifacts
-        run: python3 scripts/release_smoke.py
+        run: python3 -I -B scripts/release_smoke.py
 
       - name: Pytest
-        run: python3 -m pytest tests/ -q
+        run: python3 -I -B -m pytest tests/ -q
 
   powershell:
     runs-on: windows-latest
@@ -102,11 +102,19 @@ jobs:
             -Xswiftc -strict-concurrency=complete
 
       - name: Test Mac SwiftUI models and safety state
-        run: swift test --package-path macos/PCHealthCheckMac
-
-      - name: Validate standalone packaging prerequisites
         run: |
-          bash -n scripts/build_macos_swift_app.sh scripts/build_macos_icon.sh scripts/package_macos_release.sh
+          swift test --package-path macos/PCHealthCheckMac \
+            -Xswiftc -warnings-as-errors \
+            -Xswiftc -strict-concurrency=complete
+
+      - name: Validate all shell entrypoints and packaging prerequisites
+        run: |
+          while IFS= read -r -d '' script; do
+            /bin/bash -n "$script"
+          done < <(
+            printf '%s\0' ./Mac앱실행.command ./검사하기.command
+            /usr/bin/find ./scripts -type f -name '*.sh' -print0
+          )
           scripts/package_macos_release.sh --check
 
       - name: Build and audit full local Universal 2 DMG
@@ -123,8 +131,16 @@ jobs:
           metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
           assert set(metadata["platform"]["architectures"]) == {"arm64", "x86_64"}
           assert metadata["platform"]["minimumSystemVersion"] == "13.0"
+          toolchain = metadata["platform"]["toolchain"]
+          assert toolchain["developerDirectory"].startswith(("/Applications/", "/Library/Developer/"))
+          assert "Swift version" in toolchain["swiftVersion"]
+          assert metadata["source"]["tagSignatureVerified"] is False
+          assert metadata["source"]["tagSignerPrincipal"] is None
+          assert metadata["source"]["tagSignerFingerprint"] is None
           assert metadata["trust"] == {
               "signature": "ad-hoc",
+              "teamIdentifier": None,
+              "certificateSHA256": None,
               "notarized": False,
               "stapled": False,
               "gatekeeperAssessed": False,

@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -105,9 +106,18 @@ final class ScanModel: ObservableObject {
     var securityHasDanger: Bool { summary?.hasDanger ?? false }
     var normalReportURL: URL { projectRoot.appendingPathComponent(normalReportName) }
     var shareReportURL: URL { projectRoot.appendingPathComponent(shareReportName) }
-    var hasNormalReport: Bool { FileManager.default.fileExists(atPath: normalReportURL.path) }
-    var hasShareReport: Bool { FileManager.default.fileExists(atPath: shareReportURL.path) }
+    var hasNormalReport: Bool { reportURLIsSafe(normalReportURL) }
+    var hasShareReport: Bool { reportURLIsSafe(shareReportURL) }
     var hasAnyReport: Bool { hasNormalReport || hasShareReport }
+
+    func reportURLIsSafe(_ url: URL) -> Bool {
+        let candidate = url.standardizedFileURL
+        guard candidate == normalReportURL.standardizedFileURL
+                || candidate == shareReportURL.standardizedFileURL else {
+            return false
+        }
+        return Self.isSecureRegularFile(at: candidate, allowsRootOwner: false)
+    }
     var lastStorageScanAt: Date? { displayedStorageEntry?.capturedAt }
     var newerStorageHistoryEntry: StorageHistoryEntry? {
         StorageHistoryStore.newestEntry(after: displayedStorageEntry, in: storageHistory)
@@ -193,7 +203,10 @@ final class ScanModel: ObservableObject {
             appendLog("완료: 일반 리포트와 공유용 리포트를 생성했습니다.")
         } else {
             state = .failed
-            errorMessage = "검사 또는 리포트 생성 중 오류가 발생했습니다. 실행 로그를 확인하세요."
+            if selectedReportURL != nil {
+                selectedReportTitle = "이전 리포트 (이번 검사 아님)"
+            }
+            errorMessage = "이번 검사 또는 리포트 생성 중 오류가 발생했습니다. 표시된 이전 결과를 새 결과로 해석하지 마세요."
         }
     }
 
@@ -265,16 +278,39 @@ final class ScanModel: ObservableObject {
             }.value
             return
         }
+        guard let invocation = execution.pinnedInvocation(
+            relativePath: "scripts/schedule.sh",
+            name: "schedule"
+        ) else {
+            storageWatchEnabled = false
+            storageWatchDetail = "봉인한 감시 설정 프로그램을 확인할 수 없음"
+            return
+        }
+        guard let watcherHash = execution.sealedSHA256(
+            relativePath: "scripts/storage_watch.sh"
+        ) else {
+            storageWatchEnabled = false
+            storageWatchDetail = "봉인한 저장공간 감시 프로그램을 확인할 수 없음"
+            return
+        }
         let result = await LocalProcessRunner.capture(
             executable: "/bin/bash",
-            arguments: [execution.scheduleScriptURL.path, "--status"],
-            currentDirectory: execution.runtimeRoot
+            arguments: [invocation.argument, "--status"],
+            currentDirectory: execution.runtimeRoot,
+            expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
+            expectedSignedBundleURL: execution.signedBundleURL,
+            pinnedFiles: invocation.files,
+            environment: [
+                "PCH_STORAGE_WATCH_SCRIPT": execution.storageWatchScriptURL.path,
+                "PCH_STORAGE_WATCH_SHA256": watcherHash,
+            ]
         )
         let values = Self.protocolValues(result.output)
         let harnessEnabled = result.status == 0 && values["enabled"] == "true"
         let runtimeState = Self.storageWatchRuntimeState(
             protocolValues: values,
-            expectedWatcherURL: execution.storageWatchScriptURL
+            expectedWatcherURL: execution.storageWatchScriptURL,
+            expectedWatcherSHA256: watcherHash
         )
         storageWatchEnabled = harnessEnabled && runtimeState == .current
         if runtimeState == .stale {
@@ -302,29 +338,74 @@ final class ScanModel: ObservableObject {
 
     nonisolated static func storageWatchRuntimeState(
         protocolValues: [String: String],
-        expectedWatcherURL: URL
+        expectedWatcherURL: URL,
+        expectedWatcherSHA256: String? = nil,
+        expectedHomeURL: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> StorageWatchRuntimeState {
         guard let plistPath = protocolValues["plist"], plistPath.hasPrefix("/") else {
             return .stale
         }
-        let plistURL = URL(fileURLWithPath: plistPath)
-        guard pathEntryExists(plistURL) else { return .absent }
-        guard isRegularFileWithoutSymlink(at: expectedWatcherURL),
-              isRegularFileWithoutSymlink(at: plistURL),
-              let data = try? Data(contentsOf: plistURL),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
-              let dictionary = plist as? [String: Any],
-              dictionary["Label"] as? String == "me.heznpc.pchealthcheck.storage-watch",
-              let arguments = dictionary["ProgramArguments"] as? [String],
-              arguments.count >= 2,
-              arguments[0] == "/bin/bash" else {
+        if protocolValues["loaded"] == "true",
+           protocolValues["loadedDefinitionCurrent"] != "true" {
             return .stale
         }
-        // Deliberately require the current immutable runtime path. If the app
-        // is moved or removed, launchd fails at that absolute path instead of
-        // falling back to a mutable Application Support script.
-        return URL(fileURLWithPath: arguments[1]).standardizedFileURL
-            == expectedWatcherURL.standardizedFileURL ? .current : .stale
+        let plistURL = URL(fileURLWithPath: plistPath)
+        let expectedPlistURL = expectedHomeURL
+            .appendingPathComponent("Library/LaunchAgents")
+            .appendingPathComponent("me.heznpc.pchealthcheck.storage-watch.plist")
+        guard let watcherHash = expectedWatcherSHA256 ?? secureSHA256(
+            at: expectedWatcherURL,
+            maximumBytes: 1_048_576
+        ), watcherHash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
+            return .stale
+        }
+        let expectedArguments = [
+            "/usr/bin/env",
+            "-i",
+            "HOME=\(expectedHomeURL.standardizedFileURL.path)",
+            "PATH=\(LocalProcessRunner.safeSystemPath)",
+            "LANG=en_US.UTF-8",
+            "LC_ALL=en_US.UTF-8",
+            "/bin/bash",
+            "-p",
+            "-c",
+            storageWatchWrapper,
+            "--",
+            watcherHash,
+            expectedWatcherURL.standardizedFileURL.path,
+        ]
+        let expectedKeys: Set<String> = [
+            "Label",
+            "ProgramArguments",
+            "RunAtLoad",
+            "StandardErrorPath",
+            "StandardOutPath",
+            "StartInterval",
+        ]
+        guard pathEntryExists(plistURL) else { return .absent }
+        guard plistURL.standardizedFileURL == expectedPlistURL.standardizedFileURL,
+              isSecureRegularFile(at: expectedWatcherURL, allowsRootOwner: true),
+              secureSHA256(at: expectedWatcherURL, maximumBytes: 1_048_576) == watcherHash,
+              isSecureRegularFile(at: plistURL, allowsRootOwner: false),
+              !pathContainsSymbolicLink(plistURL.deletingLastPathComponent()),
+              !pathContainsSymbolicLink(expectedWatcherURL.deletingLastPathComponent()),
+              let data = try? boundedRegularFileData(
+                at: plistURL,
+                maximumBytes: 65_536
+              ),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let dictionary = plist as? [String: Any],
+              Set(dictionary.keys) == expectedKeys,
+              dictionary["Label"] as? String == "me.heznpc.pchealthcheck.storage-watch",
+              let arguments = dictionary["ProgramArguments"] as? [String],
+              arguments == expectedArguments,
+              (dictionary["StartInterval"] as? NSNumber)?.intValue == 3600,
+              (dictionary["RunAtLoad"] as? NSNumber)?.boolValue == true,
+              dictionary["StandardOutPath"] as? String == "/dev/null",
+              dictionary["StandardErrorPath"] as? String == "/dev/null" else {
+            return .stale
+        }
+        return .current
     }
 
     private nonisolated static func pathEntryExists(_ url: URL) -> Bool {
@@ -343,6 +424,61 @@ final class ScanModel: ObservableObject {
         }
     }
 
+    private nonisolated static func isSecureRegularFile(
+        at url: URL,
+        allowsRootOwner: Bool
+    ) -> Bool {
+        var value = stat()
+        let status = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return Darwin.lstat(path, &value)
+        }
+        let allowedOwner = value.st_uid == Darwin.geteuid()
+            || (allowsRootOwner && value.st_uid == 0)
+        return status == 0
+            && value.st_mode & S_IFMT == S_IFREG
+            && allowedOwner
+            && value.st_mode & mode_t(S_IWGRP | S_IWOTH) == 0
+    }
+
+    private nonisolated static func pathContainsSymbolicLink(_ url: URL) -> Bool {
+        let standardized = url.standardizedFileURL
+        guard standardized.path.hasPrefix("/") else { return true }
+        var current = URL(fileURLWithPath: "/", isDirectory: true)
+        for component in standardized.pathComponents.dropFirst() {
+            current.appendPathComponent(component)
+            if current.path == "/var" || current.path == "/tmp" {
+                continue
+            }
+            var value = stat()
+            let status = current.withUnsafeFileSystemRepresentation { path in
+                guard let path else { return Int32(-1) }
+                return Darwin.lstat(path, &value)
+            }
+            if status == 0, value.st_mode & S_IFMT == S_IFLNK { return true }
+        }
+        return false
+    }
+
+    private nonisolated static func boundedRegularFileData(
+        at url: URL,
+        maximumBytes: Int
+    ) throws -> Data {
+        try SecureLocalFileIO.boundedRead(from: url, maximumBytes: maximumBytes)
+    }
+
+    nonisolated static let storageWatchWrapper = #"set -u; script="$2"; expected="$1"; [[ -f "$script" && ! -L "$script" ]] || exit 78; size=$(/usr/bin/stat -f "%z" "$script") || exit 78; [[ "$size" -le 1048576 ]] || exit 78; payload=$(/usr/bin/base64 < "$script") || exit 78; digest=$(/usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /usr/bin/shasum -a 256) || exit 78; actual="${digest%% *}"; [[ "$actual" == "$expected" ]] || exit 78; /usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /bin/bash -p"#
+
+    private nonisolated static func secureSHA256(
+        at url: URL,
+        maximumBytes: Int
+    ) -> String? {
+        guard let data = try? boundedRegularFileData(at: url, maximumBytes: maximumBytes) else {
+            return nil
+        }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     private static func detectProjectRoot() -> URL {
         RuntimeWorkspace.resolve()
     }
@@ -352,14 +488,20 @@ final class ScanModel: ObservableObject {
         let configURL = FileManager.default.fileExists(atPath: externalConfigURL.path)
             ? externalConfigURL
             : projectRoot.appendingPathComponent("data/config.json")
-        guard let data = try? Data(contentsOf: configURL),
+        guard let data = try? boundedRegularFileData(
+                at: configURL,
+                maximumBytes: 1_048_576
+              ),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let vt = root["virustotal"] as? [String: Any] else {
             return false
         }
         let enabled = vt["enabled"] as? Bool ?? false
-        let apiKey = (vt["apiKey"] as? String ?? ProcessInfo.processInfo.environment["VT_API_KEY"] ?? "")
+        let configuredKey = (vt["apiKey"] as? String ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let environmentKey = (ProcessInfo.processInfo.environment["VT_API_KEY"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = configuredKey.isEmpty ? environmentKey : configuredKey
         return enabled && !apiKey.isEmpty
     }
 
@@ -369,7 +511,11 @@ final class ScanModel: ObservableObject {
     }
 
     private static func loadSimulatorKeepState() -> SimulatorKeepState {
-        guard let text = try? String(contentsOf: simulatorKeepURL, encoding: .utf8) else {
+        guard let data = try? boundedRegularFileData(
+                at: simulatorKeepURL,
+                maximumBytes: 65_536
+              ),
+              let text = String(data: data, encoding: .utf8) else {
             return SimulatorKeepState(uuids: [], legacyEntries: [])
         }
         let entries = Set(text.split(whereSeparator: \.isNewline).map {
@@ -382,15 +528,13 @@ final class ScanModel: ObservableObject {
 
     static func saveSimulatorKeepUUIDs(_ uuids: Set<String>) throws {
         let url = simulatorKeepURL
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
         let normalized = Set(uuids.map { $0.uppercased() }.filter(Self.isSimulatorUUID))
         let text = normalized.sorted().joined(separator: "\n") + (normalized.isEmpty ? "" : "\n")
-        try text.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try SecureLocalFileIO.atomicWrite(
+            Data(text.utf8),
+            to: url,
+            permissions: 0o600
+        )
     }
 
     private static func isSimulatorUUID(_ value: String) -> Bool {
@@ -419,6 +563,7 @@ enum ScanResultLoader {
         sampleURL: URL = StorageHistoryStore.sampleURL
     ) -> LoadedScanResult {
         let scanURL = projectRoot.appendingPathComponent("scan_result.json")
+        let scanParentIdentity = FilesystemIdentity.directory(at: projectRoot)
         let existingHistory = StorageHistoryStore.load(from: historyURL)
         let samples = StorageHistoryStore.loadFreeSpaceSamples(from: sampleURL)
         guard FileManager.default.fileExists(atPath: scanURL.path) else {
@@ -434,7 +579,12 @@ enum ScanResultLoader {
 
         let data: Data
         do {
-            data = try boundedData(contentsOf: scanURL, maximumBytes: maximumScanResultBytes)
+            guard let scanParentIdentity else { throw ScanResultLoaderError.unreadable }
+            data = try boundedData(
+                contentsOf: scanURL,
+                maximumBytes: maximumScanResultBytes,
+                expectedParentIdentity: scanParentIdentity
+            )
         } catch ScanResultLoaderError.tooLarge {
             return emptyResult(
                 history: existingHistory,
@@ -507,12 +657,23 @@ enum ScanResultLoader {
         }
     }
 
-    static func boundedData(contentsOf url: URL, maximumBytes: Int) throws -> Data {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
-        guard data.count <= maximumBytes else { throw ScanResultLoaderError.tooLarge }
-        return data
+    static func boundedData(
+        contentsOf url: URL,
+        maximumBytes: Int,
+        expectedParentIdentity: FilesystemIdentity? = nil
+    ) throws -> Data {
+        do {
+            return try SecureLocalFileIO.boundedRead(
+                from: url,
+                maximumBytes: maximumBytes,
+                requireCurrentOwner: true,
+                expectedParentIdentity: expectedParentIdentity
+            )
+        } catch let error as NSError where error.code == Int(EFBIG) {
+            throw ScanResultLoaderError.tooLarge
+        } catch {
+            throw ScanResultLoaderError.unreadable
+        }
     }
 
     private static func emptyResult(
@@ -542,6 +703,7 @@ enum ScanResultLoader {
 
 enum ScanResultLoaderError: Error {
     case tooLarge
+    case unreadable
 }
 
 struct SimulatorKeepMigration: Equatable {

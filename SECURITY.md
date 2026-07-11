@@ -16,7 +16,7 @@ Only the latest `main` and, once one exists, the most recent public release tag 
 
 Use GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new) — the "Report a vulnerability" button on the repository's Security tab. This routes the report directly to the maintainer without going through public issues.
 
-If Private Vulnerability Reporting is unavailable, use a private maintainer-approved channel and include the subject prefix `[pc-health-check security]`.
+If Private Vulnerability Reporting is temporarily unavailable, do not put vulnerability details in a public issue. Retry the private advisory form later; this repository does not advertise an unverified fallback address.
 
 ### What to include
 
@@ -51,7 +51,7 @@ Out of scope:
 
 ## Trust model
 
-- Source release ZIPs ship readable PowerShell / Bash / JXA / Swift source and no compiled diagnostic binary. A future separately published Universal 2 DMG must contain the same allowlisted readable Mac runtime, be Developer ID signed/notarized/stapled/Gatekeeper-assessed, and ship with SHA-256 plus machine-readable tag/commit/architecture/minimum-OS/trust metadata.
+- Source release ZIPs ship readable PowerShell / Bash / JXA / Swift source and no compiled diagnostic binary. A future separately published Universal 2 DMG must contain the same allowlisted readable Mac runtime, be Developer ID signed/notarized/stapled/Gatekeeper-assessed, and ship with SHA-256 plus machine-readable tag object ID, pinned SSH signer principal/fingerprint, pinned Apple Team ID/leaf-certificate SHA-256, commit, architecture, minimum-OS, and trust metadata. Public packaging remains fail-closed until those owner-reviewed external trust anchors are supplied; no key, Team ID, or certificate is generated or trusted automatically.
 - Release building rejects user config, scan output, unsafe archive paths, unexpected symlinks, credential-shaped data, email addresses, and build-machine home paths. The tracked `data/config.example.json` contains no secret; `data/config.json` is ignored and excluded from every artifact.
 - The only external binaries the tool executes are Sysinternals `sigcheck.exe` and `autorunsc.exe`, both downloaded from `https://live.sysinternals.com/` and **verified via `Get-AuthenticodeSignature`** against a Microsoft signer subject. Verification runs **on every invocation**, not only at first download — the cache directory under `%LOCALAPPDATA%` is user-writable, so a cached `.exe` is re-validated each run to defend against post-cache tampering by other user-mode malware (the scenario this tool exists to detect). If the signature check fails, the binary is deleted and the tool falls back to a fresh download (which is itself re-verified).
 - VirusTotal outbound calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.jxa.js`. Optional Sysinternals downloads live in `scripts/sigcheck-helper.ps1` and `scripts/autorunsc-helper.ps1`. Grep `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api` to audit.

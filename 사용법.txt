@@ -171,7 +171,8 @@ Windows와 macOS 모두 지원합니다.
   실제 API 키 설정은 배포본에 포함되지 않습니다.
   - 스크립트 모드: 무시되는 data/config.json
   - SwiftUI 앱(소스 빌드 포함): ~/Library/Application Support/PC Health Check/config.json
-  SwiftUI 앱의 검사 결과와 변경 기록도 위 Application Support 아래 runtime 폴더에 저장됩니다.
+  SwiftUI 앱의 검사 결과와 리포트는 위 Application Support 아래 results 폴더에,
+  변경 기록과 감시 표본은 Application Support 아래 소유자 전용 상태 파일에 저장됩니다.
 
 
 [ 자주 묻는 질문 ]

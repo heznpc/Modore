@@ -7,20 +7,59 @@ function env(name, fallback) {
   const value = v ? unwrap(v) : null;
   return value == null ? fallback : String(value);
 }
-function readText(path) {
-  const s = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null);
-  return s ? unwrap(s) : "";
+function readText(path, maximumBytes) {
+  const limit = Number(maximumBytes || (16 * 1024 * 1024));
+  const handle = $.NSFileHandle.fileHandleForReadingAtPath(path);
+  if (!handle) return "";
+  try {
+    const data = handle.readDataOfLength(limit + 1);
+    if (Number(data.length) > limit) return "";
+    const value = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
+    return value ? unwrap(value) : "";
+  } finally {
+    try { handle.closeFile; } catch (_) {}
+  }
 }
 function writeText(path, text) {
-  $(text).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
+  return !!$(text).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
 }
-function readJson(path, fallback) {
-  try { return JSON.parse(readText(path)); } catch (e) { return fallback; }
+function writeRequiredText(path, text) {
+  if (!writeText(path, text)) throw new Error("검사 결과를 안전하게 기록하지 못했습니다: " + path);
+}
+function readJson(path, fallback, maximumBytes) {
+  try { return JSON.parse(readText(path, maximumBytes)); } catch (e) { return fallback; }
 }
 function run(cmd) {
   const app = Application.currentApplication();
   app.includeStandardAdditions = true;
   try { return app.doShellScript(cmd); } catch (e) { return ""; }
+}
+function runCurlWithSecretHeader(url, apiKey) {
+  if (!/^[A-Fa-f0-9]{64}$/.test(String(apiKey || ""))) return "";
+  const task = $.NSTask.alloc.init;
+  const input = $.NSPipe.pipe;
+  const output = $.NSPipe.pipe;
+  task.launchPath = "/usr/bin/curl";
+  task.arguments = $(["-q", "-sS", "--max-time", "15", "--config", "-", "-w", "\\n%{http_code}", url]);
+  task.standardInput = input;
+  task.standardOutput = output;
+  task.standardError = $.NSFileHandle.fileHandleWithNullDevice;
+  try {
+    task.launch;
+    const config = "header = \\\"x-apikey: " + apiKey + "\\\"\nheader = \\\"accept: application/json\\\"\n";
+    input.fileHandleForWriting.writeData($(config).dataUsingEncoding($.NSUTF8StringEncoding));
+    input.fileHandleForWriting.closeFile;
+    // Drain while curl is running so a response larger than the pipe buffer
+    // cannot deadlock the producer and this synchronous JXA caller.
+    const data = output.fileHandleForReading.readDataToEndOfFile;
+    task.waitUntilExit;
+    if (task.terminationStatus !== 0) return "";
+    const text = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
+    return text ? unwrap(text) : "";
+  } catch (e) {
+    try { input.fileHandleForWriting.closeFile; } catch (_) {}
+    return "";
+  }
 }
 function tmp(name) { return readText(TMP_DIR + "/" + name); }
 function basename(path) { return String(path || "").split("/").filter(Boolean).pop() || String(path || ""); }
@@ -67,15 +106,14 @@ function vtLookup(config, disabled) {
   const envKey = env("VT_API_KEY", "");
   if (envKey) {
     cfg.apiKey = envKey;
-    cfg.enabled = true;
   }
-  const enabled = !!cfg.enabled && !!cfg.apiKey && !disabled;
+  const enabled = !!cfg.enabled && /^[A-Fa-f0-9]{64}$/.test(String(cfg.apiKey || "")) && !disabled;
   const cacheHours = Number(cfg.cacheHours || 48);
   const maxCalls = Number(cfg.maxCallsPerScan || 100);
   const cacheDir = homeDir() + "/Library/Caches/PC건강검진";
   const cachePath = cacheDir + "/vt-cache.json";
   ensureDir(cacheDir);
-  let cache = readJson(cachePath, {});
+  let cache = readJson(cachePath, {}, 4 * 1024 * 1024);
   let calls = 0, lastCall = 0;
   function cached(key) {
     const entry = cache[key];
@@ -97,7 +135,8 @@ function vtLookup(config, disabled) {
     lastCall = Date.now();
     calls += 1;
     const url = "https://www.virustotal.com/api/v3/" + path;
-    const out = run("/usr/bin/curl -sS --max-time 15 -H " + escapeShell("x-apikey: " + cfg.apiKey) + " -H 'accept: application/json' -w '\\n%{http_code}' " + escapeShell(url));
+    const out = runCurlWithSecretHeader(url, cfg.apiKey);
+    if (!out) return { error: "request_failed" };
     const lines = out.split(/\r?\n/);
     const code = lines.pop();
     const body = lines.join("\n");
@@ -215,11 +254,11 @@ function whitelistIndex(whitelist) {
 }
 function loadRules(dir) {
   return {
-    process: readJson(dir + "/process.json", []),
-    network: readJson(dir + "/network.json", []),
-    autoruns: readJson(dir + "/autoruns.json", []),
-    defender: readJson(dir + "/defender.json", []),
-    installs: readJson(dir + "/installs.json", [])
+    process: readJson(env("PCH_PINNED_RULE_PROCESS", dir + "/process.json"), [], 4 * 1024 * 1024),
+    network: readJson(env("PCH_PINNED_RULE_NETWORK", dir + "/network.json"), [], 4 * 1024 * 1024),
+    autoruns: readJson(env("PCH_PINNED_RULE_AUTORUNS", dir + "/autoruns.json"), [], 4 * 1024 * 1024),
+    defender: readJson(env("PCH_PINNED_RULE_DEFENDER", dir + "/defender.json"), [], 4 * 1024 * 1024),
+    installs: readJson(env("PCH_PINNED_RULE_INSTALLS", dir + "/installs.json"), [], 4 * 1024 * 1024)
   };
 }
 function ruleMatches(rule, fact) {
@@ -465,12 +504,12 @@ function parseSimulatorDevices(text, keepUUIDs, legacyKeepNames) {
 const TMP_DIR = env("TMP_DIR", "/tmp");
 const OUTPUT = env("PCH_OUTPUT", "scan_result.json");
 const RAW_PATH = env("PCH_RAW_PATH", "raw_facts.json");
-const WHITELIST_PATH = env("PCH_WHITELIST_PATH", "data/whitelist.json");
+const WHITELIST_PATH = env("PCH_PINNED_WHITELIST", env("PCH_WHITELIST_PATH", "data/whitelist.json"));
 const RULES_DIR = env("PCH_RULES_DIR", "rules");
 const CONFIG_PATH = env("PCH_CONFIG_PATH", "data/config.json");
 const NO_VT = /^true$/i.test(env("PCH_NO_VT", "false"));
 const SIMULATOR_KEEP_PATH = env("PCH_SIMULATOR_KEEP_PATH", homeDir() + "/Library/Application Support/PC Health Check/simulator-keep.txt");
-const simulatorKeepEntries = readText(SIMULATOR_KEEP_PATH)
+const simulatorKeepEntries = readText(SIMULATOR_KEEP_PATH, 64 * 1024)
   .split(/\r?\n/)
   .map(value => value.trim())
   .filter(Boolean);
@@ -480,7 +519,7 @@ const simulatorKeepUUIDs = simulatorKeepEntries
 const simulatorLegacyKeepNames = simulatorKeepEntries.filter(value =>
   !/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/.test(value)
 );
-const config = readJson(CONFIG_PATH, {});
+const config = readJson(CONFIG_PATH, {}, 1024 * 1024);
 const vt = vtLookup(config, NO_VT);
 if (vt.enabled) console.log("  VirusTotal 조회 활성화");
 
@@ -496,17 +535,13 @@ const raw = {
   sections: {}
 };
 
-const pidPath = {};
-run("ps -Ao pid=,comm=").split(/\r?\n/).forEach(row => {
-  const m = row.trim().match(/^(\d+)\s+(.+)$/);
-  if (m) pidPath[m[1]] = m[2];
-});
-
 raw.sections.cpu = tmp("ps.txt").trim().split(/\r?\n/).filter(Boolean).map(line => {
-  const parts = line.trim().split(/\s+/, 6);
-  if (parts.length < 6) return null;
-  const [pid, user, pcpu, pmem, rss, comm] = parts;
-  const path = pidPath[pid] || comm;
+  const match = line.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(.+)$/);
+  if (!match) return null;
+  const [, pid, user, pcpu, pmem, rss, comm] = match;
+  // Keep CPU usage and executable identity from the same ps snapshot. A later
+  // PID lookup can accidentally attach a reused PID to an unrelated process.
+  const path = comm;
   return { name: basename(path), pid_: Number(pid), cpu: Number(pcpu), memoryMB: Math.round(Number(rss) / 10.24) / 100, path, sig: null, vt: vt.file(path) };
 }).filter(Boolean).sort((a,b) => b.cpu - a.cpu);
 raw.sections.gpu = [];
@@ -657,9 +692,9 @@ raw.sections.virustotal = { enabled: vt.enabled, callsThisScan: vt.calls, cacheH
 raw.sections.sysinternals = { sigcheckEnabled: false, autorunscEnabled: false, note: "macOS는 codesign + launchctl 사용" };
 
 vt.save();
-writeText(RAW_PATH, JSON.stringify(raw, null, 2));
-const result = applyRules(raw, loadRules(RULES_DIR), whitelistIndex(readJson(WHITELIST_PATH, {})));
-writeText(OUTPUT, JSON.stringify(result, null, 2));
+writeRequiredText(RAW_PATH, JSON.stringify(raw, null, 2));
+const result = applyRules(raw, loadRules(RULES_DIR), whitelistIndex(readJson(WHITELIST_PATH, {}, 8 * 1024 * 1024)));
+writeRequiredText(OUTPUT, JSON.stringify(result, null, 2));
 console.log(`  - 위험: ${result.summary.dangerCount} 건`);
 console.log(`  - 확인: ${result.summary.warningCount} 건`);
 if (vt.enabled) console.log(`  - VT 조회: ${vt.calls} 건`);

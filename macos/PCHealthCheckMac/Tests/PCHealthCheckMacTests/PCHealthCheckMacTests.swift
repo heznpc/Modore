@@ -2,6 +2,48 @@ import XCTest
 @testable import PCHealthCheckMac
 
 final class PCHealthCheckMacTests: XCTestCase {
+    func testScanEnvironmentRequiresExplicitVTConsentAndValidAndroidPaths() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-scan-environment-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let configuration = root.appendingPathComponent("config.json")
+        let android = root.appendingPathComponent("android-sdk")
+        let androidLink = root.appendingPathComponent("android-link")
+        try FileManager.default.createDirectory(at: android, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: androidLink, withDestinationURL: android)
+        try "{\"virustotal\":{\"enabled\":false,\"apiKey\":\"\"}}".write(
+            to: configuration,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        var environment = ScanPipeline.scanEnvironment(
+            configurationURL: configuration,
+            processEnvironment: [
+                "VT_API_KEY": "secret",
+                "ANDROID_HOME": android.path,
+                "ANDROID_SDK_ROOT": androidLink.path,
+                "PCH_TEST_MODE": "1",
+            ]
+        )
+        XCTAssertNil(environment["VT_API_KEY"])
+        XCTAssertEqual(environment["ANDROID_HOME"], android.path)
+        XCTAssertNil(environment["ANDROID_SDK_ROOT"])
+        XCTAssertNil(environment["PCH_TEST_MODE"])
+
+        try "{\"virustotal\":{\"enabled\":true,\"apiKey\":\"\"}}".write(
+            to: configuration,
+            atomically: true,
+            encoding: .utf8
+        )
+        environment = ScanPipeline.scanEnvironment(
+            configurationURL: configuration,
+            processEnvironment: ["VT_API_KEY": " secret "]
+        )
+        XCTAssertEqual(environment["VT_API_KEY"], "secret")
+    }
+
     func testStorageTotalsExcludeNestedAndDeferredMeasurements() throws {
         let snapshot = try XCTUnwrap(StorageSnapshot(json: [
             "volume": volume(),
@@ -247,9 +289,11 @@ final class PCHealthCheckMacTests: XCTestCase {
 
         XCTAssertEqual(
             resolved.standardizedFileURL,
-            support.appendingPathComponent("PC Health Check/runtime").standardizedFileURL
+            support.appendingPathComponent("PC Health Check/results").standardizedFileURL
         )
-        XCTAssertTrue(RuntimeWorkspace.hasScanner(at: resolved))
+        XCTAssertTrue(RuntimeWorkspace.hasScanner(
+            at: support.appendingPathComponent("PC Health Check/runtime")
+        ))
     }
 
     func testDevelopmentEnvironmentAcceptsSourceScannerWithoutExecutableBit() throws {

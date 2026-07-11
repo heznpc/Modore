@@ -67,7 +67,7 @@ if ($useVt) {
     Write-Host "VirusTotal 조회 활성화 (쿼터 보호: 캐시 48h, 레이트 16초)" -ForegroundColor DarkCyan
 } else {
     if (-not $NoVtLookup) {
-        Write-Host "VT 조회 비활성 (VT_API_KEY 또는 로컬 config.json 설정 시 활성화)" -ForegroundColor DarkGray
+        Write-Host "VT 조회 비활성 (로컬 config에서 enabled=true와 키를 설정해야 활성화)" -ForegroundColor DarkGray
     }
 }
 

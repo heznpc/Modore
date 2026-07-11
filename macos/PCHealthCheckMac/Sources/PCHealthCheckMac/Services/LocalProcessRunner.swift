@@ -24,11 +24,43 @@ enum LocalProcessRunner {
     static let timeoutStatus: Int32 = 124
     static let outputLimitStatus: Int32 = 125
     static let cancellationStatus: Int32 = 130
+    static let safeSystemPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+    private static let allowedEnvironmentOverrides: Set<String> = [
+        "ANDROID_HOME",
+        "ANDROID_SDK_ROOT",
+        "PCH_CONFIG_PATH",
+        "PCH_PROJECT_DIR",
+        "PCH_REDACT",
+        "PCH_REPORT_OUTPUT",
+        "PCH_SCAN",
+        "PCH_PINNED_AUTORUNS_MODULE",
+        "PCH_PINNED_CONFIG",
+        "PCH_PINNED_CPU_MODULE",
+        "PCH_PINNED_NETWORK_MODULE",
+        "PCH_PINNED_SCANNER_HELPER",
+        "PCH_PINNED_SECURITY_MODULE",
+        "PCH_PINNED_STORAGE_MODULE",
+        "PCH_PINNED_RULE_AUTORUNS",
+        "PCH_PINNED_RULE_DEFENDER",
+        "PCH_PINNED_RULE_INSTALLS",
+        "PCH_PINNED_RULE_NETWORK",
+        "PCH_PINNED_RULE_PROCESS",
+        "PCH_PINNED_WHITELIST",
+        "PCH_STORAGE_DU_TIMEOUT",
+        "PCH_STORAGE_TOTAL_DU_BUDGET",
+        "PCH_STORAGE_WATCH_SCRIPT",
+        "PCH_STORAGE_WATCH_SHA256",
+        "VT_API_KEY",
+    ]
 
     static func stream(
         executable: String,
         arguments: [String],
         currentDirectory: URL,
+        expectedCurrentDirectoryIdentity: FilesystemIdentity? = nil,
+        expectedSignedBundleURL: URL? = nil,
+        pinnedFiles: [String: Data] = [:],
         environment: [String: String] = [:],
         timeout: TimeInterval? = 180,
         maxOutputBytes: Int = 2_000_000,
@@ -39,6 +71,9 @@ enum LocalProcessRunner {
                 executable: executable,
                 arguments: arguments,
                 currentDirectory: currentDirectory,
+                expectedCurrentDirectoryIdentity: expectedCurrentDirectoryIdentity,
+                expectedSignedBundleURL: expectedSignedBundleURL,
+                pinnedFiles: pinnedFiles,
                 environment: environment
             ),
             outputMode: .stream(onOutput),
@@ -57,6 +92,9 @@ enum LocalProcessRunner {
         executable: String,
         arguments: [String],
         currentDirectory: URL,
+        expectedCurrentDirectoryIdentity: FilesystemIdentity? = nil,
+        expectedSignedBundleURL: URL? = nil,
+        pinnedFiles: [String: Data] = [:],
         environment: [String: String] = [:],
         timeout: TimeInterval? = 60,
         maxOutputBytes: Int = 2_000_000
@@ -66,6 +104,9 @@ enum LocalProcessRunner {
                 executable: executable,
                 arguments: arguments,
                 currentDirectory: currentDirectory,
+                expectedCurrentDirectoryIdentity: expectedCurrentDirectoryIdentity,
+                expectedSignedBundleURL: expectedSignedBundleURL,
+                pinnedFiles: pinnedFiles,
                 environment: environment
             ),
             outputMode: .capture,
@@ -78,12 +119,103 @@ enum LocalProcessRunner {
             session.cancel()
         }
     }
+
+    static func sanitizedEnvironment(overrides: [String: String]) throws -> [String: String] {
+        guard Set(overrides.keys).isSubset(of: allowedEnvironmentOverrides) else {
+            throw invalidEnvironmentError()
+        }
+        let home = try trustedAccountHomeDirectory()
+        let temporaryDirectory = try trustedUserTemporaryDirectory()
+        var result = [
+            "HOME": home,
+            "PATH": safeSystemPath,
+            "TMPDIR": temporaryDirectory,
+            "LANG": "en_US.UTF-8",
+            "LC_ALL": "en_US.UTF-8",
+        ]
+        for (key, value) in overrides {
+            guard !key.isEmpty,
+                  !key.contains("="),
+                  !key.utf8.contains(0),
+                  !value.utf8.contains(0) else {
+                throw invalidEnvironmentError()
+            }
+            result[key] = value
+        }
+        return result
+    }
+
+    private static func trustedAccountHomeDirectory() throws -> String {
+        var entry = passwd()
+        var result: UnsafeMutablePointer<passwd>?
+        let requestedSize = Darwin.sysconf(_SC_GETPW_R_SIZE_MAX)
+        let bufferSize = requestedSize > 0 && requestedSize <= 1_048_576
+            ? Int(requestedSize) : 16_384
+        var buffer = [CChar](repeating: 0, count: bufferSize)
+        let status = buffer.withUnsafeMutableBufferPointer { storage in
+            Darwin.getpwuid_r(
+                Darwin.geteuid(),
+                &entry,
+                storage.baseAddress,
+                storage.count,
+                &result
+            )
+        }
+        guard status == 0, result != nil, let path = entry.pw_dir else {
+            throw invalidEnvironmentError()
+        }
+        return try canonicalOwnedDirectory(String(cString: path))
+    }
+
+    private static func trustedUserTemporaryDirectory() throws -> String {
+        let requiredSize = Darwin.confstr(_CS_DARWIN_USER_TEMP_DIR, nil, 0)
+        guard requiredSize > 1, requiredSize <= 1_048_576 else {
+            throw invalidEnvironmentError()
+        }
+        var buffer = [CChar](repeating: 0, count: requiredSize)
+        let written = Darwin.confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, buffer.count)
+        guard written == requiredSize else { throw invalidEnvironmentError() }
+        return try canonicalOwnedDirectory(String(cString: buffer))
+    }
+
+    private static func canonicalOwnedDirectory(_ path: String) throws -> String {
+        guard path.hasPrefix("/"), !path.utf8.contains(0) else {
+            throw invalidEnvironmentError()
+        }
+        let canonical = URL(fileURLWithPath: path, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        var value = stat()
+        let status = canonical.withUnsafeFileSystemRepresentation { representation in
+            guard let representation else { return Int32(-1) }
+            return Darwin.lstat(representation, &value)
+        }
+        let unsafeWriteBits = mode_t(S_IWGRP | S_IWOTH)
+        guard status == 0,
+              value.st_mode & S_IFMT == S_IFDIR,
+              value.st_uid == Darwin.geteuid(),
+              value.st_mode & unsafeWriteBits == 0 else {
+            throw invalidEnvironmentError()
+        }
+        return canonical.path
+    }
+
+    private static func invalidEnvironmentError() -> NSError {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(EINVAL),
+            userInfo: [NSLocalizedDescriptionKey: "안전한 프로세스 환경을 구성하지 못했습니다."]
+        )
+    }
 }
 
 private struct SpawnConfiguration: Sendable {
     let executable: String
     let arguments: [String]
     let currentDirectory: URL
+    let expectedCurrentDirectoryIdentity: FilesystemIdentity?
+    let expectedSignedBundleURL: URL?
+    let pinnedFiles: [String: Data]
     let environment: [String: String]
 }
 
@@ -477,8 +609,18 @@ private final class ManagedProcessSession: @unchecked Sendable {
 }
 
 private enum PosixProcessSpawner {
+    private static let pinnedPlaceholderPrefix = "@pch-pinned:"
+
     static func spawn(_ configuration: SpawnConfiguration) throws -> SpawnedProcess {
         try validate(configuration)
+        let directoryDescriptor = try openCurrentDirectory(configuration)
+        defer { Darwin.close(directoryDescriptor) }
+        if let bundleURL = configuration.expectedSignedBundleURL,
+           !RuntimeWorkspace.codeAtURLMatchesRunningProcess(bundleURL) {
+            throw posixError(EAUTH)
+        }
+        let openedPinnedFiles = try openPinnedFiles(configuration.pinnedFiles)
+        defer { openedPinnedFiles.forEach { Darwin.close($0.parentDescriptor) } }
         var descriptors: [Int32] = [-1, -1]
         guard descriptors.withUnsafeMutableBufferPointer({ buffer in
             Darwin.pipe(buffer.baseAddress!)
@@ -487,6 +629,13 @@ private enum PosixProcessSpawner {
         }
         let readDescriptor = descriptors[0]
         let writeDescriptor = descriptors[1]
+        let pinnedDescriptors = try assignChildDescriptors(
+            openedPinnedFiles,
+            avoiding: Set(
+                [directoryDescriptor, readDescriptor, writeDescriptor]
+                    + openedPinnedFiles.map(\.parentDescriptor)
+            )
+        )
         var didSpawn = false
         defer {
             if !didSpawn {
@@ -503,13 +652,19 @@ private enum PosixProcessSpawner {
         var actions: posix_spawn_file_actions_t? = nil
         try check(posix_spawn_file_actions_init(&actions))
         defer { posix_spawn_file_actions_destroy(&actions) }
-        try configuration.currentDirectory.path.withCString { path in
-            try check(posix_spawn_file_actions_addchdir_np(&actions, path))
-        }
+        try check(posix_spawn_file_actions_addfchdir_np(&actions, directoryDescriptor))
         try check(posix_spawn_file_actions_adddup2(&actions, writeDescriptor, STDOUT_FILENO))
         try check(posix_spawn_file_actions_adddup2(&actions, writeDescriptor, STDERR_FILENO))
         try check(posix_spawn_file_actions_addclose(&actions, readDescriptor))
         try check(posix_spawn_file_actions_addclose(&actions, writeDescriptor))
+        for pinned in pinnedDescriptors {
+            try check(posix_spawn_file_actions_adddup2(
+                &actions,
+                pinned.parentDescriptor,
+                pinned.childDescriptor
+            ))
+            try check(posix_spawn_file_actions_addclose(&actions, pinned.parentDescriptor))
+        }
         try "/dev/null".withCString { path in
             try check(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, path, O_RDONLY, 0))
         }
@@ -535,11 +690,20 @@ private enum PosixProcessSpawner {
         )
         try check(posix_spawnattr_setflags(&attributes, flags))
 
-        let command = [configuration.executable] + configuration.arguments
-        var mergedEnvironment = ProcessInfo.processInfo.environment
-        configuration.environment.forEach { mergedEnvironment[$0.key] = $0.value }
-        let environment = mergedEnvironment
-            .map { "\($0.key)=\($0.value)" }
+        let pinnedPaths = Dictionary(
+            uniqueKeysWithValues: pinnedDescriptors.map {
+                ($0.name, "/dev/fd/\($0.childDescriptor)")
+            }
+        )
+        let command = try ([configuration.executable] + configuration.arguments).map {
+            try resolvePinnedPlaceholder($0, paths: pinnedPaths)
+        }
+        let environment = try LocalProcessRunner.sanitizedEnvironment(
+            overrides: configuration.environment
+        )
+            .map { key, value in
+                "\(key)=\(try resolvePinnedPlaceholder(value, paths: pinnedPaths))"
+            }
             .sorted()
         var pid: pid_t = 0
         let spawnResult = try withMutableCStringArray(command) { arguments in
@@ -575,6 +739,160 @@ private enum PosixProcessSpawner {
                 userInfo: [NSLocalizedDescriptionKey: "프로세스 실행 인수가 올바르지 않습니다."]
             )
         }
+        let validPinnedName = try! NSRegularExpression(pattern: "^[A-Za-z0-9_]{1,48}$")
+        guard configuration.pinnedFiles.count <= 32,
+              configuration.pinnedFiles.keys.allSatisfy({ name in
+                let range = NSRange(name.startIndex..<name.endIndex, in: name)
+                return validPinnedName.firstMatch(in: name, range: range) != nil
+              }),
+              configuration.pinnedFiles.values.reduce(0, { $0 + $1.count })
+                <= 128 * 1_024 * 1_024 else {
+            throw posixError(E2BIG)
+        }
+        _ = try LocalProcessRunner.sanitizedEnvironment(overrides: configuration.environment)
+    }
+
+    private struct OpenedPinnedFile {
+        let name: String
+        let parentDescriptor: Int32
+    }
+
+    private struct PinnedDescriptor {
+        let name: String
+        let parentDescriptor: Int32
+        let childDescriptor: Int32
+    }
+
+    private static func openPinnedFiles(
+        _ files: [String: Data]
+    ) throws -> [OpenedPinnedFile] {
+        guard !files.isEmpty else { return [] }
+        let environment = try LocalProcessRunner.sanitizedEnvironment(overrides: [:])
+        guard let temporaryDirectory = environment["TMPDIR"] else { throw posixError(EINVAL) }
+        var result: [OpenedPinnedFile] = []
+        do {
+            for pair in files.sorted(by: { $0.key < $1.key }) {
+                var template = Array(
+                    "\(temporaryDirectory)/pch-pinned.XXXXXX".utf8CString
+                )
+                let descriptor = template.withUnsafeMutableBufferPointer {
+                    Darwin.mkstemp($0.baseAddress!)
+                }
+                guard descriptor >= 0 else { throw posixError(errno) }
+                let path = String(cString: template)
+                do {
+                    guard Darwin.fchmod(descriptor, 0o400) == 0 else {
+                        throw posixError(errno)
+                    }
+                    try pair.value.withUnsafeBytes { bytes in
+                        var written = 0
+                        while written < bytes.count {
+                            let count = Darwin.write(
+                                descriptor,
+                                bytes.baseAddress?.advanced(by: written),
+                                bytes.count - written
+                            )
+                            if count < 0 {
+                                if errno == EINTR { continue }
+                                throw posixError(errno)
+                            }
+                            written += count
+                        }
+                    }
+                    guard Darwin.fsync(descriptor) == 0 else {
+                        throw posixError(errno)
+                    }
+                    let readDescriptor = path.withCString {
+                        Darwin.open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+                    }
+                    guard readDescriptor >= 0 else { throw posixError(errno) }
+                    var writtenMetadata = stat()
+                    var readMetadata = stat()
+                    guard Darwin.fstat(descriptor, &writtenMetadata) == 0,
+                          Darwin.fstat(readDescriptor, &readMetadata) == 0,
+                          writtenMetadata.st_dev == readMetadata.st_dev,
+                          writtenMetadata.st_ino == readMetadata.st_ino,
+                          Darwin.unlink(path) == 0 else {
+                        let code = errno == 0 ? ESTALE : errno
+                        Darwin.close(readDescriptor)
+                        throw posixError(code)
+                    }
+                    Darwin.close(descriptor)
+                    result.append(OpenedPinnedFile(
+                        name: pair.key,
+                        parentDescriptor: readDescriptor
+                    ))
+                } catch {
+                    _ = Darwin.unlink(path)
+                    Darwin.close(descriptor)
+                    throw error
+                }
+            }
+            return result
+        } catch {
+            result.forEach { Darwin.close($0.parentDescriptor) }
+            throw error
+        }
+    }
+
+    private static func assignChildDescriptors(
+        _ files: [OpenedPinnedFile],
+        avoiding forbiddenDescriptors: Set<Int32>
+    ) throws -> [PinnedDescriptor] {
+        let openMaximum = Darwin.sysconf(_SC_OPEN_MAX)
+        guard openMaximum > 0 else { throw posixError(EMFILE) }
+        var used = forbiddenDescriptors
+        var candidate: Int32 = 100
+        var result: [PinnedDescriptor] = []
+        for file in files {
+            while used.contains(candidate), Int64(candidate) < openMaximum {
+                candidate += 1
+            }
+            guard Int64(candidate) < openMaximum else { throw posixError(EMFILE) }
+            result.append(PinnedDescriptor(
+                name: file.name,
+                parentDescriptor: file.parentDescriptor,
+                childDescriptor: candidate
+            ))
+            used.insert(candidate)
+            candidate += 1
+        }
+        return result
+    }
+
+    private static func resolvePinnedPlaceholder(
+        _ value: String,
+        paths: [String: String]
+    ) throws -> String {
+        guard value.hasPrefix(pinnedPlaceholderPrefix) else { return value }
+        let name = String(value.dropFirst(pinnedPlaceholderPrefix.count))
+        guard let path = paths[name] else { throw posixError(ENOENT) }
+        return path
+    }
+
+    private static func openCurrentDirectory(_ configuration: SpawnConfiguration) throws -> Int32 {
+        let descriptor = configuration.currentDirectory.path.withCString { path in
+            Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else { throw posixError(errno) }
+        var value = stat()
+        guard Darwin.fstat(descriptor, &value) == 0,
+              value.st_mode & S_IFMT == S_IFDIR else {
+            let code = errno == 0 ? ENOTDIR : errno
+            Darwin.close(descriptor)
+            throw posixError(code)
+        }
+        if let expected = configuration.expectedCurrentDirectoryIdentity {
+            let actual = FilesystemIdentity(
+                device: UInt64(bitPattern: Int64(value.st_dev)),
+                inode: UInt64(value.st_ino)
+            )
+            guard actual == expected else {
+                Darwin.close(descriptor)
+                throw posixError(ESTALE)
+            }
+        }
+        return descriptor
     }
 
     private static func setFlag(_ value: Int32, on descriptor: Int32, command: Int32) throws {

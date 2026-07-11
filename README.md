@@ -74,7 +74,7 @@ Shared rules, whitelist data, i18n strings, and report vocabulary can be reused 
 | Distribution | Source ZIP | Source ZIP; optional Developer ID/notarized standalone DMG |
 | Network default | Local, except opt-in hash lookup/downloads | Local, except opt-in VirusTotal hash lookup |
 
-The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A standalone build validates the app's sealed code-signature resources and executes scripts directly from that bundle; owner-controlled Application Support is used only for mutable scan output, migration state, and local configuration. It never executes the replaceable Application Support mirror and never depends on the developer's checkout path. User settings stay at `~/Library/Application Support/PC Health Check/config.json`; the tracked `data/config.example.json` contains no key.
+The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A standalone build validates the app's sealed code-signature resources, captures every interpreter input between signature checks, and executes those bytes through anonymous file descriptors. Owner-controlled Application Support is used only for the non-executable runtime mirror, migration state, local configuration, and a separate `results/` directory; app updates do not replace scan results or reports. It never executes the replaceable Application Support mirror and never depends on the developer's checkout path. User settings stay at `~/Library/Application Support/PC Health Check/config.json`; the tracked `data/config.example.json` contains no key.
 
 **Locale as a first-class concern.** Generic scanners are built for global users; their false-positive rate on Korean banking PCs is the user-facing problem this project exists to solve. The whitelist is the differentiated layer, not the scanner.
 
@@ -119,10 +119,10 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 ### Requirements
 - **Windows**: PowerShell 5.1+ (built into Windows 10/11).
 - **macOS script mode**: Bash + `osascript` (built into macOS).
-- **macOS SwiftUI source mode**: Swift toolchain from Xcode or Command Line Tools. A notarized DMG does not require the toolchain.
+- **macOS SwiftUI source mode**: macOS 13 or later plus Swift tools 5.9 or later from the system-selected, root-owned Xcode under `/Applications` or Command Line Tools under `/Library/Developer/CommandLineTools`. A notarized DMG does not require the toolchain.
 - **Development / tests only**: Python 3.11+ for pytest, release-smoke packaging, and local docs preview.
 
-## Enabling VirusTotal lookup (optional, recommended)
+## Enabling VirusTotal lookup (optional, off by default)
 
 1. Sign up at [virustotal.com](https://www.virustotal.com) — free.
 2. Profile icon → **API Key** → copy.
@@ -139,7 +139,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
    # Windows PowerShell (persistent, current user)
    [System.Environment]::SetEnvironmentVariable('VT_API_KEY', 'your_key_here', 'User')
    ```
-   When `VT_API_KEY` is set, it overrides local config and auto-enables VirusTotal. The macOS/Linux `export` and current-session PowerShell forms are process-session values and are not written by PC Health Check. The persistent Windows form is stored in the current user's registry hive on disk; use it only on a trusted single-user account and remove it when no longer needed.
+   `VT_API_KEY` supplies the secret without writing it into the project, but network lookup still requires `virustotal.enabled` to be `true` in the local user config. The macOS/Linux `export` and current-session PowerShell forms are process-session values and are not written by PC Health Check. The persistent Windows form is stored in the current user's registry hive on disk; use it only on a trusted single-user account and remove it when no longer needed.
 
    **Option B — ignored user config:** the SwiftUI Mac app, including builds opened through `Mac앱실행.command`, uses `~/Library/Application Support/PC Health Check/config.json`. Script-only source/archive mode may copy `data/config.example.json` to the ignored `data/config.json`. Windows can also use `%LOCALAPPDATA%\PC Health Check\config.json`.
    ```json
@@ -227,8 +227,10 @@ python3 -m http.server 8000
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q
-swift test --package-path macos/PCHealthCheckMac
+python3 -I -B -m pytest tests/ -q
+swift test --package-path macos/PCHealthCheckMac \
+  -Xswiftc -warnings-as-errors \
+  -Xswiftc -strict-concurrency=complete
 ```
 
 CI runs rule-JSON validation, Python syntax checks, PowerShell parser checks, pytest, strict Swift release build/tests, and a full unsigned Universal 2 standalone DMG build/audit on pushes to `main` and pull requests targeting `main`.
@@ -238,13 +240,21 @@ CI runs rule-JSON validation, Python syntax checks, PowerShell parser checks, py
 Release zips are built from explicit allowlists so scan artifacts and caches cannot be included by accident:
 
 ```bash
-python3 scripts/release_smoke.py
+python3 -I -B scripts/release_smoke.py
 # writes clearly non-publishable smoke artifacts under dist/local/
 ```
 
 The smoke checks fail on scan output, a user `config.json`, cache files, unsafe ZIP paths, symlinks, non-executable macOS launchers, credential-shaped data, email addresses, or real local home paths.
 
-For publication, `python3 scripts/release_smoke.py --release --version <version>` additionally requires clean `HEAD` at the exact `v<version>` tag, reads every payload byte from that immutable Git commit, and is the only mode that writes canonical ZIP names under `dist/`.
+For publication, provide the reviewed SSH signing public key and its expected OpenSSH SHA-256 fingerprint externally. The key must contain only its type and base64 data; the fixed allowed-signers principal is `heznpc`.
+
+```bash
+PCH_RELEASE_SIGNER_PUBLIC_KEY='ssh-ed25519 <reviewed-public-key-base64>' \
+PCH_RELEASE_SIGNER_SHA256='SHA256:<reviewed-fingerprint>' \
+python3 -I -B scripts/release_smoke.py --release --version <version>
+```
+
+Publication additionally requires clean `HEAD` at the exact signed annotated `v<version>` tag with the pinned signer succeeding before and after the ZIP build, reads every payload byte with Git replace objects disabled from that immutable commit, and is the only mode that writes canonical ZIP names under `dist/`.
 
 ### Standalone Mac distribution
 
@@ -255,11 +265,15 @@ scripts/package_macos_release.sh --check
 scripts/package_macos_release.sh --local
 
 PCH_CODESIGN_IDENTITY="Developer ID Application: ..." \
+PCH_CODESIGN_TEAM_ID="ABCDE12345" \
+PCH_CODESIGN_CERT_SHA256="<reviewed-64-hex-leaf-certificate-fingerprint>" \
 PCH_NOTARY_PROFILE="pc-health-check-notary" \
+PCH_RELEASE_SIGNER_PUBLIC_KEY='ssh-ed25519 <reviewed-public-key-base64>' \
+PCH_RELEASE_SIGNER_SHA256='SHA256:<reviewed-fingerprint>' \
 scripts/package_macos_release.sh
 ```
 
-Distribution mode only runs from a clean `v<version>` tag at `HEAD`. It builds from an isolated `git archive` snapshot, produces Universal 2 with a declared macOS 13 minimum, removes build-machine source prefixes and file metadata, audits the app/DMG, enables hardened runtime, signs, submits with `notarytool --keychain-profile`, staples, and runs Gatekeeper assessment. Only then does it atomically publish the DMG and sidecar JSON containing commit, tag, architectures, minimum OS, trust state, audit state, and SHA-256. `--local` writes an unmistakably unsigned artifact under `dist/local/` and refuses to overwrite any existing artifact.
+Distribution mode only runs from a clean `v<version>` tag at `HEAD` verified by that pinned SSH signer. It builds from an isolated `git archive` snapshot with replace objects disabled, produces Universal 2 with a declared macOS 13 minimum, removes build-machine source prefixes and file metadata, audits the app/DMG, pins the Developer ID identity to an externally reviewed Team ID and leaf-certificate SHA-256, enables hardened runtime, signs, submits with `notarytool --keychain-profile`, staples, and runs Gatekeeper assessment. Only then does it publish the sidecar first and the DMG as the completion marker; metadata contains the commit, tag object ID, tag signer, Developer ID Team/certificate, architectures, minimum OS, trust state, audit state, and SHA-256. `--local` writes an unmistakably unsigned artifact under `dist/local/` and refuses to overwrite any existing artifact.
 
 ## Why open source matters here
 
@@ -302,7 +316,7 @@ Whitelist contributions are especially welcome. See [`CONTRIBUTING.md`](./CONTRI
 
 ## Security
 
-Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new). If that is unavailable, use a private maintainer-approved channel — see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
+Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new). Do not place vulnerability details in a public issue; see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
 
 This project verifies all Sysinternals binaries via `Get-AuthenticodeSignature` against a Microsoft signer subject **on every invocation** — not only at first download — before executing them. The cached `.exe` under `%LOCALAPPDATA%` is re-validated each run because that directory is user-writable and the threat model this tool exists in (other user-mode malware may be present) requires treating the cache as untrusted between runs. By default, Sysinternals download prompts for user confirmation; setting `sysinternals.autoDownload` to `true` enables quiet download with the same signature gate.
 
