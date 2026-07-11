@@ -16,30 +16,14 @@ echo "PC 건강검진 Mac Edition SwiftUI 앱을 준비합니다..."
 echo ""
 
 APP_PATH="./build/macos/PC Health Check Mac.app"
-APP_BIN="$APP_PATH/Contents/MacOS/PCHealthCheckMac"
 
-needs_build=true
-if [[ -x "$APP_BIN" ]]; then
-    needs_build=false
-    while IFS= read -r src; do
-        if [[ "$src" -nt "$APP_BIN" ]]; then
-            needs_build=true
-            break
-        fi
-    done < <(find "./macos/PCHealthCheckMac" -type f \( -name "*.swift" -o -name "Package.swift" \))
-fi
-
-if [[ "$needs_build" == "true" ]]; then
-    bash "./scripts/build_macos_swift_app.sh"
-    status=$?
-    if [[ $status -ne 0 ]]; then
-        echo ""
-        echo "앱 빌드에 실패했습니다. 위 오류를 확인하세요."
-        read -r -p "엔터를 누르면 종료합니다..." _
-        exit $status
-    fi
-else
-    echo "기존 앱이 최신입니다. 빌드를 건너뜁니다."
+/bin/bash "./scripts/build_macos_swift_app.sh"
+status=$?
+if [[ $status -ne 0 ]]; then
+    echo ""
+    echo "앱 빌드에 실패했습니다. 위 오류를 확인하세요."
+    read -r -p "엔터를 누르면 종료합니다..." _
+    exit $status
 fi
 
 echo ""

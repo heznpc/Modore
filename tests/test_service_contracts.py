@@ -131,7 +131,6 @@ def test_macos_distribution_script_requires_explicit_credentials(project_root):
     assert "PCH_CODESIGN_IDENTITY" in source
     assert "PCH_NOTARY_PROFILE" in source
     assert "--keychain-profile" in source
-    assert "PCH_STANDALONE_BUNDLE=1" in source
     assert "project-root marker" in source
 
 

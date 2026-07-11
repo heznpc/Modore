@@ -28,7 +28,7 @@ Windows와 macOS 모두 지원합니다.
   SwiftUI 앱으로 실행:
   1. 공증된 DMG가 배포된 버전이면 앱을 Applications로 옮겨 바로 실행합니다.
      소스 ZIP 버전은 "Mac앱실행.command" 우클릭 → "열기"로 빌드합니다.
-  2. 소스 모드는 처음 실행 시 SwiftUI 앱을 빌드한 뒤 자동으로 엽니다.
+  2. 소스 모드는 매 실행 시 증분 빌드로 앱과 내장 진단 스크립트를 최신 상태로 맞춘 뒤 자동으로 엽니다.
   3. 앱에서 [지금 검사]를 누르면 요약 화면에 남은 공간과 직전 검사 이후 변화가 표시됩니다.
   4. [왜 변했나]에서 증가한 경로와 추적되지 않은 APFS/swap/임시 파일 변화를 구분해 확인합니다.
   5. [공간 정리]에서 항목을 선택하고 오른쪽 [정리 검토]를 누르면 미리보기가 열립니다.
@@ -96,8 +96,8 @@ Windows와 macOS 모두 지원합니다.
   2. 우측 상단 프로필 아이콘 → "API Key" 복사
   3. 다음 중 하나를 선택:
      - 권장: VT_API_KEY 환경 변수로 현재 사용자에게만 설정
-     - 또는 data/config.example.json을 data/config.json으로 복사한 뒤 로컬 파일을 편집
-     - 독립 앱: ~/Library/Application Support/PC Health Check/config.json 편집
+     - 스크립트 메뉴: data/config.example.json을 data/config.json으로 복사한 뒤 로컬 파일을 편집
+     - SwiftUI 앱(소스 빌드 포함): ~/Library/Application Support/PC Health Check/config.json 편집
   4. 파일을 사용하는 경우:
      - "enabled": true
      - "apiKey": "YOUR_API_KEY"
@@ -146,8 +146,8 @@ Windows와 macOS 모두 지원합니다.
   ├─ 검사하기.command     ← macOS 실행
   ├─ Mac앱실행.command    ← macOS SwiftUI 앱 실행
   ├─ 사용법.txt           ← 이 파일
-  ├─ 검사결과.html         ← 검사 후 자동 생성
-  ├─ 검사결과_공유용.html  ← macOS 공유용 결과
+  ├─ 검사결과.html         ← 스크립트 모드 검사 후 자동 생성
+  ├─ 검사결과_공유용.html  ← macOS 스크립트 모드 공유용 결과
   ├─ data/
   │  ├─ whitelist.json    ← 한국 프로그램 DB
   │  ├─ explain.json      ← 쉬운 설명
@@ -169,8 +169,9 @@ Windows와 macOS 모두 지원합니다.
      └─ autorunsc-helper.ps1 ← Sysinternals autorunsc
 
   실제 API 키 설정은 배포본에 포함되지 않습니다.
-  - 소스 실행: 무시되는 data/config.json
-  - 독립 Mac 앱: ~/Library/Application Support/PC Health Check/config.json
+  - 스크립트 모드: 무시되는 data/config.json
+  - SwiftUI 앱(소스 빌드 포함): ~/Library/Application Support/PC Health Check/config.json
+  SwiftUI 앱의 검사 결과와 변경 기록도 위 Application Support 아래 runtime 폴더에 저장됩니다.
 
 
 [ 자주 묻는 질문 ]

@@ -252,27 +252,22 @@ final class PCHealthCheckMacTests: XCTestCase {
         XCTAssertTrue(RuntimeWorkspace.hasScanner(at: resolved))
     }
 
-    func testRuntimeResolutionAcceptsSourceScannerWithoutExecutableBit() throws {
+    func testDevelopmentEnvironmentAcceptsSourceScannerWithoutExecutableBit() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-runtime-source-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        let resources = root.appendingPathComponent("resources")
         let source = root.appendingPathComponent("checkout")
         try writeRuntime(at: source, manifest: "source", config: "default")
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: source.appendingPathComponent("scripts/scanner.sh").path
         )
-        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
-        try source.path.write(
-            to: resources.appendingPathComponent("project-root.txt"),
-            atomically: true,
-            encoding: .utf8
-        )
-
         let resolved = RuntimeWorkspace.resolve(
-            environment: [:],
-            resourceURL: resources,
+            environment: [
+                "PCH_DEVELOPMENT_MODE": "1",
+                "PCH_PROJECT_DIR": source.path,
+            ],
+            resourceURL: nil,
             currentDirectory: root.appendingPathComponent("unrelated"),
             applicationSupportRoot: root.appendingPathComponent("support")
         )

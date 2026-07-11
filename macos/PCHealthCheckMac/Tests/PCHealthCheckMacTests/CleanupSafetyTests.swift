@@ -122,7 +122,7 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertFalse(try String(contentsOf: execution.scannerScriptURL).contains("replaced"))
     }
 
-    func testInvalidProductionBundleCannotFallThroughToMarkerOrEnvironmentRuntime() throws {
+    func testInvalidProductionBundleCannotFallThroughToEnvironmentRuntime() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-invalid-production-bundle-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -133,12 +133,6 @@ final class CleanupSafetyTests: XCTestCase {
         let support = root.appendingPathComponent("support")
         try writeRuntime(at: bundled, marker: "tampered-bundle")
         try writeRuntime(at: attacker, marker: "attacker")
-        try attacker.path.write(
-            to: resources.appendingPathComponent("project-root.txt"),
-            atomically: true,
-            encoding: .utf8
-        )
-
         let expectedInstalled = support.appendingPathComponent("PC Health Check/runtime")
         let environment = [
             "PCH_DEVELOPMENT_MODE": "1",

@@ -181,10 +181,6 @@ runtime_hash="$({
 } | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
 /usr/bin/printf '%s:%s\n' "$APP_VERSION" "$runtime_hash" > "$RUNTIME_DIR/runtime-manifest.txt"
 
-if [[ "${PCH_STANDALONE_BUNDLE:-0}" != "1" ]]; then
-    /usr/bin/printf '%s\n' "$ROOT_DIR" > "$APP_DIR/Contents/Resources/project-root.txt"
-fi
-
 /bin/cp "$ROOT_DIR/LICENSE" "$APP_DIR/Contents/Resources/LICENSE"
 "$ROOT_DIR/scripts/build_macos_icon.sh" "$APP_DIR/Contents/Resources/AppIcon.icns"
 

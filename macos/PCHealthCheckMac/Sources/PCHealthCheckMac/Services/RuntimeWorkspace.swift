@@ -65,15 +65,9 @@ enum RuntimeWorkspace {
             mainBundleURL: mainApplicationBundleURL
            ),
            !bundledRuntimeSignatureIsValid(bundleURL: mainApplicationBundleURL) {
-            // A modified production bundle must never fall through to a
-            // project-root marker or environment-selected development path.
+            // A modified production bundle must never fall through to an
+            // environment-selected development path.
             return installedRuntime
-        }
-
-        // Local app builds carry an explicit marker written into their
-        // resources by the builder. Distribution builds never contain it.
-        if let developmentRoot = markedDevelopmentRoot(resourceURL: resourceURL) {
-            return developmentRoot
         }
 
         // A standalone app always uses its signed bundled runtime as the source
@@ -134,23 +128,6 @@ enum RuntimeWorkspace {
            !bundledRuntimeSignatureIsValid(bundleURL: mainApplicationBundleURL) {
             return nil
         }
-        if let developmentRoot = markedDevelopmentRoot(resourceURL: resourceURL) {
-            guard normalizedProjectRoot == developmentRoot.standardizedFileURL,
-                  hasScanner(at: developmentRoot),
-                  let configurationURL = effectiveConfigurationURL(
-                    runtimeRoot: developmentRoot,
-                    applicationSupportRoot: applicationSupportRoot
-                  ) else {
-                return nil
-            }
-            return RuntimeExecutionContext(
-                runtimeRoot: developmentRoot,
-                outputRoot: developmentRoot,
-                configurationURL: configurationURL,
-                usesBundledRuntime: false
-            )
-        }
-
         if let resourceURL {
             let bundledRuntime = resourceURL.appendingPathComponent("runtime")
             if pathEntryExists(bundledRuntime) {
@@ -225,16 +202,6 @@ enum RuntimeWorkspace {
             currentDirectory: currentDirectory,
             applicationSupportRoot: applicationSupportRoot
         ) != nil
-    }
-
-    private static func markedDevelopmentRoot(resourceURL: URL?) -> URL? {
-        guard let resourceURL else { return nil }
-        let marker = resourceURL.appendingPathComponent("project-root.txt")
-        guard let text = try? String(contentsOf: marker, encoding: .utf8) else { return nil }
-        let path = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else { return nil }
-        let candidate = URL(fileURLWithPath: path).standardizedFileURL
-        return hasScanner(at: candidate) ? candidate : nil
     }
 
     private static func bundledRuntimeSignatureIsValid(bundleURL: URL) -> Bool {

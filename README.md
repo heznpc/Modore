@@ -141,7 +141,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
    ```
    When `VT_API_KEY` is set, it overrides local config and auto-enables VirusTotal. The macOS/Linux `export` and current-session PowerShell forms are process-session values and are not written by PC Health Check. The persistent Windows form is stored in the current user's registry hive on disk; use it only on a trusted single-user account and remove it when no longer needed.
 
-   **Option B — ignored user config:** copy `data/config.example.json` to `data/config.json` in a source/archive checkout. The standalone Mac app uses `~/Library/Application Support/PC Health Check/config.json`. Windows can also use `%LOCALAPPDATA%\PC Health Check\config.json`.
+   **Option B — ignored user config:** the SwiftUI Mac app, including builds opened through `Mac앱실행.command`, uses `~/Library/Application Support/PC Health Check/config.json`. Script-only source/archive mode may copy `data/config.example.json` to the ignored `data/config.json`. Windows can also use `%LOCALAPPDATA%\PC Health Check\config.json`.
    ```json
    "virustotal": {
      "enabled": true,

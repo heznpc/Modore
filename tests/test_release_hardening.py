@@ -178,6 +178,7 @@ def test_mac_builder_embeds_release_identity_without_local_path(project_root):
     assert "build_macos_icon.sh" in source
     assert 'Contents/Resources/LICENSE' in source
     assert "CFBundleIconFile" in source
+    assert "project-root.txt" not in source
 
 
 def test_mac_packager_separates_local_and_public_trust(project_root):
