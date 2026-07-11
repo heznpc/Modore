@@ -69,10 +69,11 @@ fail_usage() {
 
 path_owner_uid() {
     local target="$1"
-    if /usr/bin/stat -f '%u' "$target" 2>/dev/null; then
-        return 0
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        /usr/bin/stat -f '%u' "$target" 2>/dev/null
+    else
+        /usr/bin/stat -c '%u' "$target" 2>/dev/null
     fi
-    /usr/bin/stat -c '%u' "$target" 2>/dev/null
 }
 
 account_home_for_current_uid() {
@@ -719,26 +720,29 @@ process_fingerprint() {
 
 target_stat_fields() {
     local target="$1"
-    if /usr/bin/stat -f $'%d\t%i\t%HT\t%z\t%m' "$target" 2>/dev/null; then
-        return 0
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        /usr/bin/stat -f $'%d\t%i\t%HT\t%z\t%m' "$target" 2>/dev/null
+    else
+        /usr/bin/stat -c $'%d\t%i\t%F\t%s\t%Y' "$target" 2>/dev/null
     fi
-    /usr/bin/stat -c $'%d\t%i\t%F\t%s\t%Y' "$target" 2>/dev/null
 }
 
 path_device() {
     local target="$1"
-    if /usr/bin/stat -f '%d' "$target" 2>/dev/null; then
-        return 0
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        /usr/bin/stat -f '%d' "$target" 2>/dev/null
+    else
+        /usr/bin/stat -c '%d' "$target" 2>/dev/null
     fi
-    /usr/bin/stat -c '%d' "$target" 2>/dev/null
 }
 
 path_mode() {
     local target="$1"
-    if /usr/bin/stat -f '%Lp' "$target" 2>/dev/null; then
-        return 0
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        /usr/bin/stat -f '%Lp' "$target" 2>/dev/null
+    else
+        /usr/bin/stat -c '%a' "$target" 2>/dev/null
     fi
-    /usr/bin/stat -c '%a' "$target" 2>/dev/null
 }
 
 prepare_private_directory() {
