@@ -101,33 +101,13 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     assert "scripts/package_macos_release.sh" in module.MACOS_FILES
     assert "Mac앱실행.command" in module.MACOS_FILES
     assert "macos/PCHealthCheckMac/Package.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/PCHealthCheckMacApp.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/ScanModels.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/ScanContent.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/StorageModels.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/CleanupModels.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/StorageHistory.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/WorkspaceSelection.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/RuntimeWorkspace.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModelActions.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanPipeline.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/LocalProcessRunner.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/CleanupPresentation.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ProcessRunState.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ScanLogStore.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/ViewStyles.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/AppShell.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/CleanupView.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/CleanupInspectorView.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/DevelopmentView.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/DevelopmentInspectorView.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/InventoryView.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/InventoryInspectorView.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/NativeSettingsComponents.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/NativeSourceIcons.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/StorageVolumeCard.swift" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Tests/PCHealthCheckMacTests/PCHealthCheckMacTests.swift" in module.MACOS_FILES
+    swift_root = project_root / "macos" / "PCHealthCheckMac"
+    swift_files = {
+        path.relative_to(project_root).as_posix()
+        for path in swift_root.rglob("*.swift")
+        if ".build" not in path.parts
+    }
+    assert swift_files.issubset(set(module.MACOS_FILES))
 
 
 def test_macos_launcher_is_executable(project_root):
@@ -182,6 +162,21 @@ def test_macos_high_frequency_log_state_is_isolated(project_root):
     assert "@Published private(set) var content = ScanContent.empty" in source
     assert "LocalProcessRunner.capture" in source
     assert "struct StorageOverviewPage: View" not in overview
+
+
+def test_macos_ui_reserves_chromatic_status_colors_for_critical_states(project_root):
+    source_root = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac"
+    )
+    sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in source_root.rglob("*.swift")
+    )
+
+    assert ".orange" not in sources
+    assert ".yellow" not in sources
+    assert "systemOrange" not in sources
+    assert "systemYellow" not in sources
 
 
 def test_macos_timed_out_cleanup_measurements_remain_visible(project_root):

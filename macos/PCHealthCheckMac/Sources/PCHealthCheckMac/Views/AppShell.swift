@@ -1,11 +1,8 @@
-import AppKit
 import SwiftUI
 
 enum AppDestination: String, CaseIterable, Identifiable, Hashable {
-    case overview
-    case cleanup
-    case development
-    case inventory
+    case status
+    case storage
     case security
     case activity
 
@@ -13,78 +10,55 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
-        case .overview: return "저장 공간"
-        case .cleanup: return "공간 정리"
-        case .development: return "개발 환경"
-        case .inventory: return "앱 및 Simulator"
-        case .security: return "보안 점검"
-        case .activity: return "기록"
+        case .status: return "상태"
+        case .storage: return "저장공간"
+        case .security: return "보안"
+        case .activity: return "활동"
         }
     }
 
     var symbol: String {
         switch self {
-        case .overview: return "internaldrive"
-        case .cleanup: return "trash"
-        case .development: return "hammer"
-        case .inventory: return "square.grid.2x2"
+        case .status: return "checkmark.circle"
+        case .storage: return "internaldrive"
         case .security: return "lock.shield"
-        case .activity: return "clock"
-        }
-    }
-
-    var tint: Color {
-        .accentColor
-    }
-
-    var searchTerms: String {
-        switch self {
-        case .overview: return "요약 저장 공간 디스크 용량 변화"
-        case .cleanup: return "공간 정리 캐시 삭제 회수"
-        case .development: return "개발 환경 Xcode Android SDK runtime"
-        case .inventory: return "앱 응용 프로그램 Simulator 시뮬레이터"
-        case .security: return "보안 악성코드 자동실행 네트워크"
-        case .activity: return "기록 로그 감시 이력"
+        case .activity: return "clock.arrow.circlepath"
         }
     }
 }
+
 struct ModernRootView: View {
     @EnvironmentObject private var model: ScanModel
-    @State private var selection: AppDestination = .overview
+    @State private var selection: AppDestination = .status
+    @State private var storageSection: StorageWorkspaceSection = .cleanup
 
     var body: some View {
         NavigationSplitView {
             ModernSidebar(selection: selection, onSelect: navigate)
-                .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 270)
+                .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 240)
         } detail: {
-            ModernDetailView(destination: selection, onNavigate: navigate)
-                .navigationTitle(selection.title)
-                .toolbar {
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        Button {
-                            model.runScan()
-                        } label: {
-                            Image(systemName: model.isBusy ? "hourglass" : "arrow.clockwise")
-                        }
-                        .disabled(model.isBusy)
-                        .help(model.isBusy ? "검사 중" : "지금 검사")
-
-                        Menu {
-                            Button("일반 리포트 열기") { model.openNormalReportInBrowser() }
-                                .disabled(!model.hasNormalReport)
-                            Button("공유용 리포트 열기") { model.openShareReportInBrowser() }
-                                .disabled(!model.hasShareReport)
-                            Divider()
-                            Button("Finder에서 보기") { model.revealReportsInFinder() }
-                                .disabled(!model.hasAnyReport)
-                        } label: {
-                            Image(systemName: "doc.text")
-                        }
-                        .menuIndicator(.hidden)
-                        .help("리포트")
+            ModernDetailView(
+                destination: selection,
+                storageSection: $storageSection,
+                onOpenStorage: openStorage,
+                onNavigate: navigate
+            )
+            .navigationTitle(selection.title)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        performPrimaryAction()
+                    } label: {
+                        Label(primaryActionTitle, systemImage: primaryActionSymbol)
+                        .labelStyle(.titleAndIcon)
                     }
+                    .buttonStyle(.bordered)
+                    .disabled(primaryActionDisabled)
+                    .help(primaryActionHelp)
                 }
+            }
         }
+        .navigationSplitViewStyle(.balanced)
         .alert(
             "PC Health Check",
             isPresented: Binding(
@@ -99,8 +73,48 @@ struct ModernRootView: View {
     }
 
     private func navigate(to destination: AppDestination) {
-        guard destination != selection else { return }
         selection = destination
+    }
+
+    private func openStorage(_ section: StorageWorkspaceSection) {
+        storageSection = section
+        selection = .storage
+    }
+
+    private func performPrimaryAction() {
+        if model.isRunning {
+            model.cancelScan()
+        } else if model.cleanupInFlight, !model.cleanupIsExecuting {
+            model.cancelCleanupPreviewRequest()
+        } else {
+            model.runScan()
+        }
+    }
+
+    private var primaryActionTitle: String {
+        if model.cleanupIsExecuting { return "정리 중" }
+        if model.cleanupInFlight { return "미리보기 취소" }
+        if model.isRunning { return "검사 취소" }
+        if model.storageWatchInFlight { return "설정 적용 중" }
+        return "지금 검사"
+    }
+
+    private var primaryActionSymbol: String {
+        if model.cleanupIsExecuting || model.storageWatchInFlight { return "hourglass" }
+        if model.cleanupInFlight || model.isRunning { return "xmark" }
+        return "arrow.clockwise"
+    }
+
+    private var primaryActionDisabled: Bool {
+        model.cleanupIsExecuting || model.storageWatchInFlight || model.resultLoading
+    }
+
+    private var primaryActionHelp: String {
+        if model.cleanupIsExecuting { return "승인한 정리가 끝날 때까지 중단하지 않습니다" }
+        if model.cleanupInFlight { return "삭제 없이 정리 대상 확인을 취소합니다" }
+        if model.isRunning { return "현재 검사를 안전하게 중단합니다" }
+        if model.storageWatchInFlight { return "감시 설정을 적용하고 있습니다" }
+        return "현재 상태 다시 검사"
     }
 }
 
@@ -108,61 +122,21 @@ struct ModernSidebar: View {
     @EnvironmentObject private var model: ScanModel
     let selection: AppDestination
     let onSelect: (AppDestination) -> Void
-    @State private var query = ""
 
     var body: some View {
         VStack(spacing: 0) {
             List(selection: nativeSelection) {
-                Section {
-                    ForEach(filteredDestinations) { destination in
-                        HStack(spacing: 10) {
-                            Image(systemName: destination.symbol)
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(Color.accentColor)
-                                .frame(width: 24)
-                            Text(destination.title)
-                        }
+                ForEach(AppDestination.allCases) { destination in
+                    SidebarDestinationRow(destination: destination)
                         .tag(destination)
-                    }
                 }
-
             }
             .listStyle(.sidebar)
-            .searchable(text: $query, placement: .sidebar, prompt: "검색")
-            .onChange(of: query) { newValue in
-                let matches = matchingDestinations(for: newValue)
-                let needle = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !needle.isEmpty, !matches.contains(selection) {
-                    let target = matches.first(where: { $0 != .overview }) ?? matches.first
-                    if let target {
-                        onSelect(target)
-                    }
-                }
-            }
 
             Divider()
-            HStack(spacing: 8) {
-                Image(systemName: model.state.symbol)
-                    .foregroundStyle(model.state.color)
-                VStack(alignment: .leading, spacing: 1) {
-                    TimelineView(.periodic(from: .now, by: 60)) { _ in
-                        Text(sidebarStatusTitle)
-                            .font(.caption.weight(.semibold))
-                    }
-                    if let storage = model.storage {
-                        Text("\(storage.freeGB, specifier: "%.1f")GB 남음")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                if model.isBusy {
-                    ProgressView().controlSize(.small)
-                }
-            }
-            .padding(12)
+            SidebarScanStatus()
+                .padding(12)
         }
-        .background(Color(nsColor: .controlBackgroundColor))
     }
 
     private var nativeSelection: Binding<AppDestination?> {
@@ -175,72 +149,113 @@ struct ModernSidebar: View {
             }
         )
     }
+}
 
-    private var filteredDestinations: [AppDestination] {
-        matchingDestinations(for: query)
+private struct SidebarDestinationRow: View {
+    @EnvironmentObject private var model: ScanModel
+    let destination: AppDestination
+
+    var body: some View {
+        Label {
+            HStack {
+                Text(destination.title)
+                Spacer(minLength: 8)
+                if destination == .security, model.securityAttentionCount > 0 {
+                    Text("\(model.securityAttentionCount)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(model.securityHasDanger ? Color.red : Color.secondary)
+                }
+            }
+        } icon: {
+            Image(systemName: destination.symbol)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(
+                    destination == .security && model.securityHasDanger
+                        ? Color.red
+                        : Color.secondary
+                )
+        }
     }
+}
 
-    private func matchingDestinations(for value: String) -> [AppDestination] {
-        let needle = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return AppDestination.allCases }
-        return AppDestination.allCases.filter {
-            searchIndex(for: $0).localizedCaseInsensitiveContains(needle)
+private struct SidebarScanStatus: View {
+    @EnvironmentObject private var model: ScanModel
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            statusContent(at: context.date)
         }
     }
 
-    private var sidebarStatusTitle: String {
-        if model.isRunning || model.state == .failed {
-            return model.state.title
+    private func statusContent(at date: Date) -> some View {
+        HStack(spacing: 9) {
+            Group {
+                if model.isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: statusSymbol(at: date))
+                        .foregroundStyle(statusColor)
+                }
+            }
+            .frame(width: 16, height: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(statusTitle(at: date))
+                    .font(.caption.weight(.semibold))
+                if let storage = model.storage {
+                    Text("\(storage.freeGB, specifier: "%.1f")GB 사용 가능")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            Spacer(minLength: 0)
         }
+    }
+
+    private func statusTitle(at date: Date) -> String {
+        if model.isRunning { return "검사 중" }
+        if model.cleanupInFlight { return "정리 대상 확인 중" }
+        if model.storageWatchInFlight { return "감시 설정 적용 중" }
+        if model.securityHasDanger {
+            return model.securityAttentionCount > 0
+                ? "위험 신호 \(model.securityAttentionCount)건"
+                : "위험 신호 확인"
+        }
+        if model.storageSnapshotNeedsRefresh(at: date) { return "업데이트 필요" }
+        if model.securityAttentionCount > 0 { return "확인 항목 \(model.securityAttentionCount)건" }
         return model.storageSnapshotAgeText
     }
 
-    private func searchIndex(for destination: AppDestination) -> String {
-        var values = [destination.title, destination.searchTerms]
-        if let storage = model.storage {
-            switch destination {
-            case .overview:
-                values += storage.cleanupCandidates.map(\.label)
-                values += storage.developerToolchains.map(\.label)
-                values += storage.applications.map(\.label)
-                values += storage.simulatorDevices.map(\.name)
-            case .cleanup:
-                values += (storage.cleanupCandidates + storage.reviewCandidates).flatMap {
-                    [$0.label, $0.note, $0.path]
-                }
-            case .development:
-                values += storage.developerToolchains.flatMap { [$0.label, $0.note, $0.path] }
-                values += storage.runtimeSignals.flatMap { [$0.label, $0.note] }
-            case .inventory:
-                values += storage.applications.flatMap { [$0.label, $0.path] }
-                values += storage.simulatorDevices.flatMap { [$0.name, $0.runtime] }
-            case .security:
-                values += storage.accessIssues.flatMap { [$0.label, $0.path, $0.note] }
-                values += model.findings.flatMap { [$0.title, $0.detail] }
-                values += model.autorunRows.flatMap { [$0.entry, $0.image] }
-                values += model.recentInstalls.flatMap { [$0.name, $0.publisher] }
-            case .activity:
-                values.append(model.logText)
-            }
-        }
-        return values.joined(separator: " ")
+    private func statusSymbol(at date: Date) -> String {
+        if model.securityHasDanger { return "exclamationmark.shield" }
+        if model.storageSnapshotNeedsRefresh(at: date) { return "clock" }
+        if model.securityAttentionCount > 0 { return "info.circle" }
+        return model.state.symbol
+    }
+
+    private var statusColor: Color {
+        model.state == .failed || model.securityHasDanger ? .red : .secondary
     }
 }
 
 struct ModernDetailView: View {
     let destination: AppDestination
+    @Binding var storageSection: StorageWorkspaceSection
+    let onOpenStorage: (StorageWorkspaceSection) -> Void
     let onNavigate: (AppDestination) -> Void
 
     var body: some View {
         switch destination {
-        case .overview:
-            SettingsStorageOverviewPage(onNavigate: onNavigate)
-        case .cleanup:
-            CleanupPage()
-        case .development:
-            DevelopmentPage()
-        case .inventory:
-            InventoryPage()
+        case .status:
+            StatusPage(
+                onOpenStorage: onOpenStorage,
+                onOpenSecurity: { onNavigate(.security) },
+                onOpenActivity: { onNavigate(.activity) }
+            )
+        case .storage:
+            StorageWorkspacePage(section: $storageSection)
         case .security:
             SecurityPage()
         case .activity:

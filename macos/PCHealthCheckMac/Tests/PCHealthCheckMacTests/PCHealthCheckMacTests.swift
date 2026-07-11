@@ -2,42 +2,19 @@ import XCTest
 @testable import PCHealthCheckMac
 
 final class PCHealthCheckMacTests: XCTestCase {
-    func testSelectionKeysRemainStableAcrossJSONReparse() {
-        let first = storageItem(path: "/tmp/cache", cleanupID: "user_caches")
-        let second = storageItem(path: "/tmp/cache", cleanupID: "user_caches")
-
-        XCTAssertNotEqual(first.id, second.id)
-        XCTAssertEqual(
-            WorkspaceSelectionKey.cleanup(first, mode: "cleanup"),
-            WorkspaceSelectionKey.cleanup(second, mode: "cleanup")
-        )
-        XCTAssertEqual(
-            WorkspaceSelectionKey.developmentAsset(first),
-            WorkspaceSelectionKey.developmentAsset(second)
-        )
-    }
-
-    func testSelectionRepairPreservesValidSelectionAndFallsBackToFirst() {
-        let candidates = ["first", "second"]
-
-        XCTAssertEqual(
-            WorkspaceSelectionKey.repairedSelection(current: "second", candidates: candidates),
-            "second"
-        )
-        XCTAssertEqual(
-            WorkspaceSelectionKey.repairedSelection(current: "missing", candidates: candidates),
-            "first"
-        )
-        XCTAssertNil(WorkspaceSelectionKey.repairedSelection(current: "missing", candidates: []))
-    }
-
     func testStorageTotalsExcludeNestedAndDeferredMeasurements() throws {
         let snapshot = try XCTUnwrap(StorageSnapshot(json: [
             "volume": volume(),
             "cleanupCandidates": [
-                storageJSON(label: "Root cache", sizeGB: 10, path: "/cache"),
-                storageJSON(label: "Nested cache", sizeGB: 4, path: "/cache/nested"),
-                storageJSON(label: "Deferred", sizeGB: 99, path: "/slow", measureStatus: "timed_out"),
+                storageJSON(label: "Root cache", sizeGB: 10, path: "/cache", cleanupID: "npm_cache"),
+                storageJSON(label: "Nested cache", sizeGB: 4, path: "/cache/nested", cleanupID: "pnpm_store"),
+                storageJSON(
+                    label: "Deferred",
+                    sizeGB: 99,
+                    path: "/slow",
+                    measureStatus: "timed_out",
+                    cleanupID: "gradle_cache"
+                ),
             ],
             "developerToolchains": [
                 storageJSON(kind: "android_sdk", label: "Android SDK", sizeGB: 11, path: "/sdk"),
@@ -116,6 +93,40 @@ final class PCHealthCheckMacTests: XCTestCase {
         XCTAssertEqual(summary.itemChanges.first?.deltaGB ?? 0, 1, accuracy: 0.001)
     }
 
+    func testDisplayedSnapshotChangeDoesNotUseNewerHistoryEntry() throws {
+        let first = try XCTUnwrap(StorageSnapshot(json: [
+            "volume": volume(freeGB: 30),
+            "cleanupCandidates": [
+                storageJSON(label: "Cache", sizeGB: 1, path: "/cache", cleanupID: "cache"),
+            ],
+        ]))
+        let displayed = try XCTUnwrap(StorageSnapshot(json: [
+            "volume": volume(freeGB: 29),
+            "cleanupCandidates": [
+                storageJSON(label: "Cache", sizeGB: 2, path: "/cache", cleanupID: "cache"),
+            ],
+        ]))
+        let newer = try XCTUnwrap(StorageSnapshot(json: [
+            "volume": volume(freeGB: 20),
+            "cleanupCandidates": [
+                storageJSON(label: "Cache", sizeGB: 9, path: "/cache", cleanupID: "cache"),
+            ],
+        ]))
+        let entries = [
+            StorageHistoryEntry(sourceID: "first", capturedAt: Date(timeIntervalSince1970: 1), storage: first),
+            StorageHistoryEntry(sourceID: "displayed", capturedAt: Date(timeIntervalSince1970: 2), storage: displayed),
+            StorageHistoryEntry(sourceID: "newer", capturedAt: Date(timeIntervalSince1970: 3), storage: newer),
+        ]
+
+        let summary = try XCTUnwrap(
+            StorageHistoryStore.changeSummary(endingAt: "displayed", in: entries)
+        )
+
+        XCTAssertEqual(summary.current.sourceID, "displayed")
+        XCTAssertEqual(summary.freeDeltaGB, -1, accuracy: 0.001)
+        XCTAssertEqual(summary.largestChanges.first?.afterGB ?? 0, 2, accuracy: 0.001)
+    }
+
     func testProtectedHistoryCannotBecomeCleanupCandidateWithoutRecipe() {
         let history = storageItem(
             kind: "protected_history",
@@ -125,7 +136,6 @@ final class PCHealthCheckMacTests: XCTestCase {
         )
 
         XCTAssertFalse(history.canCleanup)
-        XCTAssertTrue(WorkspaceSelectionKey.cleanup(history, mode: "protected").contains("protected"))
     }
 
     func testCleanupPreviewParsesApprovalProtocol() throws {
@@ -178,11 +188,11 @@ final class PCHealthCheckMacTests: XCTestCase {
         let first = try XCTUnwrap(SimulatorDevice(json: simulatorJSON(name: "iPhone 17 Pro")))
         let renamed = try XCTUnwrap(SimulatorDevice(json: simulatorJSON(name: "QA Phone")))
 
-        XCTAssertEqual(WorkspaceSelectionKey.simulator(first), WorkspaceSelectionKey.simulator(renamed))
+        XCTAssertEqual(first.id, renamed.id)
         XCTAssertTrue(first.isBooted)
     }
 
-    func testBundledRuntimeInstallPreservesUserConfig() throws {
+    func testBundledRuntimeInstallMigratesUserConfigOutsideRuntime() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-runtime-test-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -205,6 +215,10 @@ final class PCHealthCheckMacTests: XCTestCase {
         )
         XCTAssertEqual(
             try String(contentsOf: destination.appendingPathComponent("data/config.json")),
+            "default"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: destination.deletingLastPathComponent().appendingPathComponent("config.json")),
             "custom"
         )
         XCTAssertTrue(RuntimeWorkspace.hasScanner(at: destination))
@@ -266,7 +280,7 @@ final class PCHealthCheckMacTests: XCTestCase {
         XCTAssertEqual(resolved.standardizedFileURL, source.standardizedFileURL)
     }
 
-    func testBundledRuntimeRefreshesTamperedScriptAndKeepsConfig() throws {
+    func testBundledRuntimeRefreshesTamperedScriptAndMigratesConfig() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-runtime-integrity-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -294,6 +308,10 @@ final class PCHealthCheckMacTests: XCTestCase {
         )
         XCTAssertEqual(
             try String(contentsOf: destination.appendingPathComponent("data/config.json")),
+            "default"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: destination.deletingLastPathComponent().appendingPathComponent("config.json")),
             "custom"
         )
     }

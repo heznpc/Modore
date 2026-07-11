@@ -16,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
           cache: pip
@@ -54,8 +54,8 @@ jobs:
       - name: Python syntax check
         run: python3 -m compileall -q scripts/
 
-      - name: Release artifact smoke
-        run: python3 scripts/release_smoke.py --check-only
+      - name: Build and audit source release artifacts
+        run: python3 scripts/release_smoke.py
 
       - name: Pytest
         run: python3 -m pytest tests/ -q
@@ -64,7 +64,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: PowerShell syntax check
         shell: pwsh
@@ -90,18 +90,49 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Swift toolchain
         run: swift --version
 
       - name: Build Mac SwiftUI app
-        run: swift build --package-path macos/PCHealthCheckMac -c release
+        run: |
+          swift build --package-path macos/PCHealthCheckMac -c release \
+            -Xswiftc -warnings-as-errors \
+            -Xswiftc -strict-concurrency=complete
 
       - name: Test Mac SwiftUI models and safety state
         run: swift test --package-path macos/PCHealthCheckMac
 
       - name: Validate standalone packaging prerequisites
         run: |
-          bash -n scripts/build_macos_swift_app.sh scripts/package_macos_release.sh
+          bash -n scripts/build_macos_swift_app.sh scripts/build_macos_icon.sh scripts/package_macos_release.sh
           scripts/package_macos_release.sh --check
+
+      - name: Build and audit full local Universal 2 DMG
+        run: scripts/package_macos_release.sh --local
+
+      - name: Verify local DMG metadata is non-publishable
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          metadata_files = list(Path("dist/local").glob("*.dmg.metadata.json"))
+          assert len(metadata_files) == 1, metadata_files
+          metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
+          assert set(metadata["platform"]["architectures"]) == {"arm64", "x86_64"}
+          assert metadata["platform"]["minimumSystemVersion"] == "13.0"
+          assert metadata["trust"] == {
+              "signature": "ad-hoc",
+              "notarized": False,
+              "stapled": False,
+              "gatekeeperAssessed": False,
+          }
+          assert metadata["audit"] == {
+              "secretScan": True,
+              "personalDataScan": True,
+              "symlinkScan": True,
+          }
+          assert not list(Path("dist").glob("PC-Health-Check-Mac-v*.dmg"))
+          PY

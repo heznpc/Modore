@@ -14,47 +14,34 @@ struct CleanupPreview: Identifiable {
     let processNote: String
     let blockedReason: String
     let runningProcesses: String
+    let approvalToken: String
     let targets: [String]
+    let stagedRemainders: [String]
     let receipt: String
     let trashRun: String
 
     init?(protocolText: String) {
-        var values: [String: String] = [:]
-        var targets: [String] = []
-        for rawLine in protocolText.split(whereSeparator: \.isNewline) {
-            let parts = rawLine.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
-            guard parts.count == 2 else { continue }
-            let key = String(parts[0])
-            let value = String(parts[1])
-            if key == "target" {
-                targets.append(value)
-            } else {
-                values[key] = value
-            }
-        }
-        guard values["version"] == "1",
-              let recipeID = values["recipeId"], !recipeID.isEmpty,
-              let status = values["status"], !status.isEmpty else {
-            return nil
-        }
-        operation = values["operation"] ?? "preview"
-        self.status = status
-        actionMode = values["actionMode"] ?? "remove"
-        self.recipeID = recipeID
-        label = values["label"] ?? recipeID
-        estimatedKB = Int64(values["estimatedKB"] ?? "0") ?? 0
-        reclaimedKB = Int64(values["reclaimedKB"] ?? "0") ?? 0
-        physicalDeltaKB = Int64(values["physicalDeltaKB"] ?? "0") ?? 0
-        warning = values["warning"] ?? ""
-        processNote = values["processNote"] ?? ""
-        blockedReason = values["blockedReason"] ?? ""
-        runningProcesses = values["runningProcesses"] ?? ""
-        self.targets = targets
-        receipt = values["receipt"] ?? ""
-        trashRun = values["trashRun"] ?? ""
+        guard let payload = CleanupProtocolPayload.parse(protocolText) else { return nil }
+        operation = payload.operation
+        status = payload.status
+        actionMode = payload.actionMode
+        recipeID = payload.recipeID
+        label = payload.label
+        estimatedKB = payload.estimatedKB
+        reclaimedKB = payload.reclaimedKB
+        physicalDeltaKB = payload.physicalDeltaKB
+        warning = payload.warning
+        processNote = payload.processNote
+        blockedReason = payload.blockedReason
+        runningProcesses = payload.runningProcesses
+        approvalToken = payload.approvalToken
+        targets = payload.targets
+        stagedRemainders = payload.stagedRemainders
+        receipt = payload.receipt
+        trashRun = payload.trashRun
     }
 
-    var canExecute: Bool { status == "ready" }
+    var canExecute: Bool { status == "ready" && !approvalToken.isEmpty }
     var isComplete: Bool { status == "complete" }
 
     var estimatedText: String { Self.sizeText(estimatedKB) }
@@ -80,5 +67,80 @@ struct CleanupPreview: Identifiable {
             return String(format: "%.1fMB", Double(value) / 1_024)
         }
         return "\(max(value, 0))KB"
+    }
+}
+
+private struct CleanupProtocolPayload {
+    let operation: String
+    let status: String
+    let actionMode: String
+    let recipeID: String
+    let label: String
+    let estimatedKB: Int64
+    let reclaimedKB: Int64
+    let physicalDeltaKB: Int64
+    let warning: String
+    let processNote: String
+    let blockedReason: String
+    let runningProcesses: String
+    let approvalToken: String
+    let targets: [String]
+    let stagedRemainders: [String]
+    let receipt: String
+    let trashRun: String
+
+    static func parse(_ text: String) -> CleanupProtocolPayload? {
+        let parsed = parseLines(text)
+        let values = parsed.values
+        guard values["version"] == "1",
+              let recipeID = values["recipeId"], !recipeID.isEmpty,
+              let status = values["status"], !status.isEmpty else {
+            return nil
+        }
+        return CleanupProtocolPayload(
+            operation: values["operation"] ?? "preview",
+            status: status,
+            actionMode: values["actionMode"] ?? "remove",
+            recipeID: recipeID,
+            label: values["label"] ?? recipeID,
+            estimatedKB: integer(values["estimatedKB"]),
+            reclaimedKB: integer(values["reclaimedKB"]),
+            physicalDeltaKB: integer(values["physicalDeltaKB"]),
+            warning: values["warning"] ?? "",
+            processNote: values["processNote"] ?? "",
+            blockedReason: values["blockedReason"] ?? "",
+            runningProcesses: values["runningProcesses"] ?? "",
+            approvalToken: values["approvalToken"] ?? "",
+            targets: parsed.targets,
+            stagedRemainders: parsed.stagedRemainders,
+            receipt: values["receipt"] ?? "",
+            trashRun: values["trashRun"] ?? ""
+        )
+    }
+
+    private static func parseLines(
+        _ text: String
+    ) -> (values: [String: String], targets: [String], stagedRemainders: [String]) {
+        var values: [String: String] = [:]
+        var targets: [String] = []
+        var stagedRemainders: [String] = []
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let parts = rawLine.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else { continue }
+            let key = String(parts[0])
+            let value = String(parts[1])
+            if key == "target" {
+                targets.append(value)
+            } else if key == "stagedRemainder" {
+                stagedRemainders.append(value)
+            } else {
+                values[key] = value
+            }
+        }
+        return (values, targets, stagedRemainders)
+    }
+
+    private static func integer(_ value: String?) -> Int64 {
+        Int64(value ?? "0") ?? 0
     }
 }

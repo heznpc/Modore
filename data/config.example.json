@@ -1,0 +1,19 @@
+{
+  "_comment": "PC Health Check configuration template. Copy this file to a local config path before adding a secret.",
+  "_howto": "VirusTotal API key: https://www.virustotal.com -> profile -> API Key",
+
+  "virustotal": {
+    "enabled": false,
+    "apiKey": "",
+    "cacheHours": 48,
+    "maxCallsPerScan": 100,
+    "_note": "Only SHA-256 hashes are queried. Files are never uploaded. Prefer the VT_API_KEY environment variable when practical."
+  },
+
+  "sysinternals": {
+    "useSigcheck": true,
+    "useAutorunsc": true,
+    "autoDownload": false,
+    "_note": "Sysinternals tools are verified as Microsoft-signed before every execution. autoDownload=false asks before the first download."
+  }
+}

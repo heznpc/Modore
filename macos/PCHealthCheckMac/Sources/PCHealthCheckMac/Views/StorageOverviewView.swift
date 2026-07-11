@@ -1,186 +1,319 @@
-import AppKit
 import SwiftUI
 
-struct SettingsStorageOverviewPage: View {
+struct StatusPage: View {
     @EnvironmentObject private var model: ScanModel
-    let onNavigate: (AppDestination) -> Void
+    let onOpenStorage: (StorageWorkspaceSection) -> Void
+    let onOpenSecurity: () -> Void
+    let onOpenActivity: () -> Void
 
     var body: some View {
-        Group {
-            if let storage = model.storage {
-                Form {
-                    Section {
-                        TimelineView(.periodic(from: .now, by: 60)) { _ in
-                            StorageVolumeSettingsCard(
-                                storage: storage,
-                                change: model.storageChange,
-                                snapshotAgeText: model.storageSnapshotAgeText,
-                                isSnapshotStale: model.storageSnapshotIsStale
-                            )
-                        }
-                    }
-                    StorageRecommendationsSection(
-                        storage: storage,
-                        change: model.storageChange,
-                        onNavigate: onNavigate
-                    )
-                    StorageChangesSection(storage: storage, change: model.storageChange)
-                }
-                .formStyle(.grouped)
-                .scrollContentBackground(.hidden)
-                .frame(maxWidth: 980)
-                .padding(.horizontal, 20)
-            } else {
-                ModernEmptyState(
-                    symbol: "internaldrive",
-                    title: "저장공간 정보가 없습니다",
-                    message: "툴바의 새로고침 버튼으로 검사를 실행하세요."
-                )
-            }
-        }
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-}
-
-struct StorageRecommendationsSection: View {
-    let storage: StorageSnapshot
-    let change: StorageChangeSummary?
-    let onNavigate: (AppDestination) -> Void
-
-    var body: some View {
-        Section("권장") {
-            leadingRecommendation
-            NativeSettingsNavigationRow(
-                icon: "trash",
-                tint: .red,
-                title: "정리 후보",
-                subtitle: "캐시와 임시 파일의 논리 크기",
-                value: storage.reclaimableText
-            ) {
-                onNavigate(.cleanup)
-            }
-            NativeSettingsNavigationRow(
-                icon: "hammer",
-                tint: .gray,
-                title: "개발자",
-                subtitle: "SDK, runtime 및 toolchain",
-                value: storage.developerText
-            ) {
-                onNavigate(.development)
-            }
-            NativeSettingsNavigationRow(
-                icon: "square.grid.2x2",
-                tint: .gray,
-                title: "응용 프로그램 및 Simulator",
-                subtitle: "설치 앱과 가상 기기",
-                value: storage.inventoryText
-            ) {
-                onNavigate(.inventory)
-            }
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            pageContent(at: context.date)
         }
     }
 
     @ViewBuilder
-    private var leadingRecommendation: some View {
-        if let largest = change?.largestChanges.first {
-            NativeSettingsNavigationRow(
-                icon: largest.deltaGB > 0 ? "arrow.up.right" : "arrow.down.right",
-                tint: largest.deltaGB > 0 ? .orange : .green,
-                title: largest.label,
-                subtitle: changeSubtitle(largest),
-                value: String(format: "%+.1fGB", largest.deltaGB)
-            ) {
-                onNavigate(largest.category == "developer" ? .development : .cleanup)
-            }
-        } else if let largest = storage.cleanupCandidates.first {
-            NativeSettingsNavigationRow(
-                icon: "questionmark.folder",
-                tint: .orange,
-                title: largest.label,
-                subtitle: "첫 비교 전 현재 큰 항목",
-                value: largest.sizeText
-            ) {
-                onNavigate(.cleanup)
+    private func pageContent(at date: Date) -> some View {
+        Group {
+            if let storage = model.storage {
+                Form {
+                    Section {
+                        StatusStorageSummary(
+                            storage: storage,
+                            change: model.storageChange,
+                            snapshotNeedsRefresh: model.storageSnapshotNeedsRefresh(at: date)
+                        )
+                    }
+
+                    if let newer = model.newerStorageHistoryEntry {
+                        Section {
+                            StatusNoticeRow(
+                                symbol: "clock.badge.exclamationmark",
+                                title: "이 화면보다 최신 기록이 있습니다",
+                                detail: String(
+                                    format: "활동에 %@의 여유 공간 기록(%.1fGB)이 있습니다. 세부 항목을 섞지 않도록 이 화면은 이전 전체 검사에 고정되어 있으니 지금 다시 검사하세요.",
+                                    newer.capturedAt.formatted(date: .abbreviated, time: .shortened),
+                                    newer.freeGB
+                                ),
+                                tint: .secondary
+                            )
+                        }
+                    } else if model.isStorageSnapshotStale(at: date) {
+                        Section {
+                            StatusNoticeRow(
+                                symbol: "clock",
+                                title: "현재 결과가 오래되었습니다",
+                                detail: "\(model.storageSnapshotAgeText) 결과입니다. 새 검사 전까지 정리 가능 용량이 달라질 수 있습니다.",
+                                tint: .secondary
+                            )
+                        }
+                    }
+
+                    StatusChangeSection(
+                        change: model.storageChange,
+                        onOpenStorage: onOpenStorage,
+                        onOpenActivity: onOpenActivity
+                    )
+
+                    Section("다음 행동") {
+                        StatusActionRow(
+                            symbol: "trash",
+                            title: "정리 가능한 항목",
+                            detail: "미리보기 가능한 캐시·임시 파일의 대상 점유 추정입니다.",
+                            value: storage.reclaimableText,
+                            actionTitle: "항목 보기"
+                        ) {
+                            onOpenStorage(.cleanup)
+                        }
+
+                        if !storage.attentionRuntimeSignals.isEmpty {
+                            StatusActionRow(
+                                symbol: "hammer",
+                                title: "다시 공간을 채우는 작업",
+                                detail: "실행 중인 개발 도구와 자동화 작업을 확인합니다.",
+                                value: "\(storage.attentionRuntimeSignals.count)종",
+                                actionTitle: "개발 보기"
+                            ) {
+                                onOpenStorage(.development)
+                            }
+                        }
+
+                        if model.securityAttentionCount > 0 {
+                            StatusActionRow(
+                                symbol: "lock.shield",
+                                title: "보안 확인 필요",
+                                detail: model.summary?.message ?? "확인할 진단 결과가 있습니다.",
+                                value: "\(model.securityAttentionCount)건",
+                                actionTitle: "보안 보기"
+                            ) {
+                                onOpenSecurity()
+                            }
+                        }
+
+                        if !model.storageWatchEnabled {
+                            StatusActionRow(
+                                symbol: "clock.arrow.circlepath",
+                                title: "급감 감시 꺼짐",
+                                detail: "감시를 켜면 여유 공간만 로컬에 기록하고 급격한 감소를 알립니다.",
+                                value: "자동 삭제 없음",
+                                actionTitle: "활동 보기"
+                            ) {
+                                onOpenActivity()
+                            }
+                        }
+                    }
+                }
+                .macSettingsFormStyle()
+            } else {
+                ModernEmptyState(
+                    symbol: "internaldrive",
+                    title: "아직 검사 결과가 없습니다",
+                    message: "검사가 끝나면 현재 저장공간과 보안 상태가 여기에 표시됩니다."
+                )
             }
         }
     }
-
-    private func changeSubtitle(_ item: StorageItemChange) -> String {
-        let verb = item.deltaGB > 0 ? "증가" : "감소"
-        return String(format: "%.1fGB에서 %.1fGB로 %@", item.beforeGB, item.afterGB, verb)
-    }
 }
 
-struct StorageChangesSection: View {
+private struct StatusStorageSummary: View {
     let storage: StorageSnapshot
     let change: StorageChangeSummary?
+    let snapshotNeedsRefresh: Bool
 
     var body: some View {
-        Section(change == nil ? "현재 큰 항목" : "최근 변화") {
-            if let change {
-                StorageChangeRows(change: change)
-            } else {
-                ForEach(Array(storage.cleanupCandidates.prefix(6))) { item in
-                    NativeCurrentSizeRow(item: item)
+        VStack(alignment: .leading, spacing: 16) {
+            StatusStorageHeader(
+                freeGB: storage.freeGB,
+                changeDescription: changeDescription,
+                snapshotNeedsRefresh: snapshotNeedsRefresh
+            )
+            StatusStorageMeter(storage: storage, snapshotNeedsRefresh: snapshotNeedsRefresh)
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var changeDescription: String {
+        guard let change else { return "이 검사부터 변화 비교를 시작합니다." }
+        if change.consumedGB >= 0.05 {
+            return String(format: "직전 검사보다 %.1fGB 줄었습니다.", change.consumedGB)
+        }
+        if change.recoveredGB >= 0.05 {
+            return String(format: "직전 검사보다 %.1fGB 늘었습니다.", change.recoveredGB)
+        }
+        return "직전 검사와 거의 같습니다."
+    }
+
+}
+
+private struct StatusStorageHeader: View {
+    @EnvironmentObject private var model: ScanModel
+    let freeGB: Double
+    let changeDescription: String
+    let snapshotNeedsRefresh: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(freeSpaceTitle)
+                    .font(.system(size: 30, weight: .semibold))
+                    .monospacedDigit()
+                Text(changeDescription)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 20)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text("Macintosh HD")
+                    .font(.headline)
+                TimelineView(.periodic(from: .now, by: 60)) { _ in
+                    Text(model.storageSnapshotAgeText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
+    }
+
+    private var freeSpaceTitle: String {
+        let value = String(format: "%.1fGB", freeGB)
+        return snapshotNeedsRefresh ? "검사 당시 \(value) 사용 가능" : "\(value) 사용 가능"
     }
 }
 
-struct StorageChangeRows: View {
-    let change: StorageChangeSummary
+private struct StatusStorageMeter: View {
+    let storage: StorageSnapshot
+    let snapshotNeedsRefresh: Bool
 
     var body: some View {
-        Group {
-            if change.largestChanges.isEmpty {
-                NativeSettingsMessageRow(
-                    icon: "equal.circle",
-                    tint: .green,
-                    title: "추적 경로 변화 없음",
-                    subtitle: "직전 검사와 같은 경로의 크기가 유지됐습니다."
-                )
-            } else {
-                ForEach(Array(change.largestChanges.prefix(7))) { item in
-                    NativeSettingsChangeRow(item: item)
+        ProgressView(value: min(max(storage.usePercent, 0), 100), total: 100)
+            .progressViewStyle(.linear)
+            .tint(storage.risk == "danger" ? .red : .secondary)
+        HStack {
+            Text(snapshotNeedsRefresh
+                ? "검사 당시 \(storage.usedGB, specifier: "%.1f")GB 사용 중"
+                : "\(storage.usedGB, specifier: "%.1f")GB 사용 중")
+            Spacer()
+            Text("전체 \(storage.totalGB, specifier: "%.1f")GB")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .monospacedDigit()
+    }
+}
+
+private struct StatusChangeSection: View {
+    let change: StorageChangeSummary?
+    let onOpenStorage: (StorageWorkspaceSection) -> Void
+    let onOpenActivity: () -> Void
+
+    var body: some View {
+        Section("최근 변화") {
+            if let change, let largest = change.largestChanges.first {
+                StatusActionRow(
+                    symbol: largest.deltaGB > 0 ? "arrow.up.right" : "arrow.down.right",
+                    title: largest.label,
+                    detail: changeDetail(largest),
+                    value: String(format: "%+.1fGB", largest.deltaGB),
+                    actionTitle: "확인"
+                ) {
+                    onOpenStorage(largest.category == "developer" ? .development : .cleanup)
                 }
-            }
 
-            if change.unattributedConsumedGB >= 0.1 {
-                NativeSettingsMessageRow(
-                    icon: "questionmark.circle",
-                    tint: .orange,
-                    title: "추적되지 않은 사용",
-                    subtitle: String(
-                        format: "%.1fGB · APFS snapshot, swap 또는 제한 영역",
-                        change.unattributedConsumedGB
+                if change.unattributedConsumedGB >= 0.1 {
+                    StatusNoticeRow(
+                        symbol: "questionmark.circle",
+                        title: "추적 밖에서 사용된 공간",
+                        detail: "APFS snapshot, swap 또는 접근이 제한된 영역일 수 있습니다.",
+                        value: String(format: "%.1fGB", change.unattributedConsumedGB),
+                        tint: .secondary
                     )
-                )
-            } else if change.unattributedRecoveredGB >= 0.1 {
-                NativeSettingsMessageRow(
-                    icon: "arrow.up.circle",
-                    tint: .green,
-                    title: "추적 경로 밖에서 회복",
-                    subtitle: String(
-                        format: "%.1fGB · 임시 파일 또는 시스템 관리 영역",
-                        change.unattributedRecoveredGB
-                    )
+                }
+            } else {
+                StatusNoticeRow(
+                    symbol: "record.circle",
+                    title: "비교할 이전 검사가 없습니다",
+                    detail: "다음 검사부터 무엇이 늘고 줄었는지 비교합니다.",
+                    tint: .secondary
                 )
             }
 
-            if logicalAndPhysicalSizesDiverge {
-                NativeSettingsMessageRow(
-                    icon: "square.2.layers.3d",
-                    tint: .blue,
-                    title: "논리 크기와 실제 여유 공간이 다름",
-                    subtitle: "APFS clone의 공유 블록은 경로 크기를 그대로 합산할 수 없습니다."
-                )
+            Button(action: onOpenActivity) {
+                Label("전체 변화 기록 보기", systemImage: "clock.arrow.circlepath")
             }
+            .buttonStyle(.link)
         }
     }
 
-    private var logicalAndPhysicalSizesDiverge: Bool {
-        (change.freeDeltaGB > 0 && change.trackedNetDeltaGB > 0.1)
-            || (change.freeDeltaGB < 0 && change.trackedNetDeltaGB < -0.1)
+    private func changeDetail(_ item: StorageItemChange) -> String {
+        String(format: "경로 점유 추정: 직전 %.1fGB · 현재 %.1fGB", item.beforeGB, item.afterGB)
+    }
+}
+
+private struct StatusActionRow: View {
+    let symbol: String
+    let title: String
+    let detail: String
+    let value: String
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body.weight(.medium))
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 6) {
+                Text(value)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Button(actionTitle, action: action)
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+            }
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+private struct StatusNoticeRow: View {
+    let symbol: String
+    let title: String
+    let detail: String
+    var value: String = ""
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tint)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body.weight(.medium))
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            if !value.isEmpty {
+                Text(value)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+        .padding(.vertical, 5)
     }
 }

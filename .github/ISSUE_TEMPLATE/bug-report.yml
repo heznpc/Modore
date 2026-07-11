@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible PC Health Check behavior that is not a security vulnerability.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach scan JSON, HTML reports, screenshots with local paths, API keys, email addresses, account IDs, full command lines, or process lists. Security vulnerabilities belong in Private Vulnerability Reporting.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS app
+        - macOS script mode
+        - Windows script mode
+        - Release/build tooling
+        - Documentation/website
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Use the public version or abbreviated commit only; do not paste a local path.
+      placeholder: v0.3.0 or abc1234
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Minimal reproduction
+      description: List the smallest steps using placeholder paths and synthetic names.
+      placeholder: |
+        1. Open …
+        2. Select …
+        3. Observe …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Quote only redacted UI text or terminal output.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Privacy and scope check
+      options:
+        - label: I removed usernames, home paths, IP addresses, hashes, keys, emails, account IDs, and report attachments.
+          required: true
+        - label: This report does not describe a security vulnerability.
+          required: true

@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 struct ActivityPage: View {
@@ -6,58 +5,89 @@ struct ActivityPage: View {
 
     var body: some View {
         Form {
-            Section {
-                HStack {
-                    Toggle(
-                        "매시간 확인",
-                        isOn: Binding(
-                            get: { model.storageWatchEnabled },
-                            set: { model.setStorageWatchEnabled($0) }
-                        )
-                    )
-                    .toggleStyle(.switch)
-                    .disabled(model.storageWatchInFlight || model.isRunning || model.cleanupInFlight)
-                    Spacer()
-                    Text(model.storageWatchDetail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if !model.freeSpaceSamples.isEmpty {
-                    FreeSpaceTrendView(samples: Array(model.freeSpaceSamples.suffix(48)))
-                        .frame(height: 120)
-                } else {
-                    Text("시간별 표본이 아직 없습니다.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                NativeSectionHeader(
-                    title: "저장공간 변화",
-                    subtitle: "여유 공간만 기록하며 파일을 삭제하지 않습니다.",
-                    value: "\(model.freeSpaceSamples.count)개 표본"
-                )
-            }
+            StorageWatchActivitySection()
 
             if !model.storageHistory.isEmpty {
-                Section {
-                    ForEach(Array(model.storageHistory.suffix(12).reversed())) { entry in
-                        RecentScanHistoryRow(
-                            entry: entry,
-                            previous: model.storageHistory.last(where: { $0.capturedAt < entry.capturedAt })
-                        )
-                    }
-                } header: {
-                    NativeSectionHeader(
-                        title: "검사 이력",
-                        subtitle: "검사 시점의 여유 공간과 가장 큰 경로 변화를 비교합니다.",
-                        value: "\(model.storageHistory.count)회"
-                    )
-                }
+                ScanHistorySection(entries: model.storageHistory)
             }
 
             ScanLogSection(store: model.logStore, clearAction: model.clearLog)
         }
         .macSettingsFormStyle()
+    }
+}
+
+private struct StorageWatchActivitySection: View {
+    @EnvironmentObject private var model: ScanModel
+
+    var body: some View {
+        Section {
+            HStack(spacing: 12) {
+                Image(systemName: model.storageWatchEnabled ? "checkmark.circle" : "pause.circle")
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.storageWatchEnabled ? "급감 감시 켜짐" : "급감 감시 꺼짐")
+                        .font(.body.weight(.medium))
+                    Text(model.storageWatchDetail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                StorageWatchSettingsButton()
+            }
+            if !model.freeSpaceSamples.isEmpty {
+                FreeSpaceTrendView(samples: Array(model.freeSpaceSamples.suffix(48)))
+                    .frame(height: 120)
+            } else {
+                Text("시간별 표본이 아직 없습니다.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            NativeSectionHeader(
+                title: "저장공간 변화",
+                subtitle: "여유 공간만 기록하며 파일을 삭제하지 않습니다.",
+                value: "\(model.freeSpaceSamples.count)개 표본"
+            )
+        }
+    }
+}
+
+private struct ScanHistorySection: View {
+    let entries: [StorageHistoryEntry]
+
+    var body: some View {
+        Section {
+            ForEach(Array(entries.suffix(12).reversed())) { entry in
+                RecentScanHistoryRow(
+                    entry: entry,
+                    previous: entries.last(where: { $0.capturedAt < entry.capturedAt })
+                )
+            }
+        } header: {
+            NativeSectionHeader(
+                title: "검사 이력",
+                subtitle: "검사 시점의 여유 공간과 가장 큰 경로 변화를 비교합니다.",
+                value: "\(entries.count)회"
+            )
+        }
+    }
+}
+
+private struct StorageWatchSettingsButton: View {
+    var body: some View {
+        if #available(macOS 14.0, *) {
+            SettingsLink {
+                Label("감시 설정…", systemImage: "gear")
+            }
+            .buttonStyle(.bordered)
+        } else {
+            Text("⌘, 에서 설정")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -103,7 +133,7 @@ struct RecentScanHistoryRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            NativeStatusGlyph(symbol: changeSymbol, tint: changeTint)
+            NativeStatusGlyph(symbol: changeSymbol, tint: .secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.capturedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.body.weight(.medium))
@@ -139,7 +169,7 @@ struct RecentScanHistoryRow: View {
             parts.append(String(format: "추적 밖 회복 %.1fGB", change.unattributedRecoveredGB))
         }
         if let largest = change.largestChanges.first {
-            parts.append(String(format: "%@ 논리 %+.1fGB", largest.label, largest.deltaGB))
+            parts.append(String(format: "%@ 경로 점유 %+.1fGB", largest.label, largest.deltaGB))
             return parts.joined(separator: " · ")
         }
         if abs(change.freeDeltaGB) >= 0.05 {
@@ -156,12 +186,6 @@ struct RecentScanHistoryRow: View {
         return "equal.circle"
     }
 
-    private var changeTint: Color {
-        guard let change else { return .secondary }
-        if change.freeDeltaGB < -0.05 { return .orange }
-        if change.freeDeltaGB > 0.05 { return .green }
-        return .secondary
-    }
 }
 
 struct FreeSpaceTrendView: View {
@@ -198,26 +222,49 @@ struct FreeSpaceSparkline: View {
                     style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
                 )
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("여유 공간 추세 그래프")
+        .accessibilityValue(accessibilitySummary)
+    }
+
+    private var accessibilitySummary: String {
+        guard let first = values.first, let last = values.last else {
+            return "표본 없음"
+        }
+        let minimum = values.min() ?? last
+        let maximum = values.max() ?? last
+        return String(
+            format: "최근 %d회, 처음 %.1fGB, 현재 %.1fGB, 최저 %.1fGB, 최고 %.1fGB",
+            values.count,
+            first,
+            last,
+            minimum,
+            maximum
+        )
     }
 
     private func makePath(in size: CGSize) -> Path {
+        let points = chartPoints(in: size)
+        var path = Path()
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        for point in points.dropFirst() {
+            path.addLine(to: point)
+        }
+        return path
+    }
+
+    private func chartPoints(in size: CGSize) -> [CGPoint] {
         let minimum = values.min() ?? 0
         let maximum = values.max() ?? 1
         let span = max(maximum - minimum, 0.5)
         let horizontalStep = values.count <= 1
             ? 0
             : size.width / CGFloat(values.count - 1)
-        return Path { path in
-            for (index, value) in values.enumerated() {
-                let x = horizontalStep * CGFloat(index)
-                let normalizedValue = CGFloat((value - minimum) / span)
-                let y = size.height * (1 - normalizedValue)
-                if index == 0 {
-                    path.move(to: CGPoint(x: x, y: y))
-                } else {
-                    path.addLine(to: CGPoint(x: x, y: y))
-                }
-            }
+        return values.enumerated().map { index, value in
+            let x = horizontalStep * CGFloat(index)
+            let normalizedValue = CGFloat((value - minimum) / span)
+            return CGPoint(x: x, y: size.height * (1 - normalizedValue))
         }
     }
 }

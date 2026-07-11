@@ -73,21 +73,29 @@ Build and verify the release artifacts first:
 
 ```bash
 python3 scripts/release_smoke.py
-cat dist/release-manifest.json
 ```
 
-The smoke build creates:
-- `dist/pch-v0.3.0-win.zip`
-- `dist/pch-v0.3.0-mac.zip`
-- `dist/release-manifest.json` with SHA-256 checksums
+The default smoke build writes commit-labelled, non-publishable ZIPs and a manifest under `dist/local/`. It never uses the canonical public filenames.
 
-To publish a release:
+Build an unsigned, non-publishable Universal 2 DMG smoke artifact in its isolated path:
+
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+scripts/package_macos_release.sh --local
 ```
 
-Then on GitHub: Releases → Draft new release → select tag → attach both zips and paste the checksums from `dist/release-manifest.json`.
+Public Mac packaging is intentionally fail-closed. First commit and review every change, create the exact signed `v<version>` tag at `HEAD`, and confirm that the worktree/index are clean. Then supply the Developer ID identity and an existing `notarytool` Keychain profile externally:
+
+```bash
+python3 scripts/release_smoke.py --release --version 0.3.0
+cat dist/release-manifest.json
+
+PCH_APP_VERSION=0.3.0 \
+PCH_CODESIGN_IDENTITY="Developer ID Application identity from Keychain" \
+PCH_NOTARY_PROFILE="local-keychain-profile" \
+scripts/package_macos_release.sh
+```
+
+The release ZIP builder reads payloads from the verified Git commit, and the Mac packager builds from an isolated `git archive` snapshot. The script validates Universal 2 slices, macOS 13 minimum deployment, app/DMG payload and metadata audit, signing, notarization, stapling, and Gatekeeper before atomically publishing final names. Attach the source ZIPs, notarized DMG, `*.dmg.metadata.json`, and source `release-manifest.json` only after every gate succeeds. This repository currently has no published installer; do not present an artifact from `dist/local/` as a release.
 
 ## SEO tips (optional)
 

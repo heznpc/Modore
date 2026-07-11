@@ -20,7 +20,7 @@ param(
     [string]$OutputPath = "$PSScriptRoot\..\scan_result.json",
     [string]$RawPath = "$PSScriptRoot\..\raw_facts.json",
     [string]$WhitelistPath = "$PSScriptRoot\..\data\whitelist.json",
-    [string]$ConfigPath = "$PSScriptRoot\..\data\config.json",
+    [string]$ConfigPath = "",
     [string]$RulesDir = "$PSScriptRoot\..\rules",
     [switch]$NoVtLookup,
     [switch]$NoRuleEngine
@@ -28,6 +28,24 @@ param(
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
+
+if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+    $sourceLocalConfig = Join-Path $PSScriptRoot '..\data\config.json'
+    $userConfig = if ($env:LOCALAPPDATA) {
+        Join-Path $env:LOCALAPPDATA 'PC Health Check\config.json'
+    } else {
+        $null
+    }
+    $exampleConfig = Join-Path $PSScriptRoot '..\data\config.example.json'
+
+    if (Test-Path -LiteralPath $sourceLocalConfig -PathType Leaf) {
+        $ConfigPath = $sourceLocalConfig
+    } elseif ($userConfig -and (Test-Path -LiteralPath $userConfig -PathType Leaf)) {
+        $ConfigPath = $userConfig
+    } else {
+        $ConfigPath = $exampleConfig
+    }
+}
 
 # ---------- 헬퍼 로드 ----------
 . "$PSScriptRoot\_sysinternals-verify.ps1"
@@ -49,7 +67,7 @@ if ($useVt) {
     Write-Host "VirusTotal 조회 활성화 (쿼터 보호: 캐시 48h, 레이트 16초)" -ForegroundColor DarkCyan
 } else {
     if (-not $NoVtLookup) {
-        Write-Host "VT 조회 비활성 (data\config.json에서 enabled=true 및 apiKey 설정 시 활성화)" -ForegroundColor DarkGray
+        Write-Host "VT 조회 비활성 (VT_API_KEY 또는 로컬 config.json 설정 시 활성화)" -ForegroundColor DarkGray
     }
 }
 

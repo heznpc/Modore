@@ -16,7 +16,7 @@ $script:VtRateLimitSec = 16   # 4 req/min = 15초 간격, 안전하게 16초
 
 function Initialize-VtLookup {
     param(
-        [string]$ConfigPath = "$PSScriptRoot\..\data\config.json",
+        [string]$ConfigPath = "$PSScriptRoot\..\data\config.example.json",
         [string]$CacheDir = "$env:LOCALAPPDATA\PC건강검진"
     )
 

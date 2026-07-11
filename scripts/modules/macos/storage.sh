@@ -3,6 +3,22 @@
 # 출력: storage_df.txt, storage_paths.tsv, storage_access.tsv, storage_runtime.tsv, storage_simulators.tsv
 # 의존: df, du, find
 
+_pch_is_protected_developer_app() {
+    local app_path="$1"
+    local bundle_id="${2:-}"
+
+    case "$bundle_id" in
+        com.apple.dt.Xcode|com.apple.dt.Xcode.*) return 0 ;;
+    esac
+    case "$(/usr/bin/basename "$app_path" 2>/dev/null || true)" in
+        Xcode.app|Xcode-*.app|Xcode_*.app) return 0 ;;
+    esac
+    [[ -d "$app_path/Contents/Developer/Platforms" ]] && return 0
+    [[ -d "$app_path/Contents/Developer/Toolchains" ]] && return 0
+    [[ -d "$app_path/Contents/Developer/SDKs" ]] && return 0
+    return 1
+}
+
 collect_storage() {
     local df_target="/"
     local du_timeout="${PCH_STORAGE_DU_TIMEOUT:-8}"
@@ -198,8 +214,13 @@ collect_storage() {
         case "$app_bytes" in ''|*[!0-9]*) continue ;; esac
         app_kb=$((app_bytes / 1024))
         app_name="$(/usr/bin/basename "$app_path" .app)"
-        app_note="Bundle ID: $bundle_id. 앱 본체와 정확히 귀속되는 사용자 데이터만 승인 후 휴지통으로 이동합니다."
-        add_sized_path "application" "$app_name" "$app_path" "$app_kb" "$app_note" "app_uninstall:$bundle_id"
+        if _pch_is_protected_developer_app "$app_path" "$bundle_id"; then
+            app_note="Bundle ID: $bundle_id. 개발 SDK와 toolchain을 포함할 수 있어 프로젝트 요구 버전을 확인하기 전에는 제거하지 않습니다."
+            add_sized_path "application" "$app_name" "$app_path" "$app_kb" "$app_note"
+        else
+            app_note="Bundle ID: $bundle_id. 앱 본체와 정확히 귀속되는 사용자 데이터만 승인 후 휴지통으로 이동합니다."
+            add_sized_path "application" "$app_name" "$app_path" "$app_kb" "$app_note" "app_uninstall:$bundle_id"
+        fi
     done < <(
         /usr/bin/find /Applications -mindepth 1 -maxdepth 1 -type d -name '*.app' -print0 2>/dev/null
         /usr/bin/find "$HOME/Applications" -mindepth 1 -maxdepth 2 -type d -name '*.app' -prune -print0 2>/dev/null
@@ -273,10 +294,49 @@ collect_storage() {
     add_du_path "ai_cache" "Codex runtime cache" "$HOME/.cache/codex-runtimes" "codex_runtime_cache"
     add_du_path "ai_cache" "Codex temporary cache" "$HOME/.codex/.tmp" "codex_temp_cache"
     add_du_path "ai_review" "Codex internal event log DB" "$HOME/.codex/logs_2.sqlite"
+    local protected_path
+    for protected_path in "$HOME/.codex"/state*.sqlite "$HOME/.codex"/state*.sqlite-wal "$HOME/.codex"/state*.sqlite-shm; do
+        [[ -e "$protected_path" ]] || continue
+        add_du_path "ai_review" "Codex local state DB" "$protected_path"
+    done
+    add_du_path "protected_history" "Codex active sessions" "$HOME/.codex/sessions"
+    add_du_path "protected_history" "Codex archived sessions" "$HOME/.codex/archived_sessions"
+    add_du_path "protected_history" "Codex command history" "$HOME/.codex/history.jsonl"
+    add_du_path "protected_history" "Codex session index" "$HOME/.codex/session_index.jsonl"
+    add_du_path "protected_history" "Codex worktrees" "$HOME/.codex/worktrees"
+    add_du_path "protected_history" "Codex shell session snapshots" "$HOME/.codex/shell_snapshots"
+    add_du_path "protected_history" "Codex saved memories" "$HOME/.codex/memories"
+    add_du_path "ai_review" "Codex internal state databases" "$HOME/.codex/sqlite"
+    add_du_path "protected_history" "Codex attachments" "$HOME/.codex/attachments"
+    add_du_path "protected_history" "Codex automations" "$HOME/.codex/automations"
+    add_du_path "protected_history" "Codex generated images" "$HOME/.codex/generated_images"
+    add_du_path "protected_history" "Codex imported work" "$HOME/.codex/vendor_imports"
+    add_du_path "protected_history" "Codex visualizations" "$HOME/.codex/visualizations"
+    add_du_path "protected_history" "Codex user backups" "$HOME/.codex/backups"
+
     add_du_path "protected_history" "Claude local agent workspaces" "$HOME/Library/Application Support/Claude/local-agent-mode-sessions"
-    add_du_path "protected_history" "Codex session history (jsonl)" "$HOME/.codex/sessions"
-    add_du_path "cache" "User caches" "$HOME/Library/Caches" "user_caches"
-    add_du_path "cache" "CLI/tool caches" "$HOME/.cache" "cli_tool_caches"
+    add_du_path "protected_history" "Claude Code project sessions" "$HOME/.claude/projects"
+    add_du_path "protected_history" "Claude sessions" "$HOME/.claude/sessions"
+    add_du_path "protected_history" "Claude command history" "$HOME/.claude/history.jsonl"
+    add_du_path "protected_history" "Claude session environments" "$HOME/.claude/session-env"
+    add_du_path "protected_history" "Claude shell snapshots" "$HOME/.claude/shell-snapshots"
+    add_du_path "protected_history" "Claude tasks" "$HOME/.claude/tasks"
+    add_du_path "protected_history" "Claude user backups" "$HOME/.claude/backups"
+    add_du_path "protected_history" "Claude plans" "$HOME/.claude/plans"
+    add_du_path "protected_history" "Claude file history" "$HOME/.claude/file-history"
+    add_du_path "ai_review" "Claude local databases" "$HOME/Library/Application Support/Claude/databases"
+    add_du_path "protected_history" "Claude Code local sessions" "$HOME/Library/Application Support/Claude/claude-code-sessions"
+    add_du_path "protected_history" "Claude Code local workspace" "$HOME/Library/Application Support/Claude/claude-code"
+    add_du_path "ai_review" "Claude Code VM workspace" "$HOME/Library/Application Support/Claude/claude-code-vm"
+    add_du_path "protected_history" "Claude IndexedDB" "$HOME/Library/Application Support/Claude/IndexedDB"
+    add_du_path "protected_history" "Claude local storage" "$HOME/Library/Application Support/Claude/Local Storage"
+    add_du_path "protected_history" "Claude session storage" "$HOME/Library/Application Support/Claude/Session Storage"
+    add_du_path "protected_history" "Claude partition workspaces" "$HOME/Library/Application Support/Claude/Partitions"
+    add_du_path "ai_review" "Claude WebStorage DB" "$HOME/Library/Application Support/Claude/WebStorage"
+    add_du_path "ai_review" "Claude shared protocol DB" "$HOME/Library/Application Support/Claude/shared_proto_db"
+    add_du_path "protected_history" "Claude pending uploads" "$HOME/Library/Application Support/Claude/pending-uploads"
+    add_du_path "cache" "User caches" "$HOME/Library/Caches"
+    add_du_path "cache" "CLI/tool caches" "$HOME/.cache"
     add_du_path "temp" "System temporary files" "/private/tmp"
     add_du_path "trash" "User Trash" "$HOME/.Trash"
 
@@ -338,8 +398,8 @@ collect_storage() {
     add_runtime_signal "process_count" "Chrome processes" "$chrome_count" "$([[ "$chrome_count" -ge 20 ]] && echo warning || echo info)" "브라우저 탭/자동화 정리" "Chrome 계열 프로세스가 많으면 code-sign clone과 프로필 캐시가 다시 쌓일 수 있습니다."
     add_runtime_signal "process_count" "Headless/Playwright Chrome" "$chrome_auto_count" "$([[ "$chrome_auto_count" -gt 0 ]] && echo warning || echo safe)" "브라우저 자동화 종료" "headless Chrome이 살아 있으면 /var/folders 임시 clone을 붙잡을 수 있습니다."
     add_runtime_signal "process_count" "CoreSimulator processes" "$sim_count" "$([[ "$sim_count" -ge 100 ]] && echo warning || echo info)" "필요한 Simulator만 Booted" "부팅된 Simulator는 런타임 프로세스를 대량으로 띄웁니다."
-    add_runtime_signal "process_count" "Codex processes" "$codex_count" "$([[ "$codex_count" -ge 20 ]] && echo warning || echo info)" "끝난 Codex 세션 정리" "여러 Codex/Computer Use 세션은 브라우저, 첨부파일, 세션 캐시를 함께 늘립니다."
-    add_runtime_signal "process_count" "Claude processes" "$claude_count" "$([[ "$claude_count" -ge 15 ]] && echo warning || echo info)" "끝난 Claude 세션 정리" "Claude Desktop/Code 세션도 Application Support와 임시 업데이트 파일을 누적시킬 수 있습니다."
+    add_runtime_signal "process_count" "Codex processes" "$codex_count" "$([[ "$codex_count" -ge 20 ]] && echo warning || echo info)" "끝난 Codex 작업의 프로세스 종료" "세션 기록은 보존하고, 더 이상 사용하지 않는 Codex/Computer Use 프로세스만 앱에서 정상 종료하세요."
+    add_runtime_signal "process_count" "Claude processes" "$claude_count" "$([[ "$claude_count" -ge 15 ]] && echo warning || echo info)" "끝난 Claude 작업의 프로세스 종료" "로컬 작업공간은 보존하고, 더 이상 사용하지 않는 Claude Desktop/Code 프로세스만 앱에서 정상 종료하세요."
     add_runtime_signal "process_count" "Node/npm/npx processes" "$node_count" "$([[ "$node_count" -ge 25 ]] && echo warning || echo info)" "개발 서버 종료" "여러 개발 서버와 MCP/브라우저 자동화 런타임이 동시에 떠 있을 수 있습니다."
 
 }

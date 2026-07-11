@@ -27,9 +27,7 @@ enum ScanState: Equatable {
 
     var color: Color {
         switch self {
-        case .idle: return .secondary
-        case .running: return .blue
-        case .finished: return .green
+        case .idle, .running, .finished: return .secondary
         case .failed: return .red
         }
     }
@@ -40,6 +38,14 @@ struct ScanSummary {
     let dangerCount: Int
     let warningCount: Int
     let message: String
+
+    var attentionCount: Int {
+        dangerCount + warningCount
+    }
+
+    var hasDanger: Bool {
+        dangerCount > 0 || overall == "danger"
+    }
 
     init?(json: [String: Any]?) {
         guard let json else { return nil }
@@ -114,6 +120,7 @@ struct CpuRow: Identifiable {
     let memoryMB: Double
     let path: String
     let risk: String
+    let note: String
 
     init?(json: [String: Any]) {
         name = JsonRead.string(json, "name", "process")
@@ -122,7 +129,10 @@ struct CpuRow: Identifiable {
         memoryMB = JsonRead.double(json, "memoryMB")
         path = JsonRead.string(json, "path")
         risk = JsonRead.string(json, "risk", "unknown")
+        note = JsonRead.string(json, "note")
     }
+
+    var requiresAttention: Bool { risk == "danger" || risk == "warning" }
 }
 
 struct NetworkRow: Identifiable {
@@ -131,13 +141,17 @@ struct NetworkRow: Identifiable {
     let remoteAddress: String
     let remotePort: Int
     let risk: String
+    let note: String
 
     init?(json: [String: Any]) {
         process = JsonRead.string(json, "process", "process")
         remoteAddress = JsonRead.string(json, "remoteAddress")
         remotePort = JsonRead.int(json, "remotePort")
         risk = JsonRead.string(json, "risk", "unknown")
+        note = JsonRead.string(json, "note")
     }
+
+    var requiresAttention: Bool { risk == "danger" || risk == "warning" }
 }
 
 struct AutorunRow: Identifiable {
@@ -146,12 +160,14 @@ struct AutorunRow: Identifiable {
     let entry: String
     let image: String
     let risk: String
+    let note: String
 
     init?(json: [String: Any]) {
         category = JsonRead.string(json, "category")
         entry = JsonRead.string(json, "entry", "자동실행 항목")
         image = JsonRead.string(json, "image")
         risk = JsonRead.string(json, "risk", "unknown")
+        note = JsonRead.string(json, "note")
     }
 }
 

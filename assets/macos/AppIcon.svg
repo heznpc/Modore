@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="heznpc-brand" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3276E8"/>
+      <stop offset="0.52" stop-color="#4659D6"/>
+      <stop offset="1" stop-color="#713FC2"/>
+    </linearGradient>
+    <linearGradient id="surface" x1="512" y1="254" x2="512" y2="770" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.98"/>
+      <stop offset="1" stop-color="#EAF0FF" stop-opacity="0.90"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="28" stdDeviation="24" flood-color="#17235F" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect x="56" y="56" width="912" height="912" rx="208" fill="url(#heznpc-brand)"/>
+  <rect x="76" y="76" width="872" height="872" rx="190" fill="none" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="4"/>
+
+  <g filter="url(#shadow)">
+    <path d="M512 242C419 242 334 275 270 329V512C270 668 372 759 512 804C652 759 754 668 754 512V329C690 275 605 242 512 242Z" fill="url(#surface)"/>
+  </g>
+  <path d="M322 527H421L474 414L560 631L616 501H702" fill="none" stroke="#4B58D5" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="512" cy="512" r="238" fill="none" stroke="#FFFFFF" stroke-opacity="0.20" stroke-width="8"/>
+</svg>

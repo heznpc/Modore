@@ -17,10 +17,22 @@ MODULES_DIR="$SCRIPT_DIR/modules/macos"
 
 OUTPUT="${PROJECT_DIR}/scan_result.json"
 RAW_PATH="${PROJECT_DIR}/raw_facts.json"
-CONFIG_PATH="${PROJECT_DIR}/data/config.json"
+CONFIG_PATH="${PCH_CONFIG_PATH:-}"
 WHITELIST_PATH="${PROJECT_DIR}/data/whitelist.json"
 RULES_DIR="${PROJECT_DIR}/rules"
 NO_VT=false
+
+if [[ -z "$CONFIG_PATH" ]]; then
+    if [[ -f "${HOME}/Library/Application Support/PC Health Check/config.json" ]]; then
+        # User-owned config is shared by standalone and source app builds.
+        CONFIG_PATH="${HOME}/Library/Application Support/PC Health Check/config.json"
+    elif [[ -f "${PROJECT_DIR}/data/config.json" ]]; then
+        # Source/archive CLI fallback: an explicitly created, ignored config.
+        CONFIG_PATH="${PROJECT_DIR}/data/config.json"
+    else
+        CONFIG_PATH="${PROJECT_DIR}/data/config.example.json"
+    fi
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -51,15 +63,22 @@ export TMP_DIR
 # ------------------------------------------------------------
 # 모듈 로드 (source)
 # ------------------------------------------------------------
+# MODULES_DIR is validated relative to this script; ShellCheck cannot resolve
+# the dynamic prefix without following external sources.
 # shellcheck source=modules/macos/cpu.sh
+# shellcheck disable=SC1091
 . "$MODULES_DIR/cpu.sh"
 # shellcheck source=modules/macos/network.sh
+# shellcheck disable=SC1091
 . "$MODULES_DIR/network.sh"
 # shellcheck source=modules/macos/autoruns.sh
+# shellcheck disable=SC1091
 . "$MODULES_DIR/autoruns.sh"
 # shellcheck source=modules/macos/security.sh
+# shellcheck disable=SC1091
 . "$MODULES_DIR/security.sh"
 # shellcheck source=modules/macos/storage.sh
+# shellcheck disable=SC1091
 . "$MODULES_DIR/storage.sh"
 
 # ------------------------------------------------------------

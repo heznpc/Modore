@@ -433,26 +433,31 @@ function parseStorageRuntime(text) {
   }).filter(Boolean);
 }
 
-function parseSimulatorDevices(text, keepNames) {
-  const keep = new Set(keepNames || []);
+function parseSimulatorDevices(text, keepUUIDs, legacyKeepNames) {
+  const keep = new Set((keepUUIDs || []).map(value => String(value).toUpperCase()));
+  const legacyKeep = new Set(legacyKeepNames || []);
   return String(text || "").trim().split(/\r?\n/).filter(Boolean).map(line => {
     const parts = line.split("\t");
     if (parts.length < 4 || !/^[0-9A-Fa-f-]{36}$/.test(parts[1])) return null;
     const name = parts[0];
     const state = parts[3];
     const isBooted = state === "Booted";
-    const isKept = keep.has(name);
+    const uuid = parts[1].toUpperCase();
+    const isLegacyKept = legacyKeep.has(name);
+    const isKept = keep.has(uuid) || isLegacyKept;
     return {
       name,
-      uuid: parts[1],
+      uuid,
       runtime: parts[2],
       state,
       sizeGB: Math.round((Number(parts[4] || 0) / 1048576) * 10) / 10,
       measureStatus: parts[5] || "ok",
       risk: isBooted || isKept ? "safe" : "info",
       protected: isBooted || isKept,
-      protectionReason: isBooted ? "현재 Booted 상태" : (isKept ? "사용자 보존 목록" : ""),
-      cleanupId: `simulator_delete:${parts[1]}`
+      protectionReason: isBooted
+        ? "현재 Booted 상태"
+        : (isLegacyKept ? "기존 이름 보존 목록 · UUID 전환 필요" : (isKept ? "사용자 보존 목록" : "")),
+      cleanupId: `simulator_delete:${uuid}`
     };
   }).filter(Boolean);
 }
@@ -465,7 +470,16 @@ const RULES_DIR = env("PCH_RULES_DIR", "rules");
 const CONFIG_PATH = env("PCH_CONFIG_PATH", "data/config.json");
 const NO_VT = /^true$/i.test(env("PCH_NO_VT", "false"));
 const SIMULATOR_KEEP_PATH = env("PCH_SIMULATOR_KEEP_PATH", homeDir() + "/Library/Application Support/PC Health Check/simulator-keep.txt");
-const simulatorKeepNames = readText(SIMULATOR_KEEP_PATH).split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+const simulatorKeepEntries = readText(SIMULATOR_KEEP_PATH)
+  .split(/\r?\n/)
+  .map(value => value.trim())
+  .filter(Boolean);
+const simulatorKeepUUIDs = simulatorKeepEntries
+  .map(value => value.toUpperCase())
+  .filter(value => /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(value));
+const simulatorLegacyKeepNames = simulatorKeepEntries.filter(value =>
+  !/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/.test(value)
+);
 const config = readJson(CONFIG_PATH, {});
 const vt = vtLookup(config, NO_VT);
 if (vt.enabled) console.log("  VirusTotal 조회 활성화");
@@ -494,7 +508,7 @@ raw.sections.cpu = tmp("ps.txt").trim().split(/\r?\n/).filter(Boolean).map(line 
   const [pid, user, pcpu, pmem, rss, comm] = parts;
   const path = pidPath[pid] || comm;
   return { name: basename(path), pid_: Number(pid), cpu: Number(pcpu), memoryMB: Math.round(Number(rss) / 10.24) / 100, path, sig: null, vt: vt.file(path) };
-}).filter(Boolean).sort((a,b) => b.cpu - a.cpu).slice(0,15);
+}).filter(Boolean).sort((a,b) => b.cpu - a.cpu);
 raw.sections.gpu = [];
 
 const connections = [];
@@ -554,17 +568,22 @@ const storageVolume = parseStorageDf(tmp("storage_df.txt"));
 const storageItems = parseStoragePaths(tmp("storage_paths.tsv"), storageVolume.risk);
 const storageAccess = parseStorageAccess(tmp("storage_access.tsv"));
 const storageRuntime = parseStorageRuntime(tmp("storage_runtime.tsv"));
-const simulatorDevices = parseSimulatorDevices(tmp("storage_simulators.tsv"), simulatorKeepNames);
+const simulatorDevices = parseSimulatorDevices(
+  tmp("storage_simulators.tsv"),
+  simulatorKeepUUIDs,
+  simulatorLegacyKeepNames
+);
 const cleanupKinds = ["cache", "temp", "trash", "build_cache", "chrome_clone", "ai_vm_cache", "ai_cache", "known_app"];
 const cleanupCandidates = storageItems.filter(item =>
-  cleanupKinds.includes(item.kind) && (item.risk === "warning" || item.measureStatus === "timed_out")
+  cleanupKinds.includes(item.kind) && !!item.cleanupId &&
+    (item.risk === "warning" || item.measureStatus === "timed_out")
 );
 const reviewKinds = ["ai_review", "protected_history"];
 const developerKinds = ["android_sdk", "android_component", "simulator_devices", "simulator_cache", "simulator_runtime", "toolchain", "archive"];
 raw.sections.storage = {
   volume: storageVolume,
   cleanupCandidates: cleanupCandidates.slice(0, 20),
-  reviewCandidates: storageItems.filter(item => reviewKinds.includes(item.kind)).slice(0, 20),
+  reviewCandidates: storageItems.filter(item => reviewKinds.includes(item.kind)),
   developerToolchains: storageItems.filter(item => developerKinds.includes(item.kind)).slice(0, 20),
   applications: storageItems.filter(item => item.kind === "application").slice(0, 20),
   largestItems: storageItems.slice(0, 30),

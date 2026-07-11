@@ -10,13 +10,13 @@
     "problem": "문제",
     "how": "동작 방식",
     "privacy": "프라이버시",
-    "download": "다운로드"
+    "download": "소스"
   },
   "hero": {
     "tag": "v0.3 · Windows Edition / Mac Edition",
     "title": "내 PC가 <em>몰래 일하는지</em> 설명해주는 로컬 진단 도구.",
     "subtitle": "팬이 돌고 CPU/GPU가 튀고 모르는 프로세스가 보일 때, PC 건강검진은 채굴기 신호·자동실행·네트워크·한국 보안 플러그인 맥락을 모아 삭제 전 판단 근거를 보여줍니다.",
-    "cta_primary": "zip 다운로드 <span class='arrow'>→</span>",
+    "cta_primary": "소스에서 실행 <span class='arrow'>→</span>",
     "cta_secondary": "소스 읽어보기",
     "meta": {
       "free": "무료",
@@ -73,10 +73,10 @@
   "how": {
     "kicker": "HOW IT WORKS",
     "heading": "8가지 진단 → 1개의 HTML 리포트.",
-    "lead": "설치형 추적기 없음. OS별 스크립트가 시스템을 수집하면, Windows는 브라우저에서 열 수 있는 HTML 리포트로, Mac은 SwiftUI 대시보드와 HTML 내보내기로 조립합니다.",
+    "lead": "설치형 추적기 없음. OS별 스크립트가 시스템을 수집하면, Windows는 HTML 리포트로, Mac은 시스템 컴포넌트 기반 SwiftUI 유틸리티와 HTML 내보내기로 조립합니다.",
     "p1": { "title": "시스템 수집", "desc": "프로세스·네트워크·포트·자동실행·보안상태. Sysinternals + launchd + VirusTotal 해시 조회." },
     "p2": { "title": "JSON 정규화", "desc": "한국 SW 화이트리스트 대조 후 신호등 판정. OS 무관 공통 스키마." },
-    "p3": { "title": "리포트 생성", "desc": "Windows는 단일 HTML 리포트, Mac은 SwiftUI 대시보드와 HTML 내보내기. 설치형 추적기나 원격 업로드는 없습니다." }
+    "p3": { "title": "리포트 생성", "desc": "Windows는 단일 HTML 리포트, Mac은 네이티브 SwiftUI 유틸리티와 HTML 내보내기. 설치형 추적기나 원격 업로드는 없습니다." }
   },
   "privacy": {
     "kicker": "PRIVACY · AUDITABLE",
@@ -102,25 +102,25 @@
     }
   },
   "download": {
-    "kicker": "DOWNLOAD",
-    "heading": "지금 다운로드.",
-    "lead": "단일 zip. USB에 담아 다른 PC에서도 바로 실행 가능. 설치 없음, 관리자 권한 없이도 대부분 동작.",
+    "kicker": "SOURCE PREVIEW",
+    "heading": "소스를 검토하고 빌드하세요.",
+    "lead": "현재 공개 설치 산출물은 없습니다. 소스를 직접 실행하거나, 서명·공증·Gatekeeper·SHA-256 메타데이터가 있는 릴리스를 기다려 주세요.",
     "windows": {
       "title": "Windows Edition",
-      "desc": "Windows 10 / 11 · PowerShell 5.1 기본 포함. <code>검사하기.bat</code> 더블클릭.",
-      "btn": "pch-v0.3.0-win.zip →"
+      "desc": "Windows 10 / 11 · PowerShell 5.1. 소스 확인 후 <code>검사하기.bat</code> 실행.",
+      "btn": "Windows 소스 보기 →"
     },
     "macos": {
       "title": "Mac Edition",
       "desc": "macOS 13+ SwiftUI 앱은 <code>Mac앱실행.command</code>, 스크립트 모드는 <code>검사하기.command</code> 우클릭 → 열기. System Data/Developer 저장공간 막대 해석은 Mac Edition 기능입니다.",
-      "btn": "pch-v0.3.0-mac.zip →"
+      "btn": "Mac 소스 보기 →"
     },
     "github_side": "클론이나 포크: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>. 읽을 수 있는 소스로 직접 확인."
   },
   "final": {
     "heading": "의심되는 지금, <em>6분이면 답이 나옵니다.</em>",
     "lead": "가입 없음. 이메일 없음. 결과는 내 브라우저에서만 열립니다.",
-    "cta": "지금 다운로드 <span class='arrow'>→</span>"
+    "cta": "소스 보기 <span class='arrow'>→</span>"
   },
   "footer": {
     "license": "MIT License",
