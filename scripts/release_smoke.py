@@ -689,18 +689,20 @@ def preserve_entry_for_review(
 
 def discard_preserved_entry(
     recovery_path: Path | None,
-    expected: FileEntryIdentity,
+    expected: FileSeal,
 ) -> None:
     """Remove only the exact private recovery entry created by this run."""
     if recovery_path is None:
         return
     try:
-        current = file_entry_identity(recovery_path)
+        current_entry = file_entry_identity(recovery_path)
+        current_seal = seal_regular_file(recovery_path)
     except (FileNotFoundError, OSError) as error:
         raise RuntimeError(
             f"preserved release entry disappeared before cleanup: {recovery_path}"
         ) from error
-    if current != expected:
+    expected_entry = FileEntryIdentity(expected.device, expected.inode, stat.S_IFREG)
+    if current_entry != expected_entry or current_seal != expected:
         raise RuntimeError(
             f"preserved release entry changed before cleanup: {recovery_path}"
         )
@@ -835,7 +837,7 @@ def publish_new_file(
             )
         if seal_regular_file(destination) != audited_seal:
             raise RuntimeError("published release artifact changed after preservation")
-        discard_preserved_entry(staged_recovery, temporary_entry)
+        discard_preserved_entry(staged_recovery, audited_seal)
     except FileExistsError as error:
         raise FileExistsError(f"refusing to overwrite release artifact: {destination}") from error
     except Exception:

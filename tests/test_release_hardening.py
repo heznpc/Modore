@@ -150,16 +150,25 @@ def test_release_recovery_rename_never_replaces_an_existing_entry(
 def test_release_recovery_cleanup_refuses_a_replaced_entry(project_root, tmp_path):
     module = load_release_smoke(project_root)
     source = tmp_path / "artifact.zip"
+    same_inode = tmp_path / "same-inode.zip"
     source.write_bytes(b"audited")
-    expected = module.file_entry_identity(source)
-    matches, recovery = module.preserve_entry_for_review(source, expected)
+    os.link(source, same_inode)
+    audited_seal = module.seal_regular_file(source)
+    expected_entry = module.FileEntryIdentity(
+        audited_seal.device,
+        audited_seal.inode,
+        stat.S_IFREG,
+    )
+    matches, recovery = module.preserve_entry_for_review(source, expected_entry)
     assert matches is True
     assert recovery is not None
     recovery.unlink()
+    os.link(same_inode, recovery)
     recovery.write_bytes(b"replacement")
+    assert module.file_entry_identity(recovery) == expected_entry
 
     with pytest.raises(RuntimeError, match="changed before cleanup"):
-        module.discard_preserved_entry(recovery, expected)
+        module.discard_preserved_entry(recovery, audited_seal)
 
     assert recovery.read_bytes() == b"replacement"
 
