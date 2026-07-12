@@ -94,6 +94,35 @@ final class StorageSecurityRemediationTests: XCTestCase {
         XCTAssertFalse(xcode.canCleanup)
     }
 
+    func testProtectedStoragePresentationCollapsesSmallRowsButKeepsDeferredMeasurementsVisible() throws {
+        let items = try [
+            XCTUnwrap(StorageItem(json: item(
+                label: "Large history",
+                sizeGB: 0.02,
+                path: "/history/large",
+                cleanupID: ""
+            ))),
+            XCTUnwrap(StorageItem(json: item(
+                label: "Small index",
+                sizeGB: 0.001,
+                path: "/history/index",
+                cleanupID: ""
+            ))),
+            XCTUnwrap(StorageItem(json: item(
+                label: "Deferred database",
+                sizeGB: 0,
+                path: "/history/deferred",
+                cleanupID: "",
+                measureStatus: "timed_out"
+            ))),
+        ]
+
+        let groups = ProtectedStoragePresentation.split(items)
+
+        XCTAssertEqual(groups.prominent.map(\.label), ["Large history", "Deferred database"])
+        XCTAssertEqual(groups.small.map(\.label), ["Small index"])
+    }
+
     func testSimulatorProtectionSurvivesDeviceRenameByUUID() throws {
         let uuid = "5800AF4B-90D7-4F28-A8EC-80C8E2AE4B75"
         let first = try XCTUnwrap(SimulatorDevice(json: simulator(name: "iPhone 17", uuid: uuid)))
@@ -350,7 +379,8 @@ final class StorageSecurityRemediationTests: XCTestCase {
         label: String,
         sizeGB: Double,
         path: String,
-        cleanupID: String
+        cleanupID: String,
+        measureStatus: String = "ok"
     ) -> [String: Any] {
         [
             "risk": "warning",
@@ -360,7 +390,7 @@ final class StorageSecurityRemediationTests: XCTestCase {
             "path": path,
             "action": "확인",
             "note": "테스트",
-            "measureStatus": "ok",
+            "measureStatus": measureStatus,
             "cleanupId": cleanupID,
         ]
     }

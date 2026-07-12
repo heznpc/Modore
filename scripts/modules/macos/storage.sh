@@ -19,6 +19,38 @@ _pch_is_protected_developer_app() {
     return 1
 }
 
+_pch_browser_automation_roots() {
+    local pid ppid elapsed command channel state
+
+    while read -r pid ppid elapsed command; do
+        case "$pid$ppid" in ''|*[!0-9]*) continue ;; esac
+        case "$elapsed" in ''|*[!0-9:-]*) elapsed="unknown" ;; esac
+        case "$command" in
+            *playwright_chromiumdev_profile*|*--remote-debugging-pipe*|*--remote-debugging-port*|*--no-startup-window*|*--headless*) ;;
+            *) continue ;;
+        esac
+        case "$command" in
+            *"Google Chrome Helper"*|*"Chromium Helper"*|*" --type="*) continue ;;
+        esac
+        case "$command" in
+            *"Google Chrome.app/Contents/MacOS/Google Chrome"*|*"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"*|*"Chromium.app/Contents/MacOS/Chromium"*) ;;
+            *) continue ;;
+        esac
+
+        case "$command" in
+            *"Google Chrome for Testing.app/"*|*"/ms-playwright/"*|*"Chromium.app/"*) channel="isolated" ;;
+            *"/Applications/Google Chrome.app/"*) channel="system" ;;
+            *) channel="unknown" ;;
+        esac
+        if [[ "$ppid" == "1" ]]; then
+            state="orphaned"
+        else
+            state="active"
+        fi
+        /usr/bin/printf '%s\t%s\t%s\t%s\t%s\n' "$pid" "$ppid" "$elapsed" "$channel" "$state"
+    done
+}
+
 collect_storage() {
     local df_target="/"
     local du_timeout="${PCH_STORAGE_DU_TIMEOUT:-8}"
@@ -178,8 +210,9 @@ collect_storage() {
         /usr/bin/printf "%s\t%s\t%s\t%s\t%s\n" "$kind" "$label" "$target_path" "$status" "$note" >> "$TMP_DIR/storage_access.tsv"
     }
 
-    local ps_commands
+    local ps_commands ps_detailed
     ps_commands="$(/bin/ps -axo command= 2>/dev/null || true)"
+    ps_detailed="$(/bin/ps -axo pid=,ppid=,etime=,command= 2>/dev/null || true)"
     count_processes() {
         local pattern="$1"
         /usr/bin/printf "%s\n" "$ps_commands" \
@@ -387,16 +420,50 @@ collect_storage() {
     add_access_check "app_data" "Group containers" "$HOME/Library/Group Containers"
 
     # 반복 생성원: 공간을 직접 지우기보다 "왜 또 쌓이는지"를 설명하는 신호.
-    local chrome_count chrome_auto_count sim_count codex_count claude_count node_count
+    local chrome_count sim_count codex_count claude_count node_count
     chrome_count="$(count_processes 'Google Chrome')"
-    chrome_auto_count="$(count_processes 'playwright_chromiumdev_profile|--headless|remote-debugging-pipe')"
     sim_count="$(count_processes '/CoreSimulator/Volumes/iOS_|launchd_sim|Simulator.app|CoreSimulatorBridge')"
     codex_count="$(count_processes 'Codex.app|/codex|node_repl|SkyComputerUseClient')"
     claude_count="$(count_processes 'Claude.app|/claude|claude-code')"
     node_count="$(count_processes '(^|/)(node|npm|npx)( |$)')"
 
     add_runtime_signal "process_count" "Chrome processes" "$chrome_count" "$([[ "$chrome_count" -ge 20 ]] && echo warning || echo info)" "브라우저 탭/자동화 정리" "Chrome 계열 프로세스가 많으면 code-sign clone과 프로필 캐시가 다시 쌓일 수 있습니다."
-    add_runtime_signal "process_count" "Headless/Playwright Chrome" "$chrome_auto_count" "$([[ "$chrome_auto_count" -gt 0 ]] && echo warning || echo safe)" "브라우저 자동화 종료" "headless Chrome이 살아 있으면 /var/folders 임시 clone을 붙잡을 수 있습니다."
+    local browser_pid browser_ppid browser_elapsed browser_channel browser_state
+    local browser_label browser_risk browser_action browser_channel_note
+    while IFS=$'\t' read -r browser_pid browser_ppid browser_elapsed browser_channel browser_state; do
+        case "$browser_channel" in
+            system)
+                browser_label="시스템 Chrome 자동화"
+                browser_risk="warning"
+                browser_action="자동화 종료 후 기본 Chrome 다시 열기"
+                browser_channel_note="기본 Chrome 채널"
+                ;;
+            isolated)
+                browser_label="격리된 Playwright 브라우저"
+                browser_risk="info"
+                browser_action="해당 자동화 세션 종료"
+                browser_channel_note="격리 브라우저 채널"
+                ;;
+            *)
+                browser_label="브라우저 자동화"
+                browser_risk="warning"
+                browser_action="실행 출처 확인 후 종료"
+                browser_channel_note="분류되지 않은 브라우저 채널"
+                ;;
+        esac
+        if [[ "$browser_state" == "orphaned" ]]; then
+            browser_label="잔류 $browser_label"
+            browser_risk="warning"
+            browser_action="부모가 끝난 잔류 프로세스 종료 확인"
+        fi
+        add_runtime_signal \
+            "browser_automation_root" \
+            "$browser_label" \
+            "1" \
+            "$browser_risk" \
+            "$browser_action" \
+            "PID $browser_pid · 실행 $browser_elapsed · 부모 PID $browser_ppid · $browser_channel_note"
+    done < <(/usr/bin/printf '%s\n' "$ps_detailed" | _pch_browser_automation_roots)
     add_runtime_signal "process_count" "CoreSimulator processes" "$sim_count" "$([[ "$sim_count" -ge 100 ]] && echo warning || echo info)" "필요한 Simulator만 Booted" "부팅된 Simulator는 런타임 프로세스를 대량으로 띄웁니다."
     add_runtime_signal "process_count" "Codex processes" "$codex_count" "$([[ "$codex_count" -ge 20 ]] && echo warning || echo info)" "끝난 Codex 작업의 프로세스 종료" "세션 기록은 보존하고, 더 이상 사용하지 않는 Codex/Computer Use 프로세스만 앱에서 정상 종료하세요."
     add_runtime_signal "process_count" "Claude processes" "$claude_count" "$([[ "$claude_count" -ge 15 ]] && echo warning || echo info)" "끝난 Claude 작업의 프로세스 종료" "로컬 작업공간은 보존하고, 더 이상 사용하지 않는 Claude Desktop/Code 프로세스만 앱에서 정상 종료하세요."

@@ -217,7 +217,7 @@ final class PCHealthCheckMacTests: XCTestCase {
         )
 
         let processes = CleanupPresentation.processDisplays(from: [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --token=do-not-expose",
             "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework",
             "node /tmp/airmcp server.mjs",
             "node /tmp/airmcp another.mjs",

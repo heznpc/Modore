@@ -97,17 +97,49 @@ private struct CleanupCandidateRow: View {
 }
 
 private struct CleanupProtectedSection: View {
+    @State private var showsSmallItems = false
     let storage: StorageSnapshot
 
     var body: some View {
+        let groups = ProtectedStoragePresentation.split(storage.reviewCandidates)
+
         Section {
-            ForEach(storage.reviewCandidates) { item in
+            ForEach(groups.prominent) { item in
                 WorkspaceStorageItemRow(
                     item: item,
                     fallbackSymbol: "lock.shield",
                     status: "보호됨"
                 )
                 .contextMenu { StorageItemContextMenu(item: item) }
+            }
+            if !groups.small.isEmpty {
+                DisclosureGroup(isExpanded: $showsSmallItems) {
+                    ForEach(groups.small) { item in
+                        WorkspaceStorageItemRow(
+                            item: item,
+                            fallbackSymbol: "lock.shield",
+                            status: "보호됨"
+                        )
+                        .contextMenu { StorageItemContextMenu(item: item) }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "ellipsis.circle")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32)
+                        Text("작은 보호 항목")
+                            .font(.body.weight(.medium))
+                        Spacer()
+                        Text("\(groups.small.count)개")
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    .padding(.vertical, 6)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("작은 보호 항목 \(groups.small.count)개")
+                }
             }
         } header: {
             NativeSectionHeader(
@@ -116,6 +148,23 @@ private struct CleanupProtectedSection: View {
                 value: storage.reviewText
             )
         }
+    }
+}
+
+enum ProtectedStoragePresentation {
+    static let prominentThresholdGB = 0.01
+
+    static func split(_ items: [StorageItem]) -> (
+        prominent: [StorageItem],
+        small: [StorageItem]
+    ) {
+        let prominent = items.filter {
+            $0.measureStatus == "timed_out" || $0.sizeGB >= prominentThresholdGB
+        }
+        let small = items.filter {
+            $0.measureStatus != "timed_out" && $0.sizeGB < prominentThresholdGB
+        }
+        return (prominent, small)
     }
 }
 

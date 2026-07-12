@@ -17,6 +17,7 @@ MINIMUM_SYSTEM_VERSION="${PCH_MINIMUM_SYSTEM_VERSION:-13.0}"
 ARCH_SPEC="${PCH_BUILD_ARCHS:-native}"
 STRICT_BUILD="${PCH_STRICT_BUILD:-1}"
 ALLOW_USER_TOOLCHAIN="${PCH_ALLOW_USER_TOOLCHAIN:-0}"
+KEEP_PREVIOUS_APP="${PCH_KEEP_PREVIOUS_APP:-0}"
 
 if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     /usr/bin/printf 'ERROR: PCH_APP_VERSION must be a numeric X.Y.Z version: %s\n' "$APP_VERSION" >&2
@@ -28,6 +29,10 @@ if [[ ! "$MINIMUM_SYSTEM_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
 fi
 if [[ "$ALLOW_USER_TOOLCHAIN" != "0" && "$ALLOW_USER_TOOLCHAIN" != "1" ]]; then
     /usr/bin/printf 'ERROR: PCH_ALLOW_USER_TOOLCHAIN must be 0 or 1.\n' >&2
+    exit 64
+fi
+if [[ "$KEEP_PREVIOUS_APP" != "0" && "$KEEP_PREVIOUS_APP" != "1" ]]; then
+    /usr/bin/printf 'ERROR: PCH_KEEP_PREVIOUS_APP must be 0 or 1.\n' >&2
     exit 64
 fi
 if [[ "$ALLOW_USER_TOOLCHAIN" == "1" && "${PCH_SKIP_ADHOC_SIGN:-0}" == "1" ]]; then
@@ -248,14 +253,16 @@ fi
 
 running_app_binary="$FINAL_APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
 existing_app_identity=""
-existing_app_is_expected() {
-    local contents_directory="$FINAL_APP_DIR/Contents"
-    local macos_directory="$FINAL_APP_DIR/Contents/MacOS"
-    local info_plist="$FINAL_APP_DIR/Contents/Info.plist"
-    local executable="$FINAL_APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
+app_bundle_is_expected() {
+    local app_directory="$1"
+    local require_signature="${2:-1}"
+    local contents_directory="$app_directory/Contents"
+    local macos_directory="$app_directory/Contents/MacOS"
+    local info_plist="$app_directory/Contents/Info.plist"
+    local executable="$app_directory/Contents/MacOS/$EXECUTABLE_NAME"
     local bundle_identifier bundle_executable
 
-    [[ -d "$FINAL_APP_DIR" && ! -L "$FINAL_APP_DIR" ]] || return 1
+    [[ -d "$app_directory" && ! -L "$app_directory" ]] || return 1
     [[ -d "$contents_directory" && ! -L "$contents_directory" ]] || return 1
     [[ -d "$macos_directory" && ! -L "$macos_directory" ]] || return 1
     [[ -f "$info_plist" && ! -L "$info_plist" ]] || return 1
@@ -263,7 +270,12 @@ existing_app_is_expected() {
     bundle_identifier="$(/usr/bin/plutil -extract CFBundleIdentifier raw "$info_plist" 2>/dev/null)" || return 1
     bundle_executable="$(/usr/bin/plutil -extract CFBundleExecutable raw "$info_plist" 2>/dev/null)" || return 1
     [[ "$bundle_identifier" == "$IDENTIFIER" && "$bundle_executable" == "$EXECUTABLE_NAME" ]] || return 1
-    run_clean /usr/bin/codesign --verify --deep --strict "$FINAL_APP_DIR" >/dev/null 2>&1 || return 1
+    if [[ "$require_signature" == "1" ]]; then
+        run_clean /usr/bin/codesign --verify --deep --strict "$app_directory" >/dev/null 2>&1 || return 1
+    fi
+}
+existing_app_is_expected() {
+    app_bundle_is_expected "$FINAL_APP_DIR" 1
 }
 if [[ -e "$FINAL_APP_DIR" || -L "$FINAL_APP_DIR" ]]; then
     if ! existing_app_is_expected; then
@@ -438,6 +450,7 @@ if [[ -e "$FINAL_APP_DIR" || -L "$FINAL_APP_DIR" ]]; then
         exit 73
     fi
     backup_container="$(/usr/bin/mktemp -d "$BUILD_DIR/.pch-app-backup.XXXXXX")"
+    backup_identity="$(/usr/bin/stat -f '%d:%i' "$backup_container")"
     backup_app="$backup_container/$APP_NAME"
     if ! /bin/mv "$FINAL_APP_DIR" "$backup_app"; then
         /bin/rmdir "$backup_container" 2>/dev/null || true
@@ -460,9 +473,45 @@ if [[ -e "$FINAL_APP_DIR" || -L "$FINAL_APP_DIR" ]]; then
         fi
         exit 74
     fi
-    /usr/bin/printf 'Previous app preserved for manual review: %s\n' "$backup_app"
+    new_signature_required="1"
+    if [[ "${PCH_SKIP_ADHOC_SIGN:-0}" == "1" ]]; then
+        new_signature_required="0"
+    fi
+    if ! app_bundle_is_expected "$FINAL_APP_DIR" "$new_signature_required"; then
+        if /bin/mv "$FINAL_APP_DIR" "$APP_DIR" && /bin/mv "$backup_app" "$FINAL_APP_DIR"; then
+            /bin/rmdir "$backup_container" 2>/dev/null || true
+        else
+            /usr/bin/printf 'ERROR: previous app is preserved for manual recovery at: %s\n' "$backup_app" >&2
+        fi
+        /usr/bin/printf 'ERROR: replacement app failed post-swap verification; previous app restored when possible.\n' >&2
+        exit 74
+    fi
+    if [[ "$KEEP_PREVIOUS_APP" == "1" ]]; then
+        /usr/bin/printf 'Previous app preserved for manual review: %s\n' "$backup_app"
+    else
+        current_backup_identity="$(/usr/bin/stat -f '%d:%i' "$backup_container" 2>/dev/null || true)"
+        case "$backup_container" in
+            "$BUILD_DIR"/.pch-app-backup.*) ;;
+            *) current_backup_identity="" ;;
+        esac
+        if [[ -z "$backup_identity" || "$current_backup_identity" != "$backup_identity" ]] \
+            || ! app_bundle_is_expected "$backup_app" 1; then
+            /usr/bin/printf 'ERROR: previous app backup changed after replacement; preserving for manual review: %s\n' "$backup_app" >&2
+            exit 73
+        fi
+        /bin/rm -rf "$backup_container"
+        /usr/bin/printf 'Verified replacement; previous app backup removed.\n'
+    fi
 else
     /bin/mv "$APP_DIR" "$FINAL_APP_DIR"
+    new_signature_required="1"
+    if [[ "${PCH_SKIP_ADHOC_SIGN:-0}" == "1" ]]; then
+        new_signature_required="0"
+    fi
+    if ! app_bundle_is_expected "$FINAL_APP_DIR" "$new_signature_required"; then
+        /usr/bin/printf 'ERROR: built app failed post-install verification: %s\n' "$FINAL_APP_DIR" >&2
+        exit 74
+    fi
 fi
 
 /usr/bin/printf 'Built: %s\n' "$FINAL_APP_DIR"

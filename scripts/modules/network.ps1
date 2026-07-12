@@ -11,10 +11,7 @@ function Get-ProcessMap {
 }
 
 function Get-NetworkFacts {
-    param(
-        [bool]$UseVt = $false,
-        [hashtable]$ProcessMap
-    )
+    param([hashtable]$ProcessMap)
 
     if (-not $ProcessMap) { $ProcessMap = Get-ProcessMap }
 
@@ -22,14 +19,6 @@ function Get-NetworkFacts {
         Where-Object {
             $_.RemoteAddress -notmatch '^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|::1|fe80|0\.0\.0\.0)'
         }
-
-    $uniqueIps = @($connections | Select-Object -ExpandProperty RemoteAddress -Unique)
-    $ipVtCache = @{}
-    if ($UseVt) {
-        foreach ($ip in $uniqueIps) {
-            $ipVtCache[$ip] = Get-VtIpReputation -IpAddress $ip
-        }
-    }
 
     $seen = @{}
     $result = foreach ($c in $connections) {
@@ -44,7 +33,7 @@ function Get-NetworkFacts {
             remoteAddress = $c.RemoteAddress
             remotePort = $c.RemotePort
             path = $proc.Path
-            vtIp = $ipVtCache[$c.RemoteAddress]
+            vtIp = $null
         }
     }
     return @($result)

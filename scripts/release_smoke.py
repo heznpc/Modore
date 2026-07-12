@@ -687,6 +687,33 @@ def preserve_entry_for_review(
         return False, recovery_path
 
 
+def discard_preserved_entry(
+    recovery_path: Path | None,
+    expected: FileEntryIdentity,
+) -> None:
+    """Remove only the exact private recovery entry created by this run."""
+    if recovery_path is None:
+        return
+    try:
+        current = file_entry_identity(recovery_path)
+    except (FileNotFoundError, OSError) as error:
+        raise RuntimeError(
+            f"preserved release entry disappeared before cleanup: {recovery_path}"
+        ) from error
+    if current != expected:
+        raise RuntimeError(
+            f"preserved release entry changed before cleanup: {recovery_path}"
+        )
+    recovery_directory = recovery_path.parent
+    try:
+        recovery_path.unlink()
+        recovery_directory.rmdir()
+    except OSError as error:
+        raise RuntimeError(
+            f"could not remove verified release recovery entry: {recovery_path}"
+        ) from error
+
+
 def materialize_snapshot(
     destination: Path,
     snapshot: BinaryIO,
@@ -808,6 +835,7 @@ def publish_new_file(
             )
         if seal_regular_file(destination) != audited_seal:
             raise RuntimeError("published release artifact changed after preservation")
+        discard_preserved_entry(staged_recovery, temporary_entry)
     except FileExistsError as error:
         raise FileExistsError(f"refusing to overwrite release artifact: {destination}") from error
     except Exception:

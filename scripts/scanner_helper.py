@@ -217,35 +217,6 @@ class VtLookup:
         self._set(key, result)
         return result
 
-    def ip(self, ip_addr):
-        if not self.enabled:
-            return None
-        key = f"ip:{ip_addr}"
-        cached = self._cached(key)
-        if cached is not None:
-            return cached
-        r = self._request(f"https://www.virustotal.com/api/v3/ip_addresses/{ip_addr}")
-        if not r:
-            return None
-        if "error" in r:
-            return {"status": r["error"], "ip": ip_addr}
-        if r.get("notFound"):
-            result = {"status": "unknown", "ip": ip_addr}
-            self._set(key, result)
-            return result
-        attrs = r["data"]["attributes"]
-        stats = attrs["last_analysis_stats"]
-        result = {
-            "status": "ok",
-            "ip": ip_addr,
-            "malicious": int(stats.get("malicious", 0)),
-            "suspicious": int(stats.get("suspicious", 0)),
-            "country": attrs.get("country"),
-            "asnOwner": attrs.get("as_owner"),
-        }
-        self._set(key, result)
-        return result
-
     def save(self):
         if self.cache:
             dump_json(self.cache_path, self.cache)
@@ -365,7 +336,6 @@ def main() -> int:
     # ============================================================
     net_list = []
     net_txt = _read_tmp("net.txt")
-    unique_ips = set()
     connections_raw = []
     for line in net_txt.split("\n"):
         if "->" not in line or "ESTABLISHED" not in line:
@@ -383,9 +353,6 @@ def main() -> int:
         if is_local_ip(remote_ip):
             continue
         connections_raw.append({"command": command, "pid": pid_, "ip": remote_ip, "port": remote_port})
-        unique_ips.add(remote_ip)
-
-    ip_vt_cache = {ip: vt.ip(ip) for ip in unique_ips} if vt.enabled else {}
 
     seen = set()
     for c in connections_raw:
@@ -399,7 +366,7 @@ def main() -> int:
             ("remoteAddress", c["ip"]),
             ("remotePort", c["port"]),
             ("path", ""),
-            ("vtIp", ip_vt_cache.get(c["ip"])),
+            ("vtIp", None),
         ]))
     raw["sections"]["network"] = net_list
 

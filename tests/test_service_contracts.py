@@ -242,6 +242,36 @@ def test_powershell_vt_env_key_does_not_auto_enable(project_root):
     assert "virustotal.enabled=true" in helper
 
 
+def test_virustotal_automatic_lookups_send_file_hashes_only(project_root):
+    sources = [
+        project_root / "scripts/scanner_helper.py",
+        project_root / "scripts/scanner_helper.jxa.js",
+        project_root / "scripts/vt-lookup.ps1",
+        project_root / "scripts/modules/network.ps1",
+    ]
+    combined = "\n".join(path.read_text(encoding="utf-8-sig") for path in sources)
+
+    assert "api/v3/files/" in combined
+    assert "ip_addresses/" not in combined
+    assert "Get-VtIpReputation" not in combined
+
+
+def test_cleanup_ui_never_exposes_raw_process_commands(project_root):
+    shell = (project_root / "scripts/cleanup.sh").read_text(encoding="utf-8")
+    presentation = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/CleanupPresentation.swift"
+    ).read_text(encoding="utf-8")
+    sheet = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/CleanupApprovalSheet.swift"
+    ).read_text(encoding="utf-8")
+
+    assert "display_process_names" in shell
+    assert "rawCommand" not in presentation
+    assert "rawCommand" not in sheet
+
+
 def test_release_report_generators_have_investigation_links(project_root):
     jxa = (project_root / "scripts" / "report.jxa.js").read_text(encoding="utf-8")
     ps1 = (project_root / "scripts" / "report.ps1").read_text(encoding="utf-8-sig")

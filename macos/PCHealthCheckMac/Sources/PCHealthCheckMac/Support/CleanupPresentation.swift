@@ -2,7 +2,6 @@ import Foundation
 
 struct CleanupProcessDisplay: Equatable {
     let name: String
-    let rawCommand: String
 }
 
 enum CleanupPresentation {
@@ -24,7 +23,7 @@ enum CleanupPresentation {
             .compactMap { command in
                 let name = compactProcessName(command)
                 guard seen.insert(name).inserted else { return nil }
-                return CleanupProcessDisplay(name: name, rawCommand: command)
+                return CleanupProcessDisplay(name: name)
             }
             .prefix(max(0, limit))
             .map { $0 }

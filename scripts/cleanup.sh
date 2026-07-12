@@ -709,6 +709,33 @@ matching_processes() {
         || true
 }
 
+display_process_names() {
+    local command display_name
+    matching_processes | while IFS= read -r command; do
+        [[ -n "$command" ]] || continue
+        if [[ "$RECIPE_ID" == app_uninstall:* ]]; then
+            display_name="$LABEL"
+        else
+            case "$command" in
+                *"Google Chrome Helper"*) display_name="Google Chrome Helper" ;;
+                *"Google Chrome"*) display_name="Google Chrome" ;;
+                *playwright*|*Playwright*|*remote-debugging-pipe*) display_name="Playwright" ;;
+                *Codex*|*codex*|*node_repl*|*SkyComputerUseClient*) display_name="Codex" ;;
+                *Claude*|*claude*|*local-agent-mode*) display_name="Claude" ;;
+                *pnpm*) display_name="pnpm" ;;
+                *npm*|*npx*|*node*) display_name="Node/npm" ;;
+                *GradleDaemon*|*org.gradle*|*gradlew*) display_name="Gradle" ;;
+                *CocoaPods*|*"/pod "*) display_name="CocoaPods" ;;
+                *flutter*|*dart*) display_name="Dart/Flutter" ;;
+                *Xcode*|*xcodebuild*|*XCBBuildService*|*SourceKitService*) display_name="Xcode/build tool" ;;
+                *INNORIX*|*innorix*) display_name="INNORIX" ;;
+                *) display_name="관련 프로세스" ;;
+            esac
+        fi
+        /usr/bin/printf '%s\n' "$display_name"
+    done | /usr/bin/awk '!seen[$0]++'
+}
+
 sha256_stream() {
     if [[ -x /usr/bin/shasum ]]; then
         /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
@@ -912,7 +939,7 @@ preview_status() {
 
     matches="$(matching_processes)"
     if [[ -n "$matches" ]]; then
-        RUNNING_PROCESSES="$(/usr/bin/printf '%s' "$matches" | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
+        RUNNING_PROCESSES="$(display_process_names | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
         if [[ "$PROCESS_POLICY" == "block" ]]; then
             PREVIEW_STATUS="blocked"
             BLOCKED_REASON="${PROCESS_NOTE:-관련 프로세스를 먼저 종료하세요.}"
@@ -1226,7 +1253,7 @@ destructive_boundary_ready() {
     done
     matches="$(matching_processes)"
     if [[ -n "$matches" ]]; then
-        RUNNING_PROCESSES="$(/usr/bin/printf '%s' "$matches" | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
+        RUNNING_PROCESSES="$(display_process_names | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
         BLOCKED_REASON="${PROCESS_NOTE:-관련 프로세스를 먼저 종료하세요.}"
         return 1
     fi

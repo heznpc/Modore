@@ -117,7 +117,7 @@ $raw.sections.gpu = Get-GpuFacts -ProcessMap $processMap
 Write-Host " 완료" -ForegroundColor Green
 
 Write-Host "  [3/8] 네트워크 연결 검사..." -NoNewline
-$raw.sections.network = Get-NetworkFacts -UseVt:$useVt -ProcessMap $processMap
+$raw.sections.network = Get-NetworkFacts -ProcessMap $processMap
 Write-Host " 완료" -ForegroundColor Green
 
 Write-Host "  [4/8] 열린 포트 검사..." -NoNewline

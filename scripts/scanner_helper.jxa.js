@@ -177,25 +177,6 @@ function vtLookup(config, disabled) {
       setCache(key, result);
       return result;
     },
-    ip(ip) {
-      if (!enabled || !ip) return null;
-      const key = "ip:" + ip;
-      const c = cached(key);
-      if (c) return c;
-      const r = request("ip_addresses/" + ip);
-      if (!r) return null;
-      if (r.error) return { status: r.error, ip };
-      if (r.notFound) {
-        const result = { status: "unknown", ip };
-        setCache(key, result);
-        return result;
-      }
-      const attrs = (r.data || {}).attributes || {};
-      const st = stats(attrs);
-      const result = { status: "ok", ip, malicious: st.malicious, suspicious: st.suspicious, country: attrs.country || "", asnOwner: attrs.as_owner || "" };
-      setCache(key, result);
-      return result;
-    },
     save() {
       if (enabled) writeText(cachePath, JSON.stringify(cache, null, 2));
     }
@@ -558,8 +539,7 @@ tmp("net.txt").split(/\r?\n/).forEach(line => {
   connections.push({ process: parts[0], pid_: Number(parts[1]), remoteAddress: ip, remotePort: Number(m[2]), path: "", vtIp: null });
 });
 raw.sections.network = connections
-  .filter((c, i, arr) => arr.findIndex(x => x.process === c.process && x.remoteAddress === c.remoteAddress && x.remotePort === c.remotePort) === i)
-  .map(c => Object.assign({}, c, { vtIp: vt.ip(c.remoteAddress) }));
+  .filter((c, i, arr) => arr.findIndex(x => x.process === c.process && x.remoteAddress === c.remoteAddress && x.remotePort === c.remotePort) === i);
 
 raw.sections.listeningPorts = tmp("listen.txt").split(/\r?\n/).map(line => {
   if (!line.includes("LISTEN")) return null;
@@ -628,7 +608,7 @@ raw.sections.storage = {
   simulatorDevices
 };
 const bootedSimulators = storageRuntime.filter(item => item.kind === "booted_simulator");
-const warningRuntimeSignals = storageRuntime.filter(item => item.kind === "process_count" && item.risk === "warning");
+const warningRuntimeSignals = storageRuntime.filter(item => item.kind !== "booted_simulator" && item.risk === "warning");
 const claudeVm = storageItems.find(item => item.kind === "ai_vm_cache" && Number(item.sizeGB || 0) >= 5);
 const codexLogDb = storageItems.find(item => item.kind === "ai_review" && /Codex/i.test(item.label || "") && Number(item.sizeGB || 0) >= 1);
 if (claudeVm) {

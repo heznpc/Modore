@@ -78,6 +78,43 @@ def test_codex_and_claude_work_records_are_protected_inventory(project_root):
         ), f"work record is not classified as protected/manual review: {path}"
 
 
+def test_browser_automation_roots_are_grouped_without_exposing_commands(project_root):
+    script = project_root / "scripts" / "modules" / "macos" / "storage.sh"
+    process_snapshot = "\n".join(
+        [
+            "101 1 00:42 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-pipe --user-data-dir=/tmp/profile?token=secret",
+            "102 101 00:41 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=renderer --remote-debugging-pipe",
+            "201 200 02:15 /Users/test/Library/Caches/ms-playwright/chromium-123/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --no-startup-window --remote-debugging-pipe",
+            "301 300 00:03 /usr/local/bin/node playwright_chromiumdev_profile=/tmp/profile?token=secret",
+            "401 400 05:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ]
+    )
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            '. "$1"; _pch_browser_automation_roots',
+            "bash",
+            str(script),
+        ],
+        input=process_snapshot,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    rows = [line.split("\t") for line in result.stdout.splitlines()]
+    assert rows == [
+        ["101", "1", "00:42", "system", "orphaned"],
+        ["201", "200", "02:15", "isolated", "active"],
+    ]
+    assert "token=secret" not in result.stdout
+    assert "remote-debugging-pipe" not in result.stdout
+    assert "Google Chrome Helper" not in result.stdout
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="JXA scanner helper is macOS-only")
 def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
     project_root, tmp_path

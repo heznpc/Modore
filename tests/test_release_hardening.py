@@ -51,6 +51,7 @@ def test_release_manifest_uses_portable_artifact_name(project_root, tmp_path, mo
 
     assert metadata["file"] == "portable.zip"
     assert str(project_root) not in json.dumps(metadata)
+    assert not list(tmp_path.glob(".pch-release-recovery.*"))
 
 
 def test_release_zip_refuses_to_overwrite_existing_artifact(project_root, tmp_path, monkeypatch):
@@ -144,6 +145,23 @@ def test_release_recovery_rename_never_replaces_an_existing_entry(
 
     assert (source_directory / "artifact.zip").read_bytes() == b"audited"
     assert (recovery_directory / "artifact.zip").read_bytes() == b"existing-user-file"
+
+
+def test_release_recovery_cleanup_refuses_a_replaced_entry(project_root, tmp_path):
+    module = load_release_smoke(project_root)
+    source = tmp_path / "artifact.zip"
+    source.write_bytes(b"audited")
+    expected = module.file_entry_identity(source)
+    matches, recovery = module.preserve_entry_for_review(source, expected)
+    assert matches is True
+    assert recovery is not None
+    recovery.unlink()
+    recovery.write_bytes(b"replacement")
+
+    with pytest.raises(RuntimeError, match="changed before cleanup"):
+        module.discard_preserved_entry(recovery, expected)
+
+    assert recovery.read_bytes() == b"replacement"
 
 
 def test_release_source_state_contains_no_checkout_path(project_root):
@@ -758,6 +776,10 @@ def test_mac_builder_embeds_release_identity_without_local_path(project_root):
     assert "existing_app_is_expected" in source
     assert "Previous app preserved for manual review" in source
     assert '/bin/rm -rf "$backup_app"' not in source
+    assert 'KEEP_PREVIOUS_APP="${PCH_KEEP_PREVIOUS_APP:-0}"' in source
+    assert 'if [[ "$KEEP_PREVIOUS_APP" == "1" ]]' in source
+    assert '/bin/rm -rf "$backup_container"' in source
+    assert "Verified replacement; previous app backup removed" in source
     assert 'ALLOW_USER_TOOLCHAIN="${PCH_ALLOW_USER_TOOLCHAIN:-0}"' in source
     assert '"$ALLOW_USER_TOOLCHAIN" == "1" && "${PCH_SKIP_ADHOC_SIGN:-0}" == "1"' in source
 

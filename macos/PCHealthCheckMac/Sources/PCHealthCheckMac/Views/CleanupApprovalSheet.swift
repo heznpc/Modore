@@ -111,9 +111,7 @@ private struct CleanupApprovalNotices: View {
                     Label(process.name, systemImage: "app")
                         .font(.callout)
                         .lineLimit(2)
-                        .help(process.rawCommand)
                         .accessibilityLabel("실행 중인 항목: \(process.name)")
-                        .accessibilityValue(process.rawCommand)
                 }
             }
         }

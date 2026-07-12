@@ -113,13 +113,16 @@ def test_cleanup_blocks_live_related_process(project_root, tmp_path):
         home,
         "--preview",
         "playwright_browsers",
-        processes="/tmp/chrome --headless --remote-debugging-pipe\n",
+        processes="/tmp/chrome --headless --remote-debugging-pipe --token=do-not-expose\n",
     )
     payload = parse_protocol(preview.stdout)
 
     assert preview.returncode == 0
     assert payload["status"] == "blocked"
     assert "종료" in str(payload["blockedReason"])
+    assert payload["runningProcesses"] == "Playwright"
+    assert "do-not-expose" not in preview.stdout
+    assert "/tmp/chrome" not in preview.stdout
     assert browser.exists()
 
     executed = run_cleanup(
@@ -130,7 +133,7 @@ def test_cleanup_blocks_live_related_process(project_root, tmp_path):
         "--owner-approved",
         "--approval-token",
         "0" * 64,
-        processes="/tmp/chrome --headless --remote-debugging-pipe\n",
+        processes="/tmp/chrome --headless --remote-debugging-pipe --token=do-not-expose\n",
     )
     assert executed.returncode == 3
     assert browser.exists()
