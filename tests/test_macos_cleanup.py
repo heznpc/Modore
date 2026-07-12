@@ -3,6 +3,7 @@ import plistlib
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,7 @@ def run_cleanup(
     *args: str,
     processes: str = "",
     extra_env: dict[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
 ):
     applications_root = home / "ApplicationsRoot"
     applications_root.mkdir(parents=True, exist_ok=True)
@@ -56,6 +58,7 @@ def run_cleanup(
         text=True,
         encoding="utf-8",
         env=env,
+        pass_fds=pass_fds,
     )
 
 
@@ -63,6 +66,50 @@ def approval_token(payload: dict[str, object]) -> str:
     token = str(payload.get("approvalToken", ""))
     assert len(token) == 64
     return token
+
+
+def run_cleanup_with_token_file(
+    project_root: Path,
+    home: Path,
+    recipe: str,
+    token: str,
+    *,
+    processes: str = "",
+    extra_env: dict[str, str] | None = None,
+):
+    with tempfile.TemporaryFile() as token_file:
+        token_file.write(token.encode("ascii"))
+        token_file.flush()
+        token_file.seek(0)
+        descriptor = token_file.fileno()
+        return run_cleanup(
+            project_root,
+            home,
+            "--execute",
+            recipe,
+            "--owner-approved",
+            "--approval-token-file",
+            f"/dev/fd/{descriptor}",
+            processes=processes,
+            extra_env=extra_env,
+            pass_fds=(descriptor,),
+        )
+
+
+def test_macos_app_keeps_raw_approval_token_out_of_argv(project_root):
+    source = (
+        project_root
+        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModelActions.swift"
+    ).read_text(encoding="utf-8")
+    execute_source = source.split("func executeCleanup", 1)[1].split(
+        "func retryCleanupPreview", 1
+    )[0]
+    arguments = execute_source.split("arguments: [", 1)[1].split("],", 1)[0]
+
+    assert 'pinnedFiles["approval_token"] = Data(preview.approvalToken.utf8)' in execute_source
+    assert '"--approval-token-file", "@pch-pinned:approval_token"' in arguments
+    assert "preview.approvalToken" not in arguments
+    assert '"--approval-token",' not in execute_source
 
 
 def test_cleanup_preview_is_read_only_and_execute_requires_approval(project_root, tmp_path):
@@ -100,6 +147,46 @@ def test_cleanup_preview_is_read_only_and_execute_requires_approval(project_root
     receipt = Path(str(result["receipt"]))
     assert receipt.is_file()
     assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
+
+
+def test_cleanup_executes_with_exact_token_from_regular_fd(project_root, tmp_path):
+    home = tmp_path / "home"
+    cache_file = home / ".npm" / "entry"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_bytes(b"fixture")
+    preview = run_cleanup(project_root, home, "--preview", "npm_cache")
+    token = approval_token(parse_protocol(preview.stdout))
+
+    executed = run_cleanup_with_token_file(project_root, home, "npm_cache", token)
+    result = parse_protocol(executed.stdout)
+
+    assert executed.returncode == 0, executed.stderr
+    assert result["status"] == "complete"
+    assert not cache_file.exists()
+    assert token not in executed.stdout
+    assert token not in executed.stderr
+
+
+@pytest.mark.parametrize("mutation", ["short", "newline", "long"])
+def test_cleanup_rejects_non_exact_token_file(project_root, tmp_path, mutation):
+    home = tmp_path / "home"
+    cache_file = home / ".npm" / "entry"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_bytes(b"fixture")
+    preview = run_cleanup(project_root, home, "--preview", "npm_cache")
+    token = approval_token(parse_protocol(preview.stdout))
+    candidate = {
+        "short": token[:-1],
+        "newline": token + "\n",
+        "long": token + "0",
+    }[mutation]
+
+    executed = run_cleanup_with_token_file(project_root, home, "npm_cache", candidate)
+
+    assert executed.returncode == 2
+    assert cache_file.is_file()
+    assert token not in executed.stdout
+    assert token not in executed.stderr
 
 
 def test_cleanup_blocks_live_related_process(project_root, tmp_path):
@@ -179,6 +266,29 @@ def test_execute_rejects_target_drift_and_consumed_approval(project_root, tmp_pa
     assert drifted.returncode == 3
     assert parse_protocol(drifted.stdout)["status"] == "blocked"
     assert cache_file.exists()
+
+    replayed_blocked_attempt = run_cleanup(
+        project_root,
+        home,
+        "--execute",
+        "npm_cache",
+        "--owner-approved",
+        "--approval-token",
+        token,
+    )
+    approvals = (
+        home
+        / "Library"
+        / "Application Support"
+        / "PC Health Check"
+        / "cleanup-approvals"
+    )
+    assert replayed_blocked_attempt.returncode == 3
+    assert "일회성 실행으로 잠그지 못했습니다" in str(
+        parse_protocol(replayed_blocked_attempt.stdout)["blockedReason"]
+    )
+    assert not (approvals / f"{token}.tsv").exists()
+    assert not list(approvals.glob(f".executing-{token}-*.tsv"))
 
     refreshed = run_cleanup(project_root, home, "--preview", "npm_cache")
     refreshed_payload = parse_protocol(refreshed.stdout)
@@ -308,6 +418,45 @@ def test_failed_staged_removal_reports_private_recovery_path(project_root, tmp_p
     assert f"stagedRemainder\t{staged}" in receipt.read_text(encoding="utf-8")
 
 
+def test_staged_destination_swap_preserves_replacement_and_approved_object(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    approved = home / ".npm"
+    approved.mkdir(parents=True)
+    (approved / "approved.txt").write_text("approved", encoding="utf-8")
+    replacement = home / "replacement"
+    replacement.mkdir(parents=True)
+    (replacement / "replacement.txt").write_text("replacement", encoding="utf-8")
+    preview = run_cleanup(project_root, home, "--preview", "npm_cache")
+    token = approval_token(parse_protocol(preview.stdout))
+
+    executed = run_cleanup_with_token_file(
+        project_root,
+        home,
+        "npm_cache",
+        token,
+        extra_env={
+            "PCH_TEST_SWAP_STAGED_DESTINATION_AT": "1",
+            "PCH_TEST_SWAP_STAGED_DESTINATION_WITH": str(replacement),
+        },
+    )
+    result = parse_protocol(executed.stdout)
+    remainders = [Path(str(path)) for path in result["stagedRemainders"]]
+
+    assert executed.returncode == 4, executed.stderr
+    assert result["status"] == "partial"
+    assert "삭제 직전에 교체" in str(result["blockedReason"])
+    assert len(remainders) == 2
+    assert all(path.exists() for path in remainders)
+    assert any((path / "replacement.txt").is_file() for path in remainders)
+    assert any((path / "approved.txt").is_file() for path in remainders)
+    assert token not in executed.stdout
+    receipt = Path(str(result["receipt"]))
+    receipt_text = receipt.read_text(encoding="utf-8")
+    assert all(f"stagedRemainder\t{path}" in receipt_text for path in remainders)
+
+
 def test_execute_rechecks_processes_at_destructive_boundary(project_root, tmp_path):
     home = tmp_path / "home"
     browser = home / "Library" / "Caches" / "ms-playwright" / "chromium" / "chrome"
@@ -388,6 +537,7 @@ def test_cleanup_has_no_recipe_for_session_history(project_root, tmp_path):
         ("PCH_TEST_LATE_SIMULATOR_KEEP_FILE", "/tmp/outside-late-keep-list"),
         ("PCH_TEST_LATE_CONTENT_FILE", "/tmp/outside-late-content"),
         ("PCH_TEST_SWAP_TARGET_WITH_SYMLINK_TO", "/tmp"),
+        ("PCH_TEST_SWAP_STAGED_DESTINATION_WITH", "/tmp"),
     ],
 )
 def test_test_hooks_cannot_escape_isolated_home(project_root, tmp_path, key, value):

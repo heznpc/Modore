@@ -10,16 +10,16 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
-        case .status: return "상태"
+        case .status: return "진단"
         case .storage: return "저장공간"
         case .security: return "보안"
-        case .activity: return "활동"
+        case .activity: return "기록"
         }
     }
 
     var symbol: String {
         switch self {
-        case .status: return "checkmark.circle"
+        case .status: return "waveform.path.ecg"
         case .storage: return "internaldrive"
         case .security: return "lock.shield"
         case .activity: return "clock.arrow.circlepath"
@@ -218,11 +218,13 @@ private struct SidebarScanStatus: View {
         if model.isRunning { return "검사 중" }
         if model.cleanupInFlight { return "정리 대상 확인 중" }
         if model.storageWatchInFlight { return "감시 설정 적용 중" }
+        if model.summary == nil { return "검사 필요" }
         if model.securityHasDanger {
             return model.securityAttentionCount > 0
                 ? "위험 신호 \(model.securityAttentionCount)건"
                 : "위험 신호 확인"
         }
+        if model.collectionIsIncomplete { return "안전 판단 보류" }
         if model.storageSnapshotNeedsRefresh(at: date) { return "업데이트 필요" }
         if model.securityAttentionCount > 0 { return "확인 항목 \(model.securityAttentionCount)건" }
         return model.storageSnapshotAgeText
@@ -230,6 +232,8 @@ private struct SidebarScanStatus: View {
 
     private func statusSymbol(at date: Date) -> String {
         if model.securityHasDanger { return "exclamationmark.shield" }
+        if model.summary == nil { return "questionmark.circle" }
+        if model.collectionIsIncomplete { return "questionmark.shield" }
         if model.storageSnapshotNeedsRefresh(at: date) { return "clock" }
         if model.securityAttentionCount > 0 { return "info.circle" }
         return model.state.symbol

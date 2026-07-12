@@ -69,6 +69,51 @@ SCANNED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 TMP_DIR="$(mktemp -d -t pchealth)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 export TMP_DIR
+COLLECTION_STATUS_PATH="$TMP_DIR/collection_status.tsv"
+: > "$COLLECTION_STATUS_PATH"
+export COLLECTION_STATUS_PATH
+
+record_collection_status() {
+    local source_id="$1"
+    local label="$2"
+    local status="$3"
+    local required="$4"
+    local detail="${5:-}"
+
+    case "$source_id" in
+        ''|*[!a-z0-9_]*) return 1 ;;
+    esac
+    case "$status" in
+        ok|permission_denied|unavailable|timed_out|failed) ;;
+        *) status="failed" ;;
+    esac
+    case "$required" in
+        true|false) ;;
+        *) required="false" ;;
+    esac
+    label="${label//$'\t'/ }"
+    label="${label//$'\n'/ }"
+    detail="${detail//$'\t'/ }"
+    detail="${detail//$'\n'/ }"
+    /usr/bin/printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$source_id" "$label" "$status" "$required" "$detail" \
+        >> "$COLLECTION_STATUS_PATH"
+}
+
+collection_failure_status() {
+    local exit_status="$1"
+    local error_text="${2:-}"
+    if [[ "$exit_status" -eq 124 ]]; then
+        /usr/bin/printf 'timed_out'
+    elif [[ "$exit_status" -eq 126 || "$exit_status" -eq 127 ]]; then
+        /usr/bin/printf 'unavailable'
+    elif /usr/bin/printf '%s' "$error_text" \
+        | /usr/bin/grep -Eqi 'operation not permitted|permission denied|not authorized'; then
+        /usr/bin/printf 'permission_denied'
+    else
+        /usr/bin/printf 'failed'
+    fi
+}
 
 # ------------------------------------------------------------
 # 모듈 로드 (source)

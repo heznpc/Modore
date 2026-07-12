@@ -1,5 +1,51 @@
 import SwiftUI
 
+struct CollectionCoverageSection: View {
+    let coverage: CollectionCoverage
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        Section {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                ForEach(coverage.sources) { source in
+                    SecurityStatusRow(
+                        symbol: source.status == "ok" ? "checkmark.circle" : issueSymbol(source),
+                        title: source.label,
+                        subtitle: source.detail.isEmpty ? source.statusText : source.detail,
+                        value: source.statusText
+                    )
+                }
+            } label: {
+                SecurityDisclosureLabel(
+                    symbol: coverage.complete ? "checkmark.shield" : "questionmark.shield",
+                    title: coverage.complete ? "검사 범위를 완료했습니다" : "검사 범위가 불완전합니다",
+                    detail: coverage.complete
+                        ? "필수 수집기가 모두 응답했습니다. 정상 판정은 이 범위 안에서만 유효합니다."
+                        : "완료하지 못한 필수 수집기가 있어 안전 여부를 확정하지 않습니다.",
+                    value: coverage.coverageText
+                )
+            }
+        } header: {
+            NativeSectionHeader(
+                title: "검사 범위",
+                subtitle: "무엇을 실제로 확인했는지와 누락된 수집기를 구분합니다.",
+                value: coverage.complete
+                    ? "\(coverage.coverageText) · \(coverage.allCoverageText)"
+                    : "판단 보류"
+            )
+        }
+    }
+
+    private func issueSymbol(_ source: CollectionSourceStatus) -> String {
+        switch source.status {
+        case "permission_denied": return "lock"
+        case "timed_out": return "clock"
+        case "unavailable": return "slash.circle"
+        default: return "xmark.circle"
+        }
+    }
+}
+
 struct SecurityBaselineRows: View {
     let security: MacOSSecurityStatus
 
@@ -129,7 +175,7 @@ struct SecurityStatusRow: View {
     }
 }
 
-struct SecurityAccessIssuesSection: View {
+struct StorageAccessIssuesSection: View {
     let issues: [StorageAccessIssue]
     let openSettings: () -> Void
 
@@ -149,7 +195,7 @@ struct SecurityAccessIssuesSection: View {
 
 struct SecurityFindingsSection: View {
     let findings: [ScanFinding]
-    let summary: ScanSummary?
+    let attentionCount: Int
 
     var body: some View {
         Section {
@@ -159,17 +205,10 @@ struct SecurityFindingsSection: View {
         } header: {
             NativeSectionHeader(
                 title: "확인 필요",
-                subtitle: summary?.message ?? "",
+                subtitle: "보안 관련 진단 결과입니다.",
                 value: "\(attentionCount)건"
             )
         }
-    }
-
-    private var attentionCount: Int {
-        max(
-            summary?.attentionCount ?? 0,
-            findings.filter { $0.level == "danger" || $0.level == "warning" }.count
-        )
     }
 }
 

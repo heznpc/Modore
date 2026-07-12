@@ -62,6 +62,59 @@ def test_storage_watch_detects_large_drop_without_deleting(project_root, tmp_pat
     assert not injected.exists()
 
 
+def test_storage_watch_captures_bounded_top_paths_only_after_large_drop(
+    project_root, tmp_path
+):
+    state_dir = tmp_path / "state"
+    snapshot_root = tmp_path / "snapshot-roots"
+    larger = snapshot_root / "codex-cache"
+    smaller = snapshot_root / "playwright-cache"
+    larger.mkdir(parents=True)
+    smaller.mkdir()
+    (larger / "payload.bin").write_bytes(b"a" * (2 * 1024 * 1024))
+    (smaller / "payload.bin").write_bytes(b"b" * (512 * 1024))
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(50 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "0",
+            "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
+            "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "2",
+            "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "1",
+            "PCH_WATCH_SNAPSHOT_EVENT_LIMIT": "1",
+        }
+    )
+    script = project_root / "scripts" / "storage_watch.sh"
+
+    baseline = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert baseline.returncode == 0, baseline.stderr
+    assert parse_protocol(baseline.stdout)["snapshotRows"] == "0"
+    assert not (state_dir / "storage-watch-paths.tsv").exists()
+
+    env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
+    dropped = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert dropped.returncode == 0, dropped.stderr
+    payload = parse_protocol(dropped.stdout)
+    assert int(payload["snapshotRows"]) == 2
+
+    snapshot_file = state_dir / "storage-watch-paths.tsv"
+    assert snapshot_file.is_file()
+    assert stat.S_IMODE(snapshot_file.stat().st_mode) == 0o600
+    rows = [line.split("\t") for line in snapshot_file.read_text(encoding="utf-8").splitlines()]
+    assert all(len(row) == 5 for row in rows)
+    assert [row[3] for row in rows] == ["codex-cache", "playwright-cache"]
+    assert int(rows[0][1]) > int(rows[1][1]) > 0
+    assert all(row[2] == "ok" for row in rows)
+    assert all(str(snapshot_root) in row[4] for row in rows)
+
+
 def test_storage_watch_bounds_history(project_root, tmp_path):
     state_dir = tmp_path / "state"
     env = os.environ.copy()

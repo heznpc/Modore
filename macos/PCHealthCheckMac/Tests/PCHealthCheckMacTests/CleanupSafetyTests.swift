@@ -33,6 +33,28 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertTrue(approved.canExecute)
     }
 
+    func testCleanupFailureIncludesEveryRecoveryPath() throws {
+        let failure = try XCTUnwrap(CleanupPreview(protocolText: """
+        version\t1
+        operation\texecute
+        status\tpartial
+        recipeId\tnpm_cache
+        label\tnpm cache
+        blockedReason\t삭제 직전 대상이 바뀌었습니다.
+        stagedRemainder\t/Users/test/staging/replacement
+        stagedRemainder\t/Users/test/staging/approved-original
+        trashRun\t/Users/test/.Trash/PC Health Check-test
+        receipt\t/Users/test/Library/Application Support/PC Health Check/receipt.tsv
+        """))
+
+        XCTAssertTrue(failure.failureMessage.contains("삭제 직전 대상이 바뀌었습니다."))
+        XCTAssertTrue(failure.failureMessage.contains("/Users/test/staging/replacement"))
+        XCTAssertTrue(failure.failureMessage.contains("/Users/test/staging/approved-original"))
+        XCTAssertTrue(failure.failureMessage.contains("/Users/test/.Trash/PC Health Check-test"))
+        XCTAssertTrue(failure.failureMessage.contains("receipt.tsv"))
+        XCTAssertEqual(failure.recoveryPathMessages.count, 4)
+    }
+
     func testStandaloneRuntimeIgnoresEnvironmentAndWorkingDirectoryOverrides() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-runtime-boundary-\(UUID().uuidString)")
@@ -214,7 +236,7 @@ final class CleanupSafetyTests: XCTestCase {
                 "/bin/bash",
                 "-p",
                 "-c",
-                ScanModel.storageWatchWrapper,
+                StorageWatchService.storageWatchWrapper,
                 "--",
                 watcherHash,
                 watcher.path,
@@ -242,7 +264,7 @@ final class CleanupSafetyTests: XCTestCase {
         // job as unloaded: the next login can load it again.
         let protocolValues = ["enabled": "false", "plist": plistURL.path]
         try writePlist(watcher: staleWatcher)
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root
@@ -251,7 +273,7 @@ final class CleanupSafetyTests: XCTestCase {
         // Installing replaces the stale definition with the current signed
         // bundle watcher path.
         try writePlist(watcher: expectedWatcher)
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root
@@ -262,7 +284,7 @@ final class CleanupSafetyTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root
@@ -276,7 +298,7 @@ final class CleanupSafetyTests: XCTestCase {
         var mismatchedLoadedValues = protocolValues
         mismatchedLoadedValues["loaded"] = "true"
         mismatchedLoadedValues["loadedDefinitionCurrent"] = "false"
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: mismatchedLoadedValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root
@@ -286,7 +308,7 @@ final class CleanupSafetyTests: XCTestCase {
             [.posixPermissions: 0o666],
             ofItemAtPath: plistURL.path
         )
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root
@@ -297,7 +319,7 @@ final class CleanupSafetyTests: XCTestCase {
         )
 
         try writePlist(watcher: expectedWatcher, extraEnvironment: true)
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root
@@ -305,7 +327,7 @@ final class CleanupSafetyTests: XCTestCase {
 
         let mutableWatcher = root.appendingPathComponent("Application Support/PC Health Check/runtime/scripts/storage_watch.sh")
         try writePlist(watcher: mutableWatcher)
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root
@@ -314,7 +336,7 @@ final class CleanupSafetyTests: XCTestCase {
         let outsidePlist = root.appendingPathComponent("outside.plist")
         try FileManager.default.moveItem(at: plistURL, to: outsidePlist)
         try FileManager.default.createSymbolicLink(at: plistURL, withDestinationURL: outsidePlist)
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root
@@ -322,7 +344,7 @@ final class CleanupSafetyTests: XCTestCase {
 
         // Uninstall must remove the entry rather than merely unload it.
         try FileManager.default.removeItem(at: plistURL)
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root
@@ -346,7 +368,7 @@ final class CleanupSafetyTests: XCTestCase {
         try "#!/bin/bash\n".write(to: expectedWatcher, atomically: true, encoding: .utf8)
         try Data(repeating: 0x41, count: 65_537).write(to: plistURL)
         let values = ["enabled": "false", "loaded": "false", "plist": plistURL.path]
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: values,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root
@@ -361,7 +383,7 @@ final class CleanupSafetyTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
-        XCTAssertEqual(ScanModel.storageWatchRuntimeState(
+        XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: values,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root

@@ -3,6 +3,10 @@
 # 출력: storage_df.txt, storage_paths.tsv, storage_access.tsv, storage_runtime.tsv, storage_simulators.tsv
 # 의존: df, du, find
 
+if ! declare -F record_collection_status >/dev/null 2>&1; then
+    record_collection_status() { :; }
+fi
+
 _pch_is_protected_developer_app() {
     local app_path="$1"
     local bundle_id="${2:-}"
@@ -19,8 +23,56 @@ _pch_is_protected_developer_app() {
     return 1
 }
 
+_pch_browser_controller() {
+    local current_pid="$1"
+    local depth=0
+    local parent_line ancestor_pid ancestor_command
+    local fallback="other local process"
+
+    while [[ "$depth" -lt 8 ]]; do
+        case "$current_pid" in ''|*[!0-9]*|0|1) break ;; esac
+        parent_line="$(/bin/ps -p "$current_pid" -o ppid=,command= 2>/dev/null || true)"
+        [[ -n "$parent_line" ]] || break
+        read -r ancestor_pid ancestor_command <<< "$parent_line"
+        case "$ancestor_command" in
+            *Codex.app*|*/codex*|*SkyComputerUseClient*) /usr/bin/printf 'Codex'; return 0 ;;
+            *Claude.app*|*/claude*|*claude-code*) /usr/bin/printf 'Claude'; return 0 ;;
+            *playwright*|*node*) fallback="Playwright/Node" ;;
+            *python*) [[ "$fallback" == "other local process" ]] && fallback="Python automation" ;;
+        esac
+        current_pid="$ancestor_pid"
+        depth=$((depth + 1))
+    done
+    /usr/bin/printf '%s' "$fallback"
+}
+
+_pch_elapsed_seconds() {
+    local elapsed="$1"
+    local days=0 hours=0 minutes=0 seconds=0 clock
+    local day_value hour_value minute_value second_value
+    if [[ "$elapsed" == *-* ]]; then
+        days="${elapsed%%-*}"
+        clock="${elapsed#*-}"
+    else
+        clock="$elapsed"
+    fi
+    case "$clock" in
+        *:*:*) IFS=: read -r hours minutes seconds <<< "$clock" ;;
+        *:*) IFS=: read -r minutes seconds <<< "$clock" ;;
+        *) return 1 ;;
+    esac
+    case "$days$hours$minutes$seconds" in ''|*[!0-9]*) return 1 ;; esac
+    day_value=$((10#$days))
+    hour_value=$((10#$hours))
+    minute_value=$((10#$minutes))
+    second_value=$((10#$seconds))
+    /usr/bin/printf '%s' \
+        "$((day_value * 86400 + hour_value * 3600 + minute_value * 60 + second_value))"
+}
+
 _pch_browser_automation_roots() {
-    local pid ppid elapsed command channel state
+    local pid ppid elapsed command channel state profile controller parent_command
+    local parent_parent_pid elapsed_seconds
 
     while read -r pid ppid elapsed command; do
         case "$pid$ppid" in ''|*[!0-9]*) continue ;; esac
@@ -42,200 +94,30 @@ _pch_browser_automation_roots() {
             *"/Applications/Google Chrome.app/"*) channel="system" ;;
             *) channel="unknown" ;;
         esac
-        if [[ "$ppid" == "1" ]]; then
-            state="orphaned"
+        case "$command" in
+            *playwright_chromiumdev_profile*) profile="temporary" ;;
+            *--user-data-dir=*) profile="custom" ;;
+            *) profile="default" ;;
+        esac
+        parent_command="$(/bin/ps -p "$ppid" -o command= 2>/dev/null || true)"
+        parent_parent_pid="$(/bin/ps -p "$ppid" -o ppid= 2>/dev/null | /usr/bin/tr -d ' ' || true)"
+        elapsed_seconds="$(_pch_elapsed_seconds "$elapsed" 2>/dev/null || /usr/bin/printf '0')"
+        controller="$(_pch_browser_controller "$ppid")"
+        [[ -n "$parent_command" ]] || controller="parent unavailable"
+        if [[ ( "$ppid" == "1" || "$parent_parent_pid" == "1" || -z "$parent_command" ) \
+            && "$elapsed_seconds" -ge 3600 ]]; then
+            state="orphan_candidate"
+        elif [[ "$ppid" == "1" || "$parent_parent_pid" == "1" || -z "$parent_command" ]]; then
+            state="detached"
         else
             state="active"
         fi
-        /usr/bin/printf '%s\t%s\t%s\t%s\t%s\n' "$pid" "$ppid" "$elapsed" "$channel" "$state"
+        /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$pid" "$ppid" "$elapsed" "$channel" "$state" "$profile" "$controller"
     done
 }
 
-collect_storage() {
-    local df_target="/"
-    local du_timeout="${PCH_STORAGE_DU_TIMEOUT:-8}"
-    local du_budget="${PCH_STORAGE_TOTAL_DU_BUDGET:-32}"
-    local du_elapsed_ticks=0
-    local du_budget_ticks=0
-    local DU_SIZE_RESULT="0"
-    case "$du_timeout" in
-        ''|*[!0-9]*) du_timeout=8 ;;
-    esac
-    case "$du_budget" in
-        ''|*[!0-9]*) du_budget=32 ;;
-    esac
-    du_budget_ticks=$((du_budget * 10))
-    if [[ -d "/System/Volumes/Data" ]]; then
-        df_target="/System/Volumes/Data"
-    fi
-
-    /bin/df -Pk "$df_target" 2>/dev/null | /usr/bin/tail -n 1 > "$TMP_DIR/storage_df.txt" || true
-    : > "$TMP_DIR/storage_paths.tsv"
-    : > "$TMP_DIR/storage_access.tsv"
-    : > "$TMP_DIR/storage_runtime.tsv"
-    : > "$TMP_DIR/storage_simulators.tsv"
-
-    local seen="|"
-    du_size_kb() {
-        local target_path="$1"
-        local out_file="$TMP_DIR/du_size.$$.$RANDOM.out"
-        local waited_ticks=0
-        local size_kb
-        local pid
-        local this_timeout_ticks=$((du_timeout * 10))
-        DU_SIZE_RESULT="0"
-
-        if [[ "$du_timeout" -le 0 ]] 2>/dev/null; then
-            DU_SIZE_RESULT="$(/usr/bin/du -sk "$target_path" 2>/dev/null | /usr/bin/awk '{print $1; exit}')"
-            [[ -n "$DU_SIZE_RESULT" ]] || DU_SIZE_RESULT="0"
-            return 0
-        fi
-        if [[ "$du_budget_ticks" -gt 0 && "$du_elapsed_ticks" -ge "$du_budget_ticks" ]] 2>/dev/null; then
-            DU_SIZE_RESULT="__PCH_TIMEOUT__"
-            return 0
-        fi
-        if [[ "$du_budget_ticks" -gt 0 ]] 2>/dev/null; then
-            local remaining_ticks=$((du_budget_ticks - du_elapsed_ticks))
-            if [[ "$remaining_ticks" -lt "$this_timeout_ticks" ]]; then
-                this_timeout_ticks="$remaining_ticks"
-            fi
-        fi
-
-        /usr/bin/du -sk "$target_path" > "$out_file" 2>/dev/null &
-        pid=$!
-        while /bin/kill -0 "$pid" 2>/dev/null; do
-            if [[ "$waited_ticks" -ge "$this_timeout_ticks" ]]; then
-                /bin/kill -9 "$pid" 2>/dev/null || true
-                wait "$pid" 2>/dev/null || true
-                /bin/rm -f "$out_file"
-                du_elapsed_ticks=$((du_elapsed_ticks + waited_ticks))
-                DU_SIZE_RESULT="__PCH_TIMEOUT__"
-                return 0
-            fi
-            /bin/sleep 0.1
-            waited_ticks=$((waited_ticks + 1))
-        done
-        wait "$pid" 2>/dev/null || true
-        du_elapsed_ticks=$((du_elapsed_ticks + waited_ticks))
-        size_kb="$(/usr/bin/awk '{print $1; exit}' "$out_file" 2>/dev/null)"
-        /bin/rm -f "$out_file"
-        DU_SIZE_RESULT="${size_kb:-0}"
-    }
-
-    add_du_path() {
-        local kind="$1"
-        local label="$2"
-        local target_path="$3"
-        local cleanup_id="${4:-}"
-        local size_kb
-        local measure_status="ok"
-        local measure_note=""
-
-        [[ -e "$target_path" ]] || return 0
-        case "$target_path" in
-            /*) ;;
-            *) return 0 ;;
-        esac
-        case "$target_path$cleanup_id" in
-            *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
-        esac
-        case "$seen" in
-            *"|$target_path|"*) return 0 ;;
-        esac
-        seen="${seen}${target_path}|"
-
-        du_size_kb "$target_path"
-        size_kb="$DU_SIZE_RESULT"
-        if [[ "$size_kb" == "__PCH_TIMEOUT__" ]]; then
-            size_kb=0
-            measure_status="timed_out"
-            measure_note="빠른 검사의 시간 제한 때문에 크기 측정을 보류했습니다. 필요하면 PCH_STORAGE_DU_TIMEOUT=0으로 정밀 측정하세요."
-        fi
-        [[ -n "$size_kb" ]] || size_kb=0
-        /usr/bin/printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$kind" "$label" "$target_path" "$size_kb" "$measure_status" "$measure_note" "$cleanup_id" >> "$TMP_DIR/storage_paths.tsv"
-    }
-
-    add_sized_path() {
-        local kind="$1"
-        local label="$2"
-        local target_path="$3"
-        local size_kb="$4"
-        local measure_note="${5:-}"
-        local cleanup_id="${6:-}"
-
-        [[ -e "$target_path" ]] || return 0
-        [[ "$target_path" == /* ]] || return 0
-        case "$label$target_path$measure_note$cleanup_id" in
-            *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
-        esac
-        case "$size_kb" in ''|*[!0-9]*) return 0 ;; esac
-        case "$seen" in
-            *"|$target_path|"*) return 0 ;;
-        esac
-        seen="${seen}${target_path}|"
-        /usr/bin/printf "%s\t%s\t%s\t%s\tok\t%s\t%s\n" "$kind" "$label" "$target_path" "$size_kb" "$measure_note" "$cleanup_id" >> "$TMP_DIR/storage_paths.tsv"
-    }
-
-    add_access_check() {
-        local kind="$1"
-        local label="$2"
-        local target_path="$3"
-        local status="missing"
-        local note="경로가 없습니다."
-        local err
-
-        [[ -n "$target_path" ]] || return 0
-        case "$target_path" in
-            /*) ;;
-            *) return 0 ;;
-        esac
-        case "$target_path" in
-            *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
-        esac
-
-        if [[ -e "$target_path" ]]; then
-            if /usr/bin/find "$target_path" -maxdepth 1 -mindepth 1 -print -quit >/dev/null 2>"$TMP_DIR/find_access.err"; then
-                status="ok"
-                note="읽을 수 있습니다."
-            else
-                err="$(/bin/cat "$TMP_DIR/find_access.err" 2>/dev/null || true)"
-                status="blocked"
-                note="${err:-읽기 권한이 부족할 수 있습니다.}"
-            fi
-        fi
-
-        case "$note" in
-            *$'\t'*|*$'\n'*|*$'\r'*) note="읽기 권한이 부족할 수 있습니다." ;;
-        esac
-        /usr/bin/printf "%s\t%s\t%s\t%s\t%s\n" "$kind" "$label" "$target_path" "$status" "$note" >> "$TMP_DIR/storage_access.tsv"
-    }
-
-    local ps_commands ps_detailed
-    ps_commands="$(/bin/ps -axo command= 2>/dev/null || true)"
-    ps_detailed="$(/bin/ps -axo pid=,ppid=,etime=,command= 2>/dev/null || true)"
-    count_processes() {
-        local pattern="$1"
-        /usr/bin/printf "%s\n" "$ps_commands" \
-            | /usr/bin/grep -E "$pattern" \
-            | /usr/bin/grep -v -E "grep -E|scripts/scanner.sh|storage.sh" \
-            | /usr/bin/wc -l \
-            | /usr/bin/tr -d ' '
-    }
-
-    add_runtime_signal() {
-        local kind="$1"
-        local label="$2"
-        local count="$3"
-        local risk="$4"
-        local action="$5"
-        local note="$6"
-
-        case "$label$action$note" in
-            *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
-        esac
-        /usr/bin/printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$kind" "$label" "${count:-0}" "$risk" "$action" "$note" >> "$TMP_DIR/storage_runtime.tsv"
-    }
-
+_pch_collect_storage_applications() {
     # 설치 앱은 Spotlight가 이미 계산한 번들 크기를 먼저 읽는다. 깊은 du 순회 없이 큰 앱을 빠르게 비교한다.
     local app_path app_bytes app_kb app_name bundle_id app_note
     while IFS= read -r -d '' app_path; do
@@ -258,19 +140,25 @@ collect_storage() {
         /usr/bin/find /Applications -mindepth 1 -maxdepth 1 -type d -name '*.app' -print0 2>/dev/null
         /usr/bin/find "$HOME/Applications" -mindepth 1 -maxdepth 2 -type d -name '*.app' -prune -print0 2>/dev/null
     )
+}
 
+_pch_collect_storage_simulators() {
     local simctl_devices
-    simctl_devices="$(/usr/bin/xcrun simctl list devices available 2>/dev/null || true)"
+    if [[ "${PCH_TEST_MODE:-}" == "1" && -n "${PCH_TEST_STORAGE_SIMCTL_LIST_FILE:-}" ]]; then
+        simctl_devices="$(/bin/cat "$PCH_TEST_STORAGE_SIMCTL_LIST_FILE" 2>/dev/null || true)"
+    else
+        simctl_devices="$(/usr/bin/xcrun simctl list devices available 2>/dev/null || true)"
+    fi
     if [[ -n "$simctl_devices" ]]; then
         local runtime=""
-        /usr/bin/printf "%s\n" "$simctl_devices" | while IFS= read -r line; do
+        while IFS= read -r line; do
             case "$line" in
                 "-- "*)
                     runtime="${line#-- }"
                     runtime="${runtime% --}"
                     ;;
                 *)
-                    local device_name uuid state device_path device_size_kb device_measure_status saved_du_ticks
+                    local device_name uuid state device_path device_size_kb device_measure_status
                     device_name="$(/usr/bin/sed -E 's/^[[:space:]]*//; s/[[:space:]]*\([0-9A-Fa-f-]{36}\)[[:space:]]*\([^)]*\).*//' <<< "$line")"
                     uuid="$(/usr/bin/sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/' <<< "$line")"
                     state="$(/usr/bin/sed -E 's/.*\([0-9A-Fa-f-]{36}\)[[:space:]]*\(([^)]*)\).*/\1/' <<< "$line")"
@@ -282,11 +170,7 @@ collect_storage() {
                     device_size_kb=0
                     device_measure_status="ok"
                     if [[ -d "$device_path" && ! -L "$device_path" ]]; then
-                        # Device detail is useful, but it must not consume the shared budget
-                        # reserved for cleanup candidates measured later in this scan.
-                        saved_du_ticks="$du_elapsed_ticks"
                         du_size_kb "$device_path"
-                        du_elapsed_ticks="$saved_du_ticks"
                         device_size_kb="$DU_SIZE_RESULT"
                         if [[ "$device_size_kb" == "__PCH_TIMEOUT__" ]]; then
                             device_size_kb=0
@@ -302,9 +186,11 @@ collect_storage() {
                     fi
                     ;;
             esac
-        done
+        done <<< "$simctl_devices"
     fi
+}
 
+_pch_collect_known_storage_paths() {
     # Chrome code-sign clone은 변동 폭이 크고 사용자가 가장 먼저 확인해야 하므로
     # 넓은 SDK/toolchain 측정보다 앞에서 시간 예산을 확보한다.
     local clone_dir
@@ -409,7 +295,9 @@ collect_storage() {
     elif [[ -e "$HOME/Library/LaunchAgents/com.innorix.innorixes.plist" ]]; then
         add_du_path "known_app" "INNORIX-EX LaunchAgent residue" "$HOME/Library/LaunchAgents/com.innorix.innorixes.plist" "innorix_ex"
     fi
+}
 
+_pch_collect_storage_access_checks() {
     # Full Disk Access가 없으면 macOS가 일부 개인 데이터/앱 데이터 영역을 숨길 수 있다.
     add_access_check "privacy_area" "Mail data" "$HOME/Library/Mail"
     add_access_check "privacy_area" "Messages data" "$HOME/Library/Messages"
@@ -418,7 +306,9 @@ collect_storage() {
     add_access_check "privacy_area" "Contacts data" "$HOME/Library/Application Support/AddressBook"
     add_access_check "app_data" "App containers" "$HOME/Library/Containers"
     add_access_check "app_data" "Group containers" "$HOME/Library/Group Containers"
+}
 
+_pch_collect_storage_runtime_signals() {
     # 반복 생성원: 공간을 직접 지우기보다 "왜 또 쌓이는지"를 설명하는 신호.
     local chrome_count sim_count codex_count claude_count node_count
     chrome_count="$(count_processes 'Google Chrome')"
@@ -428,9 +318,9 @@ collect_storage() {
     node_count="$(count_processes '(^|/)(node|npm|npx)( |$)')"
 
     add_runtime_signal "process_count" "Chrome processes" "$chrome_count" "$([[ "$chrome_count" -ge 20 ]] && echo warning || echo info)" "브라우저 탭/자동화 정리" "Chrome 계열 프로세스가 많으면 code-sign clone과 프로필 캐시가 다시 쌓일 수 있습니다."
-    local browser_pid browser_ppid browser_elapsed browser_channel browser_state
+    local browser_pid browser_ppid browser_elapsed browser_channel browser_state browser_profile browser_controller
     local browser_label browser_risk browser_action browser_channel_note
-    while IFS=$'\t' read -r browser_pid browser_ppid browser_elapsed browser_channel browser_state; do
+    while IFS=$'\t' read -r browser_pid browser_ppid browser_elapsed browser_channel browser_state browser_profile browser_controller; do
         case "$browser_channel" in
             system)
                 browser_label="시스템 Chrome 자동화"
@@ -451,10 +341,10 @@ collect_storage() {
                 browser_channel_note="분류되지 않은 브라우저 채널"
                 ;;
         esac
-        if [[ "$browser_state" == "orphaned" ]]; then
-            browser_label="잔류 $browser_label"
+        if [[ "$browser_state" == "orphan_candidate" ]]; then
+            browser_label="잔류 후보 $browser_label"
             browser_risk="warning"
-            browser_action="부모가 끝난 잔류 프로세스 종료 확인"
+            browser_action="소유 작업 재확인 후 종료 검토"
         fi
         add_runtime_signal \
             "browser_automation_root" \
@@ -462,11 +352,316 @@ collect_storage() {
             "1" \
             "$browser_risk" \
             "$browser_action" \
-            "PID $browser_pid · 실행 $browser_elapsed · 부모 PID $browser_ppid · $browser_channel_note"
+            "PID $browser_pid · 실행 $browser_elapsed · 부모 PID $browser_ppid · $browser_channel_note · $browser_controller" \
+            "$browser_pid" \
+            "$browser_ppid" \
+            "$browser_elapsed" \
+            "$browser_channel" \
+            "$browser_state" \
+            "$browser_profile" \
+            "$browser_controller"
     done < <(/usr/bin/printf '%s\n' "$ps_detailed" | _pch_browser_automation_roots)
     add_runtime_signal "process_count" "CoreSimulator processes" "$sim_count" "$([[ "$sim_count" -ge 100 ]] && echo warning || echo info)" "필요한 Simulator만 Booted" "부팅된 Simulator는 런타임 프로세스를 대량으로 띄웁니다."
     add_runtime_signal "process_count" "Codex processes" "$codex_count" "$([[ "$codex_count" -ge 20 ]] && echo warning || echo info)" "끝난 Codex 작업의 프로세스 종료" "세션 기록은 보존하고, 더 이상 사용하지 않는 Codex/Computer Use 프로세스만 앱에서 정상 종료하세요."
     add_runtime_signal "process_count" "Claude processes" "$claude_count" "$([[ "$claude_count" -ge 15 ]] && echo warning || echo info)" "끝난 Claude 작업의 프로세스 종료" "로컬 작업공간은 보존하고, 더 이상 사용하지 않는 Claude Desktop/Code 프로세스만 앱에서 정상 종료하세요."
     add_runtime_signal "process_count" "Node/npm/npx processes" "$node_count" "$([[ "$node_count" -ge 25 ]] && echo warning || echo info)" "개발 서버 종료" "여러 개발 서버와 MCP/브라우저 자동화 런타임이 동시에 떠 있을 수 있습니다."
+}
 
+collect_storage() {
+    local df_target="/"
+    local du_timeout="${PCH_STORAGE_DU_TIMEOUT:-8}"
+    local du_budget="${PCH_STORAGE_TOTAL_DU_BUDGET:-32}"
+    local du_budget_ticks=0
+    local du_budget_started=0
+    local du_budget_timer_pid=""
+    local du_test_clock_ticks=0
+    local du_test_deadline_ticks=0
+    local du_test_duration_ticks=""
+    local du_test_size_kb="1"
+    local du_test_trace_file=""
+    local DU_SIZE_RESULT="0"
+    case "$du_timeout" in
+        ''|*[!0-9]*) du_timeout=8 ;;
+    esac
+    case "$du_budget" in
+        ''|*[!0-9]*) du_budget=32 ;;
+    esac
+    du_budget_ticks=$((du_budget * 10))
+    if [[ "${PCH_TEST_MODE:-}" == "1" ]]; then
+        case "${PCH_TEST_STORAGE_DU_DURATION_TICKS:-}" in
+            ''|*[!0-9]*) ;;
+            *) du_test_duration_ticks="$PCH_TEST_STORAGE_DU_DURATION_TICKS" ;;
+        esac
+        case "${PCH_TEST_STORAGE_DU_SIZE_KB:-}" in
+            ''|*[!0-9]*) ;;
+            *) du_test_size_kb="$PCH_TEST_STORAGE_DU_SIZE_KB" ;;
+        esac
+        du_test_trace_file="${PCH_TEST_STORAGE_DU_TRACE_FILE:-}"
+        [[ -z "$du_test_duration_ticks" || -z "$du_test_trace_file" ]] || : > "$du_test_trace_file"
+    fi
+    if [[ -d "/System/Volumes/Data" ]]; then
+        df_target="/System/Volumes/Data"
+    fi
+
+    /bin/df -Pk "$df_target" 2>/dev/null | /usr/bin/tail -n 1 > "$TMP_DIR/storage_df.txt" || true
+    if /usr/bin/awk 'NF >= 5 { found=1 } END { exit(found ? 0 : 1) }' "$TMP_DIR/storage_df.txt"; then
+        record_collection_status "storage_volume" "시동 볼륨" "ok" "false" "현재 볼륨 사용량을 확인했습니다."
+    else
+        : > "$TMP_DIR/storage_df.txt"
+        record_collection_status "storage_volume" "시동 볼륨" "failed" "false" "현재 볼륨 사용량을 읽지 못했습니다."
+    fi
+    : > "$TMP_DIR/storage_paths.tsv"
+    : > "$TMP_DIR/storage_access.tsv"
+    : > "$TMP_DIR/storage_runtime.tsv"
+    : > "$TMP_DIR/storage_simulators.tsv"
+
+    local seen="|"
+    _pch_storage_du_budget_start() {
+        [[ "$du_timeout" -gt 0 && "$du_budget" -gt 0 && "$du_budget_started" -eq 0 ]] || return 0
+        du_budget_started=1
+        if [[ -n "$du_test_duration_ticks" ]]; then
+            du_test_deadline_ticks=$((du_test_clock_ticks + du_budget_ticks))
+            return 0
+        fi
+        /bin/sleep "$du_budget" &
+        du_budget_timer_pid=$!
+    }
+
+    _pch_storage_du_budget_expired() {
+        [[ "$du_timeout" -gt 0 && "$du_budget" -gt 0 ]] || return 1
+        _pch_storage_du_budget_start
+        if [[ -n "$du_test_duration_ticks" ]]; then
+            [[ "$du_test_clock_ticks" -ge "$du_test_deadline_ticks" ]]
+            return
+        fi
+        if [[ -z "$du_budget_timer_pid" ]] || ! /bin/kill -0 "$du_budget_timer_pid" 2>/dev/null; then
+            return 0
+        fi
+        return 1
+    }
+
+    _pch_storage_du_budget_stop() {
+        [[ -n "$du_budget_timer_pid" ]] || return 0
+        /bin/kill "$du_budget_timer_pid" 2>/dev/null || true
+        wait "$du_budget_timer_pid" 2>/dev/null || true
+        du_budget_timer_pid=""
+    }
+
+    _pch_storage_trace_test_du() {
+        local target_path="$1"
+        local requested_ticks="$2"
+        local consumed_ticks="$3"
+        local status="$4"
+        [[ -n "$du_test_trace_file" ]] || return 0
+        /usr/bin/printf '%s\t%s\t%s\t%s\n' \
+            "$target_path" "$requested_ticks" "$consumed_ticks" "$status" >> "$du_test_trace_file"
+    }
+
+    du_size_kb() {
+        local target_path="$1"
+        local out_file="$TMP_DIR/du_size.$$.$RANDOM.out"
+        local waited_ticks=0
+        local size_kb
+        local pid
+        local this_timeout_ticks=$((du_timeout * 10))
+        DU_SIZE_RESULT="0"
+
+        if [[ "$du_timeout" -le 0 ]] 2>/dev/null; then
+            DU_SIZE_RESULT="$(/usr/bin/du -sk "$target_path" 2>/dev/null | /usr/bin/awk '{print $1; exit}')"
+            [[ -n "$DU_SIZE_RESULT" ]] || DU_SIZE_RESULT="0"
+            return 0
+        fi
+        _pch_storage_du_budget_start
+        if _pch_storage_du_budget_expired; then
+            _pch_storage_trace_test_du "$target_path" "${du_test_duration_ticks:-0}" 0 "timed_out"
+            DU_SIZE_RESULT="__PCH_TIMEOUT__"
+            return 0
+        fi
+
+        if [[ -n "$du_test_duration_ticks" ]]; then
+            local allowed_ticks="$du_test_duration_ticks"
+            local remaining_budget_ticks
+            local test_measure_status="ok"
+            if [[ "$this_timeout_ticks" -lt "$allowed_ticks" ]]; then
+                allowed_ticks="$this_timeout_ticks"
+                test_measure_status="timed_out"
+            fi
+            if [[ "$du_budget" -gt 0 ]]; then
+                remaining_budget_ticks=$((du_test_deadline_ticks - du_test_clock_ticks))
+                if [[ "$remaining_budget_ticks" -lt "$allowed_ticks" ]]; then
+                    allowed_ticks="$remaining_budget_ticks"
+                    test_measure_status="timed_out"
+                fi
+            fi
+            du_test_clock_ticks=$((du_test_clock_ticks + allowed_ticks))
+            _pch_storage_trace_test_du \
+                "$target_path" "$du_test_duration_ticks" "$allowed_ticks" "$test_measure_status"
+            if [[ "$test_measure_status" == "timed_out" ]]; then
+                DU_SIZE_RESULT="__PCH_TIMEOUT__"
+            else
+                DU_SIZE_RESULT="$du_test_size_kb"
+            fi
+            return 0
+        fi
+
+        /usr/bin/du -sk "$target_path" > "$out_file" 2>/dev/null &
+        pid=$!
+        while /bin/kill -0 "$pid" 2>/dev/null; do
+            if _pch_storage_du_budget_expired || [[ "$waited_ticks" -ge "$this_timeout_ticks" ]]; then
+                /bin/kill -9 "$pid" 2>/dev/null || true
+                wait "$pid" 2>/dev/null || true
+                /bin/rm -f "$out_file"
+                DU_SIZE_RESULT="__PCH_TIMEOUT__"
+                return 0
+            fi
+            /bin/sleep 0.1
+            waited_ticks=$((waited_ticks + 1))
+        done
+        wait "$pid" 2>/dev/null || true
+        size_kb="$(/usr/bin/awk '{print $1; exit}' "$out_file" 2>/dev/null)"
+        /bin/rm -f "$out_file"
+        DU_SIZE_RESULT="${size_kb:-0}"
+    }
+
+    add_du_path() {
+        local kind="$1"
+        local label="$2"
+        local target_path="$3"
+        local cleanup_id="${4:-}"
+        local size_kb
+        local measure_status="ok"
+        local measure_note=""
+
+        [[ -e "$target_path" ]] || return 0
+        case "$target_path" in
+            /*) ;;
+            *) return 0 ;;
+        esac
+        case "$target_path$cleanup_id" in
+            *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
+        esac
+        case "$seen" in
+            *"|$target_path|"*) return 0 ;;
+        esac
+        seen="${seen}${target_path}|"
+
+        du_size_kb "$target_path"
+        size_kb="$DU_SIZE_RESULT"
+        if [[ "$size_kb" == "__PCH_TIMEOUT__" ]]; then
+            size_kb=0
+            measure_status="timed_out"
+            measure_note="빠른 검사의 시간 제한 때문에 크기 측정을 보류했습니다. 필요하면 PCH_STORAGE_DU_TIMEOUT=0으로 정밀 측정하세요."
+        fi
+        [[ -n "$size_kb" ]] || size_kb=0
+        /usr/bin/printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$kind" "$label" "$target_path" "$size_kb" "$measure_status" "$measure_note" "$cleanup_id" >> "$TMP_DIR/storage_paths.tsv"
+    }
+
+    add_sized_path() {
+        local kind="$1"
+        local label="$2"
+        local target_path="$3"
+        local size_kb="$4"
+        local measure_note="${5:-}"
+        local cleanup_id="${6:-}"
+
+        [[ -e "$target_path" ]] || return 0
+        [[ "$target_path" == /* ]] || return 0
+        case "$label$target_path$measure_note$cleanup_id" in
+            *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
+        esac
+        case "$size_kb" in ''|*[!0-9]*) return 0 ;; esac
+        case "$seen" in
+            *"|$target_path|"*) return 0 ;;
+        esac
+        seen="${seen}${target_path}|"
+        /usr/bin/printf "%s\t%s\t%s\t%s\tok\t%s\t%s\n" "$kind" "$label" "$target_path" "$size_kb" "$measure_note" "$cleanup_id" >> "$TMP_DIR/storage_paths.tsv"
+    }
+
+    add_access_check() {
+        local kind="$1"
+        local label="$2"
+        local target_path="$3"
+        local status="missing"
+        local note="경로가 없습니다."
+        local err
+
+        [[ -n "$target_path" ]] || return 0
+        case "$target_path" in
+            /*) ;;
+            *) return 0 ;;
+        esac
+        case "$target_path" in
+            *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
+        esac
+
+        if [[ -e "$target_path" ]]; then
+            if /usr/bin/find "$target_path" -maxdepth 1 -mindepth 1 -print -quit >/dev/null 2>"$TMP_DIR/find_access.err"; then
+                status="ok"
+                note="읽을 수 있습니다."
+            else
+                err="$(/bin/cat "$TMP_DIR/find_access.err" 2>/dev/null || true)"
+                status="blocked"
+                note="${err:-읽기 권한이 부족할 수 있습니다.}"
+            fi
+        fi
+
+        case "$note" in
+            *$'\t'*|*$'\n'*|*$'\r'*) note="읽기 권한이 부족할 수 있습니다." ;;
+        esac
+        /usr/bin/printf "%s\t%s\t%s\t%s\t%s\n" "$kind" "$label" "$target_path" "$status" "$note" >> "$TMP_DIR/storage_access.tsv"
+    }
+
+    local ps_commands ps_detailed
+    ps_commands="$(/bin/ps -axo command= 2>/dev/null || true)"
+    ps_detailed="$(/bin/ps -axo pid=,ppid=,etime=,command= 2>/dev/null || true)"
+    if [[ -n "$ps_detailed" ]]; then
+        record_collection_status "runtime_processes" "개발 런타임 프로세스" "ok" "false" "실행 중인 개발 도구와 자동화 프로세스를 확인했습니다."
+    else
+        record_collection_status "runtime_processes" "개발 런타임 프로세스" "failed" "false" "개발 런타임 프로세스를 읽지 못했습니다."
+    fi
+    count_processes() {
+        local pattern="$1"
+        /usr/bin/printf "%s\n" "$ps_commands" \
+            | /usr/bin/grep -E "$pattern" \
+            | /usr/bin/grep -v -E "grep -E|scripts/scanner.sh|storage.sh" \
+            | /usr/bin/wc -l \
+            | /usr/bin/tr -d ' '
+    }
+
+    add_runtime_signal() {
+        local kind="$1"
+        local label="$2"
+        local count="$3"
+        local risk="$4"
+        local action="$5"
+        local note="$6"
+        local pid="${7:-0}"
+        local ppid="${8:-0}"
+        local elapsed="${9:-}"
+        local channel="${10:-}"
+        local state="${11:-}"
+        local profile="${12:-}"
+        local controller="${13:-}"
+
+        case "$label$action$note$elapsed$channel$state$profile$controller" in
+            *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
+        esac
+        /usr/bin/printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+            "$kind" "$label" "${count:-0}" "$risk" "$action" "$note" \
+            "$pid" "$ppid" "$elapsed" "$channel" "$state" "$profile" "$controller" \
+            >> "$TMP_DIR/storage_runtime.tsv"
+    }
+
+    _pch_collect_storage_applications
+    _pch_collect_storage_simulators
+    _pch_collect_known_storage_paths
+    _pch_collect_storage_access_checks
+    _pch_collect_storage_runtime_signals
+
+    if /usr/bin/grep -Eq $'\ttimed_out\t' "$TMP_DIR/storage_paths.tsv" "$TMP_DIR/storage_simulators.tsv" 2>/dev/null; then
+        record_collection_status "storage_inventory" "저장공간 경로 측정" "timed_out" "false" "시간 제한 안에 일부 경로를 측정하지 못했습니다."
+    else
+        record_collection_status "storage_inventory" "저장공간 경로 측정" "ok" "false" "알려진 저장공간 경로를 측정했습니다."
+    fi
+    _pch_storage_du_budget_stop
 }

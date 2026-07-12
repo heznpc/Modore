@@ -1,7 +1,7 @@
 # PC 건강검진 — PC Health Check
 
-> A local diagnostic reporter for the moment you wonder: **is my PC doing something behind my back?**
-> It turns miner, autorun, network, Korean security-plugin, and macOS storage signals into plain-language evidence before you delete anything.
+> A local workstation incident investigator for the moment you wonder: **is my PC doing something behind my back?**
+> It turns process, network, autorun, security, storage, and developer-runtime signals into plain-language evidence before you stop or delete anything.
 
 [🌐 **Website**](https://heznpc.github.io/pc-health-check/) · [📦 Releases (when published)](https://github.com/heznpc/pc-health-check/releases) · [🇰🇷 한국어 가이드](./사용법.txt) · [Architecture](./docs/ARCHITECTURE.md)
 
@@ -13,7 +13,7 @@
 
 ## The problem
 
-The first symptom is usually not a clear malware alert. It is a fan that will not stop, CPU/GPU load while the PC is idle, an unknown process in Task Manager, a strange network connection, or disk space disappearing overnight. The natural question is: **is this computer secretly mining, infected, or just running normal local software?**
+The first symptom is usually not a clear malware alert. It is a fan that will not stop, CPU/GPU load while the PC is idle, an unknown process in Task Manager, a strange network connection, or disk space disappearing overnight. On an AI-assisted development Mac, it can also be a detached browser automation daemon, several simulators, an abandoned local agent, or a cache that immediately grows back. The natural question is: **is this computer infected, misconfigured, or still running work I thought had ended?**
 
 Generic malware scanners are great at detection but terrible at **context**. For Korean users, running any reputable scanner typically produces something like:
 
@@ -34,7 +34,7 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 
 - **Two OS editions under one brand**: PC Health Check for Windows and PC Health Check for Mac share the same promise — explain local PC state in plain language without deleting anything automatically.
 - **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
-- **Mac Edition**: Bash + JXA scanner focused on macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and a macOS storage bar decoder for the vague System Data / Developer / macOS categories. It separates rebuildable caches, protected session history, individual Simulator devices, Android SDK components, language toolchains, and Chrome code-sign clones. The native SwiftUI app uses a system sidebar, four storage workspaces, lists/forms, and approval sheets; it compares each scan with the previous local snapshot and can run from a standalone bundle without a repository checkout.
+- **Mac Edition**: Bash + JXA scanner focused on macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and developer-runtime incidents. Every collector reports `ok`, `permission_denied`, `unavailable`, `timed_out`, or `failed`; a missing required collector can never become a safe verdict. Browser automation is grouped into roots with PID, parent, elapsed time, system/isolated channel, profile type, and a privacy-preserving controller label. The native SwiftUI app presents one incident judgment followed by evidence, likely impact, and approval-gated recovery; bounded local history keeps the judgment without storing raw commands or URLs.
 - **Local recurrence watch**: an optional hourly LaunchAgent keeps a bounded owner-only free-space timeline. It notifies when free space falls below 20GB or drops by at least 8GB between checks; it never deletes anything.
 - **Suspicion-to-evidence workflow**: CPU/GPU load, idle CPU samples, miner process names, miner-pool ports, network endpoints, autoruns, signatures, and optional VirusTotal hash lookups are shown together so a user can decide what deserves a closer look before removing anything.
 - **Locale-aware whitelist**: 71 known-good entries across 7 categories (system, browser, korean_common, banking_security, dev_tools, hardware, cloud), plus 19 miner blacklist entries, 5 RAT blacklist entries, and 13 miner-pool ports. Covers IPinside, nProtect, INISAFE, MagicLine, Veraport, XecureWeb, Ahnlab V3, Alyac, and the rest of the Korean banking/government plugin set.
@@ -79,6 +79,8 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 **Locale as a first-class concern.** Generic scanners are built for global users; their false-positive rate on Korean banking PCs is the user-facing problem this project exists to solve. The whitelist is the differentiated layer, not the scanner.
 
 **Cleanup is local and approval-gated.** PC Health Check remains the pause before deletion, but the Mac Edition can execute audited recipes for rebuildable caches, Claude VM bundles, Xcode DerivedData, stale Chrome clones, and the known INNORIX user module. Installed apps are re-resolved by bundle ID and moved with exactly attributable containers/caches/preferences to a per-run Trash folder; Xcode and app bundles containing developer SDK/toolchain payloads are blocked. Individual Shutdown Simulator devices can be removed by a normalized UUID revalidated through `simctl`; Booted devices and locally preserved UUIDs are checked again immediately before deletion. Preview produces a short-lived approval manifest binding canonical paths, tree size, process state, and filesystem identity; execution remeasures before and after the same-volume staged move. Normal app termination waits for an approved destructive transaction to reach its receipt boundary instead of abandoning a child process. SDKs, Simulator runtimes, Codex session JSONL, Claude local-agent workspaces, and Codex databases have no cleanup recipe.
+
+**The incident comes before cleanup.** The Mac home screen is ordered as judgment → observed evidence → likely impact → recovery. A browser or developer-runtime process is never killed merely because it is old or large. A detached, long-running automation tree is labeled as a residue candidate, and the app preserves the local incident summary so a later scan can show what was observed at that time.
 
 **Privacy-first VirusTotal use.** Hashes only, never file contents. VirusTotal calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.jxa.js`; optional Sysinternals downloads live in `scripts/sigcheck-helper.ps1` and `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api` to audit outbound calls.
 
@@ -194,7 +196,7 @@ pc-health-check/
 │   ├── autorunsc-helper.ps1  Sysinternals autorunsc wrapper
 │   ├── scanner.sh            macOS scanner
 │   ├── cleanup.sh            allowlisted macOS preview/execute harness
-│   ├── storage_watch.sh      lightweight free-space delta monitor
+│   ├── storage_watch.sh      free-space monitor + bounded drop-time path snapshot
 │   ├── schedule.sh           local LaunchAgent toggle harness
 │   ├── scanner_helper.jxa.js macOS data aggregator + rule evaluator
 │   ├── report.jxa.js         macOS HTML generator

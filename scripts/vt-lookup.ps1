@@ -14,6 +14,45 @@ $script:VtCachePath = $null
 $script:VtLastCall = [DateTime]::MinValue
 $script:VtRateLimitSec = 16   # 4 req/min = 15초 간격, 안전하게 16초
 
+function ConvertTo-VtHashtable {
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $InputObject
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $table = @{}
+        foreach ($key in $InputObject.Keys) {
+            $table[$key] = ConvertTo-VtHashtable -InputObject $InputObject[$key]
+        }
+        return $table
+    }
+
+    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+        $table = @{}
+        foreach ($property in $InputObject.PSObject.Properties) {
+            $table[$property.Name] = ConvertTo-VtHashtable -InputObject $property.Value
+        }
+        return $table
+    }
+
+    if (($InputObject -is [System.Collections.IEnumerable]) -and -not ($InputObject -is [string])) {
+        $items = @()
+        foreach ($item in $InputObject) {
+            $convertedItem = ConvertTo-VtHashtable -InputObject $item
+            $items += ,$convertedItem
+        }
+        return ,$items
+    }
+
+    return $InputObject
+}
+
 function Initialize-VtLookup {
     param(
         [string]$ConfigPath = "$PSScriptRoot\..\data\config.example.json",
@@ -50,7 +89,13 @@ function Initialize-VtLookup {
     # 캐시 로드
     if (Test-Path $script:VtCachePath) {
         try {
-            $script:VtCache = Get-Content $script:VtCachePath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
+            $parsedCache = Get-Content $script:VtCachePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $loadedCache = ConvertTo-VtHashtable -InputObject $parsedCache
+            if ($loadedCache -is [hashtable]) {
+                $script:VtCache = $loadedCache
+            } else {
+                $script:VtCache = @{}
+            }
         } catch {
             $script:VtCache = @{}
         }

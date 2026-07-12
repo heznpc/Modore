@@ -48,6 +48,7 @@ struct StorageSnapshot {
     let simulatorDevices: [SimulatorDevice]
     let accessIssues: [StorageAccessIssue]
     let runtimeSignals: [RuntimeSignal]
+    let browserAutomation: BrowserAutomationStatus
     let reclaimableGB: Double
     let developerGB: Double
     let reviewGB: Double
@@ -72,6 +73,7 @@ struct StorageSnapshot {
         simulatorDevices = components.simulatorDevices
         accessIssues = components.accessIssues
         runtimeSignals = components.runtimeSignals
+        browserAutomation = components.browserAutomation
         reclaimableGB = totals.reclaimableGB
         developerGB = totals.developerGB
         reviewGB = totals.reviewGB
@@ -265,6 +267,13 @@ struct RuntimeSignal: Identifiable {
     let risk: String
     let action: String
     let note: String
+    let pid: Int
+    let parentPid: Int
+    let elapsed: String
+    let channel: String
+    let state: String
+    let profile: String
+    let controller: String
 
     init?(json: [String: Any]) {
         kind = JsonRead.string(json, "kind", "process_count")
@@ -273,6 +282,13 @@ struct RuntimeSignal: Identifiable {
         risk = JsonRead.string(json, "risk", "info")
         action = JsonRead.string(json, "action", "확인 필요")
         note = JsonRead.string(json, "note")
+        pid = JsonRead.int(json, "pid")
+        parentPid = JsonRead.int(json, "parentPid")
+        elapsed = JsonRead.string(json, "elapsed")
+        channel = JsonRead.string(json, "channel")
+        state = JsonRead.string(json, "state")
+        profile = JsonRead.string(json, "profile")
+        controller = JsonRead.string(json, "controller")
     }
 
     var countText: String {
@@ -280,5 +296,40 @@ struct RuntimeSignal: Identifiable {
             return "Booted"
         }
         return "\(count)개"
+    }
+}
+
+struct BrowserAutomationStatus {
+    let verdict: String
+    let rootCount: Int
+    let systemRootCount: Int
+    let isolatedRootCount: Int
+    let orphanedRootCount: Int
+    let globalConfigPresent: Bool
+    let globalIsolationConfigured: Bool
+    let isolatedBrowserInstalled: Bool
+    let configLocation: String
+    let note: String
+
+    init(json: [String: Any]?) {
+        let json = json ?? [:]
+        verdict = JsonRead.string(json, "verdict", "unknown")
+        rootCount = JsonRead.int(json, "rootCount")
+        systemRootCount = JsonRead.int(json, "systemRootCount")
+        isolatedRootCount = JsonRead.int(json, "isolatedRootCount")
+        orphanedRootCount = JsonRead.int(json, "orphanedRootCount")
+        globalConfigPresent = JsonRead.bool(json, "globalConfigPresent") ?? false
+        globalIsolationConfigured = JsonRead.bool(json, "globalIsolationConfigured") ?? false
+        isolatedBrowserInstalled = JsonRead.bool(json, "isolatedBrowserInstalled") ?? false
+        configLocation = JsonRead.string(
+            json,
+            "configLocation",
+            "~/.playwright/cli.config.json"
+        )
+        note = JsonRead.string(json, "note", "브라우저 자동화 상태를 확인하지 못했습니다.")
+    }
+
+    var needsAttention: Bool {
+        verdict == "conflict_possible" || verdict == "orphaned"
     }
 }

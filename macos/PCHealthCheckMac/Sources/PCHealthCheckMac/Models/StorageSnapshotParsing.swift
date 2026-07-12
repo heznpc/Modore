@@ -14,6 +14,7 @@ struct StorageSnapshotComponents {
     let simulatorDevices: [SimulatorDevice]
     let accessIssues: [StorageAccessIssue]
     let runtimeSignals: [RuntimeSignal]
+    let browserAutomation: BrowserAutomationStatus
 
     init?(json: [String: Any]?) {
         guard let json, let volume = json["volume"] as? [String: Any] else { return nil }
@@ -30,6 +31,9 @@ struct StorageSnapshotComponents {
         simulatorDevices = StorageSnapshotParser.simulatorItems(json["simulatorDevices"])
         accessIssues = StorageSnapshotParser.accessItems(json["accessIssues"])
         runtimeSignals = StorageSnapshotParser.runtimeItems(json["runtimeSignals"])
+        browserAutomation = BrowserAutomationStatus(
+            json: json["browserAutomation"] as? [String: Any]
+        )
     }
 }
 

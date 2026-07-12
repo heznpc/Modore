@@ -98,15 +98,23 @@ const rawScan = JSON.parse(readText(scanPath));
 const scan = redacted ? redactScan(rawScan) : rawScan;
 if (!scan.summary) throw new Error("scan_result.json에 summary가 없습니다.");
 const overall = scan.summary.overall || "safe";
-const icon = { safe: "🟢", warning: "🟡", danger: "🔴" }[overall] || "⚪";
+const icon = { safe: "●", warning: "●", danger: "●", incomplete: "○" }[overall] || "○";
 const findings = (scan.findings || []).filter(f => f.level === "danger" || f.level === "warning");
 const actions = overall === "danger"
   ? ["의심 항목을 바로 삭제하지 말고 프로그램 이름과 경로를 확인하세요.", "백신으로 전체 검사를 실행하세요.", "민감한 브라우저 세션을 닫은 뒤 조사하세요."]
   : overall === "warning"
     ? ["확인 항목의 프로그램 이름, 게시자, 설치일을 대조하세요.", "알 수 없는 항목은 검색과 VirusTotal 리포트 링크로 맥락을 확인하세요.", "정밀 검사를 실행해 유휴 CPU 사용량을 확인하세요."]
-    : ["즉시 조치가 필요한 항목이 보이지 않습니다.", "보안 업데이트를 최신 상태로 유지하세요.", "느림이나 팬 소음이 계속되면 정밀 검사를 실행하세요."];
-const css = "body{font-family:-apple-system,Segoe UI,Apple SD Gothic Neo,Malgun Gothic,sans-serif;background:#f4f6fb;color:#1f2937;margin:0;line-height:1.6}.container{max-width:1180px;margin:auto;padding:24px}.verdict,.panel,.card,table{background:white;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.06)}.verdict{display:flex;gap:18px;align-items:center;padding:24px;border-left:8px solid #9ca3af}.verdict.danger{border-color:#ef4444}.verdict.warning{border-color:#f59e0b}.verdict.safe{border-color:#10b981}.icon{font-size:48px}.big{font-size:24px;font-weight:700}.meta,.muted{color:#6b7280}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:18px 0}.card{padding:18px}.count{font-size:32px;font-weight:700}.panel{padding:18px 20px;margin:18px 0}.share{background:#fff7ed;color:#9a3412;padding:10px;border-radius:6px;margin-top:10px}.share.redacted{background:#ecfdf5;color:#047857}.finding{padding:12px;margin:8px 0;border-left:4px solid #e5e7eb;background:#fff}.finding.danger{border-color:#ef4444;background:#fef2f2}.finding.warning{border-color:#f59e0b;background:#fffbeb}table{width:100%;border-collapse:collapse;margin:10px 0}th{background:#f3f4f6;text-align:left}th,td{padding:8px;border-top:1px solid #e5e7eb;font-size:13px;vertical-align:top}";
+    : overall === "incomplete"
+      ? ["완료하지 못한 필수 수집기를 확인하세요.", "권한 또는 시간 제한 문제를 해결한 뒤 다시 검사하세요.", "빈 결과를 정상으로 해석하지 마세요."]
+      : ["현재 수집 범위에서 즉시 조치가 필요한 항목이 보이지 않습니다.", "보안 업데이트를 최신 상태로 유지하세요.", "느림이나 팬 소음이 계속되면 다시 검사하세요."];
+const css = "body{font-family:-apple-system,Segoe UI,Apple SD Gothic Neo,Malgun Gothic,sans-serif;background:#f4f4f6;color:#1f1f22;margin:0;line-height:1.6}.container{max-width:1180px;margin:auto;padding:24px}.verdict,.panel,.card,table{background:white;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.06)}.verdict{display:flex;gap:18px;align-items:center;padding:24px;border-left:8px solid #8e8e93}.verdict.danger{border-color:#ff3b30}.verdict.warning,.verdict.incomplete,.verdict.safe{border-color:#8e8e93}.icon{font-size:48px}.big{font-size:24px;font-weight:700}.meta,.muted{color:#6e6e73}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:18px 0}.card{padding:18px}.count{font-size:32px;font-weight:700}.panel{padding:18px 20px;margin:18px 0}.share{background:#f2f2f7;color:#3a3a3c;padding:10px;border-radius:6px;margin-top:10px}.share.redacted{background:#f2f2f7;color:#3a3a3c}.finding{padding:12px;margin:8px 0;border-left:4px solid #d1d1d6;background:#fff}.finding.danger{border-color:#ff3b30;background:#fff2f1}.finding.warning{border-color:#8e8e93;background:#f9f9fb}table{width:100%;border-collapse:collapse;margin:10px 0}th{background:#f2f2f7;text-align:left}th,td{padding:8px;border-top:1px solid #d1d1d6;font-size:13px;vertical-align:top}";
 const s = scan.sections || {};
+const collection = scan.collection || {};
+const collectionHtml = `<div class="panel">
+  <h2>검사 범위</h2>
+  <p class="muted">필수 수집기 ${esc(collection.completedRequiredCount || 0)}/${esc(collection.requiredCount || 0)}개 완료 · 전체 ${esc(collection.completedCount || 0)}/${esc(collection.sourceCount || 0)}개 완료</p>
+  ${table(collection.sources || [], ["label","status","required","detail"])}
+</div>`;
 const storage = s.storage || {};
 const storageVolume = storage.volume || {};
 const accessHtml = (storage.accessIssues || []).length
@@ -145,6 +153,7 @@ const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>
 <div class="meta">${esc(scan.computerName)} / ${esc(scan.userName)} · ${esc(scan.osVersion)} · 검사 시각: ${esc(scan.scannedAt)}</div>
 <div class="verdict ${esc(overall)}"><div class="icon">${icon}</div><div><div class="big">${esc(scan.summary.message)}</div><div>위험 ${esc(scan.summary.dangerCount)}건 · 확인 ${esc(scan.summary.warningCount)}건</div></div></div>
 <div class="panel"><h2>다음 행동</h2><ol>${actions.map(a => `<li>${esc(a)}</li>`).join("")}</ol>${shareNotice}</div>
+${collectionHtml}
 <div class="cards"><div class="card"><div class="count">${esc(scan.summary.dangerCount)}</div><div>위험 항목</div></div><div class="card"><div class="count">${esc(scan.summary.warningCount)}</div><div>확인 필요</div></div><div class="card"><div class="count">${(scan.findings || []).filter(f => f.level === "safe").length}</div><div>정상 확인</div></div></div>
 <h2>주요 발견 사항</h2>${findings.length ? findings.map(f => `<div class="finding ${esc(f.level)}"><b>${esc(f.title)}</b><br>${esc(f.detail)}</div>`).join("") : "<p class='muted'>주의가 필요한 항목이 발견되지 않았습니다.</p>"}
 ${storageHtml}

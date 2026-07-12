@@ -9,6 +9,7 @@ function env(name, fallback) {
 }
 function readText(path, maximumBytes) {
   const limit = Number(maximumBytes || (16 * 1024 * 1024));
+  if (!$.NSFileManager.defaultManager.fileExistsAtPath(String(path || ""))) return "";
   const handle = $.NSFileHandle.fileHandleForReadingAtPath(path);
   if (!handle) return "";
   try {
@@ -28,6 +29,9 @@ function writeRequiredText(path, text) {
 }
 function readJson(path, fallback, maximumBytes) {
   try { return JSON.parse(readText(path, maximumBytes)); } catch (e) { return fallback; }
+}
+function pathExists(path) {
+  return !!$.NSFileManager.defaultManager.fileExistsAtPath(String(path || ""));
 }
 function run(cmd) {
   const app = Application.currentApplication();
@@ -296,10 +300,19 @@ function applyRules(raw, rules, wl) {
   }
   const danger = result.findings.filter(f => f.level === "danger").length;
   const warning = result.findings.filter(f => f.level === "warning").length;
-  const overall = danger ? "danger" : (warning ? "warning" : "safe");
+  const collectionComplete = !result.collection || result.collection.complete !== false;
+  const overall = danger ? "danger" : (warning ? "warning" : (collectionComplete ? "safe" : "incomplete"));
   const message = danger ? `긴급 확인 필요: ${danger} 건의 위험 신호가 발견되었습니다.` :
-    warning ? `확인 권장: ${warning} 건의 항목을 살펴보세요.` : "특별한 이상 징후가 발견되지 않았습니다.";
-  result.summary = { overall, dangerCount: danger, warningCount: warning, message };
+    warning ? `확인 권장: ${warning} 건의 항목을 살펴보세요.` :
+      collectionComplete ? "현재 수집 범위에서 뚜렷한 이상 징후가 발견되지 않았습니다." :
+        "필수 검사 일부를 완료하지 못해 안전 여부를 판단할 수 없습니다.";
+  result.summary = {
+    overall,
+    dangerCount: danger,
+    warningCount: warning,
+    collectionComplete,
+    message
+  };
   return result;
 }
 
@@ -448,9 +461,93 @@ function parseStorageRuntime(text) {
       count: Number(parts[2] || 0),
       risk: parts[3] || "info",
       action: parts[4],
-      note: parts[5]
+      note: parts[5],
+      pid: Number(parts[6] || 0),
+      parentPid: Number(parts[7] || 0),
+      elapsed: parts[8] || "",
+      channel: parts[9] || "",
+      state: parts[10] || "",
+      profile: parts[11] || "",
+      controller: parts[12] || ""
     };
   }).filter(Boolean);
+}
+
+function browserAutomationStatus(runtimeSignals) {
+  const roots = (runtimeSignals || []).filter(signal => signal.kind === "browser_automation_root");
+  const systemRoots = roots.filter(signal => signal.channel === "system");
+  const isolatedRoots = roots.filter(signal => signal.channel === "isolated");
+  const orphanedRoots = roots.filter(signal =>
+    signal.state === "orphan_candidate" || signal.state === "orphaned"
+  );
+  const globalConfigPath = homeDir() + "/.playwright/cli.config.json";
+  const globalConfigPresent = pathExists(globalConfigPath);
+  const globalConfig = globalConfigPresent ? readJson(globalConfigPath, {}, 256 * 1024) : {};
+  const browserConfig = globalConfig && typeof globalConfig.browser === "object"
+    ? globalConfig.browser : {};
+  const globalIsolationConfigured = browserConfig.browserName === "chromium"
+    && browserConfig.isolated === true;
+  const isolatedBrowserInstalled = pathExists(homeDir() + "/Library/Caches/ms-playwright")
+    || pathExists(homeDir() + "/.cache/ms-playwright");
+  const verdict = orphanedRoots.length ? "orphaned" :
+    systemRoots.length ? "conflict_possible" :
+      isolatedRoots.length ? "isolated_active" : "clear";
+  return {
+    verdict,
+    rootCount: roots.length,
+    systemRootCount: systemRoots.length,
+    isolatedRootCount: isolatedRoots.length,
+    orphanedRootCount: orphanedRoots.length,
+    globalConfigPresent,
+    globalIsolationConfigured,
+    isolatedBrowserInstalled,
+    configLocation: "~/.playwright/cli.config.json",
+    note: orphanedRoots.length
+      ? "상위 소유 작업을 확인할 수 없는 오래된 브라우저 자동화가 남아 있습니다. 잔류 후보이며 자동 종료하지 않습니다."
+      : systemRoots.length
+        ? "자동화가 기본 Chrome 채널을 사용해 일반 브라우저 실행과 충돌할 수 있습니다."
+        : isolatedRoots.length
+          ? "자동화가 격리 브라우저 채널에서 실행 중입니다."
+          : "현재 브라우저 자동화 루트가 감지되지 않았습니다."
+  };
+}
+
+function parseCollectionStatus(text) {
+  const sources = String(text || "").trim().split(/\r?\n/).filter(Boolean).map(line => {
+    const parts = line.split("\t");
+    if (parts.length < 4 || !/^[a-z0-9_]+$/.test(parts[0])) return null;
+    const status = ["ok", "permission_denied", "unavailable", "timed_out", "failed"].includes(parts[2])
+      ? parts[2] : "failed";
+    return {
+      id: parts[0],
+      label: parts[1] || parts[0],
+      status,
+      required: parts[3] === "true",
+      detail: parts[4] || ""
+    };
+  }).filter(Boolean);
+  if (!sources.length) {
+    sources.push({
+      id: "collector_protocol",
+      label: "검사 범위 기록",
+      status: "failed",
+      required: true,
+      detail: "수집 상태 기록이 없어 결과의 완전성을 확인할 수 없습니다."
+    });
+  }
+  const requiredSources = sources.filter(source => source.required);
+  const incompleteRequiredSources = requiredSources.filter(source => source.status !== "ok");
+  const issues = sources.filter(source => source.status !== "ok");
+  return {
+    status: incompleteRequiredSources.length ? "incomplete" : "complete",
+    complete: incompleteRequiredSources.length === 0,
+    completedCount: sources.filter(source => source.status === "ok").length,
+    sourceCount: sources.length,
+    completedRequiredCount: requiredSources.filter(source => source.status === "ok").length,
+    requiredCount: requiredSources.length,
+    issues,
+    sources
+  };
 }
 
 function parseSimulatorDevices(text, keepUUIDs, legacyKeepNames) {
@@ -512,6 +609,7 @@ const raw = {
   osVersion: env("PCH_OS_VERSION", "macOS"),
   platform: "macos",
   scannerVersion: "0.3",
+  collection: parseCollectionStatus(tmp("collection_status.tsv")),
   findings: [],
   sections: {}
 };
@@ -583,6 +681,7 @@ const storageVolume = parseStorageDf(tmp("storage_df.txt"));
 const storageItems = parseStoragePaths(tmp("storage_paths.tsv"), storageVolume.risk);
 const storageAccess = parseStorageAccess(tmp("storage_access.tsv"));
 const storageRuntime = parseStorageRuntime(tmp("storage_runtime.tsv"));
+const browserAutomation = browserAutomationStatus(storageRuntime);
 const simulatorDevices = parseSimulatorDevices(
   tmp("storage_simulators.tsv"),
   simulatorKeepUUIDs,
@@ -605,6 +704,7 @@ raw.sections.storage = {
   accessChecks: storageAccess.checks,
   accessIssues: storageAccess.issues,
   runtimeSignals: storageRuntime,
+  browserAutomation,
   simulatorDevices
 };
 const bootedSimulators = storageRuntime.filter(item => item.kind === "booted_simulator");
@@ -615,6 +715,7 @@ if (claudeVm) {
   raw.findings.push({
     level: "warning",
     category: "storage",
+    actionTarget: "cleanup",
     title: "Claude VM bundle 정리 후보",
     detail: `${claudeVm.sizeGB}GB 규모의 Claude Cowork/로컬 에이전트 VM 이미지가 있습니다. 세션 기록과 분리된 재생성 가능 런타임이지만 Claude를 완전히 종료한 뒤 지우세요.`
   });
@@ -623,6 +724,7 @@ if (codexLogDb) {
   raw.findings.push({
     level: "warning",
     category: "storage",
+    actionTarget: "cleanup",
     title: "Codex 로그 DB 수동 검토",
     detail: `${codexLogDb.sizeGB}GB 규모의 Codex 내부 이벤트 로그 DB가 있습니다. 세션 jsonl은 아니며, Codex 실행 중 삭제하지 말고 필요하면 앱 종료 후 VACUUM/수동 검토로 줄이세요.`
   });
@@ -631,6 +733,7 @@ if (bootedSimulators.length >= 2) {
   raw.findings.push({
     level: "warning",
     category: "storage",
+    actionTarget: "development",
     title: "Simulator 여러 대가 Booted 상태",
     detail: `${bootedSimulators.map(item => item.label).join(", ")}가 동시에 켜져 있습니다. Bitxel/TrashMonster 작업 대상에 맞춰 한 대만 켜두면 CoreSimulator 프로세스와 캐시 재생성을 줄일 수 있습니다.`
   });
@@ -639,6 +742,7 @@ if (warningRuntimeSignals.length) {
   raw.findings.push({
     level: "warning",
     category: "storage",
+    actionTarget: "development",
     title: "반복 생성원 정리 필요",
     detail: warningRuntimeSignals.map(item => `${item.label} ${item.count}개`).join(", ") + "가 감지되었습니다. 공간을 지워도 이 실행원이 남아 있으면 캐시와 임시 clone이 다시 생길 수 있습니다."
   });
@@ -647,6 +751,7 @@ if (storageAccess.issues.length) {
   raw.findings.push({
     level: "warning",
     category: "storage",
+    actionTarget: "privacy",
     title: "Full Disk Access 확인 필요",
     detail: `macOS 개인정보 보호 설정 때문에 ${storageAccess.issues.length}개 영역을 읽지 못했을 수 있습니다. 리포트가 비어 보이면 시스템 설정 > 개인정보 보호 및 보안 > 전체 디스크 접근 권한에서 앱 또는 Terminal 권한을 확인하세요.`
   });
@@ -655,6 +760,7 @@ if (storageVolume.risk === "danger" || storageVolume.risk === "warning") {
   raw.findings.push({
     level: storageVolume.risk,
     category: "storage",
+    actionTarget: "cleanup",
     title: "macOS 저장공간 막대 해석 필요",
     detail: `남은 공간 ${storageVolume.freeGB}GB, 사용률 ${storageVolume.usePercent}%입니다. macOS가 System Data/Developer로 뭉뚱그린 항목을 삭제 전 실제 경로와 성격으로 구분하세요.`
   });
@@ -663,6 +769,7 @@ if (storageVolume.risk === "danger" || storageVolume.risk === "warning") {
     raw.findings.push({
       level: "warning",
       category: "storage",
+      actionTarget: "cleanup",
       title: "캐시/임시파일 정리 후보",
       detail: `재생성 가능한 캐시·임시파일 후보가 약 ${cleanupGB}GB입니다. Developer 항목의 SDK/시뮬레이터/언어 도구체인은 통째 삭제하지 말고 버전 요구사항을 확인하세요.`
     });
@@ -677,4 +784,5 @@ const result = applyRules(raw, loadRules(RULES_DIR), whitelistIndex(readJson(WHI
 writeRequiredText(OUTPUT, JSON.stringify(result, null, 2));
 console.log(`  - 위험: ${result.summary.dangerCount} 건`);
 console.log(`  - 확인: ${result.summary.warningCount} 건`);
+if (!result.summary.collectionComplete) console.log("  - 검사 범위: 불완전");
 if (vt.enabled) console.log(`  - VT 조회: ${vt.calls} 건`);

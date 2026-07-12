@@ -18,20 +18,72 @@ struct StatusPage: View {
             if let storage = model.storage {
                 Form {
                     Section {
+                        StatusIncidentSummary(assessment: assessment)
+                    } header: {
+                        NativeSectionHeader(
+                            title: "현재 판단",
+                            subtitle: "관찰된 사실과 수집 범위를 기준으로 가장 중요한 상태 하나를 먼저 보여줍니다.",
+                            value: assessment.value
+                        )
+                    }
+
+                    StatusIncidentEvidenceSection(
+                        coverage: model.collectionCoverage,
+                        storage: storage,
+                        change: model.storageChange,
+                        securityFinding: model.securityFindings.first,
+                        onOpenStorage: onOpenStorage,
+                        onOpenSecurity: onOpenSecurity,
+                        onOpenActivity: onOpenActivity
+                    )
+
+                    Section("예상 영향") {
+                        StatusNoticeRow(
+                            symbol: "arrow.triangle.branch",
+                            title: assessment.impact,
+                            detail: "원인을 확정하지 않은 상태에서 프로세스 종료나 파일 삭제를 자동으로 실행하지 않습니다.",
+                            tint: assessment.kind == .securityDanger ? .red : .secondary
+                        )
+                    }
+
+                    Section {
                         StatusStorageSummary(
                             storage: storage,
                             change: model.storageChange,
                             snapshotNeedsRefresh: model.storageSnapshotNeedsRefresh(at: date)
                         )
+                    } header: {
+                        NativeSectionHeader(
+                            title: "현재 자원 상태",
+                            subtitle: "사고 판단을 보조하는 시동 볼륨 정보입니다.",
+                            value: model.storageSnapshotAgeText
+                        )
                     }
 
+                    if !storage.accessIssues.isEmpty {
+                        StorageAccessIssuesSection(
+                            issues: storage.accessIssues,
+                            openSettings: model.openFullDiskAccessSettings
+                        )
+                    }
+
+                    StatusRecoverySection(
+                        assessment: assessment,
+                        storage: storage,
+                        isBusy: model.isBusy,
+                        runScan: model.runScan,
+                        onOpenStorage: onOpenStorage,
+                        onOpenSecurity: onOpenSecurity,
+                        onOpenActivity: onOpenActivity
+                    )
+
                     if let newer = model.newerStorageHistoryEntry {
-                        Section {
+                        Section("결과 시점") {
                             StatusNoticeRow(
                                 symbol: "clock.badge.exclamationmark",
                                 title: "이 화면보다 최신 기록이 있습니다",
                                 detail: String(
-                                    format: "활동에 %@의 여유 공간 기록(%.1fGB)이 있습니다. 세부 항목을 섞지 않도록 이 화면은 이전 전체 검사에 고정되어 있으니 지금 다시 검사하세요.",
+                                    format: "활동에 %@의 여유 공간 기록(%.1fGB)이 있습니다. 전체 검사를 다시 실행하기 전에는 서로 다른 시점의 결과를 섞지 않습니다.",
                                     newer.capturedAt.formatted(date: .abbreviated, time: .shortened),
                                     newer.freeGB
                                 ),
@@ -39,69 +91,60 @@ struct StatusPage: View {
                             )
                         }
                     } else if model.isStorageSnapshotStale(at: date) {
-                        Section {
+                        Section("결과 시점") {
                             StatusNoticeRow(
                                 symbol: "clock",
                                 title: "현재 결과가 오래되었습니다",
-                                detail: "\(model.storageSnapshotAgeText) 결과입니다. 새 검사 전까지 정리 가능 용량이 달라질 수 있습니다.",
+                                detail: "\(model.storageSnapshotAgeText) 결과입니다. 새 검사 전에는 현재 상태로 단정하지 않습니다.",
                                 tint: .secondary
                             )
                         }
                     }
+                }
+                .macSettingsFormStyle()
+            } else if model.summary != nil {
+                Form {
+                    Section {
+                        StatusIncidentSummary(assessment: assessment)
+                    } header: {
+                        NativeSectionHeader(
+                            title: "현재 판단",
+                            subtitle: "저장공간 수집 여부와 별개로 완료된 진단 결과를 표시합니다.",
+                            value: assessment.value
+                        )
+                    }
 
-                    StatusChangeSection(
-                        change: model.storageChange,
+                    Section("관찰 근거") {
+                        StatusNavigationRow(
+                            symbol: model.collectionCoverage?.complete == true
+                                ? "checkmark.shield" : "questionmark.shield",
+                            title: "검사 범위",
+                            detail: model.collectionCoverage?.complete == true
+                                ? "필수 수집기가 모두 응답했습니다."
+                                : "완료하지 못한 수집기가 있어 결과를 정상으로 확정하지 않습니다.",
+                            value: model.collectionCoverage?.coverageText ?? "기록 없음",
+                            action: onOpenSecurity
+                        )
+                    }
+
+                    Section("예상 영향") {
+                        StatusNoticeRow(
+                            symbol: "arrow.triangle.branch",
+                            title: assessment.impact,
+                            detail: "수집되지 않은 값을 0으로 대체하거나 자동 조치를 실행하지 않습니다.",
+                            tint: assessment.kind == .securityDanger ? .red : .secondary
+                        )
+                    }
+
+                    StatusRecoverySection(
+                        assessment: assessment,
+                        storage: nil,
+                        isBusy: model.isBusy,
+                        runScan: model.runScan,
                         onOpenStorage: onOpenStorage,
+                        onOpenSecurity: onOpenSecurity,
                         onOpenActivity: onOpenActivity
                     )
-
-                    Section("다음 행동") {
-                        StatusActionRow(
-                            symbol: "trash",
-                            title: "정리 가능한 항목",
-                            detail: "미리보기 가능한 캐시·임시 파일의 대상 점유 추정입니다.",
-                            value: storage.reclaimableText,
-                            actionTitle: "항목 보기"
-                        ) {
-                            onOpenStorage(.cleanup)
-                        }
-
-                        if !storage.attentionRuntimeSignals.isEmpty {
-                            StatusActionRow(
-                                symbol: "hammer",
-                                title: "다시 공간을 채우는 작업",
-                                detail: "실행 중인 개발 도구와 자동화 작업을 확인합니다.",
-                                value: "\(storage.attentionRuntimeSignals.count)종",
-                                actionTitle: "개발 보기"
-                            ) {
-                                onOpenStorage(.development)
-                            }
-                        }
-
-                        if model.securityAttentionCount > 0 {
-                            StatusActionRow(
-                                symbol: "lock.shield",
-                                title: "보안 확인 필요",
-                                detail: model.summary?.message ?? "확인할 진단 결과가 있습니다.",
-                                value: "\(model.securityAttentionCount)건",
-                                actionTitle: "보안 보기"
-                            ) {
-                                onOpenSecurity()
-                            }
-                        }
-
-                        if !model.storageWatchEnabled {
-                            StatusActionRow(
-                                symbol: "clock.arrow.circlepath",
-                                title: "급감 감시 꺼짐",
-                                detail: "감시를 켜면 여유 공간만 로컬에 기록하고 급격한 감소를 알립니다.",
-                                value: "자동 삭제 없음",
-                                actionTitle: "활동 보기"
-                            ) {
-                                onOpenActivity()
-                            }
-                        }
-                    }
                 }
                 .macSettingsFormStyle()
             } else {
@@ -111,6 +154,254 @@ struct StatusPage: View {
                     message: "검사가 끝나면 현재 저장공간과 보안 상태가 여기에 표시됩니다."
                 )
             }
+        }
+    }
+
+    private var assessment: IncidentAssessment {
+        IncidentAssessment.make(content: model.content, storageChange: model.storageChange)
+    }
+}
+
+private struct StatusIncidentSummary: View {
+    let assessment: IncidentAssessment
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: assessment.symbol)
+                .font(.system(size: 24, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(isDanger ? Color.red : Color.secondary)
+                .frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(assessment.title)
+                    .font(.title3.weight(.semibold))
+                Text(assessment.detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(assessment.title). \(assessment.detail)")
+    }
+
+    private var isDanger: Bool {
+        assessment.kind == .securityDanger || assessment.kind == .storageCritical
+    }
+}
+
+private struct StatusIncidentEvidenceSection: View {
+    let coverage: CollectionCoverage?
+    let storage: StorageSnapshot
+    let change: StorageChangeSummary?
+    let securityFinding: ScanFinding?
+    let onOpenStorage: (StorageWorkspaceSection) -> Void
+    let onOpenSecurity: () -> Void
+    let onOpenActivity: () -> Void
+
+    var body: some View {
+        Section {
+            StatusNavigationRow(
+                symbol: coverage?.complete == true ? "checkmark.shield" : "questionmark.shield",
+                title: "검사 범위",
+                detail: coverageDetail,
+                value: coverage?.coverageText ?? "기록 없음",
+                action: onOpenSecurity
+            )
+
+            if storage.browserAutomation.verdict != "unknown",
+               storage.browserAutomation.verdict != "clear" {
+                StatusNavigationRow(
+                    symbol: "rectangle.on.rectangle",
+                    title: "브라우저 자동화",
+                    detail: storage.browserAutomation.note,
+                    value: "\(storage.browserAutomation.rootCount)개 루트"
+                ) {
+                    onOpenStorage(.development)
+                }
+            }
+
+            if let change {
+                StatusNavigationRow(
+                    symbol: change.freeDeltaGB < -0.05 ? "arrow.down.right" : "arrow.up.right",
+                    title: "직전 검사 이후 변화",
+                    detail: changeDetail(change),
+                    value: String(format: "%+.1fGB", change.freeDeltaGB),
+                    action: onOpenActivity
+                )
+            }
+
+            if let securityFinding {
+                StatusNavigationRow(
+                    symbol: securityFinding.level == "danger" ? "exclamationmark.shield" : "info.circle",
+                    title: securityFinding.title,
+                    detail: securityFinding.detail,
+                    value: securityFinding.level == "danger" ? "위험" : "확인 필요",
+                    action: onOpenSecurity
+                )
+            }
+        } header: {
+            NativeSectionHeader(
+                title: "관찰 근거",
+                subtitle: "판단에 사용한 실제 수집 범위와 변화 신호입니다.",
+                value: "자동 추론 아님"
+            )
+        }
+    }
+
+    private var coverageDetail: String {
+        guard let coverage else {
+            return "이전 형식의 결과에는 수집 성공 여부가 없습니다. 새 검사가 필요합니다."
+        }
+        if coverage.complete {
+            return "필수 수집기 \(coverage.completedRequiredCount)/\(coverage.requiredCount)개가 응답했습니다."
+        }
+        let labels = coverage.requiredIssues.prefix(2).map(\.label).joined(separator: ", ")
+        return "완료하지 못한 필수 수집기: \(labels.isEmpty ? "확인 불가" : labels)"
+    }
+
+    private func changeDetail(_ change: StorageChangeSummary) -> String {
+        if let cause = change.primaryCause {
+            return "\(cause.label)이 함께 \(cause.deltaGB >= 0 ? "증가" : "감소")했습니다. 인과관계는 확정하지 않습니다."
+        }
+        if change.causeNotCaptured {
+            return "여유 공간은 변했지만 현재 추적 범위에서 함께 변한 경로를 찾지 못했습니다."
+        }
+        return "여유 공간과 추적 경로의 변화를 비교했습니다."
+    }
+}
+
+private struct StatusNavigationRow: View {
+    let symbol: String
+    let title: String
+    let detail: String
+    let value: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                    Text(detail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(value)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 5)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct StatusRecoverySection: View {
+    let assessment: IncidentAssessment
+    let storage: StorageSnapshot?
+    let isBusy: Bool
+    let runScan: () -> Void
+    let onOpenStorage: (StorageWorkspaceSection) -> Void
+    let onOpenSecurity: () -> Void
+    let onOpenActivity: () -> Void
+
+    var body: some View {
+        Section("복구 및 다음 행동") {
+            StatusActionRow(
+                symbol: actionSymbol,
+                title: actionTitle,
+                detail: actionDetail,
+                value: actionValue,
+                actionTitle: buttonTitle,
+                action: action
+            )
+            .disabled(isBusy)
+        }
+    }
+
+    private var actionSymbol: String {
+        switch assessment.kind {
+        case .securityDanger, .securityAttention: return "lock.shield"
+        case .storageCritical: return "internaldrive"
+        case .collectionIncomplete, .noResult: return "arrow.clockwise"
+        case .browserAutomation, .runtimeAttention: return "hammer"
+        case .storageDrop, .clear: return "clock.arrow.circlepath"
+        }
+    }
+
+    private var actionTitle: String {
+        switch assessment.kind {
+        case .securityDanger, .securityAttention: return "증거를 먼저 확인하세요"
+        case .storageCritical: return "승인 가능한 정리 후보를 검토하세요"
+        case .collectionIncomplete, .noResult: return "검사 범위를 다시 수집하세요"
+        case .browserAutomation: return "자동화 소유자와 격리 설정을 확인하세요"
+        case .runtimeAttention: return "끝난 개발 작업만 정상 종료하세요"
+        case .storageDrop: return "감소 시점과 함께 변한 경로를 확인하세요"
+        case .clear: return "변화 기록을 유지하세요"
+        }
+    }
+
+    private var actionDetail: String {
+        switch assessment.kind {
+        case .collectionIncomplete, .noResult:
+            return "새 검사는 기존 기록을 지우지 않고 현재 수집 성공 여부를 함께 남깁니다."
+        case .browserAutomation:
+            return "기본 Chrome 자동화와 잔류 프로세스를 구분하며 자동 종료하지 않습니다."
+        case .storageCritical:
+            return "세션 기록과 개발 필수 자산은 자동 정리 대상에서 제외합니다."
+        case .securityDanger, .securityAttention:
+            return "경로, 실행 맥락과 수집 범위를 확인한 뒤 별도 제거 여부를 판단합니다."
+        case .runtimeAttention:
+            return "Codex·Claude 세션 데이터는 보존하고 실행 중인 작업만 구분합니다."
+        case .storageDrop:
+            return "크기가 함께 변한 사실과 실제 원인을 구분해서 보여줍니다."
+        case .clear:
+            return "급격한 변화가 생기면 제한된 후보 경로 스냅샷을 남길 수 있습니다."
+        }
+    }
+
+    private var actionValue: String {
+        switch assessment.kind {
+        case .storageCritical: return storage?.reclaimableText ?? "측정 불가"
+        case .browserAutomation: return "자동 종료 없음"
+        case .collectionIncomplete, .noResult: return "로컬 검사"
+        default: return assessment.value
+        }
+    }
+
+    private var buttonTitle: String {
+        switch assessment.kind {
+        case .collectionIncomplete, .noResult: return "다시 검사"
+        case .securityDanger, .securityAttention: return "보안 보기"
+        case .storageCritical: return "후보 보기"
+        case .browserAutomation, .runtimeAttention: return "개발 보기"
+        case .storageDrop, .clear: return "기록 보기"
+        }
+    }
+
+    private var action: () -> Void {
+        switch assessment.kind {
+        case .collectionIncomplete, .noResult: return runScan
+        case .securityDanger, .securityAttention: return onOpenSecurity
+        case .storageCritical: return { onOpenStorage(.cleanup) }
+        case .browserAutomation, .runtimeAttention: return { onOpenStorage(.development) }
+        case .storageDrop, .clear: return onOpenActivity
         }
     }
 }
@@ -203,54 +494,6 @@ private struct StatusStorageMeter: View {
         .font(.caption2)
         .foregroundStyle(.tertiary)
         .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-private struct StatusChangeSection: View {
-    let change: StorageChangeSummary?
-    let onOpenStorage: (StorageWorkspaceSection) -> Void
-    let onOpenActivity: () -> Void
-
-    var body: some View {
-        Section("최근 변화") {
-            if let change, let largest = change.largestChanges.first {
-                StatusActionRow(
-                    symbol: largest.deltaGB > 0 ? "arrow.up.right" : "arrow.down.right",
-                    title: largest.label,
-                    detail: changeDetail(largest),
-                    value: String(format: "%+.1fGB", largest.deltaGB),
-                    actionTitle: "확인"
-                ) {
-                    onOpenStorage(largest.category == "developer" ? .development : .cleanup)
-                }
-
-                if change.unattributedConsumedGB >= 0.1 {
-                    StatusNoticeRow(
-                        symbol: "questionmark.circle",
-                        title: "추적 밖에서 사용된 공간",
-                        detail: "APFS snapshot, swap 또는 접근이 제한된 영역일 수 있습니다.",
-                        value: String(format: "%.1fGB", change.unattributedConsumedGB),
-                        tint: .secondary
-                    )
-                }
-            } else {
-                StatusNoticeRow(
-                    symbol: "record.circle",
-                    title: "비교할 이전 검사가 없습니다",
-                    detail: "다음 검사부터 무엇이 늘고 줄었는지 비교합니다.",
-                    tint: .secondary
-                )
-            }
-
-            Button(action: onOpenActivity) {
-                Label("전체 변화 기록 보기", systemImage: "clock.arrow.circlepath")
-            }
-            .buttonStyle(.link)
-        }
-    }
-
-    private func changeDetail(_ item: StorageItemChange) -> String {
-        String(format: "경로 점유 추정: 직전 %.1fGB · 현재 %.1fGB", item.beforeGB, item.afterGB)
     }
 }
 

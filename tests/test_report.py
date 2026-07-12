@@ -58,7 +58,7 @@ def test_required_top_level_fields(sample_windows_scan):
 
 def test_summary_shape(sample_windows_scan):
     s = sample_windows_scan["summary"]
-    assert s["overall"] in ("safe", "warning", "danger")
+    assert s["overall"] in ("safe", "warning", "danger", "incomplete")
     assert isinstance(s["dangerCount"], int)
     assert isinstance(s["warningCount"], int)
 
@@ -76,7 +76,7 @@ def test_platform_scan_contracts(fixtures_dir):
         scan = __import__("json").loads((fixtures_dir / name).read_text(encoding="utf-8-sig"))
         assert scan["schemaVersion"] == "1.0"
         assert isinstance(scan["summary"], dict)
-        assert scan["summary"]["overall"] in ("safe", "warning", "danger")
+        assert scan["summary"]["overall"] in ("safe", "warning", "danger", "incomplete")
         assert isinstance(scan["sections"], dict)
         for section in ("cpu", "network", "recentInstalls", "systemLoad", "virustotal"):
             assert section in scan["sections"], f"{name}: missing {section}"

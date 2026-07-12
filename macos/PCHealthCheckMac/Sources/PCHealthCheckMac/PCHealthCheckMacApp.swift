@@ -44,7 +44,7 @@ struct PCHealthCheckMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        Window("PC Health Check Mac", id: "main") {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 900, minHeight: 640)
@@ -53,6 +53,7 @@ struct PCHealthCheckMacApp: App {
                 }
         }
         .windowStyle(.titleBar)
+        .defaultSize(width: 1100, height: 760)
         .commands {
             CommandGroup(after: .newItem) {
                 Button(model.isRunning ? "검사 취소" : "지금 검사") {
@@ -106,7 +107,7 @@ struct StorageWatchSettingsView: View {
                 )
                 .disabled(model.storageWatchInFlight || model.isRunning || model.cleanupInFlight)
 
-                Text("20GB 미만이거나 한 시간에 8GB 이상 줄면 macOS 알림을 보냅니다.")
+                Text("20GB 미만이거나 한 시간에 8GB 이상 줄면 알림을 보냅니다. 급감 시에는 원인 복원을 위해 알려진 캐시·개발 경로를 최대 8개, 총 8초 안에서 측정합니다.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
@@ -121,8 +122,8 @@ struct StorageWatchSettingsView: View {
             }
 
             Section("개인정보") {
-                Label("여유 공간과 검사 시각만 이 Mac에 저장합니다.", systemImage: "lock.shield")
-                Text("파일 내용은 기록하지 않으며 자동 삭제도 실행하지 않습니다.")
+                Label("기록은 이 Mac 안에만 저장합니다.", systemImage: "lock.shield")
+                Text("평소에는 여유 공간과 검사 시각만 기록합니다. 8GB 이상 급감할 때만 고정된 후보 경로·크기·측정 상태를 남기며, 파일 내용은 읽거나 기록하지 않고 자동 삭제도 실행하지 않습니다.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

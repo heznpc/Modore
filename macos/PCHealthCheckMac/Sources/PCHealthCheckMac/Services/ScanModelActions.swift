@@ -104,7 +104,7 @@ extension ScanModel {
             updatedUUIDs.insert(normalizedUUID)
         }
         do {
-            try Self.saveSimulatorKeepUUIDs(updatedUUIDs)
+            try SimulatorKeepStore.save(updatedUUIDs)
             replaceSimulatorKeepUUIDs(with: updatedUUIDs)
             appendLog(isRemoving ? "Simulator 보존 해제: \(device.name)" : "Simulator 보존: \(device.name)")
         } catch {
@@ -203,16 +203,18 @@ extension ScanModel {
                 errorMessage = "봉인한 정리 프로그램을 확인하지 못해 아무것도 정리하지 않았습니다."
                 return
             }
+            var pinnedFiles = invocation.files
+            pinnedFiles["approval_token"] = Data(preview.approvalToken.utf8)
             let result = await LocalProcessRunner.capture(
                 executable: "/bin/bash",
                 arguments: [
                     invocation.argument, "--execute", preview.recipeID,
-                    "--owner-approved", "--approval-token", preview.approvalToken,
+                    "--owner-approved", "--approval-token-file", "@pch-pinned:approval_token",
                 ],
                 currentDirectory: execution.runtimeRoot,
                 expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
                 expectedSignedBundleURL: execution.signedBundleURL,
-                pinnedFiles: invocation.files,
+                pinnedFiles: pinnedFiles,
                 timeout: nil,
                 maxOutputBytes: 512_000
             )
@@ -238,13 +240,9 @@ extension ScanModel {
                 await finishRun(success: ok)
             } else {
                 cleanupPreview = executed
-                if let staged = executed.stagedRemainders.first {
-                    errorMessage = "삭제하지 못한 항목을 안전한 격리 경로에 보존했습니다: \(staged)"
-                    appendLog("격리 잔여 경로: \(staged)")
-                } else {
-                    errorMessage = executed.blockedReason.isEmpty
-                        ? "일부 항목을 정리하지 못했습니다. 영수증과 실행 로그를 확인하세요."
-                        : executed.blockedReason
+                errorMessage = executed.failureMessage
+                for recoveryPath in executed.recoveryPathMessages {
+                    appendLog(recoveryPath)
                 }
                 appendLog("정리 중단: \(executed.statusText)")
             }
@@ -301,9 +299,9 @@ extension ScanModel {
                     "PCH_STORAGE_WATCH_SHA256": watcherHash,
                 ]
             )
-            let values = Self.protocolValues(result.output)
+            let values = StorageWatchService.protocolValues(result.output)
             let harnessEnabled = values["enabled"] == "true"
-            let runtimeState = Self.storageWatchRuntimeState(
+            let runtimeState = StorageWatchService.runtimeState(
                 protocolValues: values,
                 expectedWatcherURL: execution.storageWatchScriptURL,
                 expectedWatcherSHA256: watcherHash

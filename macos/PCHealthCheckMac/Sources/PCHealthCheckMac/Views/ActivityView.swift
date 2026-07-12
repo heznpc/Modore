@@ -7,6 +7,10 @@ struct ActivityPage: View {
         Form {
             StorageWatchActivitySection()
 
+            if let latestEvent = model.storageWatchPathEvents.last {
+                StorageWatchPathEvidenceSection(event: latestEvent)
+            }
+
             if !model.storageHistory.isEmpty {
                 ScanHistorySection(entries: model.storageHistory)
             }
@@ -14,6 +18,9 @@ struct ActivityPage: View {
             ScanLogSection(store: model.logStore, clearAction: model.clearLog)
         }
         .macSettingsFormStyle()
+        .task {
+            await model.refreshStorageWatchEvidence()
+        }
     }
 }
 
@@ -48,10 +55,55 @@ private struct StorageWatchActivitySection: View {
         } header: {
             NativeSectionHeader(
                 title: "저장공간 변화",
-                subtitle: "여유 공간만 기록하며 파일을 삭제하지 않습니다.",
+                subtitle: "평소에는 여유 공간만 기록하고, 급감 시 제한된 경로 크기만 추가로 남깁니다.",
                 value: "\(model.freeSpaceSamples.count)개 표본"
             )
         }
+    }
+}
+
+private struct StorageWatchPathEvidenceSection: View {
+    let event: StorageWatchPathEvent
+
+    var body: some View {
+        Section {
+            ForEach(event.rows) { row in
+                HStack(alignment: .top, spacing: 12) {
+                    NativeStatusGlyph(
+                        symbol: row.measured ? "folder" : "clock",
+                        tint: .secondary
+                    )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.label)
+                            .font(.body.weight(.medium))
+                        Text(row.path)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .help(row.path)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(measurementText(row))
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(row.measured ? .primary : .secondary)
+                        .monospacedDigit()
+                }
+                .padding(.vertical, 4)
+            }
+        } header: {
+            NativeSectionHeader(
+                title: "최근 급감 당시 경로",
+                subtitle: "급감 직후 동시에 측정된 고정 후보입니다. 크기가 크다는 사실만으로 원인으로 확정하지 않습니다.",
+                value: event.capturedAt.formatted(date: .abbreviated, time: .shortened)
+            )
+        }
+    }
+
+    private func measurementText(_ row: StorageWatchPathSnapshot) -> String {
+        guard row.measured else {
+            return row.status == "timed_out" ? "시간 제한" : "측정 실패"
+        }
+        return String(format: "%.1fGB", row.sizeGB)
     }
 }
 
@@ -68,8 +120,8 @@ private struct ScanHistorySection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "검사 이력",
-                subtitle: "검사 시점의 여유 공간과 가장 큰 경로 변화를 비교합니다.",
+                title: "사고 및 검사 이력",
+                subtitle: "검사 당시의 주요 판단, 수집 완전성과 저장공간 변화를 함께 남깁니다.",
                 value: "\(entries.count)회"
             )
         }
@@ -133,21 +185,22 @@ struct RecentScanHistoryRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            NativeStatusGlyph(symbol: changeSymbol, tint: .secondary)
+            NativeStatusGlyph(symbol: historySymbol, tint: historyTint)
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.capturedAt.formatted(date: .abbreviated, time: .shortened))
+                Text(entry.incidentTitle ?? entry.capturedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.body.weight(.medium))
-                Text(changeDescription)
+                    .lineLimit(1)
+                Text(historyDetail)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
-                Text("\(entry.freeGB, specifier: "%.1f")GB")
+                Text(entry.incidentValue ?? String(format: "%.1fGB", entry.freeGB))
                     .font(.callout.weight(.medium))
                     .monospacedDigit()
-                Text("사용 가능")
+                Text(entry.incidentValue == nil ? "사용 가능" : "당시 판단")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -162,28 +215,87 @@ struct RecentScanHistoryRow: View {
 
     private var changeDescription: String {
         guard let change else { return "첫 비교 기준점" }
+        guard abs(change.freeDeltaGB) >= 0.05 else {
+            if let largest = change.largestChanges.first {
+                return "사용 가능 거의 같음 · \(historyEvidence(largest))"
+            }
+            return "추적 경로와 여유 공간 변화 없음"
+        }
+
         var parts = [String(format: "사용 가능 %+.1fGB", change.freeDeltaGB)]
-        if change.unattributedConsumedGB >= 0.1 {
+        if let primary = change.primaryCause {
+            let label = change.consumedGB >= 0.05 ? "감소 후보" : "회복 후보"
+            parts.append("\(label) \(historyEvidence(primary))")
+        } else {
+            parts.append(change.consumedGB >= 0.05 ? "감소 원인 미포착" : "회복 원인 미포착")
+        }
+
+        if let opposite = change.oppositeDirectionChanges.first {
+            let label = change.consumedGB >= 0.05 ? "동시 감소" : "동시 증가"
+            parts.append("\(label) \(historyEvidence(opposite))")
+        }
+
+        if !change.causeNotCaptured, change.unattributedConsumedGB >= 0.1 {
             parts.append(String(format: "추적 밖 사용 %.1fGB", change.unattributedConsumedGB))
-        } else if change.unattributedRecoveredGB >= 0.1 {
+        } else if !change.causeNotCaptured, change.unattributedRecoveredGB >= 0.1 {
             parts.append(String(format: "추적 밖 회복 %.1fGB", change.unattributedRecoveredGB))
         }
-        if let largest = change.largestChanges.first {
-            parts.append(String(format: "%@ 경로 점유 %+.1fGB", largest.label, largest.deltaGB))
+        if change.causeNotCaptured {
+            parts.append("현재 수집 범위 밖")
+        }
+        if parts.count > 1 {
             return parts.joined(separator: " · ")
         }
-        if abs(change.freeDeltaGB) >= 0.05 {
-            parts.append("추적 경로 변화 없음")
-            return parts.joined(separator: " · ")
-        }
-        return "추적 경로와 여유 공간 변화 없음"
+        return "추적 경로 변화 없음"
     }
 
-    private var changeSymbol: String {
+    private var historyDetail: String {
+        guard entry.incidentTitle != nil else { return changeDescription }
+        let timestamp = entry.capturedAt.formatted(date: .abbreviated, time: .shortened)
+        return "\(timestamp) · \(changeDescription) · 사용 가능 \(String(format: "%.1fGB", entry.freeGB))"
+    }
+
+    private func historyEvidence(_ item: StorageItemChange) -> String {
+        if item.appearedInTrackedList {
+            return String(
+                format: "%@ 현재 %.1fGB(목록에 새로 나타남)",
+                item.label,
+                item.afterGB
+            )
+        }
+        if item.disappearedFromTrackedList {
+            return String(
+                format: "%@ 직전 %.1fGB(현재 목록에서 사라짐)",
+                item.label,
+                item.beforeGB
+            )
+        }
+        return String(format: "%@ %+.1fGB", item.label, item.deltaGB)
+    }
+
+    private var historySymbol: String {
+        switch entry.incidentKind {
+        case "security_danger": return "exclamationmark.shield"
+        case "storage_critical": return "internaldrive.fill"
+        case "collection_incomplete": return "questionmark.shield"
+        case "browser_automation": return "rectangle.on.rectangle"
+        case "storage_drop": return "arrow.down.right.circle"
+        case "security_attention": return "info.circle"
+        case "runtime_attention": return "hammer"
+        case "clear": return "checkmark.circle"
+        default: break
+        }
         guard let change else { return "record.circle" }
         if change.freeDeltaGB < -0.05 { return "arrow.down.right" }
         if change.freeDeltaGB > 0.05 { return "arrow.up.right" }
         return "equal.circle"
+    }
+
+    private var historyTint: Color {
+        switch entry.incidentKind {
+        case "security_danger", "storage_critical": return .red
+        default: return .secondary
+        }
     }
 
 }

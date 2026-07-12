@@ -15,6 +15,145 @@ final class StorageSecurityRemediationTests: XCTestCase {
         XCTAssertTrue(summary.hasDanger)
     }
 
+    func testSecurityAttentionExcludesStorageAndNonAttentionFindings() throws {
+        let content = ScanContent(root: [
+            "summary": [
+                "overall": "danger",
+                "dangerCount": 2,
+                "warningCount": 2,
+                "message": "전체 확인 항목 4건",
+            ],
+            "findings": [
+                ["level": "danger", "category": "process", "title": "Unknown process"],
+                ["level": "warning", "category": "network", "title": "Unknown endpoint"],
+                [
+                    "level": "danger",
+                    "category": "storage",
+                    "title": "Low free space",
+                    "actionTarget": "privacy",
+                ],
+                [
+                    "level": "warning",
+                    "category": "storage",
+                    "title": "Growing cache",
+                    "actionTarget": "development",
+                ],
+                ["level": "safe", "category": "process", "title": "Signed process"],
+            ],
+        ])
+
+        XCTAssertEqual(content.summary?.attentionCount, 4)
+        XCTAssertEqual(content.securityAttentionCount, 2)
+        XCTAssertTrue(content.securityHasDanger)
+        XCTAssertEqual(
+            content.securityAttentionFindings.map(\.title),
+            ["Unknown process", "Unknown endpoint"]
+        )
+        XCTAssertEqual(
+            content.storageAttentionFindings.map(\.title),
+            ["Low free space", "Growing cache"]
+        )
+        XCTAssertTrue(content.storageAttentionFindings[0].isStorageAccessFinding)
+        XCTAssertTrue(content.storageAttentionFindings[1].isDevelopmentStorageFinding)
+    }
+
+    func testScanContentParsesOptionalVirusTotalSnapshot() {
+        let enabled = ScanContent(root: [
+            "sections": ["virustotal": ["enabled": true]],
+        ])
+        let disabled = ScanContent(root: [
+            "sections": ["virustotal": ["enabled": false]],
+        ])
+        let legacy = ScanContent(root: ["sections": [:]])
+
+        XCTAssertEqual(enabled.virusTotalEnabled, true)
+        XCTAssertEqual(disabled.virusTotalEnabled, false)
+        XCTAssertNil(legacy.virusTotalEnabled)
+    }
+
+    func testFreeSpaceLossUsesNewlyAppearedGrowthInsteadOfLargerDisappearance() throws {
+        let before = try snapshot(
+            freeGB: 30,
+            cleanupItems: [
+                item(label: "Disappeared archive", sizeGB: 6, path: "/old", cleanupID: "old"),
+            ]
+        )
+        let after = try snapshot(
+            freeGB: 29,
+            cleanupItems: [
+                item(label: "New cache", sizeGB: 2, path: "/new", cleanupID: "new"),
+            ]
+        )
+        let summary = try XCTUnwrap(StorageChangeSummary(entries: [
+            history("before", time: 1, storage: before),
+            history("after", time: 2, storage: after),
+        ]))
+
+        XCTAssertEqual(summary.primaryCause?.label, "New cache")
+        XCTAssertEqual(summary.primaryCause?.beforeGB, 0)
+        XCTAssertEqual(summary.primaryCause?.afterGB, 2)
+        XCTAssertEqual(summary.primaryCause?.appearedInTrackedList, true)
+        XCTAssertEqual(summary.oppositeDirectionChanges.first?.label, "Disappeared archive")
+        XCTAssertEqual(summary.oppositeDirectionChanges.first?.afterGB, 0)
+        XCTAssertEqual(summary.oppositeDirectionChanges.first?.disappearedFromTrackedList, true)
+        XCTAssertEqual(summary.observedGrowthGB, 0)
+        XCTAssertEqual(summary.unattributedConsumedGB, 1, accuracy: 0.001)
+        XCTAssertFalse(summary.causeNotCaptured)
+    }
+
+    func testFreeSpaceRecoveryUsesDisappearedPathInsteadOfNewGrowth() throws {
+        let before = try snapshot(
+            freeGB: 20,
+            cleanupItems: [
+                item(label: "Removed cache", sizeGB: 4, path: "/removed", cleanupID: "removed"),
+            ]
+        )
+        let after = try snapshot(
+            freeGB: 23,
+            cleanupItems: [
+                item(label: "New SDK", sizeGB: 8, path: "/new-sdk", cleanupID: "new-sdk"),
+            ]
+        )
+        let summary = try XCTUnwrap(StorageChangeSummary(entries: [
+            history("before", time: 1, storage: before),
+            history("after", time: 2, storage: after),
+        ]))
+
+        XCTAssertEqual(summary.primaryCause?.label, "Removed cache")
+        XCTAssertEqual(summary.primaryCause?.beforeGB, 4)
+        XCTAssertEqual(summary.primaryCause?.afterGB, 0)
+        XCTAssertEqual(summary.primaryCause?.disappearedFromTrackedList, true)
+        XCTAssertEqual(summary.oppositeDirectionChanges.first?.label, "New SDK")
+        XCTAssertEqual(summary.oppositeDirectionChanges.first?.beforeGB, 0)
+        XCTAssertEqual(summary.oppositeDirectionChanges.first?.appearedInTrackedList, true)
+        XCTAssertEqual(summary.observedShrinkGB, 0)
+        XCTAssertEqual(summary.unattributedRecoveredGB, 3, accuracy: 0.001)
+        XCTAssertFalse(summary.causeNotCaptured)
+    }
+
+    func testDirectionWithoutMatchingPathEvidenceIsExplicitlyUncaptured() throws {
+        let before = try snapshot(
+            freeGB: 30,
+            cleanupItems: [
+                item(label: "Shrinking cache", sizeGB: 5, path: "/cache", cleanupID: "cache"),
+            ]
+        )
+        let after = try snapshot(
+            freeGB: 29,
+            cleanupItems: [
+                item(label: "Shrinking cache", sizeGB: 2, path: "/cache", cleanupID: "cache"),
+            ]
+        )
+        let summary = try XCTUnwrap(StorageChangeSummary(entries: [
+            history("before", time: 1, storage: before),
+            history("after", time: 2, storage: after),
+        ]))
+
+        XCTAssertNil(summary.primaryCause)
+        XCTAssertTrue(summary.causeNotCaptured)
+        XCTAssertEqual(summary.oppositeDirectionChanges.first?.label, "Shrinking cache")
+    }
+
     func testDuplicateCleanupRecipeUsesPathBoundHistoryIdentity() throws {
         let before = try snapshot(cleanupItems: [
             item(label: "Chrome clone X", sizeGB: 1, path: "/private/X/clone", cleanupID: "chrome"),
@@ -352,11 +491,73 @@ final class StorageSecurityRemediationTests: XCTestCase {
         XCTAssertTrue(content.truncatedSections.contains("자동 실행"))
     }
 
-    private func snapshot(cleanupItems: [[String: Any]]) throws -> StorageSnapshot {
+    func testHistoryWritePayloadPrunesBeforeSixteenMegabyteReadLimit() throws {
+        let repeated = String(repeating: "x", count: 1_500)
+        let items = (0..<2_000).map { index in
+            StorageHistoryItem(
+                key: "item-\(index)",
+                label: repeated,
+                category: "cleanup",
+                kind: "cache",
+                sizeGB: Double(index),
+                path: "/history/\(index)/\(repeated)",
+                cleanupID: "cache-\(index)",
+                measureStatus: "ok"
+            )
+        }
+        let entries = (0..<3).map { index in
+            StorageHistoryEntry(
+                sourceID: "entry-\(index)",
+                capturedAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                freeGB: 30,
+                usedGB: 70,
+                totalGB: 100,
+                items: items,
+                incidentKind: "browser_automation",
+                incidentTitle: "Browser automation residue",
+                incidentValue: "1 root",
+                collectionComplete: false,
+                browserVerdict: "orphaned"
+            )
+        }
+
+        let payload = try StorageHistoryStore.encodedHistoryForWrite(entries)
+
+        XCTAssertLessThanOrEqual(payload.data.count, StorageHistoryStore.maximumHistoryBytes)
+        XCTAssertEqual(payload.entries.map(\.sourceID), ["entry-1", "entry-2"])
+        XCTAssertTrue(payload.entries.allSatisfy { entry in
+            entry.incidentKind == "browser_automation"
+                && entry.incidentTitle == "Browser automation residue"
+                && entry.incidentValue == "1 root"
+                && entry.collectionComplete == false
+                && entry.browserVerdict == "orphaned"
+        })
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-history-byte-prune-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let historyURL = root.appendingPathComponent("history.json")
+        try payload.data.write(to: historyURL)
+
+        XCTAssertEqual(
+            StorageHistoryStore.load(from: historyURL).map(\.sourceID),
+            ["entry-1", "entry-2"]
+        )
+    }
+
+    private func snapshot(
+        freeGB: Double = 30,
+        cleanupItems: [[String: Any]]
+    ) throws -> StorageSnapshot {
         try XCTUnwrap(StorageSnapshot(json: [
             "volume": [
                 "mount": "/",
-                "freeGB": 30,
+                "freeGB": freeGB,
                 "usedGB": 70,
                 "totalGB": 100,
                 "usePercent": 70,

@@ -41,8 +41,32 @@ struct CleanupPreview: Identifiable {
         trashRun = payload.trashRun
     }
 
-    var canExecute: Bool { status == "ready" && !approvalToken.isEmpty }
+    var canExecute: Bool {
+        status == "ready"
+            && approvalToken.utf8.count == 64
+            && approvalToken.utf8.allSatisfy {
+                ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102)
+            }
+    }
     var isComplete: Bool { status == "complete" }
+
+    var recoveryPathMessages: [String] {
+        var messages = stagedRemainders.map { "격리 보존 경로: \($0)" }
+        if !trashRun.isEmpty {
+            messages.append("휴지통 경로: \(trashRun)")
+        }
+        if !receipt.isEmpty {
+            messages.append("영수증: \(receipt)")
+        }
+        return messages
+    }
+
+    var failureMessage: String {
+        let summary = blockedReason.isEmpty
+            ? "일부 항목을 정리하지 못했습니다. 복구 경로와 실행 로그를 확인하세요."
+            : blockedReason
+        return ([summary] + recoveryPathMessages).joined(separator: "\n")
+    }
 
     var estimatedText: String { Self.sizeText(estimatedKB) }
     var reclaimedText: String { Self.sizeText(reclaimedKB) }

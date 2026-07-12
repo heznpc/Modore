@@ -16,6 +16,8 @@ OPERATION=""
 RECIPE_ID=""
 OWNER_APPROVED="false"
 APPROVAL_TOKEN=""
+APPROVAL_TOKEN_FILE=""
+APPROVAL_INPUT_KIND=""
 HOME_ROOT="${HOME:-}"
 VAR_FOLDERS_ROOT="/private/var/folders"
 APPLICATIONS_ROOT="/Applications"
@@ -31,6 +33,9 @@ PROCESS_PATTERN=""
 PROCESS_POLICY="block"
 PROCESS_NOTE=""
 WARNING=""
+PREVIEW_STATUS=""
+BLOCKED_REASON=""
+RUNNING_PROCESSES=""
 TARGETS=()
 APP_BUNDLE_ID=""
 TRASH_RUN=""
@@ -41,18 +46,19 @@ MOVED_DESTINATIONS=()
 SIMULATOR_UUID=""
 RECIPE_BLOCK_REASON=""
 PREVIEW_APPROVAL_TOKEN=""
-APPROVAL_MANIFEST=""
 EXECUTION_MANIFEST=""
 TRANSACTION_JOURNAL=""
 EXECUTION_FAILURE_STATUS="partial"
 STAGED_REMAINDERS=()
+TEST_STAGED_APPROVED_ORIGINAL=""
 
 usage() {
     /usr/bin/printf '%s\n' \
         'Usage:' \
         '  cleanup.sh --list' \
         '  cleanup.sh --preview <recipe-id>' \
-        '  cleanup.sh --execute <recipe-id> --owner-approved --approval-token <token>'
+        '  cleanup.sh --execute <recipe-id> --owner-approved --approval-token-file /dev/fd/<fd>' \
+        '  Legacy CLI compatibility: --approval-token <token>'
 }
 
 emit() {
@@ -68,6 +74,28 @@ fail_usage() {
     /usr/bin/printf 'ERROR: %s\n' "$1" >&2
     usage >&2
     exit 64
+}
+
+approval_token_file_size() {
+    local source="$1"
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        /usr/bin/stat -f '%z' "$source" 2>/dev/null
+    else
+        /usr/bin/stat -L -c '%s' "$source" 2>/dev/null
+    fi
+}
+
+read_approval_token_file() {
+    local source="$1"
+    local size token
+    [[ "$source" =~ ^/dev/fd/[0-9]+$ && -f "$source" ]] || return 1
+    size="$(approval_token_file_size "$source")" || return 1
+    [[ "$size" == "64" ]] || return 1
+    token="$(/bin/dd if="$source" bs=64 count=1 2>/dev/null)" || return 1
+    [[ "$token" =~ ^[0-9a-f]{64}$ ]] || return 1
+    APPROVAL_TOKEN="$token"
+    APPROVAL_TOKEN_FILE=""
+    return 0
 }
 
 path_owner_uid() {
@@ -148,14 +176,16 @@ configure_roots() {
             "${PCH_TEST_LATE_SIMCTL_LIST_FILE:-}" \
             "${PCH_TEST_LATE_SIMULATOR_KEEP_FILE:-}" \
             "${PCH_TEST_LATE_CONTENT_FILE:-}" \
-            "${PCH_TEST_SWAP_TARGET_WITH_SYMLINK_TO:-}"; do
+            "${PCH_TEST_SWAP_TARGET_WITH_SYMLINK_TO:-}" \
+            "${PCH_TEST_SWAP_STAGED_DESTINATION_WITH:-}"; do
             [[ -z "$test_path" ]] || test_path_is_isolated "$test_path" \
                 || fail_usage "테스트 hook 경로가 격리 홈을 벗어났습니다."
         done
         for test_path in \
             "${PCH_TEST_FAIL_TRASH_MOVE_AT:-}" \
             "${PCH_TEST_FAIL_STAGED_REMOVE_AT:-}" \
-            "${PCH_TEST_LATE_CONTENT_AT:-}"; do
+            "${PCH_TEST_LATE_CONTENT_AT:-}" \
+            "${PCH_TEST_SWAP_STAGED_DESTINATION_AT:-}"; do
             if [[ -n "$test_path" && ! "$test_path" =~ ^[1-9][0-9]*$ ]]; then
                 fail_usage "테스트 실패 지점이 올바르지 않습니다."
             fi
@@ -453,10 +483,10 @@ define_recipe() {
     SIMULATOR_UUID=""
     RECIPE_BLOCK_REASON=""
     PREVIEW_APPROVAL_TOKEN=""
-    APPROVAL_MANIFEST=""
     EXECUTION_MANIFEST=""
     TRANSACTION_JOURNAL=""
     EXECUTION_FAILURE_STATUS="partial"
+    TEST_STAGED_APPROVED_ORIGINAL=""
 
     if [[ "$recipe" == simulator_delete:* ]]; then
         define_simulator_recipe "${recipe#simulator_delete:}"
@@ -844,23 +874,45 @@ create_approval_manifest() {
         return 1
     }
     PREVIEW_APPROVAL_TOKEN="$token"
-    APPROVAL_MANIFEST="$destination"
     return 0
 }
 
-validate_approval_manifest() {
-    local temporary created_epoch now age
+# shellcheck disable=SC2329  # Invoked by the EXIT trap after token consumption.
+cleanup_execution_manifest() {
+    local exit_status=$?
+    if [[ -n "$EXECUTION_MANIFEST" ]]; then
+        /bin/rm -f "$EXECUTION_MANIFEST" 2>/dev/null || true
+        EXECUTION_MANIFEST=""
+    fi
+    return "$exit_status"
+}
+
+consume_approval_manifest() {
+    local source executing
     [[ "$APPROVAL_TOKEN" =~ ^[0-9a-f]{64}$ ]] || return 1
     prepare_private_directory "$APPROVAL_DIR" || return 1
-    APPROVAL_MANIFEST="$APPROVAL_DIR/$APPROVAL_TOKEN.tsv"
-    [[ -f "$APPROVAL_MANIFEST" && ! -L "$APPROVAL_MANIFEST" ]] || return 1
-    created_epoch="$(/usr/bin/awk -F '\t' '$1 == "createdEpoch" {print $2; count++} END {if (count != 1) exit 1}' "$APPROVAL_MANIFEST")" \
+    source="$APPROVAL_DIR/$APPROVAL_TOKEN.tsv"
+    executing="$APPROVAL_DIR/.executing-$APPROVAL_TOKEN-$$.tsv"
+    [[ -f "$source" && ! -L "$source" && ! -e "$executing" && ! -L "$executing" ]] \
+        || return 1
+    /bin/mv "$source" "$executing" || return 1
+    EXECUTION_MANIFEST="$executing"
+    trap cleanup_execution_manifest EXIT
+    [[ -f "$EXECUTION_MANIFEST" && ! -L "$EXECUTION_MANIFEST" ]] || return 1
+    return 0
+}
+
+validate_consumed_approval_manifest() {
+    local temporary created_epoch now age
+    [[ -n "$EXECUTION_MANIFEST" \
+        && -f "$EXECUTION_MANIFEST" \
+        && ! -L "$EXECUTION_MANIFEST" ]] || return 1
+    created_epoch="$(/usr/bin/awk -F '\t' '$1 == "createdEpoch" {print $2; count++} END {if (count != 1) exit 1}' "$EXECUTION_MANIFEST")" \
         || return 1
     [[ "$created_epoch" =~ ^[0-9]+$ ]] || return 1
     now="$(/bin/date '+%s')" || return 1
     age=$((now - created_epoch))
     if [[ "$age" -lt 0 || "$age" -gt "$APPROVAL_TTL_SECONDS" ]]; then
-        /bin/rm -f "$APPROVAL_MANIFEST"
         return 2
     fi
     temporary="$(/usr/bin/mktemp "$APPROVAL_DIR/.execute.XXXXXX")" || return 1
@@ -868,20 +920,12 @@ validate_approval_manifest() {
         /bin/rm -f "$temporary"
         return 1
     fi
-    if ! /usr/bin/cmp -s "$APPROVAL_MANIFEST" "$temporary"; then
+    if ! /usr/bin/cmp -s "$EXECUTION_MANIFEST" "$temporary"; then
         /bin/rm -f "$temporary"
         return 1
     fi
     /bin/rm -f "$temporary"
-    EXECUTION_MANIFEST="$APPROVAL_MANIFEST"
     return 0
-}
-
-consume_approval_manifest() {
-    local executing="$APPROVAL_DIR/.executing-$APPROVAL_TOKEN-$$.tsv"
-    [[ -n "$EXECUTION_MANIFEST" && ! -e "$executing" && ! -L "$executing" ]] || return 1
-    /bin/mv "$EXECUTION_MANIFEST" "$executing" || return 1
-    EXECUTION_MANIFEST="$executing"
 }
 
 manifest_identity_matches() {
@@ -1002,9 +1046,8 @@ prepare_trash_run() {
 
 prepare_staging_run() {
     prepare_private_directory "$STAGING_DIR" || return 1
-    STAGING_RUN="$STAGING_DIR/$APPROVAL_TOKEN-$$"
-    [[ ! -e "$STAGING_RUN" && ! -L "$STAGING_RUN" ]] || return 1
-    /bin/mkdir "$STAGING_RUN" || return 1
+    STAGING_RUN="$(/usr/bin/mktemp -d "$STAGING_DIR/.execute-$$.XXXXXX")" || return 1
+    [[ -d "$STAGING_RUN" && ! -L "$STAGING_RUN" ]] || return 1
     /bin/chmod 700 "$STAGING_RUN" 2>/dev/null || return 1
 }
 
@@ -1014,6 +1057,45 @@ rollback_single_move() {
     [[ ! -e "$source" && ! -L "$source" ]] || return 1
     [[ -e "$destination" || -L "$destination" ]] || return 1
     /bin/mv "$destination" "$source"
+}
+
+record_staged_remainder() {
+    local candidate="$1"
+    local existing
+    [[ -e "$candidate" || -L "$candidate" ]] || return 0
+    if [[ "${#STAGED_REMAINDERS[@]}" -gt 0 ]]; then
+        for existing in "${STAGED_REMAINDERS[@]}"; do
+            [[ "$existing" != "$candidate" ]] || return 0
+        done
+    fi
+    STAGED_REMAINDERS+=("$candidate")
+}
+
+apply_test_staged_destination_swap() {
+    local destination="$1"
+    local index="$2"
+    local replacement saved
+    TEST_STAGED_APPROVED_ORIGINAL=""
+    [[ "${PCH_TEST_MODE:-0}" == "1" \
+        && "${PCH_TEST_SWAP_STAGED_DESTINATION_AT:-0}" == "$index" ]] || return 0
+    replacement="${PCH_TEST_SWAP_STAGED_DESTINATION_WITH:-}"
+    saved="$destination.pch-approved-original"
+    [[ -n "$replacement" \
+        && "$replacement" != "$destination" \
+        && "$replacement" != "$saved" \
+        && ( -e "$replacement" || -L "$replacement" ) \
+        && ! -L "$replacement" \
+        && ! -e "$saved" \
+        && ! -L "$saved" ]] || return 1
+    /bin/mv "$destination" "$saved" || return 1
+    TEST_STAGED_APPROVED_ORIGINAL="$saved"
+    if ! /bin/mv "$replacement" "$destination"; then
+        if /bin/mv "$saved" "$destination" 2>/dev/null; then
+            TEST_STAGED_APPROVED_ORIGINAL=""
+        fi
+        return 1
+    fi
+    return 0
 }
 
 stage_and_remove_target() {
@@ -1036,23 +1118,38 @@ stage_and_remove_target() {
     /bin/mv "$target" "$destination" || return 1
     if ! manifest_identity_matches "$target" "$destination" \
         || ! manifest_size_matches "$target" "$destination"; then
-        rollback_single_move "$target" "$destination" || STAGED_REMAINDERS+=("$destination")
+        rollback_single_move "$target" "$destination" || record_staged_remainder "$destination"
         return 1
     fi
 
     if [[ "$REMOVE_MODE" == "contents" ]]; then
         if ! /bin/mkdir "$target" || ! /bin/chmod "$mode" "$target" 2>/dev/null; then
-            rollback_single_move "$target" "$destination" || STAGED_REMAINDERS+=("$destination")
+            rollback_single_move "$target" "$destination" || record_staged_remainder "$destination"
             return 1
         fi
     fi
 
     if [[ "${PCH_TEST_MODE:-0}" == "1" && "${PCH_TEST_FAIL_STAGED_REMOVE_AT:-0}" == "$index" ]]; then
-        STAGED_REMAINDERS+=("$destination")
+        record_staged_remainder "$destination"
+        return 1
+    fi
+    if ! apply_test_staged_destination_swap "$destination" "$index"; then
+        BLOCKED_REASON="격리된 대상의 삭제 직전 신원을 확인하지 못해 보존했습니다. 복구 경로를 확인하세요."
+        record_staged_remainder "$destination"
+        [[ -z "$TEST_STAGED_APPROVED_ORIGINAL" ]] \
+            || record_staged_remainder "$TEST_STAGED_APPROVED_ORIGINAL"
+        return 1
+    fi
+    if ! manifest_identity_matches "$target" "$destination" \
+        || ! manifest_size_matches "$target" "$destination"; then
+        BLOCKED_REASON="격리된 대상이 삭제 직전에 교체되어 삭제를 거부했습니다. 원본과 교체 항목을 복구 경로에 보존했습니다."
+        record_staged_remainder "$destination"
+        [[ -z "$TEST_STAGED_APPROVED_ORIGINAL" ]] \
+            || record_staged_remainder "$TEST_STAGED_APPROVED_ORIGINAL"
         return 1
     fi
     if ! /bin/rm -rf "$destination"; then
-        STAGED_REMAINDERS+=("$destination")
+        record_staged_remainder "$destination"
         return 1
     fi
     return 0
@@ -1323,45 +1420,48 @@ list_recipes() {
     done
 }
 
-case "${1:-}" in
-    --list)
-        OPERATION="list"
-        shift
-        [[ "$#" -eq 0 ]] || fail_usage "--list에는 추가 인수를 사용할 수 없습니다."
-        ;;
-    --preview|--execute)
-        OPERATION="${1#--}"
-        RECIPE_ID="${2:-}"
-        [[ -n "$RECIPE_ID" ]] || fail_usage "recipe ID가 필요합니다."
-        shift 2
-        while [[ "$#" -gt 0 ]]; do
-            case "$1" in
-                --owner-approved) OWNER_APPROVED="true" ;;
-                --approval-token)
-                    [[ "$#" -ge 2 ]] || fail_usage "--approval-token 값이 필요합니다."
-                    APPROVAL_TOKEN="$2"
-                    shift
-                    ;;
-                *) fail_usage "알 수 없는 옵션: $1" ;;
-            esac
+parse_arguments() {
+    case "${1:-}" in
+        --list)
+            OPERATION="list"
             shift
-        done
-        ;;
-    *) fail_usage "작업을 지정하세요." ;;
-esac
+            [[ "$#" -eq 0 ]] || fail_usage "--list에는 추가 인수를 사용할 수 없습니다."
+            ;;
+        --preview|--execute)
+            OPERATION="${1#--}"
+            RECIPE_ID="${2:-}"
+            [[ -n "$RECIPE_ID" ]] || fail_usage "recipe ID가 필요합니다."
+            shift 2
+            while [[ "$#" -gt 0 ]]; do
+                case "$1" in
+                    --owner-approved) OWNER_APPROVED="true" ;;
+                    --approval-token-file)
+                        [[ "$#" -ge 2 ]] || fail_usage "--approval-token-file 값이 필요합니다."
+                        [[ -z "$APPROVAL_INPUT_KIND" ]] \
+                            || fail_usage "승인 토큰 입력은 하나만 사용할 수 있습니다."
+                        APPROVAL_INPUT_KIND="file"
+                        APPROVAL_TOKEN_FILE="$2"
+                        shift
+                        ;;
+                    --approval-token)
+                        [[ "$#" -ge 2 ]] || fail_usage "--approval-token 값이 필요합니다."
+                        [[ -z "$APPROVAL_INPUT_KIND" ]] \
+                            || fail_usage "승인 토큰 입력은 하나만 사용할 수 있습니다."
+                        APPROVAL_INPUT_KIND="legacy"
+                        APPROVAL_TOKEN="$2"
+                        shift
+                        ;;
+                    *) fail_usage "알 수 없는 옵션: $1" ;;
+                esac
+                shift
+            done
+            ;;
+        *) fail_usage "작업을 지정하세요." ;;
+    esac
+}
 
-configure_roots
-
-if [[ "$OPERATION" == "list" ]]; then
-    list_recipes
-    exit 0
-fi
-
-define_recipe "$RECIPE_ID" || fail_usage "허용되지 않은 recipe ID입니다: $RECIPE_ID"
-preview_status
-ESTIMATED_KB=0
-
-if [[ "$OPERATION" == "preview" ]]; then
+run_preview() {
+    preview_status
     if [[ "$PREVIEW_STATUS" == "ready" ]]; then
         if create_approval_manifest; then
             ESTIMATED_KB="$MANIFEST_ESTIMATED_KB"
@@ -1372,146 +1472,178 @@ if [[ "$OPERATION" == "preview" ]]; then
         fi
     fi
     emit_state "preview" "$PREVIEW_STATUS" "$ESTIMATED_KB"
-    exit 0
-fi
-
-if [[ "$OWNER_APPROVED" != "true" ]]; then
-    /usr/bin/printf 'ERROR: 실행에는 --owner-approved가 필요합니다.\n' >&2
-    exit 2
-fi
-
-if [[ -z "$APPROVAL_TOKEN" ]]; then
-    /usr/bin/printf 'ERROR: 실행에는 미리보기에서 받은 --approval-token이 필요합니다.\n' >&2
-    exit 2
-fi
-
-if ! validate_approval_manifest; then
-    PREVIEW_STATUS="blocked"
-    BLOCKED_REASON="미리보기 이후 대상, 크기 또는 실행 프로세스가 바뀌었습니다. 아무것도 정리하지 않았으므로 다시 미리보기하세요."
-    emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
-    exit 3
-fi
-ESTIMATED_KB="$MANIFEST_ESTIMATED_KB"
-
-if [[ "$RECIPE_ID" == "innorix_ex" ]] && ! stop_innorix; then
-    BLOCKED_REASON="INNORIX 프로세스를 종료하지 못해 파일 삭제를 중단했습니다."
-    PREVIEW_STATUS="blocked"
-    emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
-    exit 3
-fi
-
-if ! apply_test_boundary_changes || ! destructive_boundary_ready; then
-    PREVIEW_STATUS="blocked"
-    [[ -n "$BLOCKED_REASON" ]] || BLOCKED_REASON="삭제 직전 대상 신원이 바뀌어 실행을 중단했습니다. 아무것도 삭제하지 않았습니다."
-    emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
-    exit 3
-fi
-
-if [[ "$REMOVE_MODE" == "trash" ]]; then
-    prepare_trash_run || {
-        PREVIEW_STATUS="blocked"
-        BLOCKED_REASON="사용자 휴지통에 안전한 이동 폴더를 만들지 못했습니다."
-        emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
-        exit 3
-    }
-elif [[ "$REMOVE_MODE" != "simulator" || "${PCH_TEST_MODE:-0}" == "1" ]]; then
-    prepare_staging_run || {
-        PREVIEW_STATUS="blocked"
-        BLOCKED_REASON="검증된 대상을 격리할 안전한 임시 폴더를 만들지 못했습니다."
-        emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
-        exit 3
-    }
-fi
-
-if ! consume_approval_manifest; then
-    PREVIEW_STATUS="blocked"
-    BLOCKED_REASON="미리보기 승인을 일회성 실행으로 잠그지 못했습니다. 아무것도 정리하지 않았습니다."
-    emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
-    exit 3
-fi
-
-FREE_BEFORE="$(available_kb)"
-case "$FREE_BEFORE" in ''|*[!0-9]*) FREE_BEFORE=0 ;; esac
-FAILED=0
-TARGET_INDEX=0
-if [[ "$RECIPE_ID" == app_uninstall:* ]]; then
-    if move_app_transaction; then
-        unload_moved_app_launch_agents
-    else
-        FAILED=1
-    fi
-elif [[ "$REMOVE_MODE" == "simulator" ]]; then
-    if [[ -n "$(matching_processes)" ]] \
-        || ! manifest_identity_matches "${TARGETS[0]}" "${TARGETS[0]}" \
-        || ! manifest_size_matches "${TARGETS[0]}" "${TARGETS[0]}"; then
-        FAILED=1
-        EXECUTION_FAILURE_STATUS="blocked"
-        BLOCKED_REASON="Simulator 데이터가 승인 이후 바뀌어 삭제를 중단했습니다."
-    elif ! simulator_delete_boundary_ready; then
-        FAILED=1
-        EXECUTION_FAILURE_STATUS="blocked"
-    elif [[ "${PCH_TEST_MODE:-0}" == "1" && -n "${PCH_SIMCTL_DELETE_LOG:-}" ]]; then
-        if ! stage_and_remove_target "${TARGETS[0]}" 1; then
-            FAILED=1
-        elif ! /usr/bin/printf '%s\n' "$SIMULATOR_UUID" >> "$PCH_SIMCTL_DELETE_LOG"; then
-            FAILED=1
-        fi
-    elif [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
-        FAILED=1
-        EXECUTION_FAILURE_STATUS="blocked"
-        BLOCKED_REASON="테스트 Simulator 삭제 로그가 격리 루트에 없어 실행을 중단했습니다."
-    else
-        if ! manifest_size_matches "${TARGETS[0]}" "${TARGETS[0]}" \
-            || ! simulator_delete_boundary_ready; then
-            FAILED=1
-            EXECUTION_FAILURE_STATUS="blocked"
-            [[ -n "$BLOCKED_REASON" ]] \
-                || BLOCKED_REASON="Simulator 데이터 크기가 승인 이후 바뀌어 삭제를 중단했습니다."
-        elif ! /usr/bin/xcrun simctl delete "$SIMULATOR_UUID"; then
-            FAILED=1
-        fi
-    fi
-else
-    for target in "${TARGETS[@]}"; do
-        TARGET_INDEX=$((TARGET_INDEX + 1))
-        if [[ -n "$(matching_processes)" ]] \
-            || ! validate_target "$RECIPE_ID" "$target" \
-            || ! manifest_identity_matches "$target" "$target" \
-            || ! manifest_size_matches "$target" "$target"; then
-            FAILED=1
-            EXECUTION_FAILURE_STATUS="blocked"
-            BLOCKED_REASON="실행 중 대상 또는 관련 프로세스 상태가 바뀌어 남은 정리를 중단했습니다."
-            break
-        fi
-        if ! stage_and_remove_target "$target" "$TARGET_INDEX"; then
-            FAILED=1
-            break
-        fi
-    done
-fi
-
-REMAINING_KB="$(remaining_targets_size_kb)"
-RECLAIMED_KB=$((ESTIMATED_KB - REMAINING_KB))
-[[ "$RECLAIMED_KB" -ge 0 ]] || RECLAIMED_KB=0
-FREE_AFTER="$(available_kb)"
-case "$FREE_AFTER" in ''|*[!0-9]*) FREE_AFTER=0 ;; esac
-PHYSICAL_DELTA_KB=$((FREE_AFTER - FREE_BEFORE))
-[[ "$PHYSICAL_DELTA_KB" -ge 0 ]] || PHYSICAL_DELTA_KB=0
-
-RESULT_STATUS="complete"
-[[ "$FAILED" -eq 0 ]] || RESULT_STATUS="$EXECUTION_FAILURE_STATUS"
-RECEIPT_PATH=""
-write_receipt "$RESULT_STATUS" "$ESTIMATED_KB" "$RECLAIMED_KB" "$PHYSICAL_DELTA_KB" || FAILED=1
-[[ "$FAILED" -eq 0 ]] || {
-    [[ "$RESULT_STATUS" == "blocked" ]] || RESULT_STATUS="partial"
 }
 
-emit_state "execute" "$RESULT_STATUS" "$ESTIMATED_KB"
-emit "reclaimedKB" "$RECLAIMED_KB"
-emit "physicalDeltaKB" "$PHYSICAL_DELTA_KB"
-emit "receipt" "$RECEIPT_PATH"
-emit "trashRun" "$TRASH_RUN"
+emit_final_result() {
+    emit_state "execute" "$RESULT_STATUS" "$ESTIMATED_KB"
+    emit "reclaimedKB" "$RECLAIMED_KB"
+    emit "physicalDeltaKB" "$PHYSICAL_DELTA_KB"
+    emit "receipt" "$RECEIPT_PATH"
+    emit "trashRun" "$TRASH_RUN"
 
-[[ "$RESULT_STATUS" == "complete" ]] && exit 0
-[[ "$RESULT_STATUS" == "blocked" ]] && exit 3
-exit 4
+    [[ "$RESULT_STATUS" == "complete" ]] && return 0
+    [[ "$RESULT_STATUS" == "blocked" ]] && return 3
+    return 4
+}
+
+run_execute() {
+    if [[ "$OWNER_APPROVED" != "true" ]]; then
+        /usr/bin/printf 'ERROR: 실행에는 --owner-approved가 필요합니다.\n' >&2
+        return 2
+    fi
+
+    if [[ -z "$APPROVAL_INPUT_KIND" ]]; then
+        /usr/bin/printf 'ERROR: 실행에는 미리보기에서 받은 --approval-token-file이 필요합니다.\n' >&2
+        return 2
+    fi
+
+    if [[ "$APPROVAL_INPUT_KIND" == "file" ]] \
+        && ! read_approval_token_file "$APPROVAL_TOKEN_FILE"; then
+        /usr/bin/printf 'ERROR: 승인 토큰 파일은 정확한 64자리 16진수 정규 FD여야 합니다.\n' >&2
+        return 2
+    fi
+
+    if ! consume_approval_manifest; then
+        PREVIEW_STATUS="blocked"
+        BLOCKED_REASON="미리보기 승인을 일회성 실행으로 잠그지 못했습니다. 다시 미리보기하세요."
+        emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
+        return 3
+    fi
+
+    if ! validate_consumed_approval_manifest; then
+        PREVIEW_STATUS="blocked"
+        BLOCKED_REASON="미리보기 이후 대상, 크기 또는 실행 프로세스가 바뀌었습니다. 승인은 소비되었으므로 다시 미리보기하세요."
+        emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
+        return 3
+    fi
+    ESTIMATED_KB="$MANIFEST_ESTIMATED_KB"
+
+    if [[ "$RECIPE_ID" == "innorix_ex" ]] && ! stop_innorix; then
+        BLOCKED_REASON="INNORIX 프로세스를 종료하지 못해 파일 삭제를 중단했습니다."
+        PREVIEW_STATUS="blocked"
+        emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
+        return 3
+    fi
+
+    if ! apply_test_boundary_changes || ! destructive_boundary_ready; then
+        PREVIEW_STATUS="blocked"
+        [[ -n "$BLOCKED_REASON" ]] || BLOCKED_REASON="삭제 직전 대상 신원이 바뀌어 실행을 중단했습니다. 아무것도 삭제하지 않았습니다."
+        emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
+        return 3
+    fi
+
+    if [[ "$REMOVE_MODE" == "trash" ]]; then
+        prepare_trash_run || {
+            PREVIEW_STATUS="blocked"
+            BLOCKED_REASON="사용자 휴지통에 안전한 이동 폴더를 만들지 못했습니다."
+            emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
+            return 3
+        }
+    elif [[ "$REMOVE_MODE" != "simulator" || "${PCH_TEST_MODE:-0}" == "1" ]]; then
+        prepare_staging_run || {
+            PREVIEW_STATUS="blocked"
+            BLOCKED_REASON="검증된 대상을 격리할 안전한 임시 폴더를 만들지 못했습니다."
+            emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
+            return 3
+        }
+    fi
+
+    FREE_BEFORE="$(available_kb)"
+    case "$FREE_BEFORE" in ''|*[!0-9]*) FREE_BEFORE=0 ;; esac
+    FAILED=0
+    TARGET_INDEX=0
+    if [[ "$RECIPE_ID" == app_uninstall:* ]]; then
+        if move_app_transaction; then
+            unload_moved_app_launch_agents
+        else
+            FAILED=1
+        fi
+    elif [[ "$REMOVE_MODE" == "simulator" ]]; then
+        if [[ -n "$(matching_processes)" ]] \
+            || ! manifest_identity_matches "${TARGETS[0]}" "${TARGETS[0]}" \
+            || ! manifest_size_matches "${TARGETS[0]}" "${TARGETS[0]}"; then
+            FAILED=1
+            EXECUTION_FAILURE_STATUS="blocked"
+            BLOCKED_REASON="Simulator 데이터가 승인 이후 바뀌어 삭제를 중단했습니다."
+        elif ! simulator_delete_boundary_ready; then
+            FAILED=1
+            EXECUTION_FAILURE_STATUS="blocked"
+        elif [[ "${PCH_TEST_MODE:-0}" == "1" && -n "${PCH_SIMCTL_DELETE_LOG:-}" ]]; then
+            if ! stage_and_remove_target "${TARGETS[0]}" 1; then
+                FAILED=1
+            elif ! /usr/bin/printf '%s\n' "$SIMULATOR_UUID" >> "$PCH_SIMCTL_DELETE_LOG"; then
+                FAILED=1
+            fi
+        elif [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+            FAILED=1
+            EXECUTION_FAILURE_STATUS="blocked"
+            BLOCKED_REASON="테스트 Simulator 삭제 로그가 격리 루트에 없어 실행을 중단했습니다."
+        else
+            if ! manifest_size_matches "${TARGETS[0]}" "${TARGETS[0]}" \
+                || ! simulator_delete_boundary_ready; then
+                FAILED=1
+                EXECUTION_FAILURE_STATUS="blocked"
+                [[ -n "$BLOCKED_REASON" ]] \
+                    || BLOCKED_REASON="Simulator 데이터 크기가 승인 이후 바뀌어 삭제를 중단했습니다."
+            elif ! /usr/bin/xcrun simctl delete "$SIMULATOR_UUID"; then
+                FAILED=1
+            fi
+        fi
+    else
+        for target in "${TARGETS[@]}"; do
+            TARGET_INDEX=$((TARGET_INDEX + 1))
+            if [[ -n "$(matching_processes)" ]] \
+                || ! validate_target "$RECIPE_ID" "$target" \
+                || ! manifest_identity_matches "$target" "$target" \
+                || ! manifest_size_matches "$target" "$target"; then
+                FAILED=1
+                EXECUTION_FAILURE_STATUS="blocked"
+                BLOCKED_REASON="실행 중 대상 또는 관련 프로세스 상태가 바뀌어 남은 정리를 중단했습니다."
+                break
+            fi
+            if ! stage_and_remove_target "$target" "$TARGET_INDEX"; then
+                FAILED=1
+                break
+            fi
+        done
+    fi
+
+    REMAINING_KB="$(remaining_targets_size_kb)"
+    RECLAIMED_KB=$((ESTIMATED_KB - REMAINING_KB))
+    [[ "$RECLAIMED_KB" -ge 0 ]] || RECLAIMED_KB=0
+    FREE_AFTER="$(available_kb)"
+    case "$FREE_AFTER" in ''|*[!0-9]*) FREE_AFTER=0 ;; esac
+    PHYSICAL_DELTA_KB=$((FREE_AFTER - FREE_BEFORE))
+    [[ "$PHYSICAL_DELTA_KB" -ge 0 ]] || PHYSICAL_DELTA_KB=0
+
+    RESULT_STATUS="complete"
+    [[ "$FAILED" -eq 0 ]] || RESULT_STATUS="$EXECUTION_FAILURE_STATUS"
+    RECEIPT_PATH=""
+    write_receipt "$RESULT_STATUS" "$ESTIMATED_KB" "$RECLAIMED_KB" "$PHYSICAL_DELTA_KB" || FAILED=1
+    [[ "$FAILED" -eq 0 ]] || {
+        [[ "$RESULT_STATUS" == "blocked" ]] || RESULT_STATUS="partial"
+    }
+    emit_final_result
+}
+
+main() {
+    parse_arguments "$@"
+    configure_roots
+
+    if [[ "$OPERATION" == "list" ]]; then
+        list_recipes
+        return 0
+    fi
+
+    define_recipe "$RECIPE_ID" || fail_usage "허용되지 않은 recipe ID입니다: $RECIPE_ID"
+    ESTIMATED_KB=0
+
+    if [[ "$OPERATION" == "preview" ]]; then
+        run_preview
+        return $?
+    fi
+    run_execute
+}
+
+main "$@"
+exit $?

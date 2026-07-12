@@ -110,12 +110,18 @@ final class PCHealthCheckMacTests: XCTestCase {
         XCTAssertEqual(result.output.utf8.count, 1_048_576)
     }
 
-    func testMissingHistoryRowsAreNotReportedAsDeleted() throws {
+    func testTimedOutHistoryRowsAreNotReportedAsDeleted() throws {
         let previous = try XCTUnwrap(StorageSnapshot(json: [
             "volume": volume(freeGB: 30),
             "cleanupCandidates": [
                 storageJSON(label: "Growing", sizeGB: 2, path: "/growing", cleanupID: "growing"),
-                storageJSON(label: "Timed scan row", sizeGB: 5, path: "/missing", cleanupID: "missing"),
+                storageJSON(
+                    label: "Timed scan row",
+                    sizeGB: 5,
+                    path: "/missing",
+                    measureStatus: "timed_out",
+                    cleanupID: "missing"
+                ),
             ],
         ]))
         let current = try XCTUnwrap(StorageSnapshot(json: [

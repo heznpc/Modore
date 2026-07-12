@@ -3,6 +3,7 @@ import SwiftUI
 struct SecurityPage: View {
     @EnvironmentObject private var model: ScanModel
     @State private var showsProtectionDetails = false
+    @State private var showsCollectionCoverage = false
     @State private var showsProcesses = false
     @State private var showsNetwork = false
     @State private var showsAutoruns = false
@@ -10,6 +11,21 @@ struct SecurityPage: View {
 
     var body: some View {
         Form {
+            if let coverage = model.collectionCoverage {
+                CollectionCoverageSection(
+                    coverage: coverage,
+                    isExpanded: $showsCollectionCoverage
+                )
+            } else if model.summary != nil {
+                Section("검사 범위") {
+                    SecurityDetailRow(
+                        symbol: "questionmark.circle",
+                        title: "검사 범위 기록이 없습니다",
+                        detail: "이전 형식의 결과이므로 비어 있는 항목을 정상으로 해석할 수 없습니다. 지금 다시 검사하세요."
+                    )
+                }
+            }
+
             if !model.truncatedSecuritySections.isEmpty {
                 Section("표시 제한") {
                     SecurityDetailRow(
@@ -20,14 +36,10 @@ struct SecurityPage: View {
                 }
             }
 
-            if !model.findings.isEmpty {
-                SecurityFindingsSection(findings: model.findings, summary: model.summary)
-            }
-
-            if let issues = model.storage?.accessIssues, !issues.isEmpty {
-                SecurityAccessIssuesSection(
-                    issues: issues,
-                    openSettings: model.openFullDiskAccessSettings
+            if !model.securityFindings.isEmpty {
+                SecurityFindingsSection(
+                    findings: model.securityFindings,
+                    attentionCount: model.securityFindingCount
                 )
             }
 
