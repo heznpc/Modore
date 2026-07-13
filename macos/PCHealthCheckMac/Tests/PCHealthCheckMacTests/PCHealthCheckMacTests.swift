@@ -106,6 +106,26 @@ final class PCHealthCheckMacTests: XCTestCase {
         XCTAssertNotNil(content.storage)
     }
 
+    func testCollectionCoverageDistinguishesOptionalGapsFromFullCoverage() throws {
+        let coverage = try XCTUnwrap(CollectionCoverage(json: [
+            "complete": true,
+            "completedCount": 2,
+            "sourceCount": 3,
+            "completedRequiredCount": 2,
+            "requiredCount": 2,
+            "sources": [
+                ["id": "cpu", "label": "CPU", "status": "ok", "required": true],
+                ["id": "network", "label": "Network", "status": "ok", "required": true],
+                ["id": "optional", "label": "Optional", "status": "unavailable", "required": false],
+            ],
+        ]))
+
+        XCTAssertTrue(coverage.complete)
+        XCTAssertFalse(coverage.allSourcesComplete)
+        XCTAssertEqual(coverage.requiredIssues.count, 0)
+        XCTAssertEqual(coverage.optionalIssues.map(\.id), ["optional"])
+    }
+
     @MainActor
     func testScanLogStoreBoundsAndClearsOutput() {
         let store = ScanLogStore()
@@ -249,6 +269,11 @@ final class PCHealthCheckMacTests: XCTestCase {
         ].joined(separator: ";"))
 
         XCTAssertEqual(processes.map(\.name), ["Google Chrome", "AirMCP"])
+
+        let pidEvidence = CleanupPresentation.processDisplays(
+            from: "Node/npm · PID 6095;Node/npm · PID 6161"
+        )
+        XCTAssertEqual(pidEvidence.map(\.name), ["Node/npm · PID 6095", "Node/npm · PID 6161"])
     }
 
     func testBlockedPreviewWithoutMeasurementDefersEstimateDisplay() throws {

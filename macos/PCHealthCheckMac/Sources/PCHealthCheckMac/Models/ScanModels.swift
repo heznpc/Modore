@@ -87,6 +87,14 @@ struct CollectionCoverage {
         issues.filter(\.required)
     }
 
+    var optionalIssues: [CollectionSourceStatus] {
+        issues.filter { !$0.required }
+    }
+
+    var allSourcesComplete: Bool {
+        sourceCount > 0 && completedCount == sourceCount && issues.isEmpty
+    }
+
     var coverageText: String {
         guard requiredCount > 0 else { return "필수 범위 없음" }
         return "필수 \(completedRequiredCount)/\(requiredCount)"

@@ -17,11 +17,9 @@ struct CollectionCoverageSection: View {
                 }
             } label: {
                 SecurityDisclosureLabel(
-                    symbol: coverage.complete ? "checkmark.shield" : "questionmark.shield",
-                    title: coverage.complete ? "검사 범위를 완료했습니다" : "검사 범위가 불완전합니다",
-                    detail: coverage.complete
-                        ? "필수 수집기가 모두 응답했습니다. 정상 판정은 이 범위 안에서만 유효합니다."
-                        : "완료하지 못한 필수 수집기가 있어 안전 여부를 확정하지 않습니다.",
+                    symbol: coverage.allSourcesComplete ? "checkmark.shield" : "questionmark.shield",
+                    title: coverageTitle,
+                    detail: coverageDetail,
                     value: coverage.coverageText
                 )
             }
@@ -34,6 +32,23 @@ struct CollectionCoverageSection: View {
                     : "판단 보류"
             )
         }
+    }
+
+    private var coverageTitle: String {
+        guard coverage.complete else { return "필수 검사 범위가 불완전합니다" }
+        return coverage.allSourcesComplete
+            ? "모든 검사 범위를 완료했습니다"
+            : "필수 검사 범위를 완료했습니다"
+    }
+
+    private var coverageDetail: String {
+        guard coverage.complete else {
+            return "완료하지 못한 필수 수집기가 있어 안전 여부를 확정하지 않습니다."
+        }
+        guard !coverage.optionalIssues.isEmpty else {
+            return "모든 수집기가 응답했습니다. 정상 판정은 이 범위 안에서만 유효합니다."
+        }
+        return "선택 수집기 \(coverage.optionalIssues.count)개가 응답하지 않았습니다. 정상 판정은 완료된 범위 안에서만 유효합니다."
     }
 
     private func issueSymbol(_ source: CollectionSourceStatus) -> String {

@@ -742,30 +742,59 @@ matching_processes() {
         || true
 }
 
+process_display_name() {
+    local command="$1"
+    local display_name
+    if [[ "$RECIPE_ID" == app_uninstall:* ]]; then
+        display_name="$LABEL"
+    else
+        case "$command" in
+            *"Google Chrome Helper"*) display_name="Google Chrome Helper" ;;
+            *"Google Chrome"*) display_name="Google Chrome" ;;
+            *playwright*|*Playwright*|*remote-debugging-pipe*) display_name="Playwright" ;;
+            *Codex*|*codex*|*node_repl*|*SkyComputerUseClient*) display_name="Codex" ;;
+            *Claude*|*claude*|*local-agent-mode*) display_name="Claude" ;;
+            *pnpm*) display_name="pnpm" ;;
+            *npm*|*npx*|*node*) display_name="Node/npm" ;;
+            *GradleDaemon*|*org.gradle*|*gradlew*) display_name="Gradle" ;;
+            *CocoaPods*|*"/pod "*) display_name="CocoaPods" ;;
+            *flutter*|*dart*) display_name="Dart/Flutter" ;;
+            *Xcode*|*xcodebuild*|*XCBBuildService*|*SourceKitService*) display_name="Xcode/build tool" ;;
+            *INNORIX*|*innorix*) display_name="INNORIX" ;;
+            *) display_name="관련 프로세스" ;;
+        esac
+    fi
+    /usr/bin/printf '%s' "$display_name"
+}
+
 display_process_names() {
-    local command display_name
+    local command
     matching_processes | while IFS= read -r command; do
         [[ -n "$command" ]] || continue
-        if [[ "$RECIPE_ID" == app_uninstall:* ]]; then
-            display_name="$LABEL"
-        else
-            case "$command" in
-                *"Google Chrome Helper"*) display_name="Google Chrome Helper" ;;
-                *"Google Chrome"*) display_name="Google Chrome" ;;
-                *playwright*|*Playwright*|*remote-debugging-pipe*) display_name="Playwright" ;;
-                *Codex*|*codex*|*node_repl*|*SkyComputerUseClient*) display_name="Codex" ;;
-                *Claude*|*claude*|*local-agent-mode*) display_name="Claude" ;;
-                *pnpm*) display_name="pnpm" ;;
-                *npm*|*npx*|*node*) display_name="Node/npm" ;;
-                *GradleDaemon*|*org.gradle*|*gradlew*) display_name="Gradle" ;;
-                *CocoaPods*|*"/pod "*) display_name="CocoaPods" ;;
-                *flutter*|*dart*) display_name="Dart/Flutter" ;;
-                *Xcode*|*xcodebuild*|*XCBBuildService*|*SourceKitService*) display_name="Xcode/build tool" ;;
-                *INNORIX*|*innorix*) display_name="INNORIX" ;;
-                *) display_name="관련 프로세스" ;;
-            esac
-        fi
-        /usr/bin/printf '%s\n' "$display_name"
+        /usr/bin/printf '%s\n' "$(process_display_name "$command")"
+    done | /usr/bin/awk '!seen[$0]++'
+}
+
+matching_processes_with_pid() {
+    [[ -n "$PROCESS_PATTERN" ]] || return 0
+    /bin/ps -axo pid=,command= 2>/dev/null \
+        | /usr/bin/grep -E "$PROCESS_PATTERN" \
+        | /usr/bin/grep -v -E 'scripts/cleanup\.sh|PCHealthCheckMac|/usr/bin/grep -E' \
+        | /usr/bin/head -n 5 \
+        | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' \
+        || true
+}
+
+display_process_evidence() {
+    local pid command display_name
+    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+        display_process_names
+        return
+    fi
+    matching_processes_with_pid | while read -r pid command; do
+        [[ "$pid" =~ ^[0-9]+$ && -n "$command" ]] || continue
+        display_name="$(process_display_name "$command")"
+        /usr/bin/printf '%s · PID %s\n' "$display_name" "$pid"
     done | /usr/bin/awk '!seen[$0]++'
 }
 
@@ -986,7 +1015,7 @@ preview_status() {
 
     matches="$(matching_processes)"
     if [[ -n "$matches" ]]; then
-        RUNNING_PROCESSES="$(display_process_names | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
+        RUNNING_PROCESSES="$(display_process_evidence | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
         if [[ "$PROCESS_POLICY" == "block" ]]; then
             PREVIEW_STATUS="blocked"
             BLOCKED_REASON="${PROCESS_NOTE:-관련 프로세스를 먼저 종료하세요.}"
@@ -1354,7 +1383,7 @@ destructive_boundary_ready() {
     done
     matches="$(matching_processes)"
     if [[ -n "$matches" ]]; then
-        RUNNING_PROCESSES="$(display_process_names | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
+        RUNNING_PROCESSES="$(display_process_evidence | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
         BLOCKED_REASON="${PROCESS_NOTE:-관련 프로세스를 먼저 종료하세요.}"
         return 1
     fi

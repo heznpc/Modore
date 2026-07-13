@@ -480,6 +480,8 @@ def test_cleanup_ui_never_exposes_raw_process_commands(project_root):
     ).read_text(encoding="utf-8")
 
     assert "display_process_names" in shell
+    assert "display_process_evidence" in shell
+    assert "/bin/ps -axo pid=,command=" in shell
     assert "rawCommand" not in presentation
     assert "rawCommand" not in sheet
 
