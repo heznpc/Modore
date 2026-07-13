@@ -8,8 +8,15 @@ enum CleanupPresentation {
     static func sizeChangeNotice(
         snapshotAge: String,
         scannedSize: String?,
-        previewSize: String
+        previewSize: String,
+        estimateMeasured: Bool = true
     ) -> String? {
+        guard estimateMeasured else {
+            if let scannedSize {
+                return "\(snapshotAge) 값은 \(scannedSize)였습니다. 먼저 종료할 작업이 있어 아직 다시 측정하지 않았습니다. 종료 후 '다시 확인'을 누르면 다시 측정합니다."
+            }
+            return "먼저 종료할 작업이 있어 아직 크기를 측정하지 않았습니다. 종료 후 '다시 확인'을 누르면 측정합니다."
+        }
         guard let scannedSize, scannedSize != previewSize else { return nil }
         return "\(snapshotAge) 값은 \(scannedSize)였고, 미리보기에서 \(previewSize)로 다시 측정했습니다."
     }

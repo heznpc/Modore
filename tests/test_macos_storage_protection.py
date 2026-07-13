@@ -405,6 +405,99 @@ def test_jxa_fixture_preserves_collection_and_browser_automation_contract(
     assert candidate["measureStatus"] == "timed_out"
 
 
+def test_jxa_storage_notes_distinguish_session_records_from_workspaces(
+    project_root, tmp_path
+):
+    if not shutil.which("osascript"):
+        pytest.skip("osascript is unavailable")
+
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    (facts / "collection_status.tsv").write_text(
+        "storage_volume\t시동 볼륨\tok\ttrue\t볼륨을 확인했습니다.\n",
+        encoding="utf-8",
+    )
+    (facts / "storage_df.txt").write_text(
+        "/dev/disk 104857600 52428800 52428800 50% /\n",
+        encoding="utf-8",
+    )
+    (facts / "storage_paths.tsv").write_text(
+        "protected_history\tClaude Code project sessions\t/Users/test/.claude/projects"
+        "\t1048576\tok\t\t\n"
+        "protected_history\tClaude local agent workspaces"
+        "\t/Users/test/Library/Application Support/Claude/local-agent-mode-sessions"
+        "\t1048576\tok\t\t\n"
+        "ai_review\tCodex internal state databases\t/Users/test/.codex/sqlite"
+        "\t1048576\tok\t\t\n"
+        "ai_review\tCodex internal event log DB\t/Users/test/.codex/logs_2.sqlite"
+        "\t1048576\tok\t\t\n",
+        encoding="utf-8",
+    )
+    for name in (
+        "ps.txt",
+        "net.txt",
+        "listen.txt",
+        "plists.txt",
+        "security.txt",
+        "load.txt",
+        "storage_simulators.tsv",
+        "storage_runtime.tsv",
+        "storage_access.tsv",
+    ):
+        (facts / name).write_text("", encoding="utf-8")
+
+    output = tmp_path / "scan.json"
+    raw = tmp_path / "raw.json"
+    rules = tmp_path / "rules"
+    rules.mkdir()
+    keep = tmp_path / "simulator-keep.txt"
+    keep.write_text("", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "TMP_DIR": str(facts),
+            "PCH_OUTPUT": str(output),
+            "PCH_RAW_PATH": str(raw),
+            "PCH_RULES_DIR": str(rules),
+            "PCH_CONFIG_PATH": str(tmp_path / "config.json"),
+            "PCH_WHITELIST_PATH": str(tmp_path / "whitelist.json"),
+            "PCH_SIMULATOR_KEEP_PATH": str(keep),
+            "PCH_NO_VT": "true",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "osascript",
+            "-l",
+            "JavaScript",
+            str(project_root / "scripts" / "scanner_helper.jxa.js"),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    scan = json.loads(output.read_text(encoding="utf-8"))
+    notes = {
+        item["label"]: item["note"]
+        for item in scan["sections"]["storage"]["reviewCandidates"]
+    }
+
+    # 세션 기록은 세션 기록으로, 작업공간은 작업공간으로 설명해야 한다.
+    assert "세션 기록" in notes["Claude Code project sessions"]
+    assert "작업공간" not in notes["Claude Code project sessions"]
+    assert "작업공간" in notes["Claude local agent workspaces"]
+
+    # Codex 상태 DB는 이벤트 로그 DB 설명을 물려받으면 안 된다.
+    assert "상태" in notes["Codex internal state databases"]
+    assert "이벤트" not in notes["Codex internal state databases"]
+    assert "이벤트" in notes["Codex internal event log DB"]
+
+
 def test_browser_runtime_elapsed_time_is_parsed_as_decimal(project_root):
     script = project_root / "scripts/modules/macos/storage.sh"
     result = subprocess.run(

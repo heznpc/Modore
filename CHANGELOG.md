@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format loosely follows 
 
 ## [Unreleased]
 
+### Fixed (Mac incident workflow)
+- **Blocked cleanup previews no longer fabricate a 0KB re-measurement.** When related processes block a preview, `cleanup.sh` never measured the target, but the sheet still claimed "미리보기에서 0KB로 다시 측정했습니다" for directories that actually held gigabytes. The protocol now carries an explicit `estimateMeasured` flag; unmeasured estimates render as "측정 보류" with the last scanned value and retry guidance, in the sheet and the execution log.
+- **Incident history rows are now readable.** Rows in 기록 truncated the judgment context to one line with no way to expand. Rows now expand in place to the full change description plus scan time, volume state, collection completeness, and the browser-automation verdict recorded at that time.
+- **Protected-item descriptions match what the path actually is.** Claude Code project sessions were described as agent workspaces and Codex state databases inherited the event-log-DB copy; the Mac scanner now distinguishes session records, workspaces, state DBs, and event log DBs.
+- **Stale evidence is flagged at the judgment, not only at the page bottom.** When the loaded result is old, the 현재 판단 card itself now carries the scan-age note.
+- **Classified autorun entries show their risk.** Autorun rows with rule-engine warning/danger verdicts render with the same risk badge used elsewhere instead of being visually identical to unclassified entries.
+
 ### Fixed (adversarial second-pass audit — 2026-05-21)
 - **Sysinternals Authenticode verification now runs on cached binaries.** Previous implementation only verified at first download; cached `.exe` under `%LOCALAPPDATA%` was trusted without re-verification on subsequent runs. Tools the project exists to detect (other user-mode malware) could have replaced the cached binary between runs.
 - **CodeQL workflow removed.** Repository is private + free tier, which does not include GitHub Advanced Security. CodeQL runs failed every invocation with `Code scanning is not enabled for this repository`. The workflow was also wired into branch protection as a required check, silently blocking every PR from auto-merging. Workflow removed; required checks updated to `validate` + `powershell` only. PowerShell analysis remains covered by the existing parser check in `ci.yml`.

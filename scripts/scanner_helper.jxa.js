@@ -353,8 +353,10 @@ function storageNote(kind, label) {
   if (kind === "chrome_clone") return "Chrome 앱 번들 code-sign 임시 clone입니다. Chrome/브라우저 자동화가 실행 중이면 현재 사용 중인 항목이 있을 수 있습니다.";
   if (kind === "ai_vm_cache") return "Claude Cowork/로컬 에이전트용 VM 이미지입니다. 세션 기록과 분리된 재생성 가능 런타임이지만 Claude를 완전히 종료한 뒤 정리하세요.";
   if (kind === "ai_cache") return "AI 개발 도구 런타임/임시 캐시입니다. 삭제하면 다음 실행 때 다시 받을 수 있습니다.";
+  if (kind === "ai_review" && /Codex/i.test(label || "") && /state/i.test(label || "")) return "Codex 내부 상태 SQLite DB입니다. 세션 jsonl은 아니지만 Codex 동작 상태를 저장하므로 실행 중 삭제하지 말고 앱 종료 후 검토하세요.";
   if (kind === "ai_review" && /Codex/i.test(label || "")) return "Codex 내부 이벤트/진단 로그 SQLite DB입니다. .codex/sessions의 세션 jsonl은 아니며, Codex 종료 후 VACUUM/수동 검토 대상으로 분리합니다.";
   if (kind === "ai_review") return "AI 도구 내부 로그 DB입니다. 세션 jsonl은 아니지만 앱 동작/진단에 쓰일 수 있어 실행 중 삭제하지 마세요.";
+  if (kind === "protected_history" && /Claude/i.test(label || "") && /(sessions$|command history|file history|shell snapshots|session environments)/i.test(label || "")) return "Claude Code 대화/세션 기록입니다. 사용자가 되살려 볼 수 있는 실제 세션 기록이라 자동 정리 대상에서 제외합니다.";
   if (kind === "protected_history" && /Claude/i.test(label || "")) return "Claude 로컬 에이전트/Cowork 작업공간입니다. audit 로그, uploads, outputs가 포함될 수 있어 자동 정리 대상에서 제외합니다.";
   if (kind === "protected_history" && /Codex/i.test(label || "")) return "Codex 대화/session jsonl 기록입니다. 사용자가 되살려 볼 수 있는 실제 세션 기록이라 자동 정리 대상에서 제외합니다.";
   if (kind === "protected_history") return "대화/작업 세션 기록입니다. 공간은 보이지만 자동 정리 대상에서 제외합니다.";

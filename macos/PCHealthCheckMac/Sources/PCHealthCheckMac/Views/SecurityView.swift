@@ -143,13 +143,20 @@ struct SecurityPage: View {
         if !model.autorunRows.isEmpty {
             DisclosureGroup(isExpanded: $showsAutoruns) {
                 ForEach(model.autorunRows) { row in
-                    SecurityDetailRow(
-                        symbol: "gearshape.2",
-                        title: row.entry,
-                        detail: [row.category, row.image, row.note]
-                            .filter { !$0.isEmpty }
-                            .joined(separator: " · ")
-                    )
+                    if row.risk == "danger" || row.risk == "warning" {
+                        SecurityRiskDetailRow(
+                            symbol: "gearshape.2",
+                            title: row.entry,
+                            detail: autorunMetadata(row),
+                            risk: row.risk
+                        )
+                    } else {
+                        SecurityDetailRow(
+                            symbol: "gearshape.2",
+                            title: row.entry,
+                            detail: autorunMetadata(row)
+                        )
+                    }
                 }
             } label: {
                 SecurityDisclosureLabel(
@@ -201,6 +208,12 @@ struct SecurityPage: View {
 
     private var protectionValue: String {
         protectionSymbol == "checkmark.shield" ? "정상" : "확인 필요"
+    }
+
+    private func autorunMetadata(_ row: AutorunRow) -> String {
+        [row.category, row.image, row.note]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
     }
 
     private func installMetadata(_ install: RecentInstallRow) -> String {

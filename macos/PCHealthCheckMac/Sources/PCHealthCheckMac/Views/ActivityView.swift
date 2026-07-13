@@ -182,30 +182,113 @@ struct ScanLogSection: View {
 struct RecentScanHistoryRow: View {
     let entry: StorageHistoryEntry
     let previous: StorageHistoryEntry?
+    @State private var isExpanded = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            NativeStatusGlyph(symbol: historySymbol, tint: historyTint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.incidentTitle ?? entry.capturedAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(.body.weight(.medium))
-                    .lineLimit(1)
-                Text(historyDetail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isExpanded.toggle()
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(entry.incidentValue ?? String(format: "%.1fGB", entry.freeGB))
-                    .font(.callout.weight(.medium))
-                    .monospacedDigit()
-                Text(entry.incidentValue == nil ? "사용 가능" : "당시 판단")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 12) {
+                    NativeStatusGlyph(symbol: historySymbol, tint: historyTint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.incidentTitle ?? entry.capturedAt.formatted(date: .abbreviated, time: .shortened))
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(isExpanded ? nil : 1)
+                        Text(historyDetail)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(isExpanded ? nil : 1)
+                            .fixedSize(horizontal: false, vertical: isExpanded)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(entry.incidentValue ?? String(format: "%.1fGB", entry.freeGB))
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .monospacedDigit()
+                        Text(entry.incidentValue == nil ? "사용 가능" : "당시 판단")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                if isExpanded {
+                    expandedFacts
+                        .padding(.leading, 36)
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .help(isExpanded ? "접으려면 클릭" : historyDetail)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilitySummary)
+        .accessibilityHint(isExpanded ? "당시 기록을 접습니다." : "당시 기록 전체를 펼칩니다.")
+    }
+
+    private var expandedFacts: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            historyFactRow(
+                "검사 시각",
+                entry.capturedAt.formatted(date: .long, time: .standard)
+            )
+            historyFactRow(
+                "저장공간",
+                String(
+                    format: "사용 가능 %.1fGB · 사용 중 %.1fGB · 전체 %.1fGB",
+                    entry.freeGB,
+                    entry.usedGB,
+                    entry.totalGB
+                )
+            )
+            if let complete = entry.collectionComplete {
+                historyFactRow(
+                    "수집 완전성",
+                    complete
+                        ? "필수 수집기가 모두 응답한 검사였습니다."
+                        : "필수 수집기 일부가 완료되지 않아 당시 판단이 보류 기준이었습니다."
+                )
+            }
+            if let verdict = entry.browserVerdict {
+                historyFactRow("브라우저 자동화", browserVerdictText(verdict))
             }
         }
-        .padding(.vertical, 4)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+
+    private func historyFactRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(label)
+                .fontWeight(.medium)
+                .frame(width: 76, alignment: .leading)
+            Text(value)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func browserVerdictText(_ verdict: String) -> String {
+        switch verdict {
+        case "orphaned": return "소유 작업을 찾지 못한 자동화가 있었습니다."
+        case "conflict": return "기본 Chrome과 자동화 충돌 가능성이 있었습니다."
+        case "clear": return "자동화 충돌 신호가 없었습니다."
+        default: return verdict
+        }
+    }
+
+    private var accessibilitySummary: String {
+        let title = entry.incidentTitle
+            ?? entry.capturedAt.formatted(date: .abbreviated, time: .shortened)
+        return "\(title). \(historyDetail)"
     }
 
     private var change: StorageChangeSummary? {

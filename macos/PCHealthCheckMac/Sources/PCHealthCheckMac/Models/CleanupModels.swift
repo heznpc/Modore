@@ -8,6 +8,7 @@ struct CleanupPreview: Identifiable {
     let recipeID: String
     let label: String
     let estimatedKB: Int64
+    let estimateMeasured: Bool
     let reclaimedKB: Int64
     let physicalDeltaKB: Int64
     let warning: String
@@ -28,6 +29,7 @@ struct CleanupPreview: Identifiable {
         recipeID = payload.recipeID
         label = payload.label
         estimatedKB = payload.estimatedKB
+        estimateMeasured = payload.estimateMeasured
         reclaimedKB = payload.reclaimedKB
         physicalDeltaKB = payload.physicalDeltaKB
         warning = payload.warning
@@ -68,7 +70,9 @@ struct CleanupPreview: Identifiable {
         return ([summary] + recoveryPathMessages).joined(separator: "\n")
     }
 
-    var estimatedText: String { Self.sizeText(estimatedKB) }
+    var estimatedText: String {
+        estimateMeasured ? Self.sizeText(estimatedKB) : "측정 보류"
+    }
     var reclaimedText: String { Self.sizeText(reclaimedKB) }
     var physicalDeltaText: String { Self.sizeText(physicalDeltaKB) }
 
@@ -101,6 +105,7 @@ private struct CleanupProtocolPayload {
     let recipeID: String
     let label: String
     let estimatedKB: Int64
+    let estimateMeasured: Bool
     let reclaimedKB: Int64
     let physicalDeltaKB: Int64
     let warning: String
@@ -128,6 +133,7 @@ private struct CleanupProtocolPayload {
             recipeID: recipeID,
             label: values["label"] ?? recipeID,
             estimatedKB: integer(values["estimatedKB"]),
+            estimateMeasured: estimateMeasured(values, status: status),
             reclaimedKB: integer(values["reclaimedKB"]),
             physicalDeltaKB: integer(values["physicalDeltaKB"]),
             warning: values["warning"] ?? "",
@@ -166,5 +172,17 @@ private struct CleanupProtocolPayload {
 
     private static func integer(_ value: String?) -> Int64 {
         Int64(value ?? "0") ?? 0
+    }
+
+    // 구버전 런타임 미러에는 estimateMeasured 키가 없다. 그 경우 차단 상태의
+    // estimatedKB 0은 측정값이 아니라 자리 표시 값이므로 미측정으로 해석한다.
+    private static func estimateMeasured(
+        _ values: [String: String],
+        status: String
+    ) -> Bool {
+        if let raw = values["estimateMeasured"] {
+            return raw == "true"
+        }
+        return !(status == "blocked" && integer(values["estimatedKB"]) == 0)
     }
 }

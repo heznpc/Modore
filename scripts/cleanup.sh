@@ -49,6 +49,9 @@ PREVIEW_APPROVAL_TOKEN=""
 EXECUTION_MANIFEST=""
 TRANSACTION_JOURNAL=""
 EXECUTION_FAILURE_STATUS="partial"
+# 실제 측정/승인 매니페스트 값이 채워진 뒤에만 true가 된다.
+# false인 estimatedKB는 자리 표시 값이므로 크기로 표시하면 안 된다.
+ESTIMATE_MEASURED="false"
 STAGED_REMAINDERS=()
 TEST_STAGED_APPROVED_ORIGINAL=""
 
@@ -1002,6 +1005,7 @@ emit_state() {
     emit "recipeId" "$RECIPE_ID"
     emit "label" "$LABEL"
     emit "estimatedKB" "$estimated_kb"
+    emit "estimateMeasured" "$ESTIMATE_MEASURED"
     emit "actionMode" "$REMOVE_MODE"
     emit "warning" "$WARNING"
     emit "processNote" "$PROCESS_NOTE"
@@ -1465,11 +1469,14 @@ run_preview() {
     if [[ "$PREVIEW_STATUS" == "ready" ]]; then
         if create_approval_manifest; then
             ESTIMATED_KB="$MANIFEST_ESTIMATED_KB"
+            ESTIMATE_MEASURED="true"
         else
             PREVIEW_STATUS="blocked"
             BLOCKED_REASON="대상 크기와 파일 신원을 안전하게 측정하지 못했습니다. 파일시스템 상태를 확인한 뒤 다시 시도하세요."
             PREVIEW_APPROVAL_TOKEN=""
         fi
+    elif [[ "$PREVIEW_STATUS" == "empty" ]]; then
+        ESTIMATE_MEASURED="true"
     fi
     emit_state "preview" "$PREVIEW_STATUS" "$ESTIMATED_KB"
 }
@@ -1517,6 +1524,7 @@ run_execute() {
         return 3
     fi
     ESTIMATED_KB="$MANIFEST_ESTIMATED_KB"
+    ESTIMATE_MEASURED="true"
 
     if [[ "$RECIPE_ID" == "innorix_ex" ]] && ! stop_innorix; then
         BLOCKED_REASON="INNORIX 프로세스를 종료하지 못해 파일 삭제를 중단했습니다."

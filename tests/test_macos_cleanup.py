@@ -124,6 +124,8 @@ def test_cleanup_preview_is_read_only_and_execute_requires_approval(project_root
     assert preview.returncode == 0
     assert payload["status"] == "ready"
     assert payload["recipeId"] == "npm_cache"
+    assert payload["estimateMeasured"] == "true"
+    assert int(str(payload["estimatedKB"])) > 0
     assert cache_file.exists()
 
     rejected = run_cleanup(project_root, home, "--execute", "npm_cache")
@@ -208,6 +210,10 @@ def test_cleanup_blocks_live_related_process(project_root, tmp_path):
     assert payload["status"] == "blocked"
     assert "종료" in str(payload["blockedReason"])
     assert payload["runningProcesses"] == "Playwright"
+    # 차단된 미리보기는 크기를 재지 않았으므로 estimatedKB 0을
+    # 측정값으로 표시하지 못하도록 미측정을 명시해야 한다.
+    assert payload["estimateMeasured"] == "false"
+    assert payload["estimatedKB"] == "0"
     assert "do-not-expose" not in preview.stdout
     assert "/tmp/chrome" not in preview.stdout
     assert browser.exists()

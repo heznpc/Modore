@@ -232,6 +232,69 @@ final class PCHealthCheckMacTests: XCTestCase {
         XCTAssertEqual(processes.map(\.name), ["Google Chrome", "AirMCP"])
     }
 
+    func testBlockedPreviewWithoutMeasurementDefersEstimateDisplay() throws {
+        let preview = try XCTUnwrap(CleanupPreview(protocolText: """
+        version\t1
+        operation\tpreview
+        status\tblocked
+        recipeId\tcodex_runtime_cache
+        label\tCodex runtime cache
+        estimatedKB\t0
+        estimateMeasured\tfalse
+        blockedReason\tCodex 앱과 진행 중인 Codex 작업을 먼저 종료하세요.
+        """))
+
+        XCTAssertFalse(preview.estimateMeasured)
+        XCTAssertEqual(preview.estimatedText, "측정 보류")
+        XCTAssertFalse(preview.canExecute)
+
+        let legacyBlocked = try XCTUnwrap(CleanupPreview(protocolText: """
+        version\t1
+        operation\tpreview
+        status\tblocked
+        recipeId\tcodex_runtime_cache
+        label\tCodex runtime cache
+        estimatedKB\t0
+        """))
+
+        XCTAssertFalse(legacyBlocked.estimateMeasured)
+        XCTAssertEqual(legacyBlocked.estimatedText, "측정 보류")
+
+        let measuredReady = try XCTUnwrap(CleanupPreview(protocolText: """
+        version\t1
+        operation\tpreview
+        status\tready
+        recipeId\tnpm_cache
+        label\tnpm cache
+        estimatedKB\t1048576
+        estimateMeasured\ttrue
+        """))
+
+        XCTAssertTrue(measuredReady.estimateMeasured)
+        XCTAssertEqual(measuredReady.estimatedText, "1.0GB")
+    }
+
+    func testCleanupPresentationExplainsDeferredMeasurement() {
+        XCTAssertEqual(
+            CleanupPresentation.sizeChangeNotice(
+                snapshotAge: "2분 전 검사",
+                scannedSize: "1.5GB",
+                previewSize: "측정 보류",
+                estimateMeasured: false
+            ),
+            "2분 전 검사 값은 1.5GB였습니다. 먼저 종료할 작업이 있어 아직 다시 측정하지 않았습니다. 종료 후 '다시 확인'을 누르면 다시 측정합니다."
+        )
+        XCTAssertEqual(
+            CleanupPresentation.sizeChangeNotice(
+                snapshotAge: "2분 전 검사",
+                scannedSize: nil,
+                previewSize: "측정 보류",
+                estimateMeasured: false
+            ),
+            "먼저 종료할 작업이 있어 아직 크기를 측정하지 않았습니다. 종료 후 '다시 확인'을 누르면 측정합니다."
+        )
+    }
+
     func testSimulatorSelectionUsesUUID() throws {
         let first = try XCTUnwrap(SimulatorDevice(json: simulatorJSON(name: "iPhone 17 Pro")))
         let renamed = try XCTUnwrap(SimulatorDevice(json: simulatorJSON(name: "QA Phone")))

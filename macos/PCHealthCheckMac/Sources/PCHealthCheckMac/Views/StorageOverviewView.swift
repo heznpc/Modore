@@ -18,7 +18,12 @@ struct StatusPage: View {
             if let storage = model.storage {
                 Form {
                     Section {
-                        StatusIncidentSummary(assessment: assessment)
+                        StatusIncidentSummary(
+                            assessment: assessment,
+                            evidenceTimingNote: model.isStorageSnapshotStale(at: date)
+                                ? "\(model.storageSnapshotAgeText) 결과 기준 판단입니다. 새 검사 전에는 현재 상태로 단정하지 않습니다."
+                                : nil
+                        )
                     } header: {
                         NativeSectionHeader(
                             title: "현재 판단",
@@ -164,6 +169,7 @@ struct StatusPage: View {
 
 private struct StatusIncidentSummary: View {
     let assessment: IncidentAssessment
+    var evidenceTimingNote: String?
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -179,12 +185,20 @@ private struct StatusIncidentSummary: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let evidenceTimingNote {
+                    Label(evidenceTimingNote, systemImage: "clock")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(assessment.title). \(assessment.detail)")
+        .accessibilityLabel(
+            "\(assessment.title). \(assessment.detail)"
+                + (evidenceTimingNote.map { " \($0)" } ?? "")
+        )
     }
 
     private var isDanger: Bool {

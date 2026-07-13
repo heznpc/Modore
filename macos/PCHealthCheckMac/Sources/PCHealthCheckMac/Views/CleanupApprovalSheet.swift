@@ -37,7 +37,8 @@ struct CleanupApprovalSheet: View {
         return CleanupPresentation.sizeChangeNotice(
             snapshotAge: model.storageSnapshotAgeText,
             scannedSize: item?.sizeText,
-            previewSize: preview.estimatedText
+            previewSize: preview.estimatedText,
+            estimateMeasured: preview.estimateMeasured
         )
     }
 

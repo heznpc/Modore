@@ -168,7 +168,11 @@ extension ScanModel {
                 return
             }
             cleanupPreview = preview
-            appendLog("미리보기: \(preview.statusText), 대상 점유 추정 \(preview.estimatedText)")
+            appendLog(
+                preview.estimateMeasured
+                    ? "미리보기: \(preview.statusText), 대상 점유 추정 \(preview.estimatedText)"
+                    : "미리보기: \(preview.statusText), 크기 재측정 보류(종료할 작업 있음)"
+            )
         }
     }
 
