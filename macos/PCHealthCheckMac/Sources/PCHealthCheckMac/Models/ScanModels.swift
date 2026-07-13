@@ -257,15 +257,42 @@ struct CpuRow: Identifiable {
 struct NetworkRow: Identifiable {
     let id = UUID()
     let process: String
+    let pid: Int
     let remoteAddress: String
     let remotePort: Int
+    let path: String
     let risk: String
     let note: String
 
     init?(json: [String: Any]) {
         process = JsonRead.string(json, "process", "process")
+        pid = JsonRead.int(json, "pid_")
         remoteAddress = JsonRead.string(json, "remoteAddress")
         remotePort = JsonRead.int(json, "remotePort")
+        path = JsonRead.string(json, "path")
+        risk = JsonRead.string(json, "risk", "unknown")
+        note = JsonRead.string(json, "note")
+    }
+
+    var requiresAttention: Bool { risk == "danger" || risk == "warning" }
+}
+
+struct ListeningPortRow: Identifiable {
+    let id = UUID()
+    let name: String
+    let process: String
+    let pid: Int
+    let port: Int
+    let path: String
+    let risk: String
+    let note: String
+
+    init?(json: [String: Any]) {
+        name = JsonRead.string(json, "name", "수신 포트")
+        process = JsonRead.string(json, "process")
+        pid = JsonRead.int(json, "pid_")
+        port = JsonRead.int(json, "port")
+        path = JsonRead.string(json, "path")
         risk = JsonRead.string(json, "risk", "unknown")
         note = JsonRead.string(json, "note")
     }

@@ -77,13 +77,32 @@ final class PCHealthCheckMacTests: XCTestCase {
             "findings": [["level": "warning", "title": "Unknown item", "detail": "Review it"]],
             "sections": [
                 "storage": ["volume": volume()],
-                "cpu": [["risk": "safe", "name": "kernel_task", "pid": 1, "cpu": 0.1]],
+                "cpu": [["risk": "safe", "name": "kernel_task", "pid_": 1, "cpu": 0.1]],
+                "network": [[
+                    "risk": "unknown",
+                    "process": "Example",
+                    "pid_": 7,
+                    "remoteAddress": "203.0.113.1",
+                    "remotePort": 443,
+                    "path": "/Applications/Example.app/Contents/MacOS/Example",
+                ]],
+                "listeningPorts": [[
+                    "risk": "unknown",
+                    "name": "Local service",
+                    "process": "Example",
+                    "pid_": 7,
+                    "port": 8080,
+                    "path": "/Applications/Example.app/Contents/MacOS/Example",
+                ]],
             ],
         ])
 
         XCTAssertEqual(content.summary?.warningCount, 1)
         XCTAssertEqual(content.findings.count, 1)
         XCTAssertEqual(content.cpuRows.count, 1)
+        XCTAssertEqual(content.networkRows.first?.pid, 7)
+        XCTAssertEqual(content.networkRows.first?.path, "/Applications/Example.app/Contents/MacOS/Example")
+        XCTAssertEqual(content.listeningPortRows.first?.port, 8080)
         XCTAssertNotNil(content.storage)
     }
 

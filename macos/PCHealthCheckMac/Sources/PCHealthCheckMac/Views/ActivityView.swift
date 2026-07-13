@@ -231,7 +231,7 @@ struct RecentScanHistoryRow: View {
         .help(isExpanded ? "접으려면 클릭" : historyDetail)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary)
-        .accessibilityHint(isExpanded ? "당시 기록을 접습니다." : "당시 기록 전체를 펼칩니다.")
+        .accessibilityHint(isExpanded ? "당시 요약을 접습니다." : "당시 증거 요약을 펼칩니다.")
     }
 
     private var expandedFacts: some View {
@@ -259,6 +259,12 @@ struct RecentScanHistoryRow: View {
             }
             if let verdict = entry.browserVerdict {
                 historyFactRow("브라우저 자동화", browserVerdictText(verdict))
+            }
+            if let evidence = entry.evidence {
+                historyFactRow(
+                    "수집된 증거",
+                    "프로세스 \(evidence.processCount)개 · 외부 연결 \(evidence.networkConnectionCount)개 · 수신 포트 \(evidence.listeningPortCount)개 · 확인 항목 \(evidence.attentionFindingCount)건"
+                )
             }
         }
         .font(.caption)

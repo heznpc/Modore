@@ -86,7 +86,8 @@ final class IncidentAssessmentTests: XCTestCase {
             capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
             storage: storage,
             incident: incident,
-            collectionComplete: true
+            collectionComplete: true,
+            evidence: IncidentEvidenceSnapshot(content: content)
         )
 
         let data = try JSONEncoder().encode(entry)
@@ -96,6 +97,8 @@ final class IncidentAssessmentTests: XCTestCase {
         XCTAssertEqual(decoded.incidentTitle, incident.title)
         XCTAssertEqual(decoded.collectionComplete, true)
         XCTAssertEqual(decoded.browserVerdict, "clear")
+        XCTAssertEqual(decoded.evidence?.processCount, 0)
+        XCTAssertEqual(decoded.evidence?.listeningPortCount, 0)
     }
 
     func testLegacyStorageHistoryWithoutIncidentMetadataStillDecodes() throws {
@@ -115,6 +118,44 @@ final class IncidentAssessmentTests: XCTestCase {
 
         XCTAssertNil(decoded.incidentKind)
         XCTAssertNil(decoded.collectionComplete)
+        XCTAssertNil(decoded.evidence)
+    }
+
+    func testHistoryItemPruningRetainsEvidenceCounts() throws {
+        let items = (0...StorageHistoryStore.maximumItemsPerEntry).map { index in
+            StorageHistoryItem(
+                key: "item-\(index)",
+                label: "Item \(index)",
+                category: "review",
+                kind: "test",
+                sizeGB: 1,
+                path: "/test/\(index)",
+                cleanupID: "",
+                measureStatus: "ok"
+            )
+        }
+        let evidence = IncidentEvidenceSnapshot(content: ScanContent(root: [
+            "findings": [["level": "warning"]],
+            "sections": [
+                "cpu": [["name": "test"]],
+                "network": [["process": "test"]],
+                "listeningPorts": [["name": "test"]],
+            ],
+        ]))
+        let entry = StorageHistoryEntry(
+            sourceID: "oversized",
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            freeGB: 10,
+            usedGB: 20,
+            totalGB: 30,
+            items: items,
+            evidence: evidence
+        )
+
+        let encoded = try StorageHistoryStore.encodedHistoryForWrite([entry])
+
+        XCTAssertEqual(encoded.entries.first?.items.count, StorageHistoryStore.maximumItemsPerEntry)
+        XCTAssertEqual(encoded.entries.first?.evidence, evidence)
     }
 
     private func root(collection: [String: Any]) -> [String: Any] {

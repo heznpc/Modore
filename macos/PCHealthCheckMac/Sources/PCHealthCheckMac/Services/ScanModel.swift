@@ -57,11 +57,15 @@ final class ScanModel: ObservableObject {
     var storageAttentionFindings: [ScanFinding] { content.storageAttentionFindings }
     var cpuRows: [CpuRow] { content.cpuRows }
     var networkRows: [NetworkRow] { content.networkRows }
+    var listeningPortRows: [ListeningPortRow] { content.listeningPortRows }
     var autorunRows: [AutorunRow] { content.autorunRows }
     var recentInstalls: [RecentInstallRow] { content.recentInstalls }
     var truncatedSecuritySections: [String] { content.truncatedSections }
     var attentionCpuRows: [CpuRow] { cpuRows.filter(\.requiresAttention) }
     var attentionNetworkRows: [NetworkRow] { networkRows.filter(\.requiresAttention) }
+    var attentionListeningPortRows: [ListeningPortRow] {
+        listeningPortRows.filter(\.requiresAttention)
+    }
     var securityFindingCount: Int { content.securityAttentionCount }
     var securityAttentionCount: Int {
         securityFindingCount + (collectionCoverage?.requiredIssues.count ?? 0)

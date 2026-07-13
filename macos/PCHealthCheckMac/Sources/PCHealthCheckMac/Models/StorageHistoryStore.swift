@@ -186,7 +186,8 @@ enum StorageHistoryStore {
             incidentTitle: entry.incidentTitle,
             incidentValue: entry.incidentValue,
             collectionComplete: entry.collectionComplete,
-            browserVerdict: entry.browserVerdict
+            browserVerdict: entry.browserVerdict,
+            evidence: entry.evidence
         )
     }
 

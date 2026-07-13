@@ -13,6 +13,7 @@ struct ScanContent {
         securityHasDanger: false,
         cpuRows: [],
         networkRows: [],
+        listeningPortRows: [],
         autorunRows: [],
         recentInstalls: [],
         truncatedSections: []
@@ -28,6 +29,7 @@ struct ScanContent {
     let securityHasDanger: Bool
     let cpuRows: [CpuRow]
     let networkRows: [NetworkRow]
+    let listeningPortRows: [ListeningPortRow]
     let autorunRows: [AutorunRow]
     let recentInstalls: [RecentInstallRow]
     let truncatedSections: [String]
@@ -45,6 +47,7 @@ struct ScanContent {
         let findingRows = Self.rows(root["findings"])
         let cpuRows = Self.rows(sections?["cpu"])
         let networkRows = Self.rows(sections?["network"])
+        let listeningPortRows = Self.rows(sections?["listeningPorts"])
         let autorunRows = Self.rows(sections?["autoruns"])
         let installRows = Self.rows(sections?["recentInstalls"])
         let findingClassification = Self.classifyFindings(findingRows)
@@ -53,6 +56,7 @@ struct ScanContent {
             "진단 결과": findingRows,
             "프로세스": cpuRows,
             "네트워크": networkRows,
+            "수신 포트": listeningPortRows,
             "자동 실행": autorunRows,
             "최근 설치": installRows,
         ]
@@ -67,6 +71,8 @@ struct ScanContent {
             securityHasDanger: findingClassification.hasDanger,
             cpuRows: cpuRows.prefix(Self.maximumRowsPerSection).compactMap(CpuRow.init(json:)),
             networkRows: networkRows.prefix(Self.maximumRowsPerSection).compactMap(NetworkRow.init(json:)),
+            listeningPortRows: listeningPortRows.prefix(Self.maximumRowsPerSection)
+                .compactMap(ListeningPortRow.init(json:)),
             autorunRows: autorunRows.prefix(Self.maximumRowsPerSection).compactMap(AutorunRow.init(json:)),
             recentInstalls: installRows.prefix(Self.maximumRowsPerSection).compactMap(RecentInstallRow.init(json:)),
             truncatedSections: sectionRows
@@ -87,6 +93,7 @@ struct ScanContent {
         securityHasDanger: Bool,
         cpuRows: [CpuRow],
         networkRows: [NetworkRow],
+        listeningPortRows: [ListeningPortRow],
         autorunRows: [AutorunRow],
         recentInstalls: [RecentInstallRow],
         truncatedSections: [String]
@@ -101,6 +108,7 @@ struct ScanContent {
         self.securityHasDanger = securityHasDanger
         self.cpuRows = cpuRows
         self.networkRows = networkRows
+        self.listeningPortRows = listeningPortRows
         self.autorunRows = autorunRows
         self.recentInstalls = recentInstalls
         self.truncatedSections = truncatedSections

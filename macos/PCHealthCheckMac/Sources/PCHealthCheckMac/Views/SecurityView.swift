@@ -6,6 +6,7 @@ struct SecurityPage: View {
     @State private var showsCollectionCoverage = false
     @State private var showsProcesses = false
     @State private var showsNetwork = false
+    @State private var showsListeningPorts = false
     @State private var showsAutoruns = false
     @State private var showsRecentInstalls = false
 
@@ -43,10 +44,17 @@ struct SecurityPage: View {
                 )
             }
 
-            if !model.attentionCpuRows.isEmpty || !model.attentionNetworkRows.isEmpty {
-                Section("비정상 동작 신호") {
+            if !model.cpuRows.isEmpty || !model.networkRows.isEmpty || !model.listeningPortRows.isEmpty {
+                Section {
                     processDisclosure
                     networkDisclosure
+                    listeningPortsDisclosure
+                } header: {
+                    NativeSectionHeader(
+                        title: "현재 활동 증거",
+                        subtitle: "판단에 사용한 실행·통신 스냅샷입니다. 알 수 없음은 안전 판정이 아니며 경로와 맥락을 직접 대조하세요.",
+                        value: model.storageSnapshotAgeText
+                    )
                 }
             }
 
@@ -94,22 +102,30 @@ struct SecurityPage: View {
 
     @ViewBuilder
     private var processDisclosure: some View {
-        if !model.attentionCpuRows.isEmpty {
+        if !model.cpuRows.isEmpty {
             DisclosureGroup(isExpanded: $showsProcesses) {
-                ForEach(model.attentionCpuRows) { row in
-                    SecurityRiskDetailRow(
-                        symbol: "waveform.path.ecg",
-                        title: row.name,
-                        detail: processMetadata(row),
-                        risk: row.risk
-                    )
+                ForEach(model.cpuRows) { row in
+                    if row.requiresAttention {
+                        SecurityRiskDetailRow(
+                            symbol: "waveform.path.ecg",
+                            title: row.name,
+                            detail: processMetadata(row),
+                            risk: row.risk
+                        )
+                    } else {
+                        SecurityDetailRow(
+                            symbol: "waveform.path.ecg",
+                            title: row.name,
+                            detail: processMetadata(row)
+                        )
+                    }
                 }
             } label: {
                 SecurityDisclosureLabel(
                     symbol: "waveform.path.ecg",
-                    title: "확인이 필요한 프로세스",
-                    detail: "실행 경로와 사용량을 함께 확인하세요.",
-                    value: "\(model.attentionCpuRows.count)개"
+                    title: "실행 프로세스",
+                    detail: evidenceSummary(attention: model.attentionCpuRows.count),
+                    value: "\(model.cpuRows.count)개"
                 )
             }
         }
@@ -117,22 +133,61 @@ struct SecurityPage: View {
 
     @ViewBuilder
     private var networkDisclosure: some View {
-        if !model.attentionNetworkRows.isEmpty {
+        if !model.networkRows.isEmpty {
             DisclosureGroup(isExpanded: $showsNetwork) {
-                ForEach(model.attentionNetworkRows) { row in
-                    SecurityRiskDetailRow(
-                        symbol: "network",
-                        title: row.process,
-                        detail: networkMetadata(row),
-                        risk: row.risk
-                    )
+                ForEach(model.networkRows) { row in
+                    if row.requiresAttention {
+                        SecurityRiskDetailRow(
+                            symbol: "network",
+                            title: row.process,
+                            detail: networkMetadata(row),
+                            risk: row.risk
+                        )
+                    } else {
+                        SecurityDetailRow(
+                            symbol: "network",
+                            title: row.process,
+                            detail: networkMetadata(row)
+                        )
+                    }
                 }
             } label: {
                 SecurityDisclosureLabel(
                     symbol: "network",
-                    title: "확인이 필요한 네트워크 연결",
-                    detail: "원격 주소와 연결 프로세스를 확인하세요.",
-                    value: "\(model.attentionNetworkRows.count)개"
+                    title: "외부 네트워크 연결",
+                    detail: evidenceSummary(attention: model.attentionNetworkRows.count),
+                    value: "\(model.networkRows.count)개"
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var listeningPortsDisclosure: some View {
+        if !model.listeningPortRows.isEmpty {
+            DisclosureGroup(isExpanded: $showsListeningPorts) {
+                ForEach(model.listeningPortRows) { row in
+                    if row.requiresAttention {
+                        SecurityRiskDetailRow(
+                            symbol: "dot.radiowaves.left.and.right",
+                            title: listeningPortTitle(row),
+                            detail: listeningPortMetadata(row),
+                            risk: row.risk
+                        )
+                    } else {
+                        SecurityDetailRow(
+                            symbol: "dot.radiowaves.left.and.right",
+                            title: listeningPortTitle(row),
+                            detail: listeningPortMetadata(row)
+                        )
+                    }
+                }
+            } label: {
+                SecurityDisclosureLabel(
+                    symbol: "dot.radiowaves.left.and.right",
+                    title: "수신 대기 포트",
+                    detail: evidenceSummary(attention: model.attentionListeningPortRows.count),
+                    value: "\(model.listeningPortRows.count)개"
                 )
             }
         }
@@ -162,7 +217,10 @@ struct SecurityPage: View {
                 SecurityDisclosureLabel(
                     symbol: "gearshape.2",
                     title: "자동 실행 항목",
-                    detail: "로그인이나 부팅 때 다시 시작됩니다.",
+                    detail: systemChangeSummary(
+                        attention: model.autorunRows.filter { $0.risk == "danger" || $0.risk == "warning" }.count,
+                        fallback: "로그인이나 부팅 때 다시 시작됩니다."
+                    ),
                     value: "\(model.autorunRows.count)개"
                 )
             }
@@ -174,17 +232,29 @@ struct SecurityPage: View {
         if !model.recentInstalls.isEmpty {
             DisclosureGroup(isExpanded: $showsRecentInstalls) {
                 ForEach(model.recentInstalls) { install in
-                    SecurityDetailRow(
-                        symbol: "shippingbox",
-                        title: install.name,
-                        detail: installMetadata(install)
-                    )
+                    if install.risk == "danger" || install.risk == "warning" {
+                        SecurityRiskDetailRow(
+                            symbol: "shippingbox",
+                            title: install.name,
+                            detail: installMetadata(install),
+                            risk: install.risk
+                        )
+                    } else {
+                        SecurityDetailRow(
+                            symbol: "shippingbox",
+                            title: install.name,
+                            detail: installMetadata(install)
+                        )
+                    }
                 }
             } label: {
                 SecurityDisclosureLabel(
                     symbol: "shippingbox",
                     title: "최근 설치 앱",
-                    detail: "최근 30일 안에 설치되거나 변경됐습니다.",
+                    detail: systemChangeSummary(
+                        attention: model.recentInstalls.filter { $0.risk == "danger" || $0.risk == "warning" }.count,
+                        fallback: "최근 30일 안에 설치되거나 변경됐습니다."
+                    ),
                     value: "\(model.recentInstalls.count)개"
                 )
             }
@@ -233,6 +303,31 @@ struct SecurityPage: View {
         let endpoint = row.remotePort > 0
             ? "\(row.remoteAddress):\(row.remotePort)"
             : row.remoteAddress
-        return [endpoint, row.note].filter { !$0.isEmpty }.joined(separator: " · ")
+        var values = [endpoint]
+        if row.pid > 0 { values.append("PID \(row.pid)") }
+        values.append(contentsOf: [row.path, row.note])
+        return values.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    private func listeningPortTitle(_ row: ListeningPortRow) -> String {
+        let owner = row.process.isEmpty ? row.name : row.process
+        return row.port > 0 ? "\(owner) · 포트 \(row.port)" : owner
+    }
+
+    private func listeningPortMetadata(_ row: ListeningPortRow) -> String {
+        var values: [String] = []
+        if row.pid > 0 { values.append("PID \(row.pid)") }
+        values.append(contentsOf: [row.path, row.note])
+        return values.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    private func evidenceSummary(attention: Int) -> String {
+        attention > 0
+            ? "확인 필요 \(attention)개를 포함합니다. 행을 펼쳐 경로와 맥락을 대조하세요."
+            : "현재 스냅샷의 전체 행입니다. 알 수 없음 항목도 직접 확인할 수 있습니다."
+    }
+
+    private func systemChangeSummary(attention: Int, fallback: String) -> String {
+        attention > 0 ? "확인 표시 \(attention)개가 있습니다. 펼쳐 설치 맥락을 대조하세요." : fallback
     }
 }

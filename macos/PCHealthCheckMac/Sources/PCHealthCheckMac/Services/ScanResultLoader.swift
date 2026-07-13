@@ -102,7 +102,8 @@ enum ScanResultLoader {
             capturedAt: capturedAt,
             storage: storage,
             incident: incident,
-            collectionComplete: content.collectionCoverage?.complete
+            collectionComplete: content.collectionCoverage?.complete,
+            evidence: IncidentEvidenceSnapshot(content: content)
         )
 
         do {

@@ -13,6 +13,20 @@ struct StorageHistoryItem: Codable, Identifiable, Equatable {
     var id: String { key }
 }
 
+struct IncidentEvidenceSnapshot: Codable, Equatable {
+    let processCount: Int
+    let networkConnectionCount: Int
+    let listeningPortCount: Int
+    let attentionFindingCount: Int
+
+    init(content: ScanContent) {
+        processCount = content.cpuRows.count
+        networkConnectionCount = content.networkRows.count
+        listeningPortCount = content.listeningPortRows.count
+        attentionFindingCount = content.findings.filter(\.requiresAttention).count
+    }
+}
+
 struct StorageHistoryEntry: Codable, Identifiable, Equatable {
     let sourceID: String
     let capturedAt: Date
@@ -25,6 +39,7 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
     let incidentValue: String?
     let collectionComplete: Bool?
     let browserVerdict: String?
+    let evidence: IncidentEvidenceSnapshot?
 
     var id: String { sourceID }
 
@@ -33,7 +48,8 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
         capturedAt: Date,
         storage: StorageSnapshot,
         incident: IncidentAssessment? = nil,
-        collectionComplete: Bool? = nil
+        collectionComplete: Bool? = nil,
+        evidence: IncidentEvidenceSnapshot? = nil
     ) {
         self.sourceID = sourceID
         self.capturedAt = capturedAt
@@ -46,6 +62,7 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
         self.collectionComplete = collectionComplete
         browserVerdict = storage.browserAutomation.verdict == "unknown"
             ? nil : storage.browserAutomation.verdict
+        self.evidence = evidence
 
         var rows: [StorageHistoryItem] = []
         rows += Self.items(storage.cleanupCandidates, category: "cleanup")
@@ -65,7 +82,8 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
         incidentTitle: String? = nil,
         incidentValue: String? = nil,
         collectionComplete: Bool? = nil,
-        browserVerdict: String? = nil
+        browserVerdict: String? = nil,
+        evidence: IncidentEvidenceSnapshot? = nil
     ) {
         self.sourceID = sourceID
         self.capturedAt = capturedAt
@@ -78,6 +96,7 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
         self.incidentValue = incidentValue
         self.collectionComplete = collectionComplete
         self.browserVerdict = browserVerdict
+        self.evidence = evidence
     }
 
     private static func items(_ values: [StorageItem], category: String) -> [StorageHistoryItem] {
