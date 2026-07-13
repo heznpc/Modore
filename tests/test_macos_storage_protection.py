@@ -82,11 +82,11 @@ def test_browser_automation_roots_are_grouped_without_exposing_commands(project_
     script = project_root / "scripts" / "modules" / "macos" / "storage.sh"
     process_snapshot = "\n".join(
         [
-            "999101 1 02:00:42 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-pipe --user-data-dir=/tmp/profile?token=secret",
-            "999102 999101 02:00:41 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=renderer --remote-debugging-pipe",
-            "999201 999200 02:15 /Users/test/Library/Caches/ms-playwright/chromium-123/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --no-startup-window --remote-debugging-pipe",
-            "999301 999300 00:03 /usr/local/bin/node playwright_chromiumdev_profile=/tmp/profile?token=secret",
-            "999401 999400 05:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "999101 1 02:00:42 262144 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-pipe --user-data-dir=/tmp/profile?token=secret",
+            "999102 999101 02:00:41 131072 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=renderer --remote-debugging-pipe",
+            "999201 999200 02:15 196608 /Users/test/Library/Caches/ms-playwright/chromium-123/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --no-startup-window --remote-debugging-pipe",
+            "999301 999300 00:03 2048 /usr/local/bin/node playwright_chromiumdev_profile=/tmp/profile?token=secret",
+            "999401 999400 05:00 327680 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         ]
     )
 
@@ -107,12 +107,40 @@ def test_browser_automation_roots_are_grouped_without_exposing_commands(project_
     assert result.returncode == 0, result.stderr
     rows = [line.split("\t") for line in result.stdout.splitlines()]
     assert rows == [
-        ["999101", "1", "02:00:42", "system", "orphan_candidate", "custom", "other local process"],
-        ["999201", "999200", "02:15", "isolated", "detached", "default", "parent unavailable"],
+        ["999101", "1", "02:00:42", "system", "orphan_candidate", "temporary", "other local process", "262144", "393216", "2"],
+        ["999201", "999200", "02:15", "isolated", "detached", "default", "parent unavailable", "196608", "196608", "1"],
     ]
     assert "token=secret" not in result.stdout
     assert "remote-debugging-pipe" not in result.stdout
     assert "Google Chrome Helper" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", "ChatGPT"),
+        ("/Applications/Claude.app/Contents/MacOS/Claude", "Claude"),
+        ("/Applications/Codex.app/Contents/MacOS/Codex", "Codex"),
+    ],
+)
+def test_browser_controller_labels_ai_apps(project_root, command, expected):
+    script = project_root / "scripts" / "modules" / "macos" / "storage.sh"
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            '. "$1"; _pch_browser_controller_label "$2"',
+            "bash",
+            str(script),
+            command,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
 
 
 def test_storage_du_budget_is_shared_by_simulators_and_later_paths(
@@ -324,7 +352,8 @@ def test_jxa_fixture_preserves_collection_and_browser_automation_contract(
     (facts / "storage_runtime.tsv").write_text(
         "browser_automation_root\t잔류 후보 시스템 Chrome 자동화\t1\twarning"
         "\t소유 작업 재확인 후 종료 검토\t상위 작업을 확인할 수 없습니다."
-        "\t4242\t1\t02:10:00\tsystem\torphan_candidate\tdefault\tCodex\n",
+        "\t4242\t1\t02:10:00\tsystem\torphan_candidate\ttemporary\tCodex"
+        "\t262144\t393216\t2\n",
         encoding="utf-8",
     )
     (facts / "storage_access.tsv").write_text(
@@ -392,6 +421,8 @@ def test_jxa_fixture_preserves_collection_and_browser_automation_contract(
     assert browser["verdict"] == "orphaned"
     assert browser["systemRootCount"] == 1
     assert browser["orphanedRootCount"] == 1
+    assert browser["rootMemoryKB"] == 262144
+    assert browser["treeMemoryKB"] == 393216
     root = storage["runtimeSignals"][0]
     assert root["pid"] == 4242
     assert root["parentPid"] == 1
@@ -399,6 +430,9 @@ def test_jxa_fixture_preserves_collection_and_browser_automation_contract(
     assert root["channel"] == "system"
     assert root["state"] == "orphan_candidate"
     assert root["controller"] == "Codex"
+    assert root["memoryKB"] == 262144
+    assert root["treeMemoryKB"] == 393216
+    assert root["treeProcessCount"] == 2
     assert "command" not in root
     candidate = storage["cleanupCandidates"][0]
     assert candidate["cleanupId"] == "playwright_browsers"

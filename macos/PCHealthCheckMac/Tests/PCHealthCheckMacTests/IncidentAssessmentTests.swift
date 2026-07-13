@@ -35,6 +35,8 @@ final class IncidentAssessmentTests: XCTestCase {
             "systemRootCount": 1,
             "isolatedRootCount": 0,
             "orphanedRootCount": 0,
+            "rootMemoryKB": 262_144,
+            "treeMemoryKB": 393_216,
             "globalConfigPresent": false,
             "globalIsolationConfigured": false,
             "isolatedBrowserInstalled": true,
@@ -55,6 +57,9 @@ final class IncidentAssessmentTests: XCTestCase {
             "state": "active",
             "profile": "temporary",
             "controller": "Codex",
+            "memoryKB": 262_144,
+            "treeMemoryKB": 393_216,
+            "treeProcessCount": 2,
         ]]
         sections["storage"] = storage
         value["sections"] = sections
@@ -66,6 +71,11 @@ final class IncidentAssessmentTests: XCTestCase {
         XCTAssertTrue(assessment.detail.contains("기본 Chrome"))
         XCTAssertEqual(content.storage?.runtimeSignals.first?.pid, 123)
         XCTAssertEqual(content.storage?.runtimeSignals.first?.controller, "Codex")
+        XCTAssertEqual(content.storage?.runtimeSignals.first?.memoryKB, 262_144)
+        XCTAssertEqual(content.storage?.runtimeSignals.first?.treeMemoryKB, 393_216)
+        XCTAssertEqual(content.storage?.runtimeSignals.first?.treeProcessCount, 2)
+        XCTAssertEqual(content.storage?.browserAutomation.rootMemoryKB, 262_144)
+        XCTAssertEqual(content.storage?.browserAutomation.treeMemoryKB, 393_216)
     }
 
     func testClearAssessmentNamesCompletedRequiredScope() {

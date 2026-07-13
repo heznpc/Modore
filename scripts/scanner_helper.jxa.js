@@ -470,7 +470,10 @@ function parseStorageRuntime(text) {
       channel: parts[9] || "",
       state: parts[10] || "",
       profile: parts[11] || "",
-      controller: parts[12] || ""
+      controller: parts[12] || "",
+      memoryKB: Number(parts[13] || 0),
+      treeMemoryKB: Number(parts[14] || parts[13] || 0),
+      treeProcessCount: Number(parts[15] || 0)
     };
   }).filter(Boolean);
 }
@@ -482,6 +485,8 @@ function browserAutomationStatus(runtimeSignals) {
   const orphanedRoots = roots.filter(signal =>
     signal.state === "orphan_candidate" || signal.state === "orphaned"
   );
+  const rootMemoryKB = roots.reduce((total, signal) => total + Number(signal.memoryKB || 0), 0);
+  const treeMemoryKB = roots.reduce((total, signal) => total + Number(signal.treeMemoryKB || 0), 0);
   const globalConfigPath = homeDir() + "/.playwright/cli.config.json";
   const globalConfigPresent = pathExists(globalConfigPath);
   const globalConfig = globalConfigPresent ? readJson(globalConfigPath, {}, 256 * 1024) : {};
@@ -500,6 +505,8 @@ function browserAutomationStatus(runtimeSignals) {
     systemRootCount: systemRoots.length,
     isolatedRootCount: isolatedRoots.length,
     orphanedRootCount: orphanedRoots.length,
+    rootMemoryKB,
+    treeMemoryKB,
     globalConfigPresent,
     globalIsolationConfigured,
     isolatedBrowserInstalled,

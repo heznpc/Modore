@@ -274,6 +274,9 @@ struct RuntimeSignal: Identifiable {
     let state: String
     let profile: String
     let controller: String
+    let memoryKB: Int
+    let treeMemoryKB: Int
+    let treeProcessCount: Int
 
     init?(json: [String: Any]) {
         kind = JsonRead.string(json, "kind", "process_count")
@@ -289,6 +292,9 @@ struct RuntimeSignal: Identifiable {
         state = JsonRead.string(json, "state")
         profile = JsonRead.string(json, "profile")
         controller = JsonRead.string(json, "controller")
+        memoryKB = max(0, JsonRead.int(json, "memoryKB"))
+        treeMemoryKB = max(memoryKB, JsonRead.int(json, "treeMemoryKB"))
+        treeProcessCount = max(0, JsonRead.int(json, "treeProcessCount"))
     }
 
     var countText: String {
@@ -296,6 +302,20 @@ struct RuntimeSignal: Identifiable {
             return "Booted"
         }
         return "\(count)개"
+    }
+
+    var memoryText: String {
+        ByteCountFormatter.string(
+            fromByteCount: Int64(memoryKB) * 1024,
+            countStyle: .memory
+        )
+    }
+
+    var treeMemoryText: String {
+        ByteCountFormatter.string(
+            fromByteCount: Int64(treeMemoryKB) * 1024,
+            countStyle: .memory
+        )
     }
 }
 
@@ -305,6 +325,8 @@ struct BrowserAutomationStatus {
     let systemRootCount: Int
     let isolatedRootCount: Int
     let orphanedRootCount: Int
+    let rootMemoryKB: Int
+    let treeMemoryKB: Int
     let globalConfigPresent: Bool
     let globalIsolationConfigured: Bool
     let isolatedBrowserInstalled: Bool
@@ -318,6 +340,8 @@ struct BrowserAutomationStatus {
         systemRootCount = JsonRead.int(json, "systemRootCount")
         isolatedRootCount = JsonRead.int(json, "isolatedRootCount")
         orphanedRootCount = JsonRead.int(json, "orphanedRootCount")
+        rootMemoryKB = max(0, JsonRead.int(json, "rootMemoryKB"))
+        treeMemoryKB = max(rootMemoryKB, JsonRead.int(json, "treeMemoryKB"))
         globalConfigPresent = JsonRead.bool(json, "globalConfigPresent") ?? false
         globalIsolationConfigured = JsonRead.bool(json, "globalIsolationConfigured") ?? false
         isolatedBrowserInstalled = JsonRead.bool(json, "isolatedBrowserInstalled") ?? false
@@ -331,5 +355,19 @@ struct BrowserAutomationStatus {
 
     var needsAttention: Bool {
         verdict == "conflict_possible" || verdict == "orphaned"
+    }
+
+    var rootMemoryText: String {
+        ByteCountFormatter.string(
+            fromByteCount: Int64(rootMemoryKB) * 1024,
+            countStyle: .memory
+        )
+    }
+
+    var treeMemoryText: String {
+        ByteCountFormatter.string(
+            fromByteCount: Int64(treeMemoryKB) * 1024,
+            countStyle: .memory
+        )
     }
 }

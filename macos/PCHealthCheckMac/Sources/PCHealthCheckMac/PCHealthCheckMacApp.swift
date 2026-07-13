@@ -142,5 +142,9 @@ struct ContentView: View {
             CleanupApprovalSheet(preview: preview)
                 .environmentObject(model)
         }
+        .sheet(item: $model.browserAutomationStopPreview) { preview in
+            BrowserAutomationApprovalSheet(preview: preview)
+                .environmentObject(model)
+        }
     }
 }

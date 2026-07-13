@@ -217,6 +217,7 @@ private struct SidebarScanStatus: View {
     private func statusTitle(at date: Date) -> String {
         if model.isRunning { return "검사 중" }
         if model.cleanupInFlight { return "정리 대상 확인 중" }
+        if model.browserAutomationStopInFlight { return "자동화 브라우저 확인 중" }
         if model.storageWatchInFlight { return "감시 설정 적용 중" }
         if model.summary == nil { return "검사 필요" }
         if model.securityHasDanger {

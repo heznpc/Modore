@@ -23,10 +23,21 @@ _pch_is_protected_developer_app() {
     return 1
 }
 
+_pch_browser_controller_label() {
+    local command="$1"
+
+    case "$command" in
+        *Codex.app*|*/codex*|*SkyComputerUseClient*) /usr/bin/printf 'Codex'; return 0 ;;
+        *Claude.app*|*/claude*|*claude-code*) /usr/bin/printf 'Claude'; return 0 ;;
+        *ChatGPT.app*|*/ChatGPT*|*com.openai.chat*) /usr/bin/printf 'ChatGPT'; return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 _pch_browser_controller() {
     local current_pid="$1"
     local depth=0
-    local parent_line ancestor_pid ancestor_command
+    local parent_line ancestor_pid ancestor_command controller_label
     local fallback="other local process"
 
     while [[ "$depth" -lt 8 ]]; do
@@ -34,9 +45,11 @@ _pch_browser_controller() {
         parent_line="$(/bin/ps -p "$current_pid" -o ppid=,command= 2>/dev/null || true)"
         [[ -n "$parent_line" ]] || break
         read -r ancestor_pid ancestor_command <<< "$parent_line"
+        if controller_label="$(_pch_browser_controller_label "$ancestor_command")"; then
+            /usr/bin/printf '%s' "$controller_label"
+            return 0
+        fi
         case "$ancestor_command" in
-            *Codex.app*|*/codex*|*SkyComputerUseClient*) /usr/bin/printf 'Codex'; return 0 ;;
-            *Claude.app*|*/claude*|*claude-code*) /usr/bin/printf 'Claude'; return 0 ;;
             *playwright*|*node*) fallback="Playwright/Node" ;;
             *python*) [[ "$fallback" == "other local process" ]] && fallback="Python automation" ;;
         esac
@@ -71,12 +84,14 @@ _pch_elapsed_seconds() {
 }
 
 _pch_browser_automation_roots() {
-    local pid ppid elapsed command channel state profile controller parent_command
-    local parent_parent_pid elapsed_seconds
+    local pid ppid elapsed rss_kb command channel state profile controller parent_command
+    local parent_parent_pid elapsed_seconds process_snapshot tree_stats tree_memory_kb tree_process_count
 
-    while read -r pid ppid elapsed command; do
+    process_snapshot="$(/bin/cat)"
+    while read -r pid ppid elapsed rss_kb command; do
         case "$pid$ppid" in ''|*[!0-9]*) continue ;; esac
         case "$elapsed" in ''|*[!0-9:-]*) elapsed="unknown" ;; esac
+        case "$rss_kb" in ''|*[!0-9]*) rss_kb="0" ;; esac
         case "$command" in
             *playwright_chromiumdev_profile*|*--remote-debugging-pipe*|*--remote-debugging-port*|*--no-startup-window*|*--headless*) ;;
             *) continue ;;
@@ -95,7 +110,7 @@ _pch_browser_automation_roots() {
             *) channel="unknown" ;;
         esac
         case "$command" in
-            *playwright_chromiumdev_profile*) profile="temporary" ;;
+            *playwright_chromiumdev_profile*|*--user-data-dir=/tmp/*|*--user-data-dir=/private/tmp/*|*--user-data-dir=/var/folders/*|*--user-data-dir=/private/var/folders/*) profile="temporary" ;;
             *--user-data-dir=*) profile="custom" ;;
             *) profile="default" ;;
         esac
@@ -112,9 +127,41 @@ _pch_browser_automation_roots() {
         else
             state="active"
         fi
-        /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$pid" "$ppid" "$elapsed" "$channel" "$state" "$profile" "$controller"
-    done
+        tree_stats="$(/usr/bin/printf '%s\n' "$process_snapshot" | /usr/bin/awk -v root="$pid" '
+            BEGIN { included[root] = 1 }
+            {
+                pids[NR] = $1
+                parents[NR] = $2
+                memory[NR] = $4 + 0
+            }
+            END {
+                for (pass = 0; pass < 16; pass++) {
+                    changed = 0
+                    for (i = 1; i <= NR; i++) {
+                        if (included[parents[i]] && !included[pids[i]]) {
+                            included[pids[i]] = 1
+                            changed = 1
+                        }
+                    }
+                    if (!changed) break
+                }
+                total = 0
+                count = 0
+                for (i = 1; i <= NR; i++) {
+                    if (included[pids[i]]) {
+                        total += memory[i]
+                        count++
+                    }
+                }
+                printf "%d %d", total, count
+            }
+        ')"
+        read -r tree_memory_kb tree_process_count <<< "$tree_stats"
+        case "$tree_memory_kb$tree_process_count" in ''|*[!0-9]*) tree_memory_kb="$rss_kb"; tree_process_count="1" ;; esac
+        /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$pid" "$ppid" "$elapsed" "$channel" "$state" "$profile" "$controller" \
+            "$rss_kb" "$tree_memory_kb" "$tree_process_count"
+    done <<< "$process_snapshot"
 }
 
 _pch_collect_storage_applications() {
@@ -318,9 +365,9 @@ _pch_collect_storage_runtime_signals() {
     node_count="$(count_processes '(^|/)(node|npm|npx)( |$)')"
 
     add_runtime_signal "process_count" "Chrome processes" "$chrome_count" "$([[ "$chrome_count" -ge 20 ]] && echo warning || echo info)" "브라우저 탭/자동화 정리" "Chrome 계열 프로세스가 많으면 code-sign clone과 프로필 캐시가 다시 쌓일 수 있습니다."
-    local browser_pid browser_ppid browser_elapsed browser_channel browser_state browser_profile browser_controller
+    local browser_pid browser_ppid browser_elapsed browser_channel browser_state browser_profile browser_controller browser_rss_kb browser_tree_memory_kb browser_tree_process_count
     local browser_label browser_risk browser_action browser_channel_note
-    while IFS=$'\t' read -r browser_pid browser_ppid browser_elapsed browser_channel browser_state browser_profile browser_controller; do
+    while IFS=$'\t' read -r browser_pid browser_ppid browser_elapsed browser_channel browser_state browser_profile browser_controller browser_rss_kb browser_tree_memory_kb browser_tree_process_count; do
         case "$browser_channel" in
             system)
                 browser_label="시스템 Chrome 자동화"
@@ -359,7 +406,10 @@ _pch_collect_storage_runtime_signals() {
             "$browser_channel" \
             "$browser_state" \
             "$browser_profile" \
-            "$browser_controller"
+            "$browser_controller" \
+            "$browser_rss_kb" \
+            "$browser_tree_memory_kb" \
+            "$browser_tree_process_count"
     done < <(/usr/bin/printf '%s\n' "$ps_detailed" | _pch_browser_automation_roots)
     add_runtime_signal "process_count" "CoreSimulator processes" "$sim_count" "$([[ "$sim_count" -ge 100 ]] && echo warning || echo info)" "필요한 Simulator만 Booted" "부팅된 Simulator는 런타임 프로세스를 대량으로 띄웁니다."
     add_runtime_signal "process_count" "Codex processes" "$codex_count" "$([[ "$codex_count" -ge 20 ]] && echo warning || echo info)" "끝난 Codex 작업의 프로세스 종료" "세션 기록은 보존하고, 더 이상 사용하지 않는 Codex/Computer Use 프로세스만 앱에서 정상 종료하세요."
@@ -613,7 +663,7 @@ collect_storage() {
 
     local ps_commands ps_detailed
     ps_commands="$(/bin/ps -axo command= 2>/dev/null || true)"
-    ps_detailed="$(/bin/ps -axo pid=,ppid=,etime=,command= 2>/dev/null || true)"
+    ps_detailed="$(/bin/ps -axo pid=,ppid=,etime=,rss=,command= 2>/dev/null || true)"
     if [[ -n "$ps_detailed" ]]; then
         record_collection_status "runtime_processes" "개발 런타임 프로세스" "ok" "false" "실행 중인 개발 도구와 자동화 프로세스를 확인했습니다."
     else
@@ -642,13 +692,20 @@ collect_storage() {
         local state="${11:-}"
         local profile="${12:-}"
         local controller="${13:-}"
+        local memory_kb="${14:-0}"
+        local tree_memory_kb="${15:-0}"
+        local tree_process_count="${16:-0}"
 
+        case "$memory_kb" in ''|*[!0-9]*) memory_kb="0" ;; esac
+        case "$tree_memory_kb" in ''|*[!0-9]*) tree_memory_kb="$memory_kb" ;; esac
+        case "$tree_process_count" in ''|*[!0-9]*) tree_process_count="0" ;; esac
         case "$label$action$note$elapsed$channel$state$profile$controller" in
             *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
         esac
-        /usr/bin/printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        /usr/bin/printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
             "$kind" "$label" "${count:-0}" "$risk" "$action" "$note" \
             "$pid" "$ppid" "$elapsed" "$channel" "$state" "$profile" "$controller" \
+            "$memory_kb" "$tree_memory_kb" "$tree_process_count" \
             >> "$TMP_DIR/storage_runtime.tsv"
     }
 

@@ -54,7 +54,7 @@ private struct BrowserAutomationSection: View {
         } header: {
             NativeSectionHeader(
                 title: "브라우저 자동화",
-                subtitle: "일반 Chrome과 자동화 브라우저의 충돌 및 잔류 여부를 확인합니다.",
+                subtitle: "일반 Chrome과의 충돌·메모리를 확인하며 자동 종료하지 않습니다.",
                 value: summaryValue
             )
         }
@@ -119,7 +119,10 @@ private struct BrowserAutomationSummaryRow: View {
     }
 
     private var value: String {
-        status.rootCount > 0 ? "\(status.rootCount)개 루트" : "확인됨"
+        guard status.rootCount > 0 else { return "확인됨" }
+        return status.treeMemoryKB > 0
+            ? "\(status.rootCount)개 · RSS≈\(status.treeMemoryText)"
+            : "\(status.rootCount)개 루트"
     }
 }
 
@@ -159,6 +162,7 @@ private struct BrowserIsolationConfigurationRow: View {
 }
 
 private struct BrowserAutomationRootRow: View {
+    @EnvironmentObject private var model: ScanModel
     let signal: RuntimeSignal
 
     var body: some View {
@@ -179,9 +183,19 @@ private struct BrowserAutomationRootRow: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text(isOrphanCandidate ? "잔류 후보" : "실행 중")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 6) {
+                Text(statusText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                if canRequestStop {
+                    Button("종료 검토") {
+                        model.prepareBrowserAutomationStop(signal: signal)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(model.isBusy)
+                }
+            }
         }
         .padding(.vertical, 6)
     }
@@ -190,12 +204,30 @@ private struct BrowserAutomationRootRow: View {
         signal.state == "orphan_candidate" || signal.state == "orphaned"
     }
 
+    private var canRequestStop: Bool {
+        guard signal.pid > 1 else { return false }
+        if signal.channel == "isolated" { return true }
+        return signal.channel == "system"
+            && signal.profile == "temporary"
+    }
+
+    private var statusText: String {
+        if signal.channel == "system" && signal.profile == "default" {
+            return "기본 프로필 보호"
+        }
+        return isOrphanCandidate ? "잔류 후보" : "실행 중"
+    }
+
     private var metadata: String {
         var parts = ["PID \(signal.pid)", "부모 \(signal.parentPid)"]
         if !signal.elapsed.isEmpty { parts.append("실행 \(signal.elapsed)") }
         if !signal.channel.isEmpty { parts.append(signal.channel) }
         if !signal.profile.isEmpty { parts.append("\(signal.profile) profile") }
         if !signal.controller.isEmpty { parts.append(signal.controller) }
+        if signal.treeMemoryKB > 0 {
+            let count = signal.treeProcessCount > 0 ? " · \(signal.treeProcessCount)개" : ""
+            parts.append("RSS≈\(signal.treeMemoryText)\(count)")
+        }
         return parts.joined(separator: " · ")
     }
 }

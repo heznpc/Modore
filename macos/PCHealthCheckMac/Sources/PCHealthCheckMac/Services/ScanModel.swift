@@ -14,6 +14,9 @@ final class ScanModel: ObservableObject {
     @Published var cleanupPreview: CleanupPreview?
     @Published var cleanupInFlight = false
     @Published var cleanupIsExecuting = false
+    @Published var browserAutomationStopPreview: BrowserAutomationStopPreview?
+    @Published var browserAutomationStopInFlight = false
+    @Published var browserAutomationStopIsExecuting = false
     @Published private(set) var storageHistory: [StorageHistoryEntry] = []
     @Published private(set) var storageChange: StorageChangeSummary?
     @Published private(set) var displayedStorageEntry: StorageHistoryEntry?
@@ -33,6 +36,7 @@ final class ScanModel: ObservableObject {
     private let terminationSafetyGate = AppTerminationSafetyGate()
     private var scanTask: Task<Void, Never>?
     var cleanupTask: Task<Void, Never>?
+    var browserAutomationStopTask: Task<Void, Never>?
 
     init() {
         self.projectRoot = Self.detectProjectRoot()
@@ -45,7 +49,13 @@ final class ScanModel: ObservableObject {
     }
 
     var isRunning: Bool { state == .running }
-    var isBusy: Bool { isRunning || cleanupInFlight || storageWatchInFlight || resultLoading }
+    var isBusy: Bool {
+        isRunning
+            || cleanupInFlight
+            || browserAutomationStopInFlight
+            || storageWatchInFlight
+            || resultLoading
+    }
     var logText: String { logStore.text }
     var summary: ScanSummary? { content.summary }
     var collectionCoverage: CollectionCoverage? { content.collectionCoverage }
