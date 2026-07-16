@@ -1,13 +1,11 @@
 import XCTest
 @testable import PCHealthCheckMac
 
+@MainActor
 final class AccessibilityAnnouncerTests: XCTestCase {
-    override func tearDown() {
-        // Leave a no-op handler so no later test accidentally posts to
-        // NSAccessibility through the shared static.
-        AccessibilityAnnouncer.handler = { _ in }
-        super.tearDown()
-    }
+    // Each test installs its own handler (no other test triggers announce), so
+    // no shared teardown is needed — and XCTestCase.tearDown is nonisolated,
+    // which cannot touch the @MainActor handler under strict concurrency.
 
     func testAnnounceRoutesTrimmedMessageToHandler() {
         var captured: [String] = []

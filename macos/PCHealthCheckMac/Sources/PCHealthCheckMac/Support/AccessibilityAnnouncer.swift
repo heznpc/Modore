@@ -9,8 +9,9 @@ import AppKit
 ///
 /// All production announcements route through `announce(_:)`; `handler` is
 /// swapped in tests to assert exactly which terminal events speak.
+@MainActor
 enum AccessibilityAnnouncer {
-    static var handler: (String) -> Void = post
+    static var handler: @MainActor (String) -> Void = post
 
     static func announce(_ message: String) {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
