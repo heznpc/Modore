@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0",
+  "scannedAt": "2026-07-16 10:00:00",
+  "platform": "windows",
+  "findings": [],
+  "sections": {
+    "cpu": [
+      {"name": "searchindexer.exe", "pid_": 11, "cpu": 5, "memoryMB": 20, "path": "C:\\Windows\\System32\\searchindexer.exe"},
+      {"name": "svchost.exe", "pid_": 12, "cpu": 1, "memoryMB": 8, "path": "C:\\Windows\\System32\\svchost.exe"},
+      {"name": "i3gproc.exe", "pid_": 13, "cpu": 1, "memoryMB": 12, "path": "C:\\Program Files\\IPinside\\i3gproc.exe"},
+      {"name": "xmrig", "pid_": 14, "cpu": 190, "memoryMB": 300, "path": "C:\\Users\\x\\AppData\\Local\\Temp\\xmrig.exe"},
+      {"name": "totallyunknown.exe", "pid_": 15, "cpu": 2, "memoryMB": 5, "path": "D:\\weird\\totallyunknown.exe"}
+    ],
+    "recentInstalls": [
+      {"name": "SomeApp", "publisher": "Unknown", "installDate": "2026-07-10"}
+    ]
+  }
+}
