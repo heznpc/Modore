@@ -151,6 +151,31 @@ def test_cleanup_preview_is_read_only_and_execute_requires_approval(project_root
     assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
 
 
+def test_cleanup_rejects_token_minted_for_a_different_recipe(project_root, tmp_path):
+    """An approval token is bound to the recipe it was previewed for; replaying
+    it against a different recipe must not authorize anything."""
+    home = tmp_path / "home"
+    cache_file = home / ".npm" / "entry"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_bytes(b"x" * 8192)
+
+    preview = run_cleanup(project_root, home, "--preview", "npm_cache")
+    token = approval_token(parse_protocol(preview.stdout))
+
+    crossed = run_cleanup(
+        project_root,
+        home,
+        "--execute",
+        "playwright_browsers",
+        "--owner-approved",
+        "--approval-token",
+        token,
+    )
+
+    assert crossed.returncode != 0, "cross-recipe token must be rejected"
+    assert cache_file.exists(), "nothing may be deleted on a rejected token"
+
+
 def test_cleanup_executes_with_exact_token_from_regular_fd(project_root, tmp_path):
     home = tmp_path / "home"
     cache_file = home / ".npm" / "entry"
