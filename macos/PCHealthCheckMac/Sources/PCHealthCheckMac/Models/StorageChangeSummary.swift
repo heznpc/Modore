@@ -15,6 +15,15 @@ struct StorageChangeSummary: Equatable {
     var consumedGB: Double { max(0, -freeDeltaGB) }
     var recoveredGB: Double { max(0, freeDeltaGB) }
 
+    /// Whether both endpoints have a real df measurement, so a free-space delta
+    /// between them is meaningful. A failed df collection emits a 0GB sentinel;
+    /// comparing it against a real prior reading would fabricate a huge drop, so
+    /// free-space change (drop/recovery incidents) must be gated on this.
+    /// Entries predating the flag decode as nil and are treated as measured.
+    var freeSpaceComparable: Bool {
+        (previous.freeSpaceMeasured ?? true) && (current.freeSpaceMeasured ?? true)
+    }
+
     var primaryCauseCandidates: [StorageItemChange] {
         if consumedGB >= 0.05 { return growingItems }
         if recoveredGB >= 0.05 { return shrinkingItems }

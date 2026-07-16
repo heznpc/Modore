@@ -320,7 +320,10 @@ function parseStorageDf(text) {
   const line = String(text || "").trim().split(/\r?\n/).filter(Boolean).pop() || "";
   const parts = line.trim().split(/\s+/);
   if (parts.length < 5) {
-    return { mount: "", totalGB: 0, usedGB: 0, freeGB: 0, usePercent: 0, risk: "unknown", note: "저장공간 정보를 읽지 못했습니다." };
+    // df produced no usable row (collection failed). Mark the volume as
+    // unmeasured so downstream never treats freeGB:0 as a real measurement and
+    // fabricates a "storage dropped" incident from it.
+    return { mount: "", totalGB: 0, usedGB: 0, freeGB: 0, usePercent: 0, risk: "unknown", measured: false, note: "저장공간 정보를 읽지 못했습니다." };
   }
   const totalKb = Number(parts[1] || 0);
   const usedKb = Number(parts[2] || 0);
@@ -333,7 +336,7 @@ function parseStorageDf(text) {
   const note = risk === "danger" ? "남은 공간이 매우 적습니다. 캐시/임시파일 후보를 먼저 확인하세요." :
     risk === "warning" ? "macOS 저장공간 막대 뒤에 숨은 큰 캐시와 개발 도구 구성요소를 검토하세요." :
     "저장공간 압박은 낮지만, macOS가 뭉뚱그린 항목의 정체를 확인할 수 있습니다.";
-  return { mount, totalGB: kbToGb(totalKb), usedGB: kbToGb(usedKb), freeGB, usePercent, risk, note };
+  return { mount, totalGB: kbToGb(totalKb), usedGB: kbToGb(usedKb), freeGB, usePercent, risk, measured: true, note };
 }
 
 function storageNote(kind, label) {

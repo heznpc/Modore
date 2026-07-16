@@ -41,6 +41,7 @@ struct StorageSnapshot {
     let totalGB: Double
     let usePercent: Double
     let risk: String
+    let volumeMeasured: Bool
     let cleanupCandidates: [StorageItem]
     let reviewCandidates: [StorageItem]
     let developerToolchains: [StorageItem]
@@ -66,6 +67,7 @@ struct StorageSnapshot {
         totalGB = components.totalGB
         usePercent = components.usePercent
         risk = components.risk
+        volumeMeasured = components.volumeMeasured
         cleanupCandidates = components.cleanupCandidates
         reviewCandidates = components.reviewCandidates
         developerToolchains = components.developerToolchains

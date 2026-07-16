@@ -671,7 +671,9 @@ bounded_du_kb() {
     local target="$1"
     local output pid attempts=0 status
     output="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/pch-cleanup-du.XXXXXX")" || return 1
-    /usr/bin/du -sk "$target" > "$output" 2>/dev/null &
+    # -x keeps the measurement on the target's own filesystem so a volume mounted
+    # beneath the target cannot inflate the reclaim estimate we show the owner.
+    /usr/bin/du -skx "$target" > "$output" 2>/dev/null &
     pid=$!
     while /bin/kill -0 "$pid" >/dev/null 2>&1; do
         attempts=$((attempts + 1))
@@ -835,6 +837,40 @@ path_mode() {
     else
         /usr/bin/stat -c '%a' "$target" 2>/dev/null
     fi
+}
+
+# True when a different filesystem is currently mounted strictly beneath target.
+# The same-device check on the top-level target cannot see a volume mounted
+# inside the tree; moving such a target (same-device rename) relocates the nested
+# mount into staging, and a subsequent unbounded rm -rf would cross into and
+# permanently destroy that foreign volume. We consult the live mount table
+# (cheap, read-only). Darwin only — the shipped cleanup engine is macOS-only;
+# on other platforms the caller relies on the device-bounded delete below.
+subtree_contains_foreign_mount() {
+    local target="$1" canonical mp
+    [[ "$(/usr/bin/uname -s)" == "Darwin" ]] || return 1
+    canonical="$(cd -P "$target" 2>/dev/null && /bin/pwd -P)" || return 1
+    [[ -n "$canonical" && "$canonical" != "/" ]] || return 1
+    while IFS= read -r mp; do
+        mp="${mp#* on }"
+        mp="${mp% (*}"
+        [[ -n "$mp" ]] || continue
+        if [[ "$mp" == "$canonical/"* ]]; then
+            return 0
+        fi
+    done < <(/sbin/mount 2>/dev/null)
+    return 1
+}
+
+# Delete a staged tree without ever crossing into another filesystem. find's
+# -xdev confines traversal to root's own device, so a foreign volume mounted
+# inside the staged tree is never entered and its contents cannot be removed.
+# Defense in depth behind the pre-move subtree_contains_foreign_mount guard, and
+# the sole protection against a mount that races in after that check.
+remove_tree_same_device() {
+    local root="$1"
+    [[ -n "$root" ]] || return 1
+    /usr/bin/find "$root" -xdev -depth -delete 2>/dev/null
 }
 
 prepare_private_directory() {
@@ -1140,6 +1176,11 @@ stage_and_remove_target() {
     source_device="$(path_device "$target")" || return 1
     staging_device="$(path_device "$STAGING_RUN")" || return 1
     [[ "$source_device" == "$staging_device" ]] || return 1
+    if subtree_contains_foreign_mount "$target"; then
+        EXECUTION_FAILURE_STATUS="blocked"
+        BLOCKED_REASON="대상 하위에 다른 볼륨이 마운트되어 있어 이동을 중단했습니다. 해당 볼륨을 마운트 해제한 뒤 다시 미리보기하세요."
+        return 1
+    fi
     manifest_identity_matches "$target" "$target" || return 1
     mode="$(path_mode "$target")" || return 1
     apply_test_late_content_drift "$target" "$index" || return 1
@@ -1181,7 +1222,7 @@ stage_and_remove_target() {
             || record_staged_remainder "$TEST_STAGED_APPROVED_ORIGINAL"
         return 1
     fi
-    if ! /bin/rm -rf "$destination"; then
+    if ! remove_tree_same_device "$destination"; then
         record_staged_remainder "$destination"
         return 1
     fi
@@ -1232,6 +1273,11 @@ preflight_trash_transaction() {
         [[ ! -e "$destination" && ! -L "$destination" ]] || return 1
         target_device="$(path_device "$target")" || return 1
         [[ "$target_device" == "$trash_device" ]] || return 1
+        if subtree_contains_foreign_mount "$target"; then
+            EXECUTION_FAILURE_STATUS="blocked"
+            BLOCKED_REASON="대상 하위에 다른 볼륨이 마운트되어 있어 이동을 중단했습니다. 해당 볼륨을 마운트 해제한 뒤 다시 미리보기하세요."
+            return 1
+        fi
     done
     prepare_transaction_journal
 }

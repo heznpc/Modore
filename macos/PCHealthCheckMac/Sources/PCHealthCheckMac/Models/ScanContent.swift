@@ -38,6 +38,16 @@ struct ScanContent {
         findings.filter(\.isSecurityAttention)
     }
 
+    /// Security findings at the danger level only. When `securityHasDanger` is
+    /// true the incident card must headline one of these, not the first
+    /// attention finding (which may be a lower-severity warning appearing
+    /// earlier in scan order).
+    var securityDangerFindings: [ScanFinding] {
+        securityAttentionFindings.filter {
+            $0.level.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "danger"
+        }
+    }
+
     var storageAttentionFindings: [ScanFinding] {
         findings.filter { $0.requiresAttention && $0.isStorageOperational }
     }

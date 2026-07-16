@@ -50,7 +50,8 @@ struct IncidentAssessment: Equatable {
         }
 
         if content.securityHasDanger {
-            let first = content.securityAttentionFindings.first
+            let first = content.securityDangerFindings.first
+                ?? content.securityAttentionFindings.first
             return IncidentAssessment(
                 kind: .securityDanger,
                 title: first?.title ?? "즉시 확인할 위험 신호가 있습니다",
@@ -109,7 +110,7 @@ struct IncidentAssessment: Equatable {
             )
         }
 
-        if let change = storageChange, change.consumedGB >= 8 {
+        if let change = storageChange, change.freeSpaceComparable, change.consumedGB >= 8 {
             let cause = change.primaryCause.map { " 가장 크게 함께 증가한 후보는 \($0.label)입니다." } ?? ""
             return IncidentAssessment(
                 kind: .storageDrop,

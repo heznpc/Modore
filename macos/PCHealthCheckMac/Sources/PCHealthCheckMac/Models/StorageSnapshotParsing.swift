@@ -7,6 +7,10 @@ struct StorageSnapshotComponents {
     let totalGB: Double
     let usePercent: Double
     let risk: String
+    /// Whether df actually reported the volume. False when collection failed and
+    /// the producer emitted a 0GB sentinel; older results without the flag are
+    /// treated as measured only when a real total is present.
+    let volumeMeasured: Bool
     let cleanupCandidates: [StorageItem]
     let reviewCandidates: [StorageItem]
     let developerToolchains: [StorageItem]
@@ -24,6 +28,13 @@ struct StorageSnapshotComponents {
         totalGB = StorageSnapshotParser.double(volume["totalGB"])
         usePercent = StorageSnapshotParser.double(volume["usePercent"])
         risk = volume["risk"] as? String ?? "unknown"
+        if let measured = volume["measured"] as? Bool {
+            volumeMeasured = measured
+        } else {
+            // Backward compatibility with results predating the flag: a real
+            // mounted volume always reports a nonzero total.
+            volumeMeasured = StorageSnapshotParser.double(volume["totalGB"]) > 0
+        }
         cleanupCandidates = StorageSnapshotParser.items(json["cleanupCandidates"])
         reviewCandidates = StorageSnapshotParser.items(json["reviewCandidates"])
         developerToolchains = StorageSnapshotParser.items(json["developerToolchains"])

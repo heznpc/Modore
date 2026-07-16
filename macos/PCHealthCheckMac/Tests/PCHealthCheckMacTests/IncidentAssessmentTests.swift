@@ -87,6 +87,80 @@ final class IncidentAssessmentTests: XCTestCase {
         XCTAssertTrue(assessment.detail.contains("2/2"))
     }
 
+    // Regression (M3): when a danger finding exists, the incident card must
+    // headline a danger-level finding, never a lower-severity warning that
+    // happens to appear earlier in scan order.
+    func testDangerIncidentHeadlinesDangerFindingNotEarlierWarning() {
+        var value = root(collection: completeCollection())
+        value["findings"] = [
+            [
+                "level": "warning", "category": "check_cpu",
+                "title": "임시 폴더 실행: helper", "detail": "warning detail",
+            ],
+            [
+                "level": "danger", "category": "check_network",
+                "title": "악성 IP 연결: evil.example", "detail": "danger detail",
+            ],
+        ]
+        let content = ScanContent(root: value)
+        XCTAssertTrue(content.securityHasDanger)
+
+        let assessment = IncidentAssessment.make(content: content, storageChange: nil)
+
+        XCTAssertEqual(assessment.kind, .securityDanger)
+        XCTAssertEqual(assessment.title, "악성 IP 연결: evil.example")
+        XCTAssertEqual(assessment.detail, "danger detail")
+    }
+
+    // Regression (M2): a failed df collection emits a 0GB "unmeasured" volume.
+    // Comparing it against a real prior reading must NOT fabricate a storage-drop
+    // incident.
+    func testFailedVolumeMeasurementDoesNotFabricateStorageDrop() throws {
+        let change = try XCTUnwrap(StorageChangeSummary(entries: [
+            historyEntry(id: "prev", at: 1_000, freeGB: 120, measured: true),
+            historyEntry(id: "curr", at: 2_000, freeGB: 0, measured: false),
+        ]))
+        XCTAssertFalse(change.freeSpaceComparable)
+        XCTAssertGreaterThanOrEqual(change.consumedGB, 8)
+
+        let content = ScanContent(root: root(collection: completeCollection()))
+        let assessment = IncidentAssessment.make(content: content, storageChange: change)
+
+        XCTAssertNotEqual(assessment.kind, .storageDrop)
+        XCTAssertEqual(assessment.kind, .clear)
+    }
+
+    // A real measured drop must still surface, so the M2 gate only suppresses the
+    // unmeasured case.
+    func testRealMeasuredDropStillReported() throws {
+        let change = try XCTUnwrap(StorageChangeSummary(entries: [
+            historyEntry(id: "prev", at: 1_000, freeGB: 120, measured: true),
+            historyEntry(id: "curr", at: 2_000, freeGB: 100, measured: true),
+        ]))
+        XCTAssertTrue(change.freeSpaceComparable)
+
+        let content = ScanContent(root: root(collection: completeCollection()))
+        let assessment = IncidentAssessment.make(content: content, storageChange: change)
+
+        XCTAssertEqual(assessment.kind, .storageDrop)
+    }
+
+    func testUnmeasuredVolumeSentinelParsedAsUnmeasured() throws {
+        let snap = try XCTUnwrap(StorageSnapshot(json: ["volume": [
+            "mount": "", "totalGB": 0.0, "usedGB": 0.0, "freeGB": 0.0,
+            "usePercent": 0.0, "risk": "unknown", "measured": false,
+        ]]))
+        XCTAssertFalse(snap.volumeMeasured)
+    }
+
+    func testLegacyVolumeWithoutFlagTreatedAsMeasured() throws {
+        let snap = try XCTUnwrap(StorageSnapshot(json: ["volume": [
+            "mount": "/", "totalGB": 200.0, "usedGB": 100.0, "freeGB": 100.0,
+            "usePercent": 50.0, "risk": "safe",
+        ]]))
+        XCTAssertTrue(snap.volumeMeasured)
+    }
+
     func testIncidentMetadataRoundTripsWithStorageHistory() throws {
         let content = ScanContent(root: root(collection: completeCollection()))
         let storage = try XCTUnwrap(content.storage)
@@ -166,6 +240,23 @@ final class IncidentAssessmentTests: XCTestCase {
 
         XCTAssertEqual(encoded.entries.first?.items.count, StorageHistoryStore.maximumItemsPerEntry)
         XCTAssertEqual(encoded.entries.first?.evidence, evidence)
+    }
+
+    private func historyEntry(
+        id: String,
+        at time: Double,
+        freeGB: Double,
+        measured: Bool?
+    ) -> StorageHistoryEntry {
+        StorageHistoryEntry(
+            sourceID: id,
+            capturedAt: Date(timeIntervalSince1970: time),
+            freeGB: freeGB,
+            usedGB: 100,
+            totalGB: 200,
+            items: [],
+            freeSpaceMeasured: measured
+        )
     }
 
     private func root(collection: [String: Any]) -> [String: Any] {

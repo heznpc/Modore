@@ -182,6 +182,7 @@ enum StorageHistoryStore {
             usedGB: entry.usedGB,
             totalGB: entry.totalGB,
             items: Array(entry.items.prefix(max(0, itemCount))),
+            freeSpaceMeasured: entry.freeSpaceMeasured,
             incidentKind: entry.incidentKind,
             incidentTitle: entry.incidentTitle,
             incidentValue: entry.incidentValue,

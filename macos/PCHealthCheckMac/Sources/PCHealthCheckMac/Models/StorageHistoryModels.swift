@@ -33,6 +33,9 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
     let freeGB: Double
     let usedGB: Double
     let totalGB: Double
+    /// Whether freeGB came from a real df measurement. Optional so results
+    /// written before the flag decode as nil; treated as measured in that case.
+    let freeSpaceMeasured: Bool?
     let items: [StorageHistoryItem]
     let incidentKind: String?
     let incidentTitle: String?
@@ -56,6 +59,7 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
         freeGB = storage.freeGB
         usedGB = storage.usedGB
         totalGB = storage.totalGB
+        freeSpaceMeasured = storage.volumeMeasured
         incidentKind = incident?.kind.historyKey
         incidentTitle = incident?.title
         incidentValue = incident?.value
@@ -78,6 +82,7 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
         usedGB: Double,
         totalGB: Double,
         items: [StorageHistoryItem],
+        freeSpaceMeasured: Bool? = nil,
         incidentKind: String? = nil,
         incidentTitle: String? = nil,
         incidentValue: String? = nil,
@@ -90,6 +95,7 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
         self.freeGB = freeGB
         self.usedGB = usedGB
         self.totalGB = totalGB
+        self.freeSpaceMeasured = freeSpaceMeasured
         self.items = items
         self.incidentKind = incidentKind
         self.incidentTitle = incidentTitle
