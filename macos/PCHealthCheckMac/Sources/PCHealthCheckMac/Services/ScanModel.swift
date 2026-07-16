@@ -107,14 +107,20 @@ final class ScanModel: ObservableObject {
     }
     func isStorageSnapshotStale(at date: Date) -> Bool {
         guard let lastStorageScanAt else { return true }
-        return date.timeIntervalSince(lastStorageScanAt) >= 30 * 60
+        let age = date.timeIntervalSince(lastStorageScanAt)
+        // A timestamp meaningfully in the future is untrustworthy — a timezone
+        // change between scan and view can reinterpret the zone-less scan time
+        // hours ahead — so treat it as stale instead of reporting "방금 검사".
+        return age >= 30 * 60 || age < -60
     }
     func storageSnapshotNeedsRefresh(at date: Date = Date()) -> Bool {
         isStorageSnapshotStale(at: date) || hasNewerStorageHistory
     }
     var storageSnapshotAgeText: String {
         guard let lastStorageScanAt else { return "검사 기록 없음" }
-        let seconds = max(0, Date().timeIntervalSince(lastStorageScanAt))
+        let raw = Date().timeIntervalSince(lastStorageScanAt)
+        if raw < -60 { return "검사 시각 확인 필요" }
+        let seconds = max(0, raw)
         if seconds < 60 { return "방금 검사" }
         if seconds < 3600 { return "\(Int(seconds / 60))분 전 검사" }
         if seconds < 86_400 { return "\(Int(seconds / 3600))시간 전 검사" }

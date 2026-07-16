@@ -21,15 +21,17 @@ MAX_ZIP_BYTES = 1024 * 1024 * 1024
 PLACEHOLDER_USERS = {
     "<redacted>",
     "example",
-    "runner",
     "sample",
     "shared",
     "test",
-    "user",
     "username",
     "x",
     "your-name",
 }
+# "runner"/"user" were removed deliberately: they are real account names on
+# GitHub-hosted CI runners and on default user profiles, so whitelisting them
+# would let a CI-built artifact ship an embedded checkout path past this audit.
+# (Path literals are kept out of this comment so the audit does not flag itself.)
 PLACEHOLDER_SECRETS = {
     "changeme",
     "example",
@@ -103,7 +105,9 @@ def _is_placeholder_secret(value: bytes) -> bool:
         not cleaned
         or cleaned in PLACEHOLDER_SECRETS
         or cleaned.startswith(("your_", "example_", "test_", "${", "$env:"))
-        or "<" in value.decode("utf-8", errors="ignore")
+        # A bracketed template like <YOUR_KEY> is a placeholder; a bare "<"
+        # anywhere is not — real credentials can contain "<".
+        or (cleaned.startswith("<") and cleaned.endswith(">"))
     )
 
 

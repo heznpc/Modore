@@ -460,7 +460,10 @@ private final class ManagedProcessSession: @unchecked Sendable {
 
     private func requestStop(_ reason: ProcessEndState) {
         lock.lock()
-        guard !didFinish else {
+        // If the child already exited on its own, its real termination status is
+        // the truth; a deadline work item firing in the window before finish()
+        // must not relabel a successful run as timed out.
+        guard !didFinish, observedTerminationStatus == nil else {
             lock.unlock()
             return
         }

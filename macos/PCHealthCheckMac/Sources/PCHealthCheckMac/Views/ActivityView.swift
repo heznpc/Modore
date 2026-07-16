@@ -283,9 +283,13 @@ struct RecentScanHistoryRow: View {
     }
 
     private func browserVerdictText(_ verdict: String) -> String {
+        // Verdict tokens are emitted by scanner_helper.jxa.js as orphaned /
+        // conflict_possible / isolated_active / clear; matching the wrong token
+        // ("conflict") let real verdicts fall through to the raw protocol string.
         switch verdict {
         case "orphaned": return "소유 작업을 찾지 못한 자동화가 있었습니다."
-        case "conflict": return "기본 Chrome과 자동화 충돌 가능성이 있었습니다."
+        case "conflict_possible": return "기본 Chrome과 자동화 충돌 가능성이 있었습니다."
+        case "isolated_active": return "격리된 자동화 브라우저가 실행 중이었습니다."
         case "clear": return "자동화 충돌 신호가 없었습니다."
         default: return verdict
         }
