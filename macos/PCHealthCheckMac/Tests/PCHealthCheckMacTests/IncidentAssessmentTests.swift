@@ -242,6 +242,83 @@ final class IncidentAssessmentTests: XCTestCase {
         XCTAssertEqual(encoded.entries.first?.evidence, evidence)
     }
 
+    // Coverage for the remaining IncidentAssessment outcomes and one priority
+    // relationship, pinning the full ladder against reordering.
+    func testNoResultWhenNeitherSummaryNorStorage() {
+        let content = ScanContent(root: ["findings": [], "sections": [:]])
+        let assessment = IncidentAssessment.make(content: content, storageChange: nil)
+        XCTAssertEqual(assessment.kind, .noResult)
+    }
+
+    func testStorageCriticalWhenVolumeRiskDanger() throws {
+        var value = root(collection: completeCollection())
+        var sections = try XCTUnwrap(value["sections"] as? [String: Any])
+        var storage = try XCTUnwrap(sections["storage"] as? [String: Any])
+        var volume = try XCTUnwrap(storage["volume"] as? [String: Any])
+        volume["risk"] = "danger"
+        volume["freeGB"] = 3.0
+        volume["usePercent"] = 97.0
+        storage["volume"] = volume
+        sections["storage"] = storage
+        value["sections"] = sections
+
+        let assessment = IncidentAssessment.make(
+            content: ScanContent(root: value), storageChange: nil
+        )
+        XCTAssertEqual(assessment.kind, .storageCritical)
+    }
+
+    func testSecurityAttentionWhenWarningOnly() {
+        var value = root(collection: completeCollection())
+        value["findings"] = [
+            ["level": "warning", "category": "check_cpu",
+             "title": "임시 폴더 실행: x", "detail": "d"],
+        ]
+        let content = ScanContent(root: value)
+        XCTAssertFalse(content.securityHasDanger)
+
+        let assessment = IncidentAssessment.make(content: content, storageChange: nil)
+        XCTAssertEqual(assessment.kind, .securityAttention)
+        XCTAssertEqual(assessment.title, "임시 폴더 실행: x")
+    }
+
+    func testRuntimeAttentionWhenBackgroundToolingRuns() throws {
+        var value = root(collection: completeCollection())
+        var sections = try XCTUnwrap(value["sections"] as? [String: Any])
+        var storage = try XCTUnwrap(sections["storage"] as? [String: Any])
+        storage["runtimeSignals"] = [[
+            "kind": "toolchain_process", "label": "백그라운드 빌드", "count": 2,
+            "risk": "warning", "action": "확인", "note": "계속 실행 중",
+        ]]
+        sections["storage"] = storage
+        value["sections"] = sections
+
+        let assessment = IncidentAssessment.make(
+            content: ScanContent(root: value), storageChange: nil
+        )
+        XCTAssertEqual(assessment.kind, .runtimeAttention)
+    }
+
+    func testSecurityDangerOutranksStorageCritical() throws {
+        var value = root(collection: completeCollection())
+        value["findings"] = [
+            ["level": "danger", "category": "check_network",
+             "title": "악성 연결", "detail": "d"],
+        ]
+        var sections = try XCTUnwrap(value["sections"] as? [String: Any])
+        var storage = try XCTUnwrap(sections["storage"] as? [String: Any])
+        var volume = try XCTUnwrap(storage["volume"] as? [String: Any])
+        volume["risk"] = "danger"
+        storage["volume"] = volume
+        sections["storage"] = storage
+        value["sections"] = sections
+
+        let assessment = IncidentAssessment.make(
+            content: ScanContent(root: value), storageChange: nil
+        )
+        XCTAssertEqual(assessment.kind, .securityDanger)
+    }
+
     private func historyEntry(
         id: String,
         at time: Double,

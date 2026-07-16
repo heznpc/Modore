@@ -170,6 +170,15 @@ enum StorageHistoryStore {
         return self.entry(entry, keepingAtMost: maximumItemsPerEntry)
     }
 
+    /// Trim a freshly parsed entry to the same item cap persisted entries carry.
+    /// A comparison between an untrimmed provisional entry and trimmed stored
+    /// entries would otherwise report items dropped by the cap as appeared /
+    /// disappeared changes. Items are key-sorted, so both sides keep the same
+    /// deterministic prefix.
+    static func comparable(_ entry: StorageHistoryEntry) -> StorageHistoryEntry {
+        sanitizedEntry(entry)
+    }
+
     private static func entry(
         _ entry: StorageHistoryEntry,
         keepingAtMost itemCount: Int

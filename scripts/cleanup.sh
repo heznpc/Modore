@@ -150,6 +150,10 @@ test_path_is_isolated() {
         [[ "$expected" != "$probe" ]] || return 1
         probe="$expected"
     done
+    # The walk stops at the first existing-or-symlink component. If that component
+    # is a symlink, its target may point outside the isolation home, so reject
+    # rather than validating the (in-home) parent and letting a write escape.
+    [[ ! -L "$probe" ]] || return 1
     [[ -d "$probe" && ! -L "$probe" ]] || probe="$(/usr/bin/dirname "$probe")"
     canonical_probe="$(cd -P "$probe" 2>/dev/null && /bin/pwd -P)" || return 1
     [[ "$canonical_probe" == "$HOME_ROOT" || "$canonical_probe" == "$HOME_ROOT/"* ]]
@@ -286,7 +290,9 @@ define_app_recipe() {
         "$HOME_ROOT/Applications"/*/*.app
     )
     shopt -u nullglob
-    for app_path in "${candidates[@]}"; do
+    # Guard the empty-array expansion: under `set -u`, bash 3.2 (the /bin/bash the
+    # app spawns) aborts on "${candidates[@]}" when no .app bundles matched.
+    for app_path in ${candidates[@]+"${candidates[@]}"}; do
         [[ -d "$app_path" && ! -L "$app_path" ]] || continue
         if [[ "$(read_bundle_id "$app_path")" == "$bundle_id" ]]; then
             app_contains_protected_developer_payload "$app_path" && return 1
@@ -705,22 +711,29 @@ size_kb() {
 }
 
 remaining_targets_size_kb() {
-    local total=0 target value
+    local total=0 target value unmeasured=0
     for target in "${TARGETS[@]}"; do
         [[ -e "$target" || -L "$target" ]] || continue
-        value="$(size_kb "$target")" || continue
-        case "$value" in ''|*[!0-9]*) continue ;; esac
+        value="$(size_kb "$target")" || { unmeasured=1; continue; }
+        case "$value" in ''|*[!0-9]*) unmeasured=1; continue ;; esac
         total=$((total + value))
     done
     if [[ "${#STAGED_REMAINDERS[@]}" -gt 0 ]]; then
         for target in "${STAGED_REMAINDERS[@]}"; do
             [[ -e "$target" || -L "$target" ]] || continue
-            value="$(size_kb "$target")" || continue
-            case "$value" in ''|*[!0-9]*) continue ;; esac
+            value="$(size_kb "$target")" || { unmeasured=1; continue; }
+            case "$value" in ''|*[!0-9]*) unmeasured=1; continue ;; esac
             total=$((total + value))
         done
     fi
-    /usr/bin/printf '%s' "$total"
+    # A survivor that still exists but could not be sized would otherwise count
+    # as 0 remaining and inflate reclaimedKB. Signal the uncertainty so the
+    # caller falls back to the physically measured free-space gain.
+    if [[ "$unmeasured" -eq 1 ]]; then
+        /usr/bin/printf '__UNMEASURED__'
+    else
+        /usr/bin/printf '%s' "$total"
+    fi
 }
 
 process_snapshot() {
@@ -1462,7 +1475,7 @@ write_receipt() {
         /usr/bin/printf 'timestamp\t%s\n' "$timestamp"
         /usr/bin/printf 'status\t%s\n' "$status"
         /usr/bin/printf 'recipeId\t%s\n' "$RECIPE_ID"
-        /usr/bin/printf 'label\t%s\n' "$LABEL"
+        /usr/bin/printf 'label\t%s\n' "$(/usr/bin/printf '%s' "$LABEL" | /usr/bin/tr -d '\t\r\n')"
         /usr/bin/printf 'estimatedKB\t%s\n' "$estimated_kb"
         /usr/bin/printf 'reclaimedKB\t%s\n' "$reclaimed_kb"
         /usr/bin/printf 'physicalDeltaKB\t%s\n' "$physical_delta_kb"
@@ -1691,13 +1704,19 @@ run_execute() {
         done
     fi
 
-    REMAINING_KB="$(remaining_targets_size_kb)"
-    RECLAIMED_KB=$((ESTIMATED_KB - REMAINING_KB))
-    [[ "$RECLAIMED_KB" -ge 0 ]] || RECLAIMED_KB=0
     FREE_AFTER="$(available_kb)"
     case "$FREE_AFTER" in ''|*[!0-9]*) FREE_AFTER=0 ;; esac
     PHYSICAL_DELTA_KB=$((FREE_AFTER - FREE_BEFORE))
     [[ "$PHYSICAL_DELTA_KB" -ge 0 ]] || PHYSICAL_DELTA_KB=0
+    REMAINING_KB="$(remaining_targets_size_kb)"
+    if [[ "$REMAINING_KB" == "__UNMEASURED__" ]]; then
+        # Cannot verify how much remains; report only the measured free-space gain
+        # rather than overstating logical reclaim.
+        RECLAIMED_KB="$PHYSICAL_DELTA_KB"
+    else
+        RECLAIMED_KB=$((ESTIMATED_KB - REMAINING_KB))
+        [[ "$RECLAIMED_KB" -ge 0 ]] || RECLAIMED_KB=0
+    fi
 
     RESULT_STATUS="complete"
     [[ "$FAILED" -eq 0 ]] || RESULT_STATUS="$EXECUTION_FAILURE_STATUS"

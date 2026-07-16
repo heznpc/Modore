@@ -49,6 +49,11 @@ extension ScanModel {
             } catch {
                 errorMessage = error.localizedDescription
                 appendLog("자동화 브라우저 종료 중단: \(error.localizedDescription)")
+                // stop() revalidates the target identity and only throws when the
+                // previewed evidence (PID/identity) no longer describes a live
+                // process. Clear it so the approval sheet cannot keep offering a
+                // destructive action against evidence just proven invalid.
+                browserAutomationStopPreview = nil
                 browserAutomationStopInFlight = false
                 browserAutomationStopIsExecuting = false
                 browserAutomationStopTask = nil

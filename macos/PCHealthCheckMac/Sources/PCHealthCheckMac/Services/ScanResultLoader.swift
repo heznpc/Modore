@@ -87,8 +87,11 @@ enum ScanResultLoader {
             capturedAt: capturedAt,
             storage: storage
         )
+        // Compare against a provisional entry trimmed the same way stored entries
+        // are, so the item cap cannot fabricate appeared/disappeared changes that
+        // would mislabel the incident's storage-change attribution.
         let comparisonHistory = existingHistory.filter { $0.sourceID != sourceID }
-            + [provisionalEntry]
+            + [StorageHistoryStore.comparable(provisionalEntry)]
         let comparisonChange = StorageHistoryStore.changeSummary(
             endingAt: sourceID,
             in: comparisonHistory
