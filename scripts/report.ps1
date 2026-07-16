@@ -49,7 +49,7 @@ function Get-InvestigateLinks($Row) {
 
 function Render-ListTable($Rows, [string[]]$Fields) {
     if ($null -eq $Rows -or @($Rows).Count -eq 0) { return '<p class="muted">표시할 항목이 없습니다.</p>' }
-    $head = (($Fields | ForEach-Object { "<th>$(H $_)</th>" }) -join '') + '<th>조사</th>'
+    $head = (($Fields | ForEach-Object { "<th scope=""col"">$(H $_)</th>" }) -join '') + '<th scope="col">조사</th>'
     $body = foreach ($row in @($Rows)) {
         $risk = if ($row.risk) { [string]$row.risk } else { '' }
         $cells = foreach ($f in $Fields) {
@@ -92,13 +92,15 @@ body{font-family:-apple-system,Segoe UI,Malgun Gothic,sans-serif;background:#f4f
 .panel{padding:18px 20px;margin:18px 0}.share{background:#fff7ed;color:#9a3412;padding:10px;border-radius:6px;margin-top:10px}
 .finding{padding:12px;margin:8px 0;border-left:4px solid #e5e7eb;background:#fff}.finding.danger{border-color:#ef4444;background:#fef2f2}.finding.warning{border-color:#f59e0b;background:#fffbeb}
 table{width:100%;border-collapse:collapse;margin:10px 0}th{background:#f3f4f6;text-align:left}th,td{padding:8px;border-top:1px solid #e5e7eb;font-size:13px;vertical-align:top}
+a:focus-visible,button:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
+@media(max-width:700px){table{display:block;overflow-x:auto;white-space:nowrap}}
 '@
 
 $html = @"
 <!doctype html>
 <html lang="ko">
-<head><meta charset="utf-8"><title>PC 건강검진 결과</title><style>$css</style></head>
-<body><div class="container">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PC 건강검진 결과</title><style>$css</style></head>
+<body><main id="main"><div class="container">
 <h1>🩺 PC 건강검진 결과</h1>
 <div class="meta">$(H $scanObj.computerName) / $(H $scanObj.userName) · $(H $scanObj.osVersion) · 검사 시각: $(H $scanObj.scannedAt)</div>
 <div class="verdict $overall"><div class="icon">$icon</div><div><div class="big">$(H $summary.message)</div><div>위험 $($summary.dangerCount)건 · 확인 $($summary.warningCount)건</div></div></div>
@@ -112,7 +114,7 @@ $html = @"
 <h2>예약 작업</h2>$(Render-ListTable $sections.scheduledTasks @('risk','name','state','execute','note'))
 <h2>최근 설치 프로그램</h2>$(Render-ListTable $sections.recentInstalls @('risk','installDate','name','publisher','note'))
 <div class="meta">PC 건강검진 v0.3 · 생성 시각 $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</div>
-</div></body></html>
+</div></main></body></html>
 "@
 
 [IO.File]::WriteAllText($Output, $html, [Text.UTF8Encoding]::new($false))
