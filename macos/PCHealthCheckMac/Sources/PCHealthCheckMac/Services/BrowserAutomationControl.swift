@@ -112,9 +112,16 @@ enum BrowserAutomationControl {
             || command.contains(" --type=")
         let isSystemChrome = executablePath
             == "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        let isChromiumBinary = executablePath.hasSuffix("/Chromium.app/Contents/MacOS/Chromium")
+        // Only Chromium bundled under the Playwright cache is automation-only.
+        // A user-installed /Applications/Chromium.app is a daily-driver browser
+        // and must not be treated as a disposable isolated instance.
+        let isBundledAutomationChromium = isChromiumBinary
+            && executablePath.contains("/ms-playwright/")
+        let isGenericChromium = isChromiumBinary && !isBundledAutomationChromium
         let isIsolatedChrome = executablePath.hasSuffix(
             "/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
-        ) || executablePath.hasSuffix("/Chromium.app/Contents/MacOS/Chromium")
+        ) || isBundledAutomationChromium
         let hasAutomationMarker = command.contains("playwright_chromiumdev_profile")
             || command.contains("--remote-debugging-pipe")
             || command.contains("--remote-debugging-port")
@@ -139,10 +146,15 @@ enum BrowserAutomationControl {
             profile = "default"
         }
         let channel = isIsolatedChrome ? "isolated" : (isSystemChrome ? "system" : "unknown")
-        let systemProfileIsDisposable = profile == "temporary"
+        let profileIsDisposable = profile == "temporary"
+        // Automation-only browsers may be stopped outright. A real browser
+        // (system Chrome, or a user-installed generic Chromium) is only
+        // stoppable when it is clearly running a disposable throwaway profile,
+        // never on its default profile.
         let canStop = !isHelper
             && hasAutomationMarker
-            && (isIsolatedChrome || (isSystemChrome && systemProfileIsDisposable))
+            && (isIsolatedChrome
+                || ((isSystemChrome || isGenericChromium) && profileIsDisposable))
         return BrowserAutomationClassification(
             channel: channel,
             profile: profile,

@@ -50,7 +50,10 @@ function runCurlWithSecretHeader(url, apiKey) {
   task.standardError = $.NSFileHandle.fileHandleWithNullDevice;
   try {
     task.launch;
-    const config = "header = \\\"x-apikey: " + apiKey + "\\\"\nheader = \\\"accept: application/json\\\"\n";
+    // curl --config quoted-value syntax uses a literal leading double quote. An
+    // extra backslash here made curl parse the value as unquoted (starting with
+    // a backslash) and drop the header, so every VT lookup returned 401.
+    const config = "header = \"x-apikey: " + apiKey + "\"\nheader = \"accept: application/json\"\n";
     input.fileHandleForWriting.writeData($(config).dataUsingEncoding($.NSUTF8StringEncoding));
     input.fileHandleForWriting.closeFile;
     // Drain while curl is running so a response larger than the pipe buffer

@@ -247,7 +247,12 @@ capture_drop_snapshot() {
                     waited_ticks=$((waited_ticks + 1))
                 done
                 if [[ "$status" == "ok" ]]; then
-                    wait "$pid" 2>/dev/null || status="timed_out"
+                    # du that exited on its own is NOT a timeout. It returns
+                    # nonzero when a subdirectory is unreadable (routine without
+                    # Full Disk Access) while still printing a valid total, so
+                    # keep the measured size; a genuinely empty result is caught
+                    # as "unavailable" when the total is parsed below.
+                    wait "$pid" 2>/dev/null || true
                 fi
                 elapsed_ticks=$((elapsed_ticks + waited_ticks))
                 if [[ "$status" == "ok" ]]; then

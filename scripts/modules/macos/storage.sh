@@ -100,7 +100,7 @@ _pch_browser_automation_roots() {
             *"Google Chrome Helper"*|*"Chromium Helper"*|*" --type="*) continue ;;
         esac
         case "$command" in
-            *"Google Chrome.app/Contents/MacOS/Google Chrome"*|*"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"*|*"Chromium.app/Contents/MacOS/Chromium"*) ;;
+            *"Google Chrome.app/Contents/MacOS/Google Chrome"*|*"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"*|*"Chromium.app/Contents/MacOS/Chromium"*|*"ms-playwright/"*"headless_shell"*) ;;
             *) continue ;;
         esac
 
@@ -715,7 +715,9 @@ collect_storage() {
     _pch_collect_storage_access_checks
     _pch_collect_storage_runtime_signals
 
-    if /usr/bin/grep -Eq $'\ttimed_out\t' "$TMP_DIR/storage_paths.tsv" "$TMP_DIR/storage_simulators.tsv" 2>/dev/null; then
+    # Status is field 5/7 (trailing tab) in storage_paths.tsv but the LAST field
+    # in storage_simulators.tsv (line end, no trailing tab), so accept either.
+    if /usr/bin/grep -Eq $'\ttimed_out(\t|$)' "$TMP_DIR/storage_paths.tsv" "$TMP_DIR/storage_simulators.tsv" 2>/dev/null; then
         record_collection_status "storage_inventory" "저장공간 경로 측정" "timed_out" "false" "시간 제한 안에 일부 경로를 측정하지 못했습니다."
     else
         record_collection_status "storage_inventory" "저장공간 경로 측정" "ok" "false" "알려진 저장공간 경로를 측정했습니다."

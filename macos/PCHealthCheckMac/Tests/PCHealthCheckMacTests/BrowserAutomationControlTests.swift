@@ -2,6 +2,37 @@ import XCTest
 @testable import PCHealthCheckMac
 
 final class BrowserAutomationControlTests: XCTestCase {
+    // Regression (M4): a user-installed /Applications/Chromium.app is a real
+    // daily-driver browser, not a disposable Playwright instance. On its default
+    // profile it must never be offered for termination, even with an automation
+    // marker like the login-relaunch --no-startup-window flag.
+    func testUserInstalledChromiumDefaultProfileIsNotStoppable() {
+        let executable = "/Applications/Chromium.app/Contents/MacOS/Chromium"
+        let daily = BrowserAutomationControl.classify(
+            executablePath: executable,
+            command: executable + " --no-startup-window"
+        )
+        XCTAssertFalse(daily.canStop)
+        XCTAssertEqual(daily.profile, "default")
+
+        let throwaway = BrowserAutomationControl.classify(
+            executablePath: executable,
+            command: executable + " --user-data-dir=/tmp/pw-run --remote-debugging-pipe"
+        )
+        XCTAssertTrue(throwaway.canStop)
+    }
+
+    func testPlaywrightBundledChromiumRemainsStoppable() {
+        let executable = "/Users/test/Library/Caches/ms-playwright/chromium-1140/"
+            + "chrome-mac/Chromium.app/Contents/MacOS/Chromium"
+        let bundled = BrowserAutomationControl.classify(
+            executablePath: executable,
+            command: executable + " --headless --remote-debugging-pipe"
+        )
+        XCTAssertTrue(bundled.canStop)
+        XCTAssertEqual(bundled.channel, "isolated")
+    }
+
     func testNormalChromeDefaultProfileIsNeverStoppable() {
         let command = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
