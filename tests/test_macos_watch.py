@@ -62,6 +62,35 @@ def test_storage_watch_detects_large_drop_without_deleting(project_root, tmp_pat
     assert not injected.exists()
 
 
+def test_storage_watch_warns_below_free_space_floor(project_root, tmp_path):
+    """20GB free-space floor fires independently of the 8GB drop trigger."""
+    state_dir = tmp_path / "state"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(25 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "0",
+        }
+    )
+    script = project_root / "scripts" / "storage_watch.sh"
+
+    first = subprocess.run([str(script)], capture_output=True, text=True, encoding="utf-8", env=env)
+    assert first.returncode == 0, first.stderr
+    assert parse_protocol(first.stdout)["status"] == "normal"
+
+    # Drop only 6GB (below the 8GB drop trigger) but cross under the 20GB floor.
+    env["PCH_TEST_FREE_KB"] = str(19 * 1024 * 1024)
+    second = subprocess.run([str(script)], capture_output=True, text=True, encoding="utf-8", env=env)
+    payload = parse_protocol(second.stdout)
+
+    assert second.returncode == 0, second.stderr
+    assert payload["status"] == "warning"
+    assert int(payload["dropKB"]) < 8 * 1024 * 1024, "drop must stay below the drop trigger"
+    assert "아래입니다" in payload["message"], "warning must be the low-free-space floor, not the drop"
+
+
 def test_storage_watch_captures_bounded_top_paths_only_after_large_drop(
     project_root, tmp_path
 ):

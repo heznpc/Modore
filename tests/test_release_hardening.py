@@ -28,6 +28,23 @@ def load_release_smoke(project_root: Path):
     return module
 
 
+def test_release_refuses_forbidden_named_entry(project_root, tmp_path, monkeypatch):
+    """The allowlist gate rejects a forbidden artifact even if it exists on disk."""
+    module = load_release_smoke(project_root)
+    monkeypatch.setattr(module, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="forbidden"):
+        module.assert_clean_file_list(["config.json"])
+
+
+def test_source_audit_flags_real_secret_but_not_bracketed_placeholder():
+    """inspect_bytes catches an assigned credential that merely contains '<',
+    while a fully bracketed <TEMPLATE> is treated as a placeholder."""
+    assert inspect_bytes("x.env", b'api_key = "S3cr<t!value99"'), "real secret must be flagged"
+    assert not inspect_bytes("x.env", b'api_key = "<YOUR_KEY>"'), "bracketed template is a placeholder"
+
+
 def test_release_uses_template_and_excludes_user_config(project_root):
     module = load_release_smoke(project_root)
     release_files = set(module.WINDOWS_FILES + module.MACOS_FILES)
