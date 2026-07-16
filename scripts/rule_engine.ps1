@@ -48,6 +48,15 @@ function Split-ConditionKey([string]$Key) {
     return @{ path = $Key; op = 'equals' }
 }
 
+function ConvertTo-NumberOrNull($Value) {
+    # Fail soft on non-numeric input (canonical: Python try/except and JS NaN
+    # both yield "no match"); a raw [double] cast under $ErrorActionPreference =
+    # 'Stop' would otherwise abort the whole scan on one malformed fact.
+    $parsed = 0.0
+    if ([double]::TryParse([string]$Value, [ref]$parsed)) { return $parsed }
+    return $null
+}
+
 function Test-Condition($Operator, $Expected, $Actual) {
     if ($Operator -eq 'exists') {
         if ([bool]$Expected) { return $null -ne $Actual }
@@ -55,7 +64,7 @@ function Test-Condition($Operator, $Expected, $Actual) {
     }
     if ($null -eq $Actual) { return $false }
     switch ($Operator) {
-        'equals' { return $Actual -eq $Expected }
+        'equals' { return $Actual -ceq $Expected }
         'iregex' { return [regex]::IsMatch([string]$Actual, [string]$Expected, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) }
         'regex' { return [regex]::IsMatch([string]$Actual, [string]$Expected) }
         'contains' { return ([string]$Actual).Contains([string]$Expected) }
@@ -66,10 +75,10 @@ function Test-Condition($Operator, $Expected, $Actual) {
             }
             return $false
         }
-        'gte' { return ([double]$Actual) -ge ([double]$Expected) }
-        'gt' { return ([double]$Actual) -gt ([double]$Expected) }
-        'lte' { return ([double]$Actual) -le ([double]$Expected) }
-        'lt' { return ([double]$Actual) -lt ([double]$Expected) }
+        'gte' { $a = ConvertTo-NumberOrNull $Actual; $e = ConvertTo-NumberOrNull $Expected; if ($null -eq $a -or $null -eq $e) { return $false }; return $a -ge $e }
+        'gt'  { $a = ConvertTo-NumberOrNull $Actual; $e = ConvertTo-NumberOrNull $Expected; if ($null -eq $a -or $null -eq $e) { return $false }; return $a -gt $e }
+        'lte' { $a = ConvertTo-NumberOrNull $Actual; $e = ConvertTo-NumberOrNull $Expected; if ($null -eq $a -or $null -eq $e) { return $false }; return $a -le $e }
+        'lt'  { $a = ConvertTo-NumberOrNull $Actual; $e = ConvertTo-NumberOrNull $Expected; if ($null -eq $a -or $null -eq $e) { return $false }; return $a -lt $e }
     }
     return $false
 }
@@ -117,18 +126,28 @@ function Test-RuleMatches($Rule, $Fact) {
 }
 
 function Classify-Fact($Fact, [string]$Category, $RulesByCategory, $WhitelistIndex) {
+    # Canonical semantics shared with rule_engine.py / scanner_helper.jxa.js:
+    # whitelist maps safe/safe-but-noisy -> safe and safe-but-concerning -> info;
+    # the process name is looked up with and without extension; notes accumulate,
+    # dedupe and join with " / " with a default when nothing matched.
     $risk = 'unknown'
-    $note = ''
+    $notes = New-Object System.Collections.Generic.List[string]
     $findings = @()
 
     if ($Category -eq 'process') {
         $name = [string](Get-Field $Fact 'name')
         if ($name) {
-            $key = [IO.Path]::GetFileNameWithoutExtension($name).ToLowerInvariant()
-            if ($WhitelistIndex.ContainsKey($key)) {
-                $w = $WhitelistIndex[$key]
-                $risk = if ($w.risk -eq 'safe') { 'safe' } else { 'info' }
-                $note = "$($w.vendor) - $($w.desc)"
+            $lower = $name.ToLowerInvariant()
+            $base = [IO.Path]::GetFileNameWithoutExtension($name).ToLowerInvariant()
+            $info = $null
+            foreach ($k in @($lower, $base)) {
+                if ($WhitelistIndex.ContainsKey($k)) { $info = $WhitelistIndex[$k]; break }
+            }
+            if ($null -ne $info) {
+                $stripped = ("$($info.vendor) - $($info.desc)").Trim(' ', '-')
+                if ($info.risk -eq 'safe') { $risk = 'safe'; [void]$notes.Add($stripped) }
+                elseif ($info.risk -eq 'safe-but-noisy') { $risk = 'safe'; [void]$notes.Add("$($info.desc) (가끔 CPU 많이 씀)") }
+                elseif ($info.risk -eq 'safe-but-concerning') { $risk = 'info'; [void]$notes.Add($stripped) }
             }
         }
     }
@@ -138,7 +157,10 @@ function Classify-Fact($Fact, [string]$Category, $RulesByCategory, $WhitelistInd
         $then = $rule.then
         $newRisk = [string]$then.risk
         $risk = Merge-Risk $risk $newRisk
-        if ($then.note) { $note = Format-Template ([string]$then.note) $Fact }
+        if ($then.note) {
+            $rendered = Format-Template ([string]$then.note) $Fact
+            if (-not $notes.Contains($rendered)) { [void]$notes.Add($rendered) }
+        }
         if ($then.finding) {
             $f = $then.finding
             $findings += [ordered]@{
@@ -149,7 +171,8 @@ function Classify-Fact($Fact, [string]$Category, $RulesByCategory, $WhitelistInd
             }
         }
     }
-    return @{ risk = $risk; note = $note; findings = $findings }
+    $noteText = if ($notes.Count -gt 0) { [string]::Join(' / ', $notes) } else { '처음 보는 프로그램 - 확인 필요' }
+    return @{ risk = $risk; note = $noteText; findings = $findings }
 }
 
 $rawObj = Read-JsonFile $Raw

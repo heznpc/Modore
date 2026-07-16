@@ -257,12 +257,22 @@ function ruleMatches(rule, fact) {
   return true;
 }
 function classify(fact, category, rules, wl) {
-  let risk = "unknown", note = "", findings = [];
+  // Canonical semantics shared with scripts/rule_engine.py: whitelist maps
+  // safe/safe-but-noisy -> safe and safe-but-concerning -> info; the process
+  // name is looked up with and without its extension; notes accumulate,
+  // dedupe, and join with " / " with a default when nothing matched.
+  let risk = "unknown";
+  const notes = [];
+  const findings = [];
   if (category === "process" && fact.name) {
-    const key = String(fact.name).replace(/\.[^.]+$/, "").toLowerCase();
-    if (wl[key]) {
-      risk = wl[key].risk === "safe" ? "safe" : "info";
-      note = `${wl[key].vendor} - ${wl[key].desc}`;
+    const name = String(fact.name).toLowerCase();
+    const base = name.replace(/\.[^.]+$/, "");
+    const info = wl[name] || wl[base];
+    if (info) {
+      const stripped = `${info.vendor || ""} - ${info.desc || ""}`.replace(/^[ -]+|[ -]+$/g, "");
+      if (info.risk === "safe") { risk = "safe"; notes.push(stripped); }
+      else if (info.risk === "safe-but-noisy") { risk = "safe"; notes.push(`${info.desc || ""} (가끔 CPU 많이 씀)`); }
+      else if (info.risk === "safe-but-concerning") { risk = "info"; notes.push(stripped); }
     }
   }
   for (const rule of (rules[category] || [])) {
@@ -270,7 +280,10 @@ function classify(fact, category, rules, wl) {
     const then = rule.then || {};
     const newRisk = then.risk || "unknown";
     risk = mergeRisk(risk, newRisk);
-    if (then.note) note = format(then.note, fact);
+    if (then.note) {
+      const rendered = format(then.note, fact);
+      if (notes.indexOf(rendered) === -1) notes.push(rendered);
+    }
     if (then.finding) {
       findings.push({
         level: newRisk,
@@ -280,6 +293,7 @@ function classify(fact, category, rules, wl) {
       });
     }
   }
+  const note = notes.length ? notes.join(" / ") : "처음 보는 프로그램 - 확인 필요";
   return { risk, note, findings };
 }
 function applyRules(raw, rules, wl) {
@@ -615,6 +629,18 @@ const simulatorLegacyKeepNames = simulatorKeepEntries.filter(value =>
 const config = readJson(CONFIG_PATH, {}, 1024 * 1024);
 const vt = vtLookup(config, NO_VT);
 if (vt.enabled) console.log("  VirusTotal 조회 활성화");
+
+// Rule-engine-only entry point: skip collection and re-grade a captured
+// raw_facts.json (PCH_RAW_PATH) into PCH_OUTPUT. Mirrors rule_engine.ps1's CLI
+// and gives the cross-engine parity tests a deterministic seam on macOS.
+ObjC.import("stdlib");
+if (env("PCH_RULE_ENGINE_ONLY", "") === "1") {
+  const rawIn = readJson(RAW_PATH, null, 16 * 1024 * 1024);
+  if (!rawIn) { console.log("PCH_RAW_PATH를 읽지 못했습니다."); $.exit(2); }
+  const out = applyRules(rawIn, loadRules(RULES_DIR), whitelistIndex(readJson(WHITELIST_PATH, {}, 8 * 1024 * 1024)));
+  writeRequiredText(OUTPUT, JSON.stringify(out, null, 2));
+  $.exit(0);
+}
 
 const raw = {
   schemaVersion: "1.0",
