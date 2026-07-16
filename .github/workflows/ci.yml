@@ -87,11 +87,11 @@ jobs:
               $_.FullName, [ref]$tokens, [ref]$parseErrors
             ) | Out-Null
             if ($parseErrors.Count -gt 0) {
-              Write-Host "✗ $($_.FullName)"
+              Write-Host "FAIL $($_.FullName)"
               $parseErrors | ForEach-Object { Write-Host "  $_" }
               $errors += $_.FullName
             } else {
-              Write-Host "✓ $($_.FullName)"
+              Write-Host "OK $($_.FullName)"
             }
           }
           if ($errors.Count -gt 0) { exit 1 }
