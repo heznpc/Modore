@@ -183,10 +183,13 @@ struct RecentScanHistoryRow: View {
     let entry: StorageHistoryEntry
     let previous: StorageHistoryEntry?
     @State private var isExpanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
+            // Honor the system "Reduce Motion" setting: expand instantly instead
+            // of animating when the user has asked for reduced motion.
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
                 isExpanded.toggle()
             }
         } label: {

@@ -236,6 +236,9 @@ extension ScanModel {
                 if !executed.receipt.isEmpty {
                     appendLog("영수증: \(executed.receipt)")
                 }
+                AccessibilityAnnouncer.announce(
+                    executed.actionMode == "trash" ? "휴지통 이동 완료" : "정리 완료"
+                )
                 cleanupPreview = nil
                 state = .running
                 let ok = await ScanPipeline.run(projectRoot: root) { line in
@@ -319,6 +322,9 @@ extension ScanModel {
                     ? "매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림"
                     : "꺼짐 · 자동 삭제 없음"
                 appendLog(storageWatchEnabled ? "저장공간 급감 감시를 켰습니다." : "저장공간 급감 감시를 껐습니다.")
+                AccessibilityAnnouncer.announce(
+                    storageWatchEnabled ? "저장공간 감시를 켰습니다" : "저장공간 감시를 껐습니다"
+                )
             } else {
                 storageWatchEnabled = false
                 storageWatchDetail = runtimeState == .stale

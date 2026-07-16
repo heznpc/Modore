@@ -178,6 +178,10 @@ final class ScanModel: ObservableObject {
             state = .finished
             reportRevision += 1
             appendLog("완료: 일반 리포트와 공유용 리포트를 생성했습니다.")
+            let verdict = IncidentAssessment.make(
+                content: content, storageChange: storageChange
+            ).value
+            AccessibilityAnnouncer.announce("검사 완료: \(verdict)")
         } else {
             state = .failed
             if selectedReportURL != nil {
