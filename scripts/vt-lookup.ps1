@@ -14,9 +14,48 @@ $script:VtCachePath = $null
 $script:VtLastCall = [DateTime]::MinValue
 $script:VtRateLimitSec = 16   # 4 req/min = 15초 간격, 안전하게 16초
 
+function ConvertTo-VtHashtable {
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $InputObject
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $table = @{}
+        foreach ($key in $InputObject.Keys) {
+            $table[$key] = ConvertTo-VtHashtable -InputObject $InputObject[$key]
+        }
+        return $table
+    }
+
+    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+        $table = @{}
+        foreach ($property in $InputObject.PSObject.Properties) {
+            $table[$property.Name] = ConvertTo-VtHashtable -InputObject $property.Value
+        }
+        return $table
+    }
+
+    if (($InputObject -is [System.Collections.IEnumerable]) -and -not ($InputObject -is [string])) {
+        $items = @()
+        foreach ($item in $InputObject) {
+            $convertedItem = ConvertTo-VtHashtable -InputObject $item
+            $items += ,$convertedItem
+        }
+        return ,$items
+    }
+
+    return $InputObject
+}
+
 function Initialize-VtLookup {
     param(
-        [string]$ConfigPath = "$PSScriptRoot\..\data\config.json",
+        [string]$ConfigPath = "$PSScriptRoot\..\data\config.example.json",
         [string]$CacheDir = "$env:LOCALAPPDATA\PC건강검진"
     )
 
@@ -40,18 +79,23 @@ function Initialize-VtLookup {
         }
     }
 
-    # 환경변수 우선: VT_API_KEY가 있으면 config.json의 apiKey를 덮어씀.
-    # 공유/CI 환경에서 키를 디스크 평문으로 저장하지 않아도 되는 경로.
+    # 환경변수 키는 config.json의 apiKey를 덮어쓰지만 조회 동의까지 만들지는 않음.
+    # virustotal.enabled=true는 로컬 config에 명시돼야 함.
     $envKey = [System.Environment]::GetEnvironmentVariable('VT_API_KEY')
     if (-not [string]::IsNullOrWhiteSpace($envKey)) {
         $script:VtConfig.virustotal.apiKey = $envKey
-        $script:VtConfig.virustotal | Add-Member -NotePropertyName enabled -NotePropertyValue $true -Force
     }
 
     # 캐시 로드
     if (Test-Path $script:VtCachePath) {
         try {
-            $script:VtCache = Get-Content $script:VtCachePath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
+            $parsedCache = Get-Content $script:VtCachePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $loadedCache = ConvertTo-VtHashtable -InputObject $parsedCache
+            if ($loadedCache -is [hashtable]) {
+                $script:VtCache = $loadedCache
+            } else {
+                $script:VtCache = @{}
+            }
         } catch {
             $script:VtCache = @{}
         }
@@ -183,43 +227,6 @@ function Get-VtFileReputation {
         } else { $null }
         signer = $resp.data.attributes.signature_info.verified
         names = @($resp.data.attributes.names | Select-Object -First 3)
-    }
-    Set-CachedVt $cacheKey $result
-    return $result
-}
-
-function Get-VtIpReputation {
-    param([Parameter(Mandatory)][string]$IpAddress)
-
-    if (-not (Test-VtEnabled)) { return $null }
-
-    $cacheKey = "ip:$IpAddress"
-    $cached = Get-CachedVt $cacheKey
-    if ($null -ne $cached) { return $cached }
-
-    $url = "https://www.virustotal.com/api/v3/ip_addresses/$IpAddress"
-    $resp = Invoke-VtRequest $url
-    if ($null -eq $resp) { return $null }
-    if ($resp.error) {
-        return @{ status = $resp.error; message = $resp.message; ip = $IpAddress }
-    }
-    if ($resp.notFound) {
-        $result = @{ status = 'unknown'; ip = $IpAddress }
-        Set-CachedVt $cacheKey $result
-        return $result
-    }
-
-    $stats = $resp.data.attributes.last_analysis_stats
-    $result = @{
-        status = 'ok'
-        ip = $IpAddress
-        malicious = [int]$stats.malicious
-        suspicious = [int]$stats.suspicious
-        harmless = [int]$stats.harmless
-        undetected = [int]$stats.undetected
-        country = $resp.data.attributes.country
-        asnOwner = $resp.data.attributes.as_owner
-        reputation = [int]$resp.data.attributes.reputation
     }
     Set-CachedVt $cacheKey $result
     return $result

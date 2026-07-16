@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -12,47 +13,104 @@ final class ScanModel: ObservableObject {
     @Published var virusTotalEnabled = false
     @Published var cleanupPreview: CleanupPreview?
     @Published var cleanupInFlight = false
+    @Published var cleanupIsExecuting = false
+    @Published var browserAutomationStopPreview: BrowserAutomationStopPreview?
+    @Published var browserAutomationStopInFlight = false
+    @Published var browserAutomationStopIsExecuting = false
     @Published private(set) var storageHistory: [StorageHistoryEntry] = []
     @Published private(set) var storageChange: StorageChangeSummary?
+    @Published private(set) var displayedStorageEntry: StorageHistoryEntry?
     @Published private(set) var freeSpaceSamples: [FreeSpaceSample] = []
-    @Published private(set) var simulatorKeepNames: Set<String> = []
+    @Published private(set) var storageWatchPathEvents: [StorageWatchPathEvent] = []
+    @Published private(set) var simulatorKeepUUIDs: Set<String> = []
+    @Published private(set) var simulatorLegacyKeepEntries: Set<String> = []
     @Published var storageWatchEnabled = false
     @Published var storageWatchDetail = "상태 확인 중"
     @Published var storageWatchInFlight = false
+    @Published private(set) var resultLoading = true
 
     let logStore = ScanLogStore()
     let projectRoot: URL
     private let normalReportName = "검사결과.html"
     private let shareReportName = "검사결과_공유용.html"
+    private let terminationSafetyGate = AppTerminationSafetyGate()
+    private var scanTask: Task<Void, Never>?
+    var cleanupTask: Task<Void, Never>?
+    var browserAutomationStopTask: Task<Void, Never>?
 
     init() {
         self.projectRoot = Self.detectProjectRoot()
         self.virusTotalEnabled = Self.loadVirusTotalEnabled(projectRoot: projectRoot)
-        self.simulatorKeepNames = Self.loadSimulatorKeepNames()
-        refreshExistingResults()
+        let keepState = SimulatorKeepStore.load()
+        self.simulatorKeepUUIDs = keepState.uuids
+        self.simulatorLegacyKeepEntries = keepState.legacyEntries
+        Task { await refreshExistingResults() }
         Task { await refreshStorageWatchStatus() }
     }
 
     var isRunning: Bool { state == .running }
-    var isBusy: Bool { isRunning || cleanupInFlight || storageWatchInFlight }
+    var isBusy: Bool {
+        isRunning
+            || cleanupInFlight
+            || browserAutomationStopInFlight
+            || storageWatchInFlight
+            || resultLoading
+    }
     var logText: String { logStore.text }
     var summary: ScanSummary? { content.summary }
+    var collectionCoverage: CollectionCoverage? { content.collectionCoverage }
+    var collectionIsIncomplete: Bool { collectionCoverage?.complete == false }
     var macOSSecurity: MacOSSecurityStatus? { content.macOSSecurity }
     var storage: StorageSnapshot? { content.storage }
     var findings: [ScanFinding] { content.findings }
+    var securityFindings: [ScanFinding] { content.securityAttentionFindings }
+    var storageAttentionFindings: [ScanFinding] { content.storageAttentionFindings }
     var cpuRows: [CpuRow] { content.cpuRows }
     var networkRows: [NetworkRow] { content.networkRows }
+    var listeningPortRows: [ListeningPortRow] { content.listeningPortRows }
     var autorunRows: [AutorunRow] { content.autorunRows }
     var recentInstalls: [RecentInstallRow] { content.recentInstalls }
+    var truncatedSecuritySections: [String] { content.truncatedSections }
+    var attentionCpuRows: [CpuRow] { cpuRows.filter(\.requiresAttention) }
+    var attentionNetworkRows: [NetworkRow] { networkRows.filter(\.requiresAttention) }
+    var attentionListeningPortRows: [ListeningPortRow] {
+        listeningPortRows.filter(\.requiresAttention)
+    }
+    var securityFindingCount: Int { content.securityAttentionCount }
+    var securityAttentionCount: Int {
+        securityFindingCount + (collectionCoverage?.requiredIssues.count ?? 0)
+    }
+    var securityHasDanger: Bool { content.securityHasDanger }
     var normalReportURL: URL { projectRoot.appendingPathComponent(normalReportName) }
     var shareReportURL: URL { projectRoot.appendingPathComponent(shareReportName) }
-    var hasNormalReport: Bool { FileManager.default.fileExists(atPath: normalReportURL.path) }
-    var hasShareReport: Bool { FileManager.default.fileExists(atPath: shareReportURL.path) }
+    var hasNormalReport: Bool { reportURLIsSafe(normalReportURL) }
+    var hasShareReport: Bool { reportURLIsSafe(shareReportURL) }
     var hasAnyReport: Bool { hasNormalReport || hasShareReport }
-    var lastStorageScanAt: Date? { storageHistory.last?.capturedAt }
+
+    func reportURLIsSafe(_ url: URL) -> Bool {
+        let candidate = url.standardizedFileURL
+        guard candidate == normalReportURL.standardizedFileURL
+                || candidate == shareReportURL.standardizedFileURL else {
+            return false
+        }
+        return Self.isSecureRegularFile(at: candidate, allowsRootOwner: false)
+    }
+    var lastStorageScanAt: Date? { displayedStorageEntry?.capturedAt }
+    var newerStorageHistoryEntry: StorageHistoryEntry? {
+        StorageHistoryStore.newestEntry(after: displayedStorageEntry, in: storageHistory)
+    }
+    var hasNewerStorageHistory: Bool { newerStorageHistoryEntry != nil }
+    var hasUnresolvedSimulatorKeepEntries: Bool { !simulatorLegacyKeepEntries.isEmpty }
+    var terminationSafetyState: AppTerminationSafetyState { terminationSafetyGate.state }
     var storageSnapshotIsStale: Bool {
+        isStorageSnapshotStale(at: Date())
+    }
+    func isStorageSnapshotStale(at date: Date) -> Bool {
         guard let lastStorageScanAt else { return true }
-        return Date().timeIntervalSince(lastStorageScanAt) >= 30 * 60
+        return date.timeIntervalSince(lastStorageScanAt) >= 30 * 60
+    }
+    func storageSnapshotNeedsRefresh(at date: Date = Date()) -> Bool {
+        isStorageSnapshotStale(at: date) || hasNewerStorageHistory
     }
     var storageSnapshotAgeText: String {
         guard let lastStorageScanAt else { return "검사 기록 없음" }
@@ -72,30 +130,82 @@ final class ScanModel: ObservableObject {
         appendLog("프로젝트: \(projectRoot.path)")
 
         let root = projectRoot
-        Task {
+        scanTask = Task {
             let ok = await ScanPipeline.run(projectRoot: root) { line in
                 Task { @MainActor in
                     self.appendLog(line)
                 }
             }
-            finishRun(success: ok)
+            guard !Task.isCancelled else {
+                state = .idle
+                appendLog("검사를 취소했습니다.")
+                scanTask = nil
+                return
+            }
+            await finishRun(success: ok)
+            scanTask = nil
         }
     }
 
-    func finishRun(success: Bool) {
-        refreshExistingResults()
+    func cancelScan() {
+        guard isRunning else { return }
+        scanTask?.cancel()
+    }
+
+    func cancelCleanupPreviewRequest() {
+        guard cleanupInFlight, !cleanupIsExecuting else { return }
+        cleanupTask?.cancel()
+    }
+
+    func beginDestructiveCleanupTransaction() {
+        terminationSafetyGate.beginDestructiveTransaction()
+        cleanupIsExecuting = true
+    }
+
+    func finishDestructiveCleanupTransaction() {
+        cleanupIsExecuting = false
+        terminationSafetyGate.finishDestructiveTransaction()
+    }
+
+    @discardableResult
+    func deferApplicationTerminationUntilSafe(_ completion: @escaping () -> Void) -> Bool {
+        terminationSafetyGate.deferTerminationUntilSafe(completion)
+    }
+
+    func finishRun(success: Bool) async {
+        await refreshExistingResults()
         if success {
             state = .finished
             reportRevision += 1
             appendLog("완료: 일반 리포트와 공유용 리포트를 생성했습니다.")
         } else {
             state = .failed
-            errorMessage = "검사 또는 리포트 생성 중 오류가 발생했습니다. 실행 로그를 확인하세요."
+            if selectedReportURL != nil {
+                selectedReportTitle = "이전 리포트 (이번 검사 아님)"
+            }
+            errorMessage = "이번 검사 또는 리포트 생성 중 오류가 발생했습니다. 표시된 이전 결과를 새 결과로 해석하지 마세요."
         }
     }
 
-    private func refreshExistingResults() {
-        parseScanResult()
+    private func refreshExistingResults() async {
+        resultLoading = true
+        let root = projectRoot
+        let loaded = await Task.detached(priority: .utility) {
+            ScanResultLoader.load(projectRoot: root)
+        }.value
+        content = loaded.content
+        if let completedScanVirusTotalEnabled = loaded.content.virusTotalEnabled {
+            virusTotalEnabled = completedScanVirusTotalEnabled
+        }
+        reconcileLegacySimulatorKeepEntries(with: loaded.content.storage?.simulatorDevices ?? [])
+        storageHistory = loaded.storageHistory
+        displayedStorageEntry = loaded.displayedStorageEntry
+        storageChange = loaded.storageChange
+        freeSpaceSamples = loaded.freeSpaceSamples
+        await refreshStorageWatchEvidence()
+        if let diagnostic = loaded.diagnostic {
+            appendLog(diagnostic)
+        }
         if hasNormalReport {
             selectedReportURL = normalReportURL
             selectedReportTitle = "일반 리포트"
@@ -103,88 +213,78 @@ final class ScanModel: ObservableObject {
             selectedReportURL = shareReportURL
             selectedReportTitle = "공유용 리포트"
         }
+        resultLoading = false
     }
 
-    private func parseScanResult() {
-        let url = projectRoot.appendingPathComponent("scan_result.json")
-        guard let data = try? Data(contentsOf: url),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            content = .empty
-            storageHistory = StorageHistoryStore.load()
-            storageChange = StorageChangeSummary(entries: storageHistory)
-            freeSpaceSamples = StorageHistoryStore.loadFreeSpaceSamples()
-            return
-        }
-        content = ScanContent(root: root)
-        recordStorageHistory(scanRoot: root, scanURL: url)
-        freeSpaceSamples = StorageHistoryStore.loadFreeSpaceSamples()
-    }
-
-    private func recordStorageHistory(scanRoot: [String: Any], scanURL: URL) {
-        guard let storage else {
-            storageHistory = StorageHistoryStore.load()
-            storageChange = StorageChangeSummary(entries: storageHistory)
-            return
-        }
-
-        let sourceText = JsonRead.string(scanRoot, "scannedAt")
-        let fileDate = (try? scanURL.resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate ?? Date()
-        let capturedAt = Self.scanDate(from: sourceText) ?? fileDate
-        let sourceID = sourceText.isEmpty
-            ? String(Int(capturedAt.timeIntervalSince1970))
-            : sourceText
-        let entry = StorageHistoryEntry(sourceID: sourceID, capturedAt: capturedAt, storage: storage)
-
-        do {
-            storageHistory = try StorageHistoryStore.record(entry)
-        } catch {
-            storageHistory = StorageHistoryStore.load()
-            appendLog("저장공간 이력을 기록하지 못했습니다: \(error.localizedDescription)")
-        }
-        storageChange = StorageChangeSummary(entries: storageHistory)
+    func refreshStorageWatchEvidence() async {
+        let snapshots = await Task.detached(priority: .utility) {
+            StorageWatchSnapshotStore.load()
+        }.value
+        storageWatchPathEvents = StorageWatchSnapshotStore.events(from: snapshots)
     }
 
     func appendLog(_ text: String) {
         logStore.append(text)
     }
 
-    func replaceSimulatorKeepNames(with names: Set<String>) {
-        simulatorKeepNames = names
+    func replaceSimulatorKeepUUIDs(with uuids: Set<String>) {
+        simulatorKeepUUIDs = uuids
+    }
+
+    private func reconcileLegacySimulatorKeepEntries(with devices: [SimulatorDevice]) {
+        guard !simulatorLegacyKeepEntries.isEmpty else { return }
+        let migration = SimulatorKeepState(
+            uuids: simulatorKeepUUIDs,
+            legacyEntries: simulatorLegacyKeepEntries
+        ).resolvingLegacyEntries(with: devices)
+        simulatorKeepUUIDs = migration.uuids
+
+        guard migration.unresolvedEntries.isEmpty else {
+            simulatorLegacyKeepEntries = migration.unresolvedEntries
+            appendLog("기존 Simulator 보존 항목 \(migration.unresolvedEntries.count)개를 UUID로 확인하지 못해 모든 기기 삭제를 차단했습니다.")
+            return
+        }
+
+        do {
+            try SimulatorKeepStore.save(migration.uuids)
+            simulatorLegacyKeepEntries = []
+            appendLog("기존 Simulator 이름 보존 목록을 UUID 기준으로 안전하게 전환했습니다.")
+        } catch {
+            appendLog("기존 Simulator 보존 목록을 전환하지 못해 모든 기기 삭제를 차단했습니다: \(error.localizedDescription)")
+        }
     }
 
     private func refreshStorageWatchStatus() async {
-        let result = await LocalProcessRunner.capture(
-            executable: "/bin/bash",
-            arguments: ["./scripts/schedule.sh", "--status"],
-            currentDirectory: projectRoot
-        )
-        let values = Self.protocolValues(result.output)
-        storageWatchEnabled = result.status == 0 && values["enabled"] == "true"
-        storageWatchDetail = storageWatchEnabled
-            ? "매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림"
-            : "꺼짐 · 자동 삭제 없음"
-        freeSpaceSamples = StorageHistoryStore.loadFreeSpaceSamples()
-    }
-
-    private static func scanDate(from value: String) -> Date? {
-        guard !value.isEmpty else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = .current
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.date(from: value)
-    }
-
-    static func protocolValues(_ text: String) -> [String: String] {
-        var values: [String: String] = [:]
-        for line in text.split(whereSeparator: \.isNewline) {
-            let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
-            if parts.count == 2 {
-                values[String(parts[0])] = String(parts[1])
-            }
+        let status = await StorageWatchService.status(projectRoot: projectRoot)
+        storageWatchEnabled = status.enabled
+        storageWatchDetail = status.detail
+        if let samples = status.freeSpaceSamples {
+            freeSpaceSamples = samples
         }
-        return values
+    }
+
+    private nonisolated static func isSecureRegularFile(
+        at url: URL,
+        allowsRootOwner: Bool
+    ) -> Bool {
+        var value = stat()
+        let status = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return Darwin.lstat(path, &value)
+        }
+        let allowedOwner = value.st_uid == Darwin.geteuid()
+            || (allowsRootOwner && value.st_uid == 0)
+        return status == 0
+            && value.st_mode & S_IFMT == S_IFREG
+            && allowedOwner
+            && value.st_mode & mode_t(S_IWGRP | S_IWOTH) == 0
+    }
+
+    private nonisolated static func boundedRegularFileData(
+        at url: URL,
+        maximumBytes: Int
+    ) throws -> Data {
+        try SecureLocalFileIO.boundedRead(from: url, maximumBytes: maximumBytes)
     }
 
     private static func detectProjectRoot() -> URL {
@@ -192,39 +292,24 @@ final class ScanModel: ObservableObject {
     }
 
     private static func loadVirusTotalEnabled(projectRoot: URL) -> Bool {
-        let configURL = projectRoot.appendingPathComponent("data/config.json")
-        guard let data = try? Data(contentsOf: configURL),
+        let externalConfigURL = RuntimeWorkspace.userConfigURL()
+        let configURL = FileManager.default.fileExists(atPath: externalConfigURL.path)
+            ? externalConfigURL
+            : projectRoot.appendingPathComponent("data/config.json")
+        guard let data = try? boundedRegularFileData(
+                at: configURL,
+                maximumBytes: 1_048_576
+              ),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let vt = root["virustotal"] as? [String: Any] else {
             return false
         }
         let enabled = vt["enabled"] as? Bool ?? false
-        let apiKey = (vt["apiKey"] as? String ?? ProcessInfo.processInfo.environment["VT_API_KEY"] ?? "")
+        let configuredKey = (vt["apiKey"] as? String ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let environmentKey = (ProcessInfo.processInfo.environment["VT_API_KEY"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = configuredKey.isEmpty ? environmentKey : configuredKey
         return enabled && !apiKey.isEmpty
-    }
-
-    private static var simulatorKeepURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/PC Health Check/simulator-keep.txt")
-    }
-
-    private static func loadSimulatorKeepNames() -> Set<String> {
-        guard let text = try? String(contentsOf: simulatorKeepURL, encoding: .utf8) else { return [] }
-        return Set(text.split(whereSeparator: \.isNewline).map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        }.filter { !$0.isEmpty })
-    }
-
-    static func saveSimulatorKeepNames(_ names: Set<String>) throws {
-        let url = simulatorKeepURL
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let text = names.sorted().joined(separator: "\n") + (names.isEmpty ? "" : "\n")
-        try text.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

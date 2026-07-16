@@ -8,9 +8,9 @@ raw_facts.json
 # VT 캐시
 vt-cache.json
 
-# 사용자 API 키 (실수로 커밋 방지)
-# config.json은 템플릿이므로 커밋. 하지만 내부의 apiKey는 빈 값으로 유지.
-# 실제 키는 config.local.json 같은 별도 파일로 분리 권장 (추후)
+# 사용자 설정/API 키 (추적 금지). 안전한 기본값은 config.example.json에만 둔다.
+/data/config.json
+/data/config.local.json
 
 # 파이썬
 __pycache__/

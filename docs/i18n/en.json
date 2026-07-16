@@ -10,13 +10,13 @@
     "problem": "Problem",
     "how": "How",
     "privacy": "Privacy",
-    "download": "Download"
+    "download": "Source"
   },
   "hero": {
     "tag": "v0.3 · Windows Edition / Mac Edition",
     "title": "A local diagnostic for the PC that feels <em>busy behind your back</em>.",
     "subtitle": "When fans spin, CPU/GPU spikes, or unknown processes appear, PC Health Check gathers miner signals, autoruns, network context, and Korean security-plugin explanations before you delete anything.",
-    "cta_primary": "Download zip <span class='arrow'>→</span>",
+    "cta_primary": "Run from source <span class='arrow'>→</span>",
     "cta_secondary": "Read the source",
     "meta": {
       "free": "Free",
@@ -73,10 +73,10 @@
   "how": {
     "kicker": "HOW IT WORKS",
     "heading": "8 diagnostics → 1 HTML report.",
-    "lead": "No tracking installer. OS-specific scripts collect system state, then Windows assembles a browser HTML report while Mac uses a SwiftUI dashboard plus HTML export.",
+    "lead": "No tracking installer. OS-specific scripts collect system state, then Windows assembles an HTML report while Mac uses a system-component SwiftUI utility plus HTML export.",
     "p1": { "title": "Collect", "desc": "Processes, network, ports, autoruns, security posture. Sysinternals + launchd + VirusTotal hash lookup." },
     "p2": { "title": "Normalize", "desc": "Match against Korean software whitelist, assign traffic-light verdict. OS-agnostic schema." },
-    "p3": { "title": "Render", "desc": "Windows gets a single HTML report. Mac gets a SwiftUI dashboard plus HTML export. No tracking installer or report upload." }
+    "p3": { "title": "Render", "desc": "Windows gets a single HTML report. Mac gets a native SwiftUI utility plus HTML export. No tracking installer or report upload." }
   },
   "privacy": {
     "kicker": "PRIVACY · AUDITABLE",
@@ -102,25 +102,25 @@
     }
   },
   "download": {
-    "kicker": "DOWNLOAD",
-    "heading": "Get it now.",
-    "lead": "A single zip. Carry it on a USB drive — no installer, no admin rights needed for most checks.",
+    "kicker": "SOURCE PREVIEW",
+    "heading": "Review and build the source.",
+    "lead": "No public installer is available yet. Run the reviewed source, or wait for a release with signing, notarization, Gatekeeper, and SHA-256 metadata.",
     "windows": {
       "title": "Windows Edition",
-      "desc": "Windows 10 / 11 · PowerShell 5.1 preinstalled. Double-click <code>검사하기.bat</code>.",
-      "btn": "pch-v0.3.0-win.zip →"
+      "desc": "Windows 10 / 11 · PowerShell 5.1. Review the source, then run <code>검사하기.bat</code>.",
+      "btn": "View Windows source →"
     },
     "macos": {
       "title": "Mac Edition",
       "desc": "macOS 13+ SwiftUI app via <code>Mac앱실행.command</code>; script mode via <code>검사하기.command</code> → Open. Decoding the System Data / Developer storage bar is a Mac Edition feature.",
-      "btn": "pch-v0.3.0-mac.zip →"
+      "btn": "View Mac source →"
     },
     "github_side": "Clone or fork: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>. Inspect the readable source yourself."
   },
   "final": {
     "heading": "Suspicious right now? <em>6 minutes to answers.</em>",
     "lead": "No sign-up. No email. The report opens in your browser, and only your browser.",
-    "cta": "Download now <span class='arrow'>→</span>"
+    "cta": "View source <span class='arrow'>→</span>"
   },
   "footer": {
     "license": "MIT License",

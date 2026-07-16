@@ -119,12 +119,11 @@ class VtLookup:
         # 원본 객체를 mutate하지 않도록 — 향후 누가 config를 disk로 다시 쓸 경우
         # VT_API_KEY가 평문으로 누출되는 것을 방지.
         self.cfg = dict((cfg or {}).get("virustotal") or {})
-        # 환경변수 우선: VT_API_KEY가 있으면 config.json의 apiKey를 무시 (공유/CI에서
-        # 키를 디스크에 평문 저장하지 않게 함).
+        # 환경변수 키는 config.json의 apiKey를 대체하지만 네트워크 조회 동의까지
+        # 암묵적으로 만들지는 않는다. enabled=true는 로컬 config에 명시돼야 한다.
         env_key = os.environ.get("VT_API_KEY")
         if env_key:
             self.cfg["apiKey"] = env_key
-            self.cfg["enabled"] = True
         self.enabled = bool(self.cfg.get("enabled")) and bool(self.cfg.get("apiKey")) and not NO_VT
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -214,35 +213,6 @@ class VtLookup:
             "harmless": int(stats.get("harmless", 0)),
             "undetected": int(stats.get("undetected", 0)),
             "totalEngines": sum(int(stats.get(k, 0)) for k in ("malicious", "suspicious", "harmless", "undetected")),
-        }
-        self._set(key, result)
-        return result
-
-    def ip(self, ip_addr):
-        if not self.enabled:
-            return None
-        key = f"ip:{ip_addr}"
-        cached = self._cached(key)
-        if cached is not None:
-            return cached
-        r = self._request(f"https://www.virustotal.com/api/v3/ip_addresses/{ip_addr}")
-        if not r:
-            return None
-        if "error" in r:
-            return {"status": r["error"], "ip": ip_addr}
-        if r.get("notFound"):
-            result = {"status": "unknown", "ip": ip_addr}
-            self._set(key, result)
-            return result
-        attrs = r["data"]["attributes"]
-        stats = attrs["last_analysis_stats"]
-        result = {
-            "status": "ok",
-            "ip": ip_addr,
-            "malicious": int(stats.get("malicious", 0)),
-            "suspicious": int(stats.get("suspicious", 0)),
-            "country": attrs.get("country"),
-            "asnOwner": attrs.get("as_owner"),
         }
         self._set(key, result)
         return result
@@ -366,7 +336,6 @@ def main() -> int:
     # ============================================================
     net_list = []
     net_txt = _read_tmp("net.txt")
-    unique_ips = set()
     connections_raw = []
     for line in net_txt.split("\n"):
         if "->" not in line or "ESTABLISHED" not in line:
@@ -384,9 +353,6 @@ def main() -> int:
         if is_local_ip(remote_ip):
             continue
         connections_raw.append({"command": command, "pid": pid_, "ip": remote_ip, "port": remote_port})
-        unique_ips.add(remote_ip)
-
-    ip_vt_cache = {ip: vt.ip(ip) for ip in unique_ips} if vt.enabled else {}
 
     seen = set()
     for c in connections_raw:
@@ -400,7 +366,7 @@ def main() -> int:
             ("remoteAddress", c["ip"]),
             ("remotePort", c["port"]),
             ("path", ""),
-            ("vtIp", ip_vt_cache.get(c["ip"])),
+            ("vtIp", None),
         ]))
     raw["sections"]["network"] = net_list
 

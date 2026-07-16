@@ -10,11 +10,15 @@ Thanks for considering a contribution. The most-wanted PRs are **whitelist addit
 git clone https://github.com/heznpc/pc-health-check.git
 cd pc-health-check
 python3 -m pip install -r requirements-dev.txt
-python3 -m pytest tests/ -q
-swift test --package-path macos/PCHealthCheckMac
+python3 -I -B -m pytest tests/ -q
+swift test --package-path macos/PCHealthCheckMac \
+  -Xswiftc -warnings-as-errors \
+  -Xswiftc -strict-concurrency=complete
 ```
 
 Both suites should pass before you start changing runtime contracts.
+
+For a bug, use the general bug form. UI legibility, VoiceOver, keyboard, window sizing, and macOS design proposals have a dedicated accessibility/design form. Security vulnerabilities must use private reporting instead of either public form.
 
 ---
 
@@ -61,14 +65,17 @@ This is the highest-value contribution: adding a legitimate local app that curre
 
 ### Pre-PR checklist
 
-- [ ] `python3 -m pytest tests/ -q` passes.
-- [ ] If you touched the Mac app, `swift test --package-path macos/PCHealthCheckMac` passes.
+- [ ] `python3 -I -B -m pytest tests/ -q` passes.
+- [ ] `python3 -I -B scripts/release_smoke.py --check-only` passes.
+- [ ] If you touched the Mac app, `swift test --package-path macos/PCHealthCheckMac -Xswiftc -warnings-as-errors -Xswiftc -strict-concurrency=complete` passes.
+- [ ] If you touched Mac packaging, `scripts/package_macos_release.sh --local` completes and its app, DMG, and sidecar metadata report the intended architectures/minimum OS. This never creates a publishable release.
 - [ ] If you touched a PowerShell script, run a parse check:
       `pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('scripts/<file>.ps1', [ref]\$null, [ref]\$null)"`.
 - [ ] If you touched `rules/*.json`, validate JSON:
       `for f in rules/*.json; do python3 -c "import json; json.load(open('$f'))"; done`.
 - [ ] No new runtime dependencies (the tool is intentionally dependency-free).
 - [ ] No PII or user-PC scan artifacts (`scan_result.json`, `monitor_result.json`, `검사결과*.html`) committed — they're gitignored.
+- [ ] No local `data/config.json`, API key, email address, build-machine home path, or unexpected symlink appears in an artifact. Edit only `data/config.example.json` when changing defaults.
 
 ### Style
 
@@ -81,6 +88,7 @@ This is the highest-value contribution: adding a legitimate local app that curre
 - Adding any external dependency (Python package, npm module, PowerShell module).
 - Changing cleanup approval boundaries, bundle-ID attribution, or protected-history behavior.
 - Adding a new outbound network path or changing standalone runtime packaging/signing.
+- Changing release architecture, minimum OS, artifact audit rules, or the clean-tag/notarization gate.
 - Adding telemetry, analytics, or any phone-home behavior.
 - Changes to the VirusTotal integration that send more than a SHA-256 hash.
 

@@ -28,7 +28,7 @@ Windows와 macOS 모두 지원합니다.
   SwiftUI 앱으로 실행:
   1. 공증된 DMG가 배포된 버전이면 앱을 Applications로 옮겨 바로 실행합니다.
      소스 ZIP 버전은 "Mac앱실행.command" 우클릭 → "열기"로 빌드합니다.
-  2. 소스 모드는 처음 실행 시 SwiftUI 앱을 빌드한 뒤 자동으로 엽니다.
+  2. 소스 모드는 매 실행 시 증분 빌드로 앱과 내장 진단 스크립트를 최신 상태로 맞춘 뒤 자동으로 엽니다.
   3. 앱에서 [지금 검사]를 누르면 요약 화면에 남은 공간과 직전 검사 이후 변화가 표시됩니다.
   4. [왜 변했나]에서 증가한 경로와 추적되지 않은 APFS/swap/임시 파일 변화를 구분해 확인합니다.
   5. [공간 정리]에서 항목을 선택하고 오른쪽 [정리 검토]를 누르면 미리보기가 열립니다.
@@ -75,11 +75,12 @@ Windows와 macOS 모두 지원합니다.
   - 관련 Codex/Claude/Chrome/Xcode/Simulator 작업이 실행 중이면 정리를 차단합니다.
   - Codex 세션 JSONL, Claude 로컬 에이전트 작업공간, SDK, Simulator 런타임에는 정리 버튼이 생기지 않습니다.
   - 정리 후에는 다시 검사하며 영수증을 ~/Library/Application Support/PC Health Check/cleanup-receipts/ 에 남깁니다.
+  - 승인한 정리가 진행 중일 때 앱 종료를 선택하면 안전한 거래 경계와 영수증 처리가 끝날 때까지 정상 종료를 기다립니다.
   - 앱 제거는 즉시 영구 삭제하지 않고 ~/.Trash/PC Health Check-... 폴더로 이동합니다.
   - 저장공간 감시는 자동 정리를 하지 않으며 20GB 미만 또는 직전보다 8GB 이상 줄 때만 알립니다.
   - 검사별 경로 크기 이력은 최대 180개, 시간별 여유 공간 표본은 최대 336개만 로컬에 보관합니다.
   - 이력 파일은 ~/Library/Application Support/PC Health Check/ 아래에 600 권한으로 저장되며 외부로 전송되지 않습니다.
-  - SwiftUI 앱의 기본 화면은 웹뷰가 아니라 네이티브 진단 대시보드입니다.
+  - SwiftUI 앱은 시스템 목록·폼·툴바를 사용하는 네이티브 유틸리티입니다.
   - macOS가 Mail/Messages/Safari/앱 컨테이너를 숨기면 Full Disk Access 안내가 표시됩니다.
   - SwiftUI 빠른 검사는 큰 Simulator/SDK 폴더에서 오래 멈추지 않도록 크기 측정 시간을 제한합니다.
     정확한 용량까지 다시 재고 싶으면 터미널에서 PCH_STORAGE_DU_TIMEOUT=0 bash scripts/scanner.sh 로 실행하세요.
@@ -93,10 +94,14 @@ Windows와 macOS 모두 지원합니다.
   켜는 방법:
   1. https://www.virustotal.com 회원가입 (무료)
   2. 우측 상단 프로필 아이콘 → "API Key" 복사
-  3. data/config.json 열어서:
+  3. 다음 중 하나를 선택:
+     - 권장: VT_API_KEY 환경 변수로 현재 사용자에게만 설정
+     - 스크립트 메뉴: data/config.example.json을 data/config.json으로 복사한 뒤 로컬 파일을 편집
+     - SwiftUI 앱(소스 빌드 포함): ~/Library/Application Support/PC Health Check/config.json 편집
+  4. 파일을 사용하는 경우:
      - "enabled": true
-     - "apiKey": "여기에 키 붙여넣기"
-  4. 저장 후 검사 재실행
+     - "apiKey": "YOUR_API_KEY"
+  5. 저장 후 검사 재실행
 
   ※ 파일 내용은 절대 서버로 안 보내고 해시(지문)만 조회합니다.
   ※ 무료 한도: 분당 4건, 일일 500건. 캐시로 자동 관리.
@@ -141,12 +146,12 @@ Windows와 macOS 모두 지원합니다.
   ├─ 검사하기.command     ← macOS 실행
   ├─ Mac앱실행.command    ← macOS SwiftUI 앱 실행
   ├─ 사용법.txt           ← 이 파일
-  ├─ 검사결과.html         ← 검사 후 자동 생성
-  ├─ 검사결과_공유용.html  ← macOS 공유용 결과
+  ├─ 검사결과.html         ← 스크립트 모드 검사 후 자동 생성
+  ├─ 검사결과_공유용.html  ← macOS 스크립트 모드 공유용 결과
   ├─ data/
   │  ├─ whitelist.json    ← 한국 프로그램 DB
   │  ├─ explain.json      ← 쉬운 설명
-  │  └─ config.json       ← 설정 (API 키 등)
+  │  └─ config.example.json ← 비밀정보 없는 설정 예시
   └─ scripts/
      ├─ menu.ps1          ← Windows 메뉴
      ├─ scanner.ps1       ← Windows 스캐너
@@ -162,6 +167,12 @@ Windows와 macOS 모두 지원합니다.
      ├─ vt-lookup.ps1     ← VirusTotal 조회
      ├─ sigcheck-helper.ps1  ← Sysinternals sigcheck
      └─ autorunsc-helper.ps1 ← Sysinternals autorunsc
+
+  실제 API 키 설정은 배포본에 포함되지 않습니다.
+  - 스크립트 모드: 무시되는 data/config.json
+  - SwiftUI 앱(소스 빌드 포함): ~/Library/Application Support/PC Health Check/config.json
+  SwiftUI 앱의 검사 결과와 리포트는 위 Application Support 아래 results 폴더에,
+  변경 기록과 감시 표본은 Application Support 아래 소유자 전용 상태 파일에 저장됩니다.
 
 
 [ 자주 묻는 질문 ]

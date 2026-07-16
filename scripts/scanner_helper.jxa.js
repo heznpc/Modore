@@ -7,20 +7,66 @@ function env(name, fallback) {
   const value = v ? unwrap(v) : null;
   return value == null ? fallback : String(value);
 }
-function readText(path) {
-  const s = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null);
-  return s ? unwrap(s) : "";
+function readText(path, maximumBytes) {
+  const limit = Number(maximumBytes || (16 * 1024 * 1024));
+  if (!$.NSFileManager.defaultManager.fileExistsAtPath(String(path || ""))) return "";
+  const handle = $.NSFileHandle.fileHandleForReadingAtPath(path);
+  if (!handle) return "";
+  try {
+    const data = handle.readDataOfLength(limit + 1);
+    if (Number(data.length) > limit) return "";
+    const value = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
+    return value ? unwrap(value) : "";
+  } finally {
+    try { handle.closeFile; } catch (_) {}
+  }
 }
 function writeText(path, text) {
-  $(text).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
+  return !!$(text).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
 }
-function readJson(path, fallback) {
-  try { return JSON.parse(readText(path)); } catch (e) { return fallback; }
+function writeRequiredText(path, text) {
+  if (!writeText(path, text)) throw new Error("검사 결과를 안전하게 기록하지 못했습니다: " + path);
+}
+function readJson(path, fallback, maximumBytes) {
+  try { return JSON.parse(readText(path, maximumBytes)); } catch (e) { return fallback; }
+}
+function pathExists(path) {
+  return !!$.NSFileManager.defaultManager.fileExistsAtPath(String(path || ""));
 }
 function run(cmd) {
   const app = Application.currentApplication();
   app.includeStandardAdditions = true;
   try { return app.doShellScript(cmd); } catch (e) { return ""; }
+}
+function runCurlWithSecretHeader(url, apiKey) {
+  if (!/^[A-Fa-f0-9]{64}$/.test(String(apiKey || ""))) return "";
+  const task = $.NSTask.alloc.init;
+  const input = $.NSPipe.pipe;
+  const output = $.NSPipe.pipe;
+  task.launchPath = "/usr/bin/curl";
+  task.arguments = $(["-q", "-sS", "--max-time", "15", "--config", "-", "-w", "\\n%{http_code}", url]);
+  task.standardInput = input;
+  task.standardOutput = output;
+  task.standardError = $.NSFileHandle.fileHandleWithNullDevice;
+  try {
+    task.launch;
+    // curl --config quoted-value syntax uses a literal leading double quote. An
+    // extra backslash here made curl parse the value as unquoted (starting with
+    // a backslash) and drop the header, so every VT lookup returned 401.
+    const config = "header = \"x-apikey: " + apiKey + "\"\nheader = \"accept: application/json\"\n";
+    input.fileHandleForWriting.writeData($(config).dataUsingEncoding($.NSUTF8StringEncoding));
+    input.fileHandleForWriting.closeFile;
+    // Drain while curl is running so a response larger than the pipe buffer
+    // cannot deadlock the producer and this synchronous JXA caller.
+    const data = output.fileHandleForReading.readDataToEndOfFile;
+    task.waitUntilExit;
+    if (task.terminationStatus !== 0) return "";
+    const text = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
+    return text ? unwrap(text) : "";
+  } catch (e) {
+    try { input.fileHandleForWriting.closeFile; } catch (_) {}
+    return "";
+  }
 }
 function tmp(name) { return readText(TMP_DIR + "/" + name); }
 function basename(path) { return String(path || "").split("/").filter(Boolean).pop() || String(path || ""); }
@@ -67,15 +113,14 @@ function vtLookup(config, disabled) {
   const envKey = env("VT_API_KEY", "");
   if (envKey) {
     cfg.apiKey = envKey;
-    cfg.enabled = true;
   }
-  const enabled = !!cfg.enabled && !!cfg.apiKey && !disabled;
+  const enabled = !!cfg.enabled && /^[A-Fa-f0-9]{64}$/.test(String(cfg.apiKey || "")) && !disabled;
   const cacheHours = Number(cfg.cacheHours || 48);
   const maxCalls = Number(cfg.maxCallsPerScan || 100);
   const cacheDir = homeDir() + "/Library/Caches/PC건강검진";
   const cachePath = cacheDir + "/vt-cache.json";
   ensureDir(cacheDir);
-  let cache = readJson(cachePath, {});
+  let cache = readJson(cachePath, {}, 4 * 1024 * 1024);
   let calls = 0, lastCall = 0;
   function cached(key) {
     const entry = cache[key];
@@ -97,7 +142,8 @@ function vtLookup(config, disabled) {
     lastCall = Date.now();
     calls += 1;
     const url = "https://www.virustotal.com/api/v3/" + path;
-    const out = run("/usr/bin/curl -sS --max-time 15 -H " + escapeShell("x-apikey: " + cfg.apiKey) + " -H 'accept: application/json' -w '\\n%{http_code}' " + escapeShell(url));
+    const out = runCurlWithSecretHeader(url, cfg.apiKey);
+    if (!out) return { error: "request_failed" };
     const lines = out.split(/\r?\n/);
     const code = lines.pop();
     const body = lines.join("\n");
@@ -135,25 +181,6 @@ function vtLookup(config, disabled) {
       }
       const st = stats((r.data || {}).attributes || {});
       const result = Object.assign({ status: "ok", hash: h }, st, { totalEngines: st.malicious + st.suspicious + st.harmless + st.undetected });
-      setCache(key, result);
-      return result;
-    },
-    ip(ip) {
-      if (!enabled || !ip) return null;
-      const key = "ip:" + ip;
-      const c = cached(key);
-      if (c) return c;
-      const r = request("ip_addresses/" + ip);
-      if (!r) return null;
-      if (r.error) return { status: r.error, ip };
-      if (r.notFound) {
-        const result = { status: "unknown", ip };
-        setCache(key, result);
-        return result;
-      }
-      const attrs = (r.data || {}).attributes || {};
-      const st = stats(attrs);
-      const result = { status: "ok", ip, malicious: st.malicious, suspicious: st.suspicious, country: attrs.country || "", asnOwner: attrs.as_owner || "" };
       setCache(key, result);
       return result;
     },
@@ -215,11 +242,11 @@ function whitelistIndex(whitelist) {
 }
 function loadRules(dir) {
   return {
-    process: readJson(dir + "/process.json", []),
-    network: readJson(dir + "/network.json", []),
-    autoruns: readJson(dir + "/autoruns.json", []),
-    defender: readJson(dir + "/defender.json", []),
-    installs: readJson(dir + "/installs.json", [])
+    process: readJson(env("PCH_PINNED_RULE_PROCESS", dir + "/process.json"), [], 4 * 1024 * 1024),
+    network: readJson(env("PCH_PINNED_RULE_NETWORK", dir + "/network.json"), [], 4 * 1024 * 1024),
+    autoruns: readJson(env("PCH_PINNED_RULE_AUTORUNS", dir + "/autoruns.json"), [], 4 * 1024 * 1024),
+    defender: readJson(env("PCH_PINNED_RULE_DEFENDER", dir + "/defender.json"), [], 4 * 1024 * 1024),
+    installs: readJson(env("PCH_PINNED_RULE_INSTALLS", dir + "/installs.json"), [], 4 * 1024 * 1024)
   };
 }
 function ruleMatches(rule, fact) {
@@ -276,10 +303,19 @@ function applyRules(raw, rules, wl) {
   }
   const danger = result.findings.filter(f => f.level === "danger").length;
   const warning = result.findings.filter(f => f.level === "warning").length;
-  const overall = danger ? "danger" : (warning ? "warning" : "safe");
+  const collectionComplete = !result.collection || result.collection.complete !== false;
+  const overall = danger ? "danger" : (warning ? "warning" : (collectionComplete ? "safe" : "incomplete"));
   const message = danger ? `긴급 확인 필요: ${danger} 건의 위험 신호가 발견되었습니다.` :
-    warning ? `확인 권장: ${warning} 건의 항목을 살펴보세요.` : "특별한 이상 징후가 발견되지 않았습니다.";
-  result.summary = { overall, dangerCount: danger, warningCount: warning, message };
+    warning ? `확인 권장: ${warning} 건의 항목을 살펴보세요.` :
+      collectionComplete ? "현재 수집 범위에서 뚜렷한 이상 징후가 발견되지 않았습니다." :
+        "필수 검사 일부를 완료하지 못해 안전 여부를 판단할 수 없습니다.";
+  result.summary = {
+    overall,
+    dangerCount: danger,
+    warningCount: warning,
+    collectionComplete,
+    message
+  };
   return result;
 }
 
@@ -287,7 +323,10 @@ function parseStorageDf(text) {
   const line = String(text || "").trim().split(/\r?\n/).filter(Boolean).pop() || "";
   const parts = line.trim().split(/\s+/);
   if (parts.length < 5) {
-    return { mount: "", totalGB: 0, usedGB: 0, freeGB: 0, usePercent: 0, risk: "unknown", note: "저장공간 정보를 읽지 못했습니다." };
+    // df produced no usable row (collection failed). Mark the volume as
+    // unmeasured so downstream never treats freeGB:0 as a real measurement and
+    // fabricates a "storage dropped" incident from it.
+    return { mount: "", totalGB: 0, usedGB: 0, freeGB: 0, usePercent: 0, risk: "unknown", measured: false, note: "저장공간 정보를 읽지 못했습니다." };
   }
   const totalKb = Number(parts[1] || 0);
   const usedKb = Number(parts[2] || 0);
@@ -300,7 +339,7 @@ function parseStorageDf(text) {
   const note = risk === "danger" ? "남은 공간이 매우 적습니다. 캐시/임시파일 후보를 먼저 확인하세요." :
     risk === "warning" ? "macOS 저장공간 막대 뒤에 숨은 큰 캐시와 개발 도구 구성요소를 검토하세요." :
     "저장공간 압박은 낮지만, macOS가 뭉뚱그린 항목의 정체를 확인할 수 있습니다.";
-  return { mount, totalGB: kbToGb(totalKb), usedGB: kbToGb(usedKb), freeGB, usePercent, risk, note };
+  return { mount, totalGB: kbToGb(totalKb), usedGB: kbToGb(usedKb), freeGB, usePercent, risk, measured: true, note };
 }
 
 function storageNote(kind, label) {
@@ -320,8 +359,10 @@ function storageNote(kind, label) {
   if (kind === "chrome_clone") return "Chrome 앱 번들 code-sign 임시 clone입니다. Chrome/브라우저 자동화가 실행 중이면 현재 사용 중인 항목이 있을 수 있습니다.";
   if (kind === "ai_vm_cache") return "Claude Cowork/로컬 에이전트용 VM 이미지입니다. 세션 기록과 분리된 재생성 가능 런타임이지만 Claude를 완전히 종료한 뒤 정리하세요.";
   if (kind === "ai_cache") return "AI 개발 도구 런타임/임시 캐시입니다. 삭제하면 다음 실행 때 다시 받을 수 있습니다.";
+  if (kind === "ai_review" && /Codex/i.test(label || "") && /state/i.test(label || "")) return "Codex 내부 상태 SQLite DB입니다. 세션 jsonl은 아니지만 Codex 동작 상태를 저장하므로 실행 중 삭제하지 말고 앱 종료 후 검토하세요.";
   if (kind === "ai_review" && /Codex/i.test(label || "")) return "Codex 내부 이벤트/진단 로그 SQLite DB입니다. .codex/sessions의 세션 jsonl은 아니며, Codex 종료 후 VACUUM/수동 검토 대상으로 분리합니다.";
   if (kind === "ai_review") return "AI 도구 내부 로그 DB입니다. 세션 jsonl은 아니지만 앱 동작/진단에 쓰일 수 있어 실행 중 삭제하지 마세요.";
+  if (kind === "protected_history" && /Claude/i.test(label || "") && /(sessions$|command history|file history|shell snapshots|session environments)/i.test(label || "")) return "Claude Code 대화/세션 기록입니다. 사용자가 되살려 볼 수 있는 실제 세션 기록이라 자동 정리 대상에서 제외합니다.";
   if (kind === "protected_history" && /Claude/i.test(label || "")) return "Claude 로컬 에이전트/Cowork 작업공간입니다. audit 로그, uploads, outputs가 포함될 수 있어 자동 정리 대상에서 제외합니다.";
   if (kind === "protected_history" && /Codex/i.test(label || "")) return "Codex 대화/session jsonl 기록입니다. 사용자가 되살려 볼 수 있는 실제 세션 기록이라 자동 정리 대상에서 제외합니다.";
   if (kind === "protected_history") return "대화/작업 세션 기록입니다. 공간은 보이지만 자동 정리 대상에서 제외합니다.";
@@ -428,31 +469,127 @@ function parseStorageRuntime(text) {
       count: Number(parts[2] || 0),
       risk: parts[3] || "info",
       action: parts[4],
-      note: parts[5]
+      note: parts[5],
+      pid: Number(parts[6] || 0),
+      parentPid: Number(parts[7] || 0),
+      elapsed: parts[8] || "",
+      channel: parts[9] || "",
+      state: parts[10] || "",
+      profile: parts[11] || "",
+      controller: parts[12] || "",
+      memoryKB: Number(parts[13] || 0),
+      treeMemoryKB: Number(parts[14] || parts[13] || 0),
+      treeProcessCount: Number(parts[15] || 0)
     };
   }).filter(Boolean);
 }
 
-function parseSimulatorDevices(text, keepNames) {
-  const keep = new Set(keepNames || []);
+function browserAutomationStatus(runtimeSignals) {
+  const roots = (runtimeSignals || []).filter(signal => signal.kind === "browser_automation_root");
+  const systemRoots = roots.filter(signal => signal.channel === "system");
+  const isolatedRoots = roots.filter(signal => signal.channel === "isolated");
+  const orphanedRoots = roots.filter(signal =>
+    signal.state === "orphan_candidate" || signal.state === "orphaned"
+  );
+  const rootMemoryKB = roots.reduce((total, signal) => total + Number(signal.memoryKB || 0), 0);
+  const treeMemoryKB = roots.reduce((total, signal) => total + Number(signal.treeMemoryKB || 0), 0);
+  const globalConfigPath = homeDir() + "/.playwright/cli.config.json";
+  const globalConfigPresent = pathExists(globalConfigPath);
+  const globalConfig = globalConfigPresent ? readJson(globalConfigPath, {}, 256 * 1024) : {};
+  const browserConfig = globalConfig && typeof globalConfig.browser === "object"
+    ? globalConfig.browser : {};
+  const globalIsolationConfigured = browserConfig.browserName === "chromium"
+    && browserConfig.isolated === true;
+  const isolatedBrowserInstalled = pathExists(homeDir() + "/Library/Caches/ms-playwright")
+    || pathExists(homeDir() + "/.cache/ms-playwright");
+  const verdict = orphanedRoots.length ? "orphaned" :
+    systemRoots.length ? "conflict_possible" :
+      isolatedRoots.length ? "isolated_active" : "clear";
+  return {
+    verdict,
+    rootCount: roots.length,
+    systemRootCount: systemRoots.length,
+    isolatedRootCount: isolatedRoots.length,
+    orphanedRootCount: orphanedRoots.length,
+    rootMemoryKB,
+    treeMemoryKB,
+    globalConfigPresent,
+    globalIsolationConfigured,
+    isolatedBrowserInstalled,
+    configLocation: "~/.playwright/cli.config.json",
+    note: orphanedRoots.length
+      ? "상위 소유 작업을 확인할 수 없는 오래된 브라우저 자동화가 남아 있습니다. 잔류 후보이며 자동 종료하지 않습니다."
+      : systemRoots.length
+        ? "자동화가 기본 Chrome 채널을 사용해 일반 브라우저 실행과 충돌할 수 있습니다."
+        : isolatedRoots.length
+          ? "자동화가 격리 브라우저 채널에서 실행 중입니다."
+          : "현재 브라우저 자동화 루트가 감지되지 않았습니다."
+  };
+}
+
+function parseCollectionStatus(text) {
+  const sources = String(text || "").trim().split(/\r?\n/).filter(Boolean).map(line => {
+    const parts = line.split("\t");
+    if (parts.length < 4 || !/^[a-z0-9_]+$/.test(parts[0])) return null;
+    const status = ["ok", "permission_denied", "unavailable", "timed_out", "failed"].includes(parts[2])
+      ? parts[2] : "failed";
+    return {
+      id: parts[0],
+      label: parts[1] || parts[0],
+      status,
+      required: parts[3] === "true",
+      detail: parts[4] || ""
+    };
+  }).filter(Boolean);
+  if (!sources.length) {
+    sources.push({
+      id: "collector_protocol",
+      label: "검사 범위 기록",
+      status: "failed",
+      required: true,
+      detail: "수집 상태 기록이 없어 결과의 완전성을 확인할 수 없습니다."
+    });
+  }
+  const requiredSources = sources.filter(source => source.required);
+  const incompleteRequiredSources = requiredSources.filter(source => source.status !== "ok");
+  const issues = sources.filter(source => source.status !== "ok");
+  return {
+    status: incompleteRequiredSources.length ? "incomplete" : "complete",
+    complete: incompleteRequiredSources.length === 0,
+    completedCount: sources.filter(source => source.status === "ok").length,
+    sourceCount: sources.length,
+    completedRequiredCount: requiredSources.filter(source => source.status === "ok").length,
+    requiredCount: requiredSources.length,
+    issues,
+    sources
+  };
+}
+
+function parseSimulatorDevices(text, keepUUIDs, legacyKeepNames) {
+  const keep = new Set((keepUUIDs || []).map(value => String(value).toUpperCase()));
+  const legacyKeep = new Set(legacyKeepNames || []);
   return String(text || "").trim().split(/\r?\n/).filter(Boolean).map(line => {
     const parts = line.split("\t");
     if (parts.length < 4 || !/^[0-9A-Fa-f-]{36}$/.test(parts[1])) return null;
     const name = parts[0];
     const state = parts[3];
     const isBooted = state === "Booted";
-    const isKept = keep.has(name);
+    const uuid = parts[1].toUpperCase();
+    const isLegacyKept = legacyKeep.has(name);
+    const isKept = keep.has(uuid) || isLegacyKept;
     return {
       name,
-      uuid: parts[1],
+      uuid,
       runtime: parts[2],
       state,
       sizeGB: Math.round((Number(parts[4] || 0) / 1048576) * 10) / 10,
       measureStatus: parts[5] || "ok",
       risk: isBooted || isKept ? "safe" : "info",
       protected: isBooted || isKept,
-      protectionReason: isBooted ? "현재 Booted 상태" : (isKept ? "사용자 보존 목록" : ""),
-      cleanupId: `simulator_delete:${parts[1]}`
+      protectionReason: isBooted
+        ? "현재 Booted 상태"
+        : (isLegacyKept ? "기존 이름 보존 목록 · UUID 전환 필요" : (isKept ? "사용자 보존 목록" : "")),
+      cleanupId: `simulator_delete:${uuid}`
     };
   }).filter(Boolean);
 }
@@ -460,13 +597,22 @@ function parseSimulatorDevices(text, keepNames) {
 const TMP_DIR = env("TMP_DIR", "/tmp");
 const OUTPUT = env("PCH_OUTPUT", "scan_result.json");
 const RAW_PATH = env("PCH_RAW_PATH", "raw_facts.json");
-const WHITELIST_PATH = env("PCH_WHITELIST_PATH", "data/whitelist.json");
+const WHITELIST_PATH = env("PCH_PINNED_WHITELIST", env("PCH_WHITELIST_PATH", "data/whitelist.json"));
 const RULES_DIR = env("PCH_RULES_DIR", "rules");
 const CONFIG_PATH = env("PCH_CONFIG_PATH", "data/config.json");
 const NO_VT = /^true$/i.test(env("PCH_NO_VT", "false"));
 const SIMULATOR_KEEP_PATH = env("PCH_SIMULATOR_KEEP_PATH", homeDir() + "/Library/Application Support/PC Health Check/simulator-keep.txt");
-const simulatorKeepNames = readText(SIMULATOR_KEEP_PATH).split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-const config = readJson(CONFIG_PATH, {});
+const simulatorKeepEntries = readText(SIMULATOR_KEEP_PATH, 64 * 1024)
+  .split(/\r?\n/)
+  .map(value => value.trim())
+  .filter(Boolean);
+const simulatorKeepUUIDs = simulatorKeepEntries
+  .map(value => value.toUpperCase())
+  .filter(value => /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(value));
+const simulatorLegacyKeepNames = simulatorKeepEntries.filter(value =>
+  !/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/.test(value)
+);
+const config = readJson(CONFIG_PATH, {}, 1024 * 1024);
 const vt = vtLookup(config, NO_VT);
 if (vt.enabled) console.log("  VirusTotal 조회 활성화");
 
@@ -478,23 +624,20 @@ const raw = {
   osVersion: env("PCH_OS_VERSION", "macOS"),
   platform: "macos",
   scannerVersion: "0.3",
+  collection: parseCollectionStatus(tmp("collection_status.tsv")),
   findings: [],
   sections: {}
 };
 
-const pidPath = {};
-run("ps -Ao pid=,comm=").split(/\r?\n/).forEach(row => {
-  const m = row.trim().match(/^(\d+)\s+(.+)$/);
-  if (m) pidPath[m[1]] = m[2];
-});
-
 raw.sections.cpu = tmp("ps.txt").trim().split(/\r?\n/).filter(Boolean).map(line => {
-  const parts = line.trim().split(/\s+/, 6);
-  if (parts.length < 6) return null;
-  const [pid, user, pcpu, pmem, rss, comm] = parts;
-  const path = pidPath[pid] || comm;
+  const match = line.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(.+)$/);
+  if (!match) return null;
+  const [, pid, user, pcpu, pmem, rss, comm] = match;
+  // Keep CPU usage and executable identity from the same ps snapshot. A later
+  // PID lookup can accidentally attach a reused PID to an unrelated process.
+  const path = comm;
   return { name: basename(path), pid_: Number(pid), cpu: Number(pcpu), memoryMB: Math.round(Number(rss) / 10.24) / 100, path, sig: null, vt: vt.file(path) };
-}).filter(Boolean).sort((a,b) => b.cpu - a.cpu).slice(0,15);
+}).filter(Boolean).sort((a,b) => b.cpu - a.cpu);
 raw.sections.gpu = [];
 
 const connections = [];
@@ -509,8 +652,7 @@ tmp("net.txt").split(/\r?\n/).forEach(line => {
   connections.push({ process: parts[0], pid_: Number(parts[1]), remoteAddress: ip, remotePort: Number(m[2]), path: "", vtIp: null });
 });
 raw.sections.network = connections
-  .filter((c, i, arr) => arr.findIndex(x => x.process === c.process && x.remoteAddress === c.remoteAddress && x.remotePort === c.remotePort) === i)
-  .map(c => Object.assign({}, c, { vtIp: vt.ip(c.remoteAddress) }));
+  .filter((c, i, arr) => arr.findIndex(x => x.process === c.process && x.remoteAddress === c.remoteAddress && x.remotePort === c.remotePort) === i);
 
 raw.sections.listeningPorts = tmp("listen.txt").split(/\r?\n/).map(line => {
   if (!line.includes("LISTEN")) return null;
@@ -554,33 +696,41 @@ const storageVolume = parseStorageDf(tmp("storage_df.txt"));
 const storageItems = parseStoragePaths(tmp("storage_paths.tsv"), storageVolume.risk);
 const storageAccess = parseStorageAccess(tmp("storage_access.tsv"));
 const storageRuntime = parseStorageRuntime(tmp("storage_runtime.tsv"));
-const simulatorDevices = parseSimulatorDevices(tmp("storage_simulators.tsv"), simulatorKeepNames);
+const browserAutomation = browserAutomationStatus(storageRuntime);
+const simulatorDevices = parseSimulatorDevices(
+  tmp("storage_simulators.tsv"),
+  simulatorKeepUUIDs,
+  simulatorLegacyKeepNames
+);
 const cleanupKinds = ["cache", "temp", "trash", "build_cache", "chrome_clone", "ai_vm_cache", "ai_cache", "known_app"];
 const cleanupCandidates = storageItems.filter(item =>
-  cleanupKinds.includes(item.kind) && (item.risk === "warning" || item.measureStatus === "timed_out")
+  cleanupKinds.includes(item.kind) && !!item.cleanupId &&
+    (item.risk === "warning" || item.measureStatus === "timed_out")
 );
 const reviewKinds = ["ai_review", "protected_history"];
 const developerKinds = ["android_sdk", "android_component", "simulator_devices", "simulator_cache", "simulator_runtime", "toolchain", "archive"];
 raw.sections.storage = {
   volume: storageVolume,
   cleanupCandidates: cleanupCandidates.slice(0, 20),
-  reviewCandidates: storageItems.filter(item => reviewKinds.includes(item.kind)).slice(0, 20),
+  reviewCandidates: storageItems.filter(item => reviewKinds.includes(item.kind)),
   developerToolchains: storageItems.filter(item => developerKinds.includes(item.kind)).slice(0, 20),
   applications: storageItems.filter(item => item.kind === "application").slice(0, 20),
   largestItems: storageItems.slice(0, 30),
   accessChecks: storageAccess.checks,
   accessIssues: storageAccess.issues,
   runtimeSignals: storageRuntime,
+  browserAutomation,
   simulatorDevices
 };
 const bootedSimulators = storageRuntime.filter(item => item.kind === "booted_simulator");
-const warningRuntimeSignals = storageRuntime.filter(item => item.kind === "process_count" && item.risk === "warning");
+const warningRuntimeSignals = storageRuntime.filter(item => item.kind !== "booted_simulator" && item.risk === "warning");
 const claudeVm = storageItems.find(item => item.kind === "ai_vm_cache" && Number(item.sizeGB || 0) >= 5);
 const codexLogDb = storageItems.find(item => item.kind === "ai_review" && /Codex/i.test(item.label || "") && Number(item.sizeGB || 0) >= 1);
 if (claudeVm) {
   raw.findings.push({
     level: "warning",
     category: "storage",
+    actionTarget: "cleanup",
     title: "Claude VM bundle 정리 후보",
     detail: `${claudeVm.sizeGB}GB 규모의 Claude Cowork/로컬 에이전트 VM 이미지가 있습니다. 세션 기록과 분리된 재생성 가능 런타임이지만 Claude를 완전히 종료한 뒤 지우세요.`
   });
@@ -589,6 +739,7 @@ if (codexLogDb) {
   raw.findings.push({
     level: "warning",
     category: "storage",
+    actionTarget: "cleanup",
     title: "Codex 로그 DB 수동 검토",
     detail: `${codexLogDb.sizeGB}GB 규모의 Codex 내부 이벤트 로그 DB가 있습니다. 세션 jsonl은 아니며, Codex 실행 중 삭제하지 말고 필요하면 앱 종료 후 VACUUM/수동 검토로 줄이세요.`
   });
@@ -597,6 +748,7 @@ if (bootedSimulators.length >= 2) {
   raw.findings.push({
     level: "warning",
     category: "storage",
+    actionTarget: "development",
     title: "Simulator 여러 대가 Booted 상태",
     detail: `${bootedSimulators.map(item => item.label).join(", ")}가 동시에 켜져 있습니다. Bitxel/TrashMonster 작업 대상에 맞춰 한 대만 켜두면 CoreSimulator 프로세스와 캐시 재생성을 줄일 수 있습니다.`
   });
@@ -605,6 +757,7 @@ if (warningRuntimeSignals.length) {
   raw.findings.push({
     level: "warning",
     category: "storage",
+    actionTarget: "development",
     title: "반복 생성원 정리 필요",
     detail: warningRuntimeSignals.map(item => `${item.label} ${item.count}개`).join(", ") + "가 감지되었습니다. 공간을 지워도 이 실행원이 남아 있으면 캐시와 임시 clone이 다시 생길 수 있습니다."
   });
@@ -613,6 +766,7 @@ if (storageAccess.issues.length) {
   raw.findings.push({
     level: "warning",
     category: "storage",
+    actionTarget: "privacy",
     title: "Full Disk Access 확인 필요",
     detail: `macOS 개인정보 보호 설정 때문에 ${storageAccess.issues.length}개 영역을 읽지 못했을 수 있습니다. 리포트가 비어 보이면 시스템 설정 > 개인정보 보호 및 보안 > 전체 디스크 접근 권한에서 앱 또는 Terminal 권한을 확인하세요.`
   });
@@ -621,6 +775,7 @@ if (storageVolume.risk === "danger" || storageVolume.risk === "warning") {
   raw.findings.push({
     level: storageVolume.risk,
     category: "storage",
+    actionTarget: "cleanup",
     title: "macOS 저장공간 막대 해석 필요",
     detail: `남은 공간 ${storageVolume.freeGB}GB, 사용률 ${storageVolume.usePercent}%입니다. macOS가 System Data/Developer로 뭉뚱그린 항목을 삭제 전 실제 경로와 성격으로 구분하세요.`
   });
@@ -629,6 +784,7 @@ if (storageVolume.risk === "danger" || storageVolume.risk === "warning") {
     raw.findings.push({
       level: "warning",
       category: "storage",
+      actionTarget: "cleanup",
       title: "캐시/임시파일 정리 후보",
       detail: `재생성 가능한 캐시·임시파일 후보가 약 ${cleanupGB}GB입니다. Developer 항목의 SDK/시뮬레이터/언어 도구체인은 통째 삭제하지 말고 버전 요구사항을 확인하세요.`
     });
@@ -638,9 +794,10 @@ raw.sections.virustotal = { enabled: vt.enabled, callsThisScan: vt.calls, cacheH
 raw.sections.sysinternals = { sigcheckEnabled: false, autorunscEnabled: false, note: "macOS는 codesign + launchctl 사용" };
 
 vt.save();
-writeText(RAW_PATH, JSON.stringify(raw, null, 2));
-const result = applyRules(raw, loadRules(RULES_DIR), whitelistIndex(readJson(WHITELIST_PATH, {})));
-writeText(OUTPUT, JSON.stringify(result, null, 2));
+writeRequiredText(RAW_PATH, JSON.stringify(raw, null, 2));
+const result = applyRules(raw, loadRules(RULES_DIR), whitelistIndex(readJson(WHITELIST_PATH, {}, 8 * 1024 * 1024)));
+writeRequiredText(OUTPUT, JSON.stringify(result, null, 2));
 console.log(`  - 위험: ${result.summary.dangerCount} 건`);
 console.log(`  - 확인: ${result.summary.warningCount} 건`);
+if (!result.summary.collectionComplete) console.log("  - 검사 범위: 불완전");
 if (vt.enabled) console.log(`  - VT 조회: ${vt.calls} 건`);

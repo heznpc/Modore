@@ -10,6 +10,12 @@
 /scripts/autorunsc-helper.ps1   @heznpc
 /scripts/vt-lookup.ps1          @heznpc
 /scripts/scanner_helper.py      @heznpc
+/scripts/artifact_audit.py      @heznpc
+/scripts/build_macos_icon.sh    @heznpc
+/scripts/build_macos_swift_app.sh @heznpc
+/scripts/package_macos_release.sh @heznpc
+/data/config.example.json       @heznpc
+/assets/macos/                  @heznpc
 
 # CI / 거버넌스
 /.github/                       @heznpc

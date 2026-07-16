@@ -2,14 +2,15 @@ import AppKit
 import Foundation
 import SwiftUI
 
+@MainActor
 struct NativeSourceIcon: View {
     let item: StorageItem
     let fallbackSymbol: String
 
     var body: some View {
         Group {
-            if let applicationURL {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: applicationURL.path))
+            if let icon = NativeApplicationIconCache.shared.icon(for: item) {
+                Image(nsImage: icon)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
@@ -21,7 +22,30 @@ struct NativeSourceIcon: View {
         }
     }
 
-    private var applicationURL: URL? {
+}
+
+@MainActor
+private final class NativeApplicationIconCache {
+    static let shared = NativeApplicationIconCache()
+
+    private let icons = NSCache<NSString, NSImage>()
+    private var missingKeys: Set<String> = []
+
+    func icon(for item: StorageItem) -> NSImage? {
+        let key = item.path.isEmpty ? item.label.lowercased() : item.path
+        if let cached = icons.object(forKey: key as NSString) {
+            return cached
+        }
+        guard !missingKeys.contains(key), let applicationURL = applicationURL(for: item) else {
+            missingKeys.insert(key)
+            return nil
+        }
+        let icon = NSWorkspace.shared.icon(forFile: applicationURL.path)
+        icons.setObject(icon, forKey: key as NSString)
+        return icon
+    }
+
+    private func applicationURL(for item: StorageItem) -> URL? {
         if item.path.hasSuffix(".app"), FileManager.default.fileExists(atPath: item.path) {
             return URL(fileURLWithPath: item.path)
         }

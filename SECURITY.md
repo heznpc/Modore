@@ -2,12 +2,12 @@
 
 ## Supported versions
 
-Only the latest `main` and the most recent release tag receive security fixes. Older releases are not patched — please upgrade.
+Only the latest `main` and, once one exists, the most recent public release tag receive security fixes. Older releases are not patched.
 
 | Version | Supported |
 |---|---|
 | `main` (latest commit) | ✅ |
-| most recent release tag | ✅ |
+| most recent release tag | not published yet |
 | `v0.2.x` and earlier | ❌ |
 
 ## Reporting a vulnerability
@@ -16,7 +16,7 @@ Only the latest `main` and the most recent release tag receive security fixes. O
 
 Use GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new) — the "Report a vulnerability" button on the repository's Security tab. This routes the report directly to the maintainer without going through public issues.
 
-If Private Vulnerability Reporting is unavailable, use a private maintainer-approved channel and include the subject prefix `[pc-health-check security]`.
+If Private Vulnerability Reporting is temporarily unavailable, do not put vulnerability details in a public issue. Retry the private advisory form later; this repository does not advertise an unverified fallback address.
 
 ### What to include
 
@@ -51,15 +51,17 @@ Out of scope:
 
 ## Trust model
 
-- Source release ZIPs ship readable PowerShell / Bash / JXA / Swift source and no compiled diagnostic binary. An optional separately published notarized DMG contains a compiled SwiftUI app plus the same allowlisted readable Mac runtime resources; its hash is published with the release.
+- Source release ZIPs ship readable PowerShell / Bash / JXA / Swift source and no compiled diagnostic binary. A future separately published Universal 2 DMG must contain the same allowlisted readable Mac runtime, be Developer ID signed/notarized/stapled/Gatekeeper-assessed, and ship with SHA-256 plus machine-readable tag object ID, pinned SSH signer principal/fingerprint, pinned Apple Team ID/leaf-certificate SHA-256, commit, architecture, minimum-OS, and trust metadata. Public packaging remains fail-closed until those owner-reviewed external trust anchors are supplied; no key, Team ID, or certificate is generated or trusted automatically.
+- Release building rejects user config, scan output, unsafe archive paths, unexpected symlinks, credential-shaped data, email addresses, and build-machine home paths. The tracked `data/config.example.json` contains no secret; `data/config.json` is ignored and excluded from every artifact.
 - The only external binaries the tool executes are Sysinternals `sigcheck.exe` and `autorunsc.exe`, both downloaded from `https://live.sysinternals.com/` and **verified via `Get-AuthenticodeSignature`** against a Microsoft signer subject. Verification runs **on every invocation**, not only at first download — the cache directory under `%LOCALAPPDATA%` is user-writable, so a cached `.exe` is re-validated each run to defend against post-cache tampering by other user-mode malware (the scenario this tool exists to detect). If the signature check fails, the binary is deleted and the tool falls back to a fresh download (which is itself re-verified).
 - VirusTotal outbound calls live in `scripts/vt-lookup.ps1` and `scripts/scanner_helper.jxa.js`. Optional Sysinternals downloads live in `scripts/sigcheck-helper.ps1` and `scripts/autorunsc-helper.ps1`. Grep `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api` to audit.
 - The Mac cleanup harness never accepts a caller-supplied filesystem path. It resolves a fixed recipe ID to targets under the current user's home or Chrome's temporary clone directory, rejects symlinked/non-canonical targets, and requires `--owner-approved` for execution. Preview is read-only.
 - Protected histories (`~/.codex/sessions`, Claude local-agent workspaces), SDKs, Simulator runtimes, and Codex log databases have no executable cleanup recipe. Cleanup receipts are mode `0600` inside a mode `0700` local directory.
-- Dynamic app recipes accept a validated bundle ID, independently rediscover matching bundles under `/Applications` or `~/Applications`, block running bundles, and move only exact bundle-ID residue to a unique Trash folder. They never accept an app path from scan output.
-- Simulator recipes accept a UUID only after `simctl` reports that exact available device. Booted devices and exact names in the owner-only keep list are rejected; runtime assets are never a target.
+- Dynamic app recipes accept a validated bundle ID, independently rediscover matching bundles under `/Applications` or `~/Applications`, block running bundles, and move only exact bundle-ID residue to a unique Trash folder. Xcode identifiers and bundles containing developer SDK/toolchain payloads are rejected. They never accept an app path from scan output.
+- Simulator recipes accept a normalized UUID only after `simctl` reports that exact available device. Booted devices, legacy keep entries, and UUIDs in the owner-only keep list are rejected again immediately before deletion; runtime assets are never a target.
 - The optional hourly LaunchAgent runs the read-only free-space watcher. Installing or removing it requires explicit approval, and the watcher has no cleanup command.
-- Before reusing the staged standalone runtime, the app compares every bundled immutable runtime file byte-for-byte. A missing, symlinked, or modified script/rule is replaced from the signed app bundle; only the user's `data/config.json` is preserved across refreshes.
+- Before a standalone invocation, the app validates its sealed bundle signature and compares every bundled runtime file byte-for-byte with the staged mirror. Executable scanner, report, cleanup, schedule, and watcher paths come only from the signed bundle; Application Support holds mutable output and migration state, never executable input. User configuration lives separately at `~/Library/Application Support/PC Health Check/config.json`, is mode `0600`, and is never treated as immutable runtime content.
+- Native process execution creates a private process group atomically, drains output with a bound, and terminates the whole group on timeout, cancellation, output overflow, or a root process that leaves descendants behind. During an approved destructive cleanup, normal app termination is deferred until the transaction reports completion or a recoverable receipt state.
 - The SwiftUI app contains no LLM client. MCP, skills, plugins, and external AI models are not required for scanning or cleanup and cannot authorize a cleanup action through this release runtime.
 
 ## Hall of thanks

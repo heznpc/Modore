@@ -10,13 +10,13 @@
     "problem": "問題",
     "how": "仕組み",
     "privacy": "プライバシー",
-    "download": "ダウンロード"
+    "download": "ソース"
   },
   "hero": {
     "tag": "v0.3 · Windows Edition / Mac Edition",
     "title": "PCが<em>裏で勝手に動いていないか</em>説明するローカル診断。",
     "subtitle": "ファンが回り続ける、CPU/GPUが跳ねる、知らないプロセスがある。PCヘルスチェックはマイニングの兆候、自動実行、ネットワーク、韓国セキュリティプラグインの文脈を集め、削除前の判断材料を示します。",
-    "cta_primary": "zipをダウンロード <span class='arrow'>→</span>",
+    "cta_primary": "ソースから実行 <span class='arrow'>→</span>",
     "cta_secondary": "ソースを読む",
     "meta": {
       "free": "無料",
@@ -73,10 +73,10 @@
   "how": {
     "kicker": "HOW IT WORKS",
     "heading": "8種の診断 → 1つのHTMLレポート。",
-    "lead": "追跡型インストーラなし。OS別スクリプトがシステムを収集し、Windowsはブラウザで開けるHTMLレポート、MacはSwiftUIダッシュボードとHTML書き出しに組み立てます。",
+    "lead": "追跡型インストーラなし。OS別スクリプトがシステムを収集し、WindowsはHTMLレポート、Macはシステムコンポーネント中心のSwiftUIユーティリティとHTML書き出しに組み立てます。",
     "p1": { "title": "収集", "desc": "プロセス・ネットワーク・ポート・自動実行・セキュリティ状態。Sysinternals + launchd + VirusTotalハッシュ照会。" },
     "p2": { "title": "正規化", "desc": "韓国SWホワイトリストと照合してシグナル判定。OS非依存の共通スキーマ。" },
-    "p3": { "title": "レンダリング", "desc": "Windowsは単一HTMLレポート。MacはSwiftUIダッシュボードとHTML書き出し。追跡型インストーラやレポートアップロードはありません。" }
+    "p3": { "title": "レンダリング", "desc": "Windowsは単一HTMLレポート。MacはネイティブSwiftUIユーティリティとHTML書き出し。追跡型インストーラやレポートアップロードはありません。" }
   },
   "privacy": {
     "kicker": "PRIVACY · AUDITABLE",
@@ -102,25 +102,25 @@
     }
   },
   "download": {
-    "kicker": "DOWNLOAD",
-    "heading": "いますぐダウンロード。",
-    "lead": "単一zip。USBに入れて別PCでもそのまま実行可。インストール不要、ほとんどの診断で管理者権限も不要。",
+    "kicker": "SOURCE PREVIEW",
+    "heading": "ソースを確認してビルド。",
+    "lead": "現在、公開インストーラはありません。確認済みのソースを実行するか、署名・公証・Gatekeeper・SHA-256メタデータ付きリリースをお待ちください。",
     "windows": {
       "title": "Windows Edition",
-      "desc": "Windows 10 / 11 · PowerShell 5.1 標準搭載。<code>검사하기.bat</code> をダブルクリック。",
-      "btn": "pch-v0.3.0-win.zip →"
+      "desc": "Windows 10 / 11 · PowerShell 5.1。ソースを確認して <code>검사하기.bat</code> を実行。",
+      "btn": "Windowsソースを見る →"
     },
     "macos": {
       "title": "Mac Edition",
       "desc": "macOS 13+ SwiftUIアプリは <code>Mac앱실행.command</code>、スクリプトモードは <code>검사하기.command</code> を右クリック → 開く。System Data/Developerストレージバーの解釈は Mac Edition の機能です。",
-      "btn": "pch-v0.3.0-mac.zip →"
+      "btn": "Macソースを見る →"
     },
     "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>。読めるソースを自分で確認できます。"
   },
   "final": {
     "heading": "疑わしい今、<em>6分で答えが出ます。</em>",
     "lead": "登録不要。メールアドレス不要。レポートは自分のブラウザでのみ開かれます。",
-    "cta": "いますぐダウンロード <span class='arrow'>→</span>"
+    "cta": "ソースを見る <span class='arrow'>→</span>"
   },
   "footer": {
     "license": "MIT License",

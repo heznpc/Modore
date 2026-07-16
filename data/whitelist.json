@@ -68,6 +68,7 @@
     "python": { "vendor": "Python", "desc": "Python 인터프리터", "risk": "safe" },
     "docker": { "vendor": "Docker", "desc": "Docker Desktop", "risk": "safe" },
     "com.docker.backend": { "vendor": "Docker", "desc": "Docker 백엔드", "risk": "safe" },
+    "pchealthcheckmac": { "vendor": "Heznpc", "desc": "PC Health Check Mac 로컬 진단 앱", "risk": "safe" },
     "claude": { "vendor": "Anthropic", "desc": "Claude Desktop AI 어시스턴트", "risk": "safe" }
   },
   "hardware": {

@@ -31,17 +31,22 @@ extension ScanModel {
     }
 
     func openCurrentReportInBrowser() {
-        guard let url = selectedReportURL else { return }
+        guard let url = selectedReportURL, reportURLIsSafe(url) else { return }
         NSWorkspace.shared.open(url)
     }
 
     func revealReportsInFinder() {
-        let target = selectedReportURL ?? (hasNormalReport ? normalReportURL : projectRoot)
+        let target: URL
+        if let selectedReportURL, reportURLIsSafe(selectedReportURL) {
+            target = selectedReportURL
+        } else {
+            target = hasNormalReport ? normalReportURL : projectRoot
+        }
         NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
     func openConfigInFinder() {
-        NSWorkspace.shared.activateFileViewerSelecting([projectRoot.appendingPathComponent("data/config.json")])
+        NSWorkspace.shared.activateFileViewerSelecting([RuntimeWorkspace.userConfigURL()])
     }
 
     func openFullDiskAccessSettings() {
@@ -76,26 +81,31 @@ extension ScanModel {
     }
 
     func prepareCleanup(_ device: SimulatorDevice) {
-        guard !isSimulatorProtected(device), !device.cleanupID.isEmpty else { return }
+        guard !isSimulatorProtected(device), device.hasSupportedCleanupRecipe else { return }
         prepareCleanup(recipeID: device.cleanupID, label: device.name)
     }
 
     func isSimulatorProtected(_ device: SimulatorDevice) -> Bool {
-        device.isBooted || simulatorKeepNames.contains(device.name)
+        device.isProtected(by: simulatorKeepUUIDs) || hasUnresolvedSimulatorKeepEntries
     }
 
     func toggleSimulatorProtection(_ device: SimulatorDevice) {
         guard !device.isBooted else { return }
-        var updatedNames = simulatorKeepNames
-        let isRemoving = updatedNames.contains(device.name)
+        guard !hasUnresolvedSimulatorKeepEntries else {
+            errorMessage = "기존 Simulator 보존 항목을 UUID로 확인하지 못해 변경을 차단했습니다. Simulator 목록을 확인한 뒤 다시 검사하세요."
+            return
+        }
+        var updatedUUIDs = simulatorKeepUUIDs
+        let normalizedUUID = device.uuid.uppercased()
+        let isRemoving = updatedUUIDs.contains(normalizedUUID)
         if isRemoving {
-            updatedNames.remove(device.name)
+            updatedUUIDs.remove(normalizedUUID)
         } else {
-            updatedNames.insert(device.name)
+            updatedUUIDs.insert(normalizedUUID)
         }
         do {
-            try Self.saveSimulatorKeepNames(updatedNames)
-            replaceSimulatorKeepNames(with: updatedNames)
+            try SimulatorKeepStore.save(updatedUUIDs)
+            replaceSimulatorKeepUUIDs(with: updatedUUIDs)
             appendLog(isRemoving ? "Simulator 보존 해제: \(device.name)" : "Simulator 보존: \(device.name)")
         } catch {
             errorMessage = "Simulator 보존 목록을 저장하지 못했습니다: \(error.localizedDescription)"
@@ -105,40 +115,114 @@ extension ScanModel {
     private func prepareCleanup(recipeID: String, label: String) {
         guard !recipeID.isEmpty, !isBusy else { return }
         cleanupInFlight = true
+        cleanupIsExecuting = false
         errorMessage = nil
         appendLog("정리 미리보기: \(label)")
         let root = projectRoot
-        Task {
+        cleanupTask = Task {
+            defer {
+                cleanupInFlight = false
+                cleanupTask = nil
+            }
+            let execution = await Task.detached(priority: .userInitiated) {
+                RuntimeWorkspace.prepareExecution(projectRoot: root)
+            }.value
+            guard !Task.isCancelled else {
+                appendLog("정리 미리보기를 취소했습니다.")
+                return
+            }
+            guard let execution else {
+                errorMessage = "서명된 정리 런타임을 다시 검증하지 못했습니다. 앱을 다시 설치한 뒤 시도하세요."
+                appendLog("정리 미리보기 중단: 런타임 신뢰 검증 실패")
+                return
+            }
+            guard let invocation = execution.pinnedInvocation(
+                relativePath: "scripts/cleanup.sh",
+                name: "cleanup"
+            ) else {
+                errorMessage = "봉인한 정리 프로그램을 확인하지 못해 실행하지 않았습니다."
+                return
+            }
             let result = await LocalProcessRunner.capture(
                 executable: "/bin/bash",
-                arguments: ["./scripts/cleanup.sh", "--preview", recipeID],
-                currentDirectory: root
+                arguments: [invocation.argument, "--preview", recipeID],
+                currentDirectory: execution.runtimeRoot,
+                expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
+                expectedSignedBundleURL: execution.signedBundleURL,
+                pinnedFiles: invocation.files,
+                timeout: 60,
+                maxOutputBytes: 256_000
             )
-            cleanupInFlight = false
+            guard result.endState == .exited else {
+                if result.endState == .cancelled {
+                    appendLog("정리 미리보기를 취소했습니다.")
+                } else {
+                    errorMessage = "정리 대상을 제한 시간과 출력 상한 안에서 확인하지 못했습니다. 다시 시도하세요."
+                    appendLog("정리 미리보기 중단: \(result.endState)")
+                }
+                return
+            }
             guard let preview = CleanupPreview(protocolText: result.output) else {
                 errorMessage = "정리 미리보기 결과를 읽지 못했습니다. 실행 로그를 확인하세요."
                 appendLog("정리 미리보기 실패: \(result.status)")
                 return
             }
             cleanupPreview = preview
-            appendLog("미리보기: \(preview.statusText), 논리 크기 \(preview.estimatedText)")
+            appendLog(
+                preview.estimateMeasured
+                    ? "미리보기: \(preview.statusText), 대상 점유 추정 \(preview.estimatedText)"
+                    : "미리보기: \(preview.statusText), 크기 재측정 보류(종료할 작업 있음)"
+            )
         }
     }
 
     func executeCleanup(_ preview: CleanupPreview) {
-        guard preview.canExecute, !isBusy, cleanupPreview?.recipeID == preview.recipeID else { return }
+        guard preview.canExecute,
+              !isBusy,
+              cleanupPreview?.recipeID == preview.recipeID,
+              cleanupPreview?.approvalToken == preview.approvalToken else { return }
         cleanupInFlight = true
+        beginDestructiveCleanupTransaction()
         errorMessage = nil
         appendLog("승인형 정리 실행: \(preview.label)")
         let root = projectRoot
-        Task {
+        cleanupTask = Task {
+            defer {
+                cleanupInFlight = false
+                finishDestructiveCleanupTransaction()
+                cleanupTask = nil
+            }
+            let execution = await Task.detached(priority: .userInitiated) {
+                RuntimeWorkspace.prepareExecution(projectRoot: root)
+            }.value
+            guard let execution else {
+                errorMessage = "서명된 정리 런타임을 다시 검증하지 못해 실행을 중단했습니다. 아무것도 정리하지 않았습니다."
+                appendLog("정리 실행 중단: 런타임 신뢰 검증 실패")
+                return
+            }
+            guard let invocation = execution.pinnedInvocation(
+                relativePath: "scripts/cleanup.sh",
+                name: "cleanup"
+            ) else {
+                errorMessage = "봉인한 정리 프로그램을 확인하지 못해 아무것도 정리하지 않았습니다."
+                return
+            }
+            var pinnedFiles = invocation.files
+            pinnedFiles["approval_token"] = Data(preview.approvalToken.utf8)
             let result = await LocalProcessRunner.capture(
                 executable: "/bin/bash",
-                arguments: ["./scripts/cleanup.sh", "--execute", preview.recipeID, "--owner-approved"],
-                currentDirectory: root
+                arguments: [
+                    invocation.argument, "--execute", preview.recipeID,
+                    "--owner-approved", "--approval-token-file", "@pch-pinned:approval_token",
+                ],
+                currentDirectory: execution.runtimeRoot,
+                expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
+                expectedSignedBundleURL: execution.signedBundleURL,
+                pinnedFiles: pinnedFiles,
+                timeout: nil,
+                maxOutputBytes: 512_000
             )
             guard let executed = CleanupPreview(protocolText: result.output) else {
-                cleanupInFlight = false
                 errorMessage = "정리 실행 결과를 읽지 못했습니다. 사용자 파일 정리는 다시 실행하지 말고 로그를 확인하세요."
                 appendLog("정리 실행 결과 해석 실패: \(result.status)")
                 return
@@ -147,7 +231,7 @@ extension ScanModel {
                 if executed.actionMode == "trash" {
                     appendLog("휴지통 이동 완료: \(executed.reclaimedText). 휴지통을 비운 뒤 실제 공간이 회수됩니다.")
                 } else {
-                    appendLog("정리 완료: 논리 크기 \(executed.reclaimedText), 실제 여유 변화 \(executed.physicalDeltaText)")
+                    appendLog("정리 완료: 처리 대상 점유 \(executed.reclaimedText), 실제 여유 변화 \(executed.physicalDeltaText)")
                 }
                 if !executed.receipt.isEmpty {
                     appendLog("영수증: \(executed.receipt)")
@@ -157,14 +241,13 @@ extension ScanModel {
                 let ok = await ScanPipeline.run(projectRoot: root) { line in
                     Task { @MainActor in self.appendLog(line) }
                 }
-                cleanupInFlight = false
-                finishRun(success: ok)
+                await finishRun(success: ok)
             } else {
-                cleanupInFlight = false
                 cleanupPreview = executed
-                errorMessage = executed.blockedReason.isEmpty
-                    ? "일부 항목을 정리하지 못했습니다. 영수증과 실행 로그를 확인하세요."
-                    : executed.blockedReason
+                errorMessage = executed.failureMessage
+                for recoveryPath in executed.recoveryPathMessages {
+                    appendLog(recoveryPath)
+                }
                 appendLog("정리 중단: \(executed.statusText)")
             }
         }
@@ -187,21 +270,63 @@ extension ScanModel {
         let root = projectRoot
         let command = enabled ? "--install" : "--uninstall"
         Task {
+            defer { storageWatchInFlight = false }
+            let execution = await Task.detached(priority: .userInitiated) {
+                RuntimeWorkspace.prepareExecution(projectRoot: root)
+            }.value
+            guard let execution else {
+                errorMessage = "서명된 감시 런타임을 확인하지 못해 설정을 변경하지 않았습니다."
+                return
+            }
+            guard let invocation = execution.pinnedInvocation(
+                relativePath: "scripts/schedule.sh",
+                name: "schedule"
+            ) else {
+                errorMessage = "봉인한 감시 설정 프로그램을 확인하지 못해 변경하지 않았습니다."
+                return
+            }
+            guard let watcherHash = execution.sealedSHA256(
+                relativePath: "scripts/storage_watch.sh"
+            ) else {
+                errorMessage = "봉인한 저장공간 감시 프로그램을 확인하지 못해 변경하지 않았습니다."
+                return
+            }
             let result = await LocalProcessRunner.capture(
                 executable: "/bin/bash",
-                arguments: ["./scripts/schedule.sh", command, "--owner-approved"],
-                currentDirectory: root
+                arguments: [invocation.argument, command, "--owner-approved"],
+                currentDirectory: execution.runtimeRoot,
+                expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
+                expectedSignedBundleURL: execution.signedBundleURL,
+                pinnedFiles: invocation.files,
+                environment: [
+                    "PCH_STORAGE_WATCH_SCRIPT": execution.storageWatchScriptURL.path,
+                    "PCH_STORAGE_WATCH_SHA256": watcherHash,
+                ]
             )
-            storageWatchInFlight = false
-            let values = Self.protocolValues(result.output)
-            if result.status == 0, let value = values["enabled"] {
+            let values = StorageWatchService.protocolValues(result.output)
+            let harnessEnabled = values["enabled"] == "true"
+            let runtimeState = StorageWatchService.runtimeState(
+                protocolValues: values,
+                expectedWatcherURL: execution.storageWatchScriptURL,
+                expectedWatcherSHA256: watcherHash
+            )
+            let stateMatchesRequest = enabled
+                ? harnessEnabled && runtimeState == .current
+                : !harnessEnabled && runtimeState == .absent
+            if result.status == 0, let value = values["enabled"], stateMatchesRequest {
                 storageWatchEnabled = value == "true"
                 storageWatchDetail = storageWatchEnabled
                     ? "매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림"
                     : "꺼짐 · 자동 삭제 없음"
                 appendLog(storageWatchEnabled ? "저장공간 급감 감시를 켰습니다." : "저장공간 급감 감시를 껐습니다.")
             } else {
-                errorMessage = "저장공간 감시 설정을 변경하지 못했습니다. 실행 로그를 확인하세요."
+                storageWatchEnabled = false
+                storageWatchDetail = runtimeState == .stale
+                    ? "안전하지 않은 감시 plist가 남아 있습니다. 제거 후 다시 시도하세요."
+                    : "꺼짐 · 자동 삭제 없음"
+                errorMessage = runtimeState == .stale
+                    ? "감시 LaunchAgent가 현재 서명된 앱 경로를 가리키지 않거나 안전하지 않아 작업을 완료하지 않았습니다."
+                    : "저장공간 감시 설정을 변경하지 못했습니다. 실행 로그를 확인하세요."
             }
         }
     }
