@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<a class="skip-link" href="#main">본문으로 건너뛰기</a>
 
 <header class="topbar">
   <div class="topbar-inner">
@@ -26,13 +27,14 @@
       <a href="#download" data-i18n="nav.download">소스</a>
       <a href="https://github.com/heznpc/pc-health-check" target="_blank" rel="noopener" class="github-link">GitHub</a>
       <div class="lang-switcher" id="langSwitcher">
-        <button class="lang-btn active" data-lang="ko">KO</button>
-        <button class="lang-btn" data-lang="en">EN</button>
-        <button class="lang-btn" data-lang="ja">JA</button>
+        <button class="lang-btn active" data-lang="ko" aria-pressed="true">KO</button>
+        <button class="lang-btn" data-lang="en" aria-pressed="false">EN</button>
+        <button class="lang-btn" data-lang="ja" aria-pressed="false">JA</button>
       </div>
     </nav>
   </div>
 </header>
+<main id="main">
 
 <!-- ======================================================
      HERO
@@ -323,6 +325,7 @@
   </div>
 </section>
 
+</main>
 <footer>
   <div class="container">
     <div>

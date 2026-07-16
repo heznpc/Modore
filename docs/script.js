@@ -167,7 +167,9 @@ async function switchLanguage(lang) {
 
   // 버튼 활성화 상태 업데이트
   document.querySelectorAll('.lang-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.lang === lang);
+    const isActive = btn.dataset.lang === lang;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-pressed', String(isActive));
   });
 
   // URL 업데이트 (히스토리 쌓지 않게 replaceState)

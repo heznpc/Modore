@@ -142,6 +142,10 @@ h2 { margin-top: 40px; font-size: 22px; border-bottom: 2px solid #e5e7eb; paddin
 table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 th { background: #f3f4f6; padding: 10px; text-align: left; font-size: 13px; color: #4b5563; font-weight: 600; }
 td { padding: 10px; border-top: 1px solid #f3f4f6; font-size: 14px; vertical-align: top; }
+a:focus-visible, button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+@media (max-width: 700px) {
+  table { display: block; overflow-x: auto; white-space: nowrap; }
+}
 tr.risk-danger { background: #fef2f2; }
 tr.risk-warning { background: #fffbeb; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -280,14 +284,14 @@ def render_cpu_table(i18n: I18n, rows) -> str:
     return f"""
 <table>
   <thead><tr>
-    <th>{esc(h("table_headers.verdict"))}</th>
-    <th>{esc(h("table_headers.vt"))}</th>
-    <th>{esc(h("table_headers.program"))}</th>
-    <th>{esc(h("table_headers.cpu_sec"))}</th>
-    <th>{esc(h("table_headers.memory_mb"))}</th>
-    <th>{esc(h("table_headers.description"))}</th>
-    <th>{esc(h("table_headers.path"))}</th>
-    <th>{esc(h("table_headers.investigate"))}</th>
+    <th scope="col">{esc(h("table_headers.verdict"))}</th>
+    <th scope="col">{esc(h("table_headers.vt"))}</th>
+    <th scope="col">{esc(h("table_headers.program"))}</th>
+    <th scope="col">{esc(h("table_headers.cpu_sec"))}</th>
+    <th scope="col">{esc(h("table_headers.memory_mb"))}</th>
+    <th scope="col">{esc(h("table_headers.description"))}</th>
+    <th scope="col">{esc(h("table_headers.path"))}</th>
+    <th scope="col">{esc(h("table_headers.investigate"))}</th>
   </tr></thead>
   <tbody>{''.join(body)}</tbody>
 </table>"""
@@ -321,14 +325,14 @@ def render_autoruns_table(i18n: I18n, rows, show_all=False) -> str:
     table = f"""
 <table>
   <thead><tr>
-    <th>{esc(h("table_headers.verdict"))}</th>
-    <th>{esc(h("table_headers.signature"))}</th>
-    <th>{esc(h("table_headers.vt"))}</th>
-    <th>{esc(h("table_headers.category"))}</th>
-    <th>{esc(h("table_headers.entry"))}</th>
-    <th>{esc(h("table_headers.description"))}</th>
-    <th>{esc(h("table_headers.path"))}</th>
-    <th>{esc(h("table_headers.investigate"))}</th>
+    <th scope="col">{esc(h("table_headers.verdict"))}</th>
+    <th scope="col">{esc(h("table_headers.signature"))}</th>
+    <th scope="col">{esc(h("table_headers.vt"))}</th>
+    <th scope="col">{esc(h("table_headers.category"))}</th>
+    <th scope="col">{esc(h("table_headers.entry"))}</th>
+    <th scope="col">{esc(h("table_headers.description"))}</th>
+    <th scope="col">{esc(h("table_headers.path"))}</th>
+    <th scope="col">{esc(h("table_headers.investigate"))}</th>
   </tr></thead>
   <tbody>{''.join(body)}</tbody>
 </table>"""
@@ -358,14 +362,14 @@ def render_network_table(i18n: I18n, rows) -> str:
     return f"""
 <table>
   <thead><tr>
-    <th>{esc(h("table_headers.verdict"))}</th>
-    <th>{esc(h("table_headers.vt_country"))}</th>
-    <th>{esc(h("table_headers.program"))}</th>
-    <th>{esc(h("table_headers.remote_ip"))}</th>
-    <th>{esc(h("table_headers.port"))}</th>
-    <th>{esc(h("table_headers.description"))}</th>
-    <th>{esc(h("table_headers.path"))}</th>
-    <th>{esc(h("table_headers.investigate"))}</th>
+    <th scope="col">{esc(h("table_headers.verdict"))}</th>
+    <th scope="col">{esc(h("table_headers.vt_country"))}</th>
+    <th scope="col">{esc(h("table_headers.program"))}</th>
+    <th scope="col">{esc(h("table_headers.remote_ip"))}</th>
+    <th scope="col">{esc(h("table_headers.port"))}</th>
+    <th scope="col">{esc(h("table_headers.description"))}</th>
+    <th scope="col">{esc(h("table_headers.path"))}</th>
+    <th scope="col">{esc(h("table_headers.investigate"))}</th>
   </tr></thead>
   <tbody>{''.join(body)}</tbody>
 </table>"""
@@ -374,8 +378,8 @@ def render_network_table(i18n: I18n, rows) -> str:
 def render_simple_table(i18n: I18n, rows, columns) -> str:
     """columns = [{'field': 'name', 'header_key': 'table_headers.name'}, ...]"""
     rows = rows or []
-    headers = f'<th>{esc(i18n.t("table_headers.verdict"))}</th>' + \
-              "".join(f"<th>{esc(i18n.t(c['header_key']))}</th>" for c in columns)
+    headers = f'<th scope="col">{esc(i18n.t("table_headers.verdict"))}</th>' + \
+              "".join(f'<th scope="col">{esc(i18n.t(c["header_key"]))}</th>' for c in columns)
     body = []
     for r in rows:
         cells = "".join(f"<td>{esc(r.get(c['field']))}</td>" for c in columns)
@@ -404,13 +408,13 @@ def render_storage_table(i18n: I18n, rows) -> str:
     return f"""
 <table>
   <thead><tr>
-    <th>{esc(h("table_headers.verdict"))}</th>
-    <th>{esc(h("table_headers.category"))}</th>
-    <th>{esc(h("table_headers.item"))}</th>
-    <th>{esc(h("table_headers.size_gb"))}</th>
-    <th>{esc(h("table_headers.action"))}</th>
-    <th>{esc(h("table_headers.description"))}</th>
-    <th>{esc(h("table_headers.path"))}</th>
+    <th scope="col">{esc(h("table_headers.verdict"))}</th>
+    <th scope="col">{esc(h("table_headers.category"))}</th>
+    <th scope="col">{esc(h("table_headers.item"))}</th>
+    <th scope="col">{esc(h("table_headers.size_gb"))}</th>
+    <th scope="col">{esc(h("table_headers.action"))}</th>
+    <th scope="col">{esc(h("table_headers.description"))}</th>
+    <th scope="col">{esc(h("table_headers.path"))}</th>
   </tr></thead>
   <tbody>{''.join(body)}</tbody>
 </table>"""
@@ -435,11 +439,11 @@ def render_storage_access_table(i18n: I18n, rows) -> str:
 <p class="muted">{esc(h("storage.full_disk_note"))}</p>
 <table>
   <thead><tr>
-    <th>{esc(h("table_headers.verdict"))}</th>
-    <th>{esc(h("table_headers.item"))}</th>
-    <th>{esc(h("table_headers.status"))}</th>
-    <th>{esc(h("table_headers.description"))}</th>
-    <th>{esc(h("table_headers.path"))}</th>
+    <th scope="col">{esc(h("table_headers.verdict"))}</th>
+    <th scope="col">{esc(h("table_headers.item"))}</th>
+    <th scope="col">{esc(h("table_headers.status"))}</th>
+    <th scope="col">{esc(h("table_headers.description"))}</th>
+    <th scope="col">{esc(h("table_headers.path"))}</th>
   </tr></thead>
   <tbody>{''.join(body)}</tbody>
 </table>"""
@@ -464,12 +468,12 @@ def render_storage_runtime_table(i18n: I18n, rows) -> str:
     return f"""
 <table>
   <thead><tr>
-    <th>{esc(h("table_headers.verdict"))}</th>
-    <th>{esc(h("table_headers.category"))}</th>
-    <th>{esc(h("table_headers.item"))}</th>
-    <th>{esc(h("table_headers.count"))}</th>
-    <th>{esc(h("table_headers.action"))}</th>
-    <th>{esc(h("table_headers.description"))}</th>
+    <th scope="col">{esc(h("table_headers.verdict"))}</th>
+    <th scope="col">{esc(h("table_headers.category"))}</th>
+    <th scope="col">{esc(h("table_headers.item"))}</th>
+    <th scope="col">{esc(h("table_headers.count"))}</th>
+    <th scope="col">{esc(h("table_headers.action"))}</th>
+    <th scope="col">{esc(h("table_headers.description"))}</th>
   </tr></thead>
   <tbody>{''.join(body)}</tbody>
 </table>"""
@@ -554,13 +558,13 @@ def render_monitor(i18n: I18n, m) -> str:
 </div>
 <table>
   <thead><tr>
-    <th>{esc(h("table_headers.verdict"))}</th>
-    <th>{esc(h("table_headers.program"))}</th>
-    <th>{esc(h("table_headers.avg_cpu"))}</th>
-    <th>{esc(h("table_headers.max_cpu"))}</th>
-    <th>{esc(h("table_headers.description"))}</th>
-    <th>{esc(h("table_headers.path"))}</th>
-    <th>{esc(h("table_headers.investigate"))}</th>
+    <th scope="col">{esc(h("table_headers.verdict"))}</th>
+    <th scope="col">{esc(h("table_headers.program"))}</th>
+    <th scope="col">{esc(h("table_headers.avg_cpu"))}</th>
+    <th scope="col">{esc(h("table_headers.max_cpu"))}</th>
+    <th scope="col">{esc(h("table_headers.description"))}</th>
+    <th scope="col">{esc(h("table_headers.path"))}</th>
+    <th scope="col">{esc(h("table_headers.investigate"))}</th>
   </tr></thead>
   <tbody>{''.join(body)}</tbody>
 </table>"""
@@ -762,10 +766,12 @@ def build_report(i18n: I18n, scan, monitor) -> str:
 <html lang="{i18n.lang}">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(h("title"))} - {esc(scan.get('computerName'))}</title>
 <style>{CSS}</style>
 </head>
 <body>
+<main id="main">
 <div class="container">
 
 {language_switcher_html(i18n.lang)}
@@ -837,6 +843,7 @@ def build_report(i18n: I18n, scan, monitor) -> str:
 <div class="footer">{h("footer", now=now)}</div>
 
 </div>
+</main>
 </body>
 </html>"""
 
