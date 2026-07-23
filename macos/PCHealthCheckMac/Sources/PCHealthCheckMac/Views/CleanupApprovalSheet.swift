@@ -72,6 +72,7 @@ private struct CleanupApprovalHeader: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(preview.label)
                     .font(.title3.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
                 Text(preview.statusText)
                     .font(.callout)
                     .foregroundStyle(.secondary)

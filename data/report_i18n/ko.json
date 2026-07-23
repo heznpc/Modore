@@ -80,7 +80,7 @@
   },
   "vt_summary": {
     "enabled": "🛰️ <b>VirusTotal 조회 활성화</b> · 이번 검사에서 {calls} 건 조회 · 캐시 TTL {hours}시간 · 해시만 전송 (파일 업로드 안 함)",
-    "disabled": "ℹ️ VirusTotal 조회 비활성화 상태. 활성화하려면 <code>data/config.json</code>에서 <code>enabled: true</code>로 바꾸고 API 키를 입력하세요. <a href='https://www.virustotal.com/gui/my-apikey' target='_blank'>API 키 발급 받기</a>"
+    "disabled": "ℹ️ VirusTotal 조회 비활성화 상태. 활성화하려면 <code>data/config.json</code>에서 <code>enabled: true</code>로 바꾸고 API 키를 입력하세요. <a href='https://www.virustotal.com/gui/my-apikey' target='_blank' rel='noopener noreferrer' aria-label='VirusTotal API 키 발급 받기'>API 키 발급 받기</a>"
   },
   "explain_summary": "💡 이게 무슨 검사인가요?",
   "explain_warning": "🟡 확인 권장:",

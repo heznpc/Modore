@@ -32,17 +32,18 @@ function Get-InvestigateLinks($Row) {
         }
     }
     $links = [System.Collections.Generic.List[string]]::new()
+    $linkContext = if ([string]::IsNullOrWhiteSpace($label)) { '항목' } else { H $label }
     $vt = $Row.PSObject.Properties['vt']
     $sha = $Row.PSObject.Properties['sha256']
     if ($vt -and $vt.Value -and $vt.Value.PSObject.Properties['hash']) {
-        $links.Add("<a href='https://www.virustotal.com/gui/file/$(U $vt.Value.hash)' target='_blank'>VT</a>")
+        $links.Add("<a href='https://www.virustotal.com/gui/file/$(U $vt.Value.hash)' target='_blank' rel='noopener noreferrer' aria-label='VirusTotal에서 $linkContext 조사'>VT</a>")
     } elseif ($sha -and -not [string]::IsNullOrWhiteSpace([string]$sha.Value)) {
-        $links.Add("<a href='https://www.virustotal.com/gui/file/$(U $sha.Value)' target='_blank'>VT</a>")
+        $links.Add("<a href='https://www.virustotal.com/gui/file/$(U $sha.Value)' target='_blank' rel='noopener noreferrer' aria-label='VirusTotal에서 $linkContext 조사'>VT</a>")
     } elseif ($Row.PSObject.Properties['remoteAddress']) {
-        $links.Add("<a href='https://www.virustotal.com/gui/ip-address/$(U $Row.remoteAddress)' target='_blank'>VT IP</a>")
+        $links.Add("<a href='https://www.virustotal.com/gui/ip-address/$(U $Row.remoteAddress)' target='_blank' rel='noopener noreferrer' aria-label='VirusTotal에서 $linkContext 조사'>VT IP</a>")
     }
     if (-not [string]::IsNullOrWhiteSpace($label)) {
-        $links.Add("<a href='https://www.google.com/search?q=$(U "$label malware")' target='_blank'>Google</a>")
+        $links.Add("<a href='https://www.google.com/search?q=$(U "$label malware")' target='_blank' rel='noopener noreferrer' aria-label='Google에서 $linkContext 검색'>Google</a>")
     }
     return ($links -join ' · ')
 }
@@ -93,7 +94,7 @@ body{font-family:-apple-system,Segoe UI,Malgun Gothic,sans-serif;background:#f4f
 .finding{padding:12px;margin:8px 0;border-left:4px solid #e5e7eb;background:#fff}.finding.danger{border-color:#ef4444;background:#fef2f2}.finding.warning{border-color:#f59e0b;background:#fffbeb}
 table{width:100%;border-collapse:collapse;margin:10px 0}th{background:#f3f4f6;text-align:left}th,td{padding:8px;border-top:1px solid #e5e7eb;font-size:13px;vertical-align:top}
 a:focus-visible,button:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
-@media(max-width:700px){table{display:block;overflow-x:auto;white-space:nowrap}}
+@media(max-width:700px){.container{overflow-x:hidden}table{display:block;overflow-x:auto;white-space:nowrap}}
 '@
 
 $html = @"
