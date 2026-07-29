@@ -494,3 +494,5 @@ def test_release_report_generators_have_investigation_links(project_root):
         assert "https://www.google.com/search" in source
         assert "https://www.virustotal.com/gui/ip-address" in source
         assert "https://www.virustotal.com/gui/file" in source
+        assert "noopener noreferrer" in source
+        assert "aria-label" in source

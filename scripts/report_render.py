@@ -63,6 +63,7 @@ th { background: #f3f4f6; padding: 10px; text-align: left; font-size: 13px; colo
 td { padding: 10px; border-top: 1px solid #f3f4f6; font-size: 14px; vertical-align: top; }
 a:focus-visible, button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 @media (max-width: 700px) {
+  .container { overflow-x: hidden; }
   table { display: block; overflow-x: auto; white-space: nowrap; }
 }
 tr.risk-danger { background: #fef2f2; }
@@ -136,14 +137,24 @@ def url_encode(s):
 def search_links(i18n: I18n, name, path=None, vt_hash=None) -> str:
     q = url_encode(name) + url_encode(i18n.t("links.search_suffix"))
     google = i18n.t("links.google_search")
-    links = f'<a href="https://www.google.com/search?q={q}" target="_blank">{esc(google)}</a>'
+    context = esc(name or (os.path.basename(str(path)) if path else i18n.t("table_headers.item")))
+    links = (
+        f'<a href="https://www.google.com/search?q={q}" target="_blank" '
+        f'rel="noopener noreferrer" aria-label="{esc(google)}: {context}">{esc(google)}</a>'
+    )
     if vt_hash:
         vt_label = i18n.t("links.vt_report")
-        links += f' · <a href="https://www.virustotal.com/gui/file/{vt_hash}" target="_blank">{esc(vt_label)}</a>'
+        links += (
+            f' · <a href="https://www.virustotal.com/gui/file/{url_encode(vt_hash)}" target="_blank" '
+            f'rel="noopener noreferrer" aria-label="{esc(vt_label)}: {context}">{esc(vt_label)}</a>'
+        )
     elif path:
         fname = url_encode(os.path.basename(str(path)))
         vt_label = i18n.t("links.vt_lookup")
-        links += f' · <a href="https://www.virustotal.com/gui/search/{fname}" target="_blank">{esc(vt_label)}</a>'
+        links += (
+            f' · <a href="https://www.virustotal.com/gui/search/{fname}" target="_blank" '
+            f'rel="noopener noreferrer" aria-label="{esc(vt_label)}: {context}">{esc(vt_label)}</a>'
+        )
     return links
 
 
@@ -266,6 +277,7 @@ def render_network_table(i18n: I18n, rows) -> str:
     body = []
     for r in rows:
         ip = esc(r.get("remoteAddress"))
+        ip_url = url_encode(r.get("remoteAddress"))
         vt_label = i18n.t("links.vt_lookup")
         body.append(f"""
 <tr class="risk-{r.get('risk','unknown')}">
@@ -276,7 +288,7 @@ def render_network_table(i18n: I18n, rows) -> str:
   <td class="num">{esc(r.get('remotePort'))}</td>
   <td class="note">{esc(r.get('note'))}</td>
   <td class="path">{esc(r.get('path'))}</td>
-  <td class="links"><a href="https://www.virustotal.com/gui/ip-address/{ip}" target="_blank">{esc(vt_label)}</a></td>
+  <td class="links"><a href="https://www.virustotal.com/gui/ip-address/{ip_url}" target="_blank" rel="noopener noreferrer" aria-label="{esc(vt_label)}: {ip}">{esc(vt_label)}</a></td>
 </tr>""")
     return f"""
 <table>
@@ -765,4 +777,3 @@ def build_report(i18n: I18n, scan, monitor) -> str:
 </main>
 </body>
 </html>"""
-

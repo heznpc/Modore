@@ -45,6 +45,7 @@ extension ScanModel {
                 browserAutomationStopInFlight = false
                 browserAutomationStopIsExecuting = false
                 browserAutomationStopTask = nil
+                AccessibilityAnnouncer.announce("자동화 브라우저를 정상 종료했습니다")
                 runScan()
             } catch {
                 errorMessage = error.localizedDescription

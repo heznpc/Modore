@@ -74,13 +74,14 @@ function investigateLinks(row) {
   const label = row.name || row.process || row.entry || row.remoteAddress || row.label || "";
   const links = [];
   const vtHash = (row.vt && row.vt.hash) || row.sha256 || "";
+  const context = esc(label || "항목");
   if (vtHash) {
-    links.push(`<a href="https://www.virustotal.com/gui/file/${urlEncode(vtHash)}" target="_blank">VT</a>`);
+    links.push(`<a href="https://www.virustotal.com/gui/file/${urlEncode(vtHash)}" target="_blank" rel="noopener noreferrer" aria-label="VirusTotal에서 ${context} 조사">VT</a>`);
   } else if (row.remoteAddress) {
-    links.push(`<a href="https://www.virustotal.com/gui/ip-address/${urlEncode(row.remoteAddress)}" target="_blank">VT IP</a>`);
+    links.push(`<a href="https://www.virustotal.com/gui/ip-address/${urlEncode(row.remoteAddress)}" target="_blank" rel="noopener noreferrer" aria-label="VirusTotal에서 ${context} 조사">VT IP</a>`);
   }
   if (label) {
-    links.push(`<a href="https://www.google.com/search?q=${urlEncode(label + " malware")}" target="_blank">Google</a>`);
+    links.push(`<a href="https://www.google.com/search?q=${urlEncode(label + " malware")}" target="_blank" rel="noopener noreferrer" aria-label="Google에서 ${context} 검색">Google</a>`);
   }
   return links.length ? links.join(" · ") : "";
 }
@@ -107,7 +108,7 @@ const actions = overall === "danger"
     : overall === "incomplete"
       ? ["완료하지 못한 필수 수집기를 확인하세요.", "권한 또는 시간 제한 문제를 해결한 뒤 다시 검사하세요.", "빈 결과를 정상으로 해석하지 마세요."]
       : ["현재 수집 범위에서 즉시 조치가 필요한 항목이 보이지 않습니다.", "보안 업데이트를 최신 상태로 유지하세요.", "느림이나 팬 소음이 계속되면 다시 검사하세요."];
-const css = "body{font-family:-apple-system,Segoe UI,Apple SD Gothic Neo,Malgun Gothic,sans-serif;background:#f4f4f6;color:#1f1f22;margin:0;line-height:1.6}.container{max-width:1180px;margin:auto;padding:24px}.verdict,.panel,.card,table{background:white;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.06)}.verdict{display:flex;gap:18px;align-items:center;padding:24px;border-left:8px solid #8e8e93}.verdict.danger{border-color:#ff3b30}.verdict.warning{border-color:#ff9500}.verdict.safe{border-color:#34c759}.verdict.incomplete{border-color:#8e8e93}.icon{font-size:48px}.big{font-size:24px;font-weight:700}.meta,.muted{color:#6e6e73}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:18px 0}.card{padding:18px}.count{font-size:32px;font-weight:700}.panel{padding:18px 20px;margin:18px 0}.share{background:#f2f2f7;color:#3a3a3c;padding:10px;border-radius:6px;margin-top:10px}.share.redacted{background:#f2f2f7;color:#3a3a3c}.finding{padding:12px;margin:8px 0;border-left:4px solid #d1d1d6;background:#fff}.finding.danger{border-color:#ff3b30;background:#fff2f1}.finding.warning{border-color:#ff9500;background:#fff8f0}table{width:100%;border-collapse:collapse;margin:10px 0}th{background:#f2f2f7;text-align:left}th,td{padding:8px;border-top:1px solid #d1d1d6;font-size:13px;vertical-align:top}a:focus-visible,button:focus-visible{outline:2px solid #0071e3;outline-offset:2px}@media(max-width:700px){table{display:block;overflow-x:auto;white-space:nowrap}}";
+const css = "body{font-family:-apple-system,Segoe UI,Apple SD Gothic Neo,Malgun Gothic,sans-serif;background:#f4f4f6;color:#1f1f22;margin:0;line-height:1.6}.container{max-width:1180px;margin:auto;padding:24px}.verdict,.panel,.card,table{background:white;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.06)}.verdict{display:flex;gap:18px;align-items:center;padding:24px;border-left:8px solid #8e8e93}.verdict.danger{border-color:#ff3b30}.verdict.warning{border-color:#ff9500}.verdict.safe{border-color:#34c759}.verdict.incomplete{border-color:#8e8e93}.icon{font-size:48px}.big{font-size:24px;font-weight:700}.meta,.muted{color:#6e6e73}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:18px 0}.card{padding:18px}.count{font-size:32px;font-weight:700}.panel{padding:18px 20px;margin:18px 0}.share{background:#f2f2f7;color:#3a3a3c;padding:10px;border-radius:6px;margin-top:10px}.share.redacted{background:#f2f2f7;color:#3a3a3c}.finding{padding:12px;margin:8px 0;border-left:4px solid #d1d1d6;background:#fff}.finding.danger{border-color:#ff3b30;background:#fff2f1}.finding.warning{border-color:#ff9500;background:#fff8f0}table{width:100%;border-collapse:collapse;margin:10px 0}th{background:#f2f2f7;text-align:left}th,td{padding:8px;border-top:1px solid #d1d1d6;font-size:13px;vertical-align:top}a:focus-visible,button:focus-visible{outline:2px solid #0071e3;outline-offset:2px}@media(max-width:700px){.container{overflow-x:hidden}table{display:block;overflow-x:auto;white-space:nowrap}}";
 const s = scan.sections || {};
 const collection = scan.collection || {};
 const collectionHtml = `<div class="panel">

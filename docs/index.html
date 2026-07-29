@@ -12,7 +12,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<a class="skip-link" href="#main">본문으로 건너뛰기</a>
+<a class="skip-link" href="#main" data-i18n="nav.skip">본문으로 건너뛰기</a>
 
 <header class="topbar">
   <div class="topbar-inner">
@@ -27,9 +27,9 @@
       <a href="#download" data-i18n="nav.download">소스</a>
       <a href="https://github.com/heznpc/pc-health-check" target="_blank" rel="noopener" class="github-link">GitHub</a>
       <div class="lang-switcher" id="langSwitcher">
-        <button class="lang-btn active" data-lang="ko" aria-pressed="true">KO</button>
-        <button class="lang-btn" data-lang="en" aria-pressed="false">EN</button>
-        <button class="lang-btn" data-lang="ja" aria-pressed="false">JA</button>
+        <button class="lang-btn active" data-lang="ko" aria-label="한국어" aria-pressed="true">KO</button>
+        <button class="lang-btn" data-lang="en" aria-label="English" aria-pressed="false">EN</button>
+        <button class="lang-btn" data-lang="ja" aria-label="日本語" aria-pressed="false">JA</button>
       </div>
     </nav>
   </div>
@@ -66,12 +66,12 @@
     </div>
 
     <!-- 실제 리포트 UI 미리보기 (mockup) -->
-    <div class="report-preview">
-      <div class="preview-titlebar">
+    <div class="report-preview" role="img" data-i18n-attr="aria-label:preview.accessible_summary" aria-label="검사 결과 예시: 확인 필요 3건, 위험 0건, 정상 93건">
+      <div class="preview-titlebar" aria-hidden="true">
         <div class="preview-dots"><span></span><span></span><span></span></div>
         <div class="preview-url">file:///PC건강검진/검사결과.html</div>
       </div>
-      <div class="preview-body">
+      <div class="preview-body" aria-hidden="true">
         <div class="preview-verdict">
           <div class="icon">🟡</div>
           <div class="text">
@@ -198,21 +198,21 @@
     <div class="pipeline">
       <div class="pipe-node">
         <div class="label">01 · COLLECT</div>
-        <h4 data-i18n="how.p1.title">시스템 수집</h4>
+        <h3 data-i18n="how.p1.title">시스템 수집</h3>
         <p data-i18n="how.p1.desc">프로세스·네트워크·포트·자동실행·보안상태. Sysinternals + launchd + VirusTotal 해시 조회.</p>
         <code>scanner.ps1 · scanner.sh</code>
       </div>
       <div class="pipe-arrow">→</div>
       <div class="pipe-node">
         <div class="label">02 · NORMALIZE</div>
-        <h4 data-i18n="how.p2.title">JSON 정규화</h4>
+        <h3 data-i18n="how.p2.title">JSON 정규화</h3>
         <p data-i18n="how.p2.desc">한국 SW 화이트리스트 대조 후 신호등 판정. OS 무관 공통 스키마.</p>
         <code>scan_result.json</code>
       </div>
       <div class="pipe-arrow">→</div>
       <div class="pipe-node">
         <div class="label">03 · RENDER</div>
-        <h4 data-i18n="how.p3.title">HTML 생성</h4>
+        <h3 data-i18n="how.p3.title">HTML 생성</h3>
         <p data-i18n="how.p3.desc">브라우저가 여는 단일 HTML. 실행 파일 없음, 서명 없음, 추적 없음.</p>
         <code>검사결과.html</code>
       </div>
@@ -234,19 +234,19 @@
     <div class="privacy-block">
       <div class="privacy-points">
         <div class="privacy-point">
-          <h4 data-i18n="privacy.points.hash.title">해시만 전송, 파일 업로드 안 함</h4>
+          <h3 data-i18n="privacy.points.hash.title">해시만 전송, 파일 업로드 안 함</h3>
           <p data-i18n="privacy.points.hash.desc"><code>Get-FileHash</code>로 로컬에서 SHA-256 계산 후 GET 요청. 알려지지 않은 해시면 "unknown" 반환, 자동 업로드 없음.</p>
         </div>
         <div class="privacy-point">
-          <h4 data-i18n="privacy.points.telemetry.title">텔레메트리 0건</h4>
+          <h3 data-i18n="privacy.points.telemetry.title">텔레메트리 0건</h3>
           <p data-i18n="privacy.points.telemetry.desc">사용 통계·에러 리포트 어떤 것도 수집하지 않습니다. 진단 런타임의 외부 호출은 옵트인 VirusTotal 조회와 선택적 Sysinternals 다운로드뿐입니다.</p>
         </div>
         <div class="privacy-point">
-          <h4 data-i18n="privacy.points.local.title">로컬 캐시만</h4>
+          <h3 data-i18n="privacy.points.local.title">로컬 캐시만</h3>
           <p data-i18n="privacy.points.local.desc">VT 응답은 %LOCALAPPDATA% (Windows) 또는 ~/Library/Caches (macOS)에 48시간 저장. 클라우드 계정 없음.</p>
         </div>
         <div class="privacy-point">
-          <h4 data-i18n="privacy.points.audit.title">읽을 수 있는 소스</h4>
+          <h3 data-i18n="privacy.points.audit.title">읽을 수 있는 소스</h3>
           <p data-i18n="privacy.points.audit.desc">읽을 수 있는 PowerShell · Bash · JXA 소스. 릴리스 zip에는 사전 컴파일된 진단 바이너리를 넣지 않습니다. <code>grep -R "Invoke-RestMethod\|Invoke-WebRequest\|curl\|virustotal.com/api" scripts/</code>로 외부 호출 확인 가능.</p>
         </div>
       </div>

@@ -107,6 +107,9 @@ extension ScanModel {
             try SimulatorKeepStore.save(updatedUUIDs)
             replaceSimulatorKeepUUIDs(with: updatedUUIDs)
             appendLog(isRemoving ? "Simulator 보존 해제: \(device.name)" : "Simulator 보존: \(device.name)")
+            AccessibilityAnnouncer.announce(
+                isRemoving ? "\(device.name) 보존을 해제했습니다" : "\(device.name) 보존을 설정했습니다"
+            )
         } catch {
             errorMessage = "Simulator 보존 목록을 저장하지 못했습니다: \(error.localizedDescription)"
         }

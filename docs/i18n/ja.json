@@ -7,6 +7,7 @@
     "name": "PCヘルスチェック"
   },
   "nav": {
+    "skip": "本文へ移動",
     "problem": "問題",
     "how": "仕組み",
     "privacy": "プライバシー",
@@ -26,6 +27,7 @@
     }
   },
   "preview": {
+    "accessible_summary": "診断結果の例: 要確認3件、危険0件、安全93件",
     "verdict_label": "要確認",
     "verdict_msg": "要確認 3件 · 危険 0件",
     "danger": "危険",

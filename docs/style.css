@@ -198,9 +198,19 @@ button:focus-visible,
 
 /* Respect the system Reduce Motion preference (WCAG 2.3.3). */
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
   .hero-tag .pulse,
   .ticker-track {
-    animation: none;
+    animation: none !important;
+  }
+  a,
+  button,
+  .report-preview,
+  .dl-card,
+  .skip-link {
+    transition: none !important;
   }
 }
 .hero h1 {
@@ -503,7 +513,7 @@ button:focus-visible,
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
-.pipe-node h4 {
+.pipe-node h3 {
   font-size: 16px;
   font-weight: 700;
   margin-bottom: 6px;
@@ -544,14 +554,14 @@ button:focus-visible,
   align-items: start;
 }
 .privacy-points { display: flex; flex-direction: column; gap: 24px; }
-.privacy-point h4 {
+.privacy-point h3 {
   font-size: 15px;
   font-weight: 700;
   color: var(--text);
   margin-bottom: 4px;
   display: flex; align-items: center; gap: 8px;
 }
-.privacy-point h4::before {
+.privacy-point h3::before {
   content: '✓';
   color: var(--green);
   font-weight: 800;

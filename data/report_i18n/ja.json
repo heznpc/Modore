@@ -80,7 +80,7 @@
   },
   "vt_summary": {
     "enabled": "🛰️ <b>VirusTotal 照会 有効</b> · 今回 {calls} 件照会 · キャッシュ {hours}時間 · ハッシュのみ送信(ファイルアップロード無し)",
-    "disabled": "ℹ️ VirusTotal 照会は無効です。<code>data/config.json</code>の<code>enabled: true</code>に変更しAPIキーを入力してください。<a href='https://www.virustotal.com/gui/my-apikey' target='_blank'>APIキー取得</a>"
+    "disabled": "ℹ️ VirusTotal 照会は無効です。<code>data/config.json</code>の<code>enabled: true</code>に変更しAPIキーを入力してください。<a href='https://www.virustotal.com/gui/my-apikey' target='_blank' rel='noopener noreferrer' aria-label='VirusTotal APIキーを取得'>APIキー取得</a>"
   },
   "explain_summary": "💡 これはどんな検査?",
   "explain_warning": "🟡 確認推奨:",

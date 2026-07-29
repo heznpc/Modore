@@ -21,6 +21,16 @@ def _assert_a11y(html: str) -> None:
     assert not missing, f"<th> without scope: {missing[:3]}"
     assert ":focus-visible" in html, "no visible focus style"
     assert "overflow-x" in html, "no responsive/scrollable table handling"
+    assert re.search(r"\.container\s*\{[^}]*overflow-x:\s*hidden", html), (
+        "mobile table overflow is not contained"
+    )
+    new_tab_links = re.findall(
+        r"<a\b[^>]*target=[\"']_blank[\"'][^>]*>", html, re.IGNORECASE
+    )
+    assert new_tab_links, "expected investigation links that open in a new tab"
+    for link in new_tab_links:
+        assert re.search(r"\brel=[\"'][^\"']*noopener", link, re.IGNORECASE), link
+        assert re.search(r"\baria-label=[\"'][^\"']+", link, re.IGNORECASE), link
 
 
 def test_python_report_meets_a11y_contract(fixtures_dir, project_root, tmp_path):

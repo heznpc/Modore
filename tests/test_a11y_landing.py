@@ -42,6 +42,7 @@ def test_language_buttons_expose_pressed_state(index_html, script_js):
     lang_buttons = re.findall(r'<button class="lang-btn[^"]*"[^>]*>', index_html)
     assert lang_buttons, "language buttons not found"
     assert all("aria-pressed=" in b for b in lang_buttons)
+    assert all("aria-label=" in b for b in lang_buttons)
     # The switcher must keep aria-pressed in sync, not just the CSS class.
     assert "aria-pressed" in script_js
 
@@ -57,10 +58,29 @@ def test_reduced_motion_gates_the_animations(style_css):
     body = block.group(1)
     assert ".pulse" in body and ".ticker-track" in body
     assert "animation: none" in body
+    assert "scroll-behavior: auto" in body
+    assert "transition: none" in body
 
 
 def test_focus_visible_styles_present(style_css):
     assert ":focus-visible" in style_css
+
+
+def test_heading_levels_do_not_skip_after_sections(index_html):
+    levels = [int(level) for level in re.findall(r"<h([1-6])\b", index_html)]
+    assert levels and levels[0] == 1
+    for previous, current in zip(levels, levels[1:]):
+        assert current <= previous + 1, f"heading level skips from h{previous} to h{current}"
+
+
+def test_translatable_accessible_names_cover_skip_link_and_report_preview(index_html):
+    skip = re.search(r'<a class="skip-link"[^>]*>', index_html)
+    preview = re.search(r'<div class="report-preview"[^>]*>', index_html)
+    assert skip is not None and 'data-i18n="nav.skip"' in skip.group(0)
+    assert preview is not None
+    assert 'role="img"' in preview.group(0)
+    assert "aria-label:preview.accessible_summary" in preview.group(0)
+    assert len(re.findall(r'class="preview-(?:titlebar|body)" aria-hidden="true"', index_html)) == 2
 
 
 def _luminance(hex6: str) -> float:
