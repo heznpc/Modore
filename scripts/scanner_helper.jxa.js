@@ -357,6 +357,7 @@ function parseStorageDf(text) {
 }
 
 function storageNote(kind, label) {
+  if (kind === "project_residue") return "개발 프로젝트 안의 재생성 가능한 빌드 산출물입니다. git이 무시하고 macOS도 뭉뚱그려 눈에 잘 띄지 않지만, 공식 clean 명령으로 안전하게 비워집니다.";
   if (kind === "cache") return "재생성 가능한 캐시입니다. 삭제 전 관련 앱/빌드 도구를 종료하고, 재다운로드 시간이 생길 수 있음을 감안하세요.";
   if (kind === "temp") return "임시파일입니다. 실행 중인 앱이 잡고 있을 수 있으므로 오래된 항목 위주로 정리하세요.";
   if (kind === "trash") return "휴지통입니다. 복구할 파일이 없을 때 비우면 즉시 공간을 회수할 수 있습니다.";
@@ -386,6 +387,7 @@ function storageNote(kind, label) {
 }
 
 function storageAction(kind, label) {
+  if (kind === "project_residue") return "공식 clean 명령으로 정리";
   if (kind === "cache") return "캐시 정리 후보";
   if (kind === "temp") return "오래된 임시파일 확인";
   if (kind === "trash") return "휴지통 비우기 후보";
@@ -411,6 +413,11 @@ function storageAction(kind, label) {
 }
 
 function classifyStorageRow(kind, label, sizeGB, volumeRisk) {
+  // 프로젝트 잔여물: 재생성 가능하지만 gitignore 사각지대라 커질수록 주의를 끈다.
+  if (kind === "project_residue") {
+    if (sizeGB >= 2 || (volumeRisk !== "safe" && sizeGB >= 1)) return "warning";
+    return sizeGB >= 0.5 ? "info" : "safe";
+  }
   if (kind === "ai_vm_cache") return sizeGB >= 1 ? "warning" : "safe";
   if (kind === "ai_cache") return sizeGB >= 1 ? "warning" : (sizeGB >= 0.5 ? "info" : "safe");
   if (kind === "cache" && /Playwright|pnpm|npm/i.test(label || "")) {
@@ -734,7 +741,7 @@ const cleanupCandidates = storageItems.filter(item =>
     (item.risk === "warning" || item.measureStatus === "timed_out")
 );
 const reviewKinds = ["ai_review", "protected_history"];
-const developerKinds = ["android_sdk", "android_component", "simulator_devices", "simulator_cache", "simulator_runtime", "toolchain", "archive"];
+const developerKinds = ["android_sdk", "android_component", "simulator_devices", "simulator_cache", "simulator_runtime", "toolchain", "archive", "project_residue"];
 raw.sections.storage = {
   volume: storageVolume,
   cleanupCandidates: cleanupCandidates.slice(0, 20),

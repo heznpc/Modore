@@ -550,3 +550,78 @@ def test_browser_runtime_elapsed_time_is_parsed_as_decimal(project_root):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "116354"
+
+
+def test_project_residue_scan_surfaces_rebuildable_artifacts(project_root, tmp_path):
+    """개발 프로젝트 내부의 재생성 가능한 빌드 산출물(gitignore 사각지대)을
+    project_residue 행으로 표면화한다. 4MB 미만은 노이즈로 생략하고, cleanup_id는
+    항상 비어 있어야 한다(탐지 전용 — 임의 경로 삭제 레시피 금지)."""
+    script = project_root / "scripts" / "modules" / "macos" / "storage.sh"
+    home = tmp_path / "home"
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    scan_root = home / "Documents"
+
+    flutter = scan_root / "Fylish"
+    (flutter / "build").mkdir(parents=True)
+    (flutter / "build" / "app.blob").write_bytes(b"x" * (5 * 1024 * 1024))
+    (flutter / ".dart_tool").mkdir()
+    (flutter / ".dart_tool" / "pkg").write_bytes(b"y" * (5 * 1024 * 1024))
+    (flutter / "pubspec.yaml").write_text("name: fylish\n", encoding="utf-8")
+
+    node = scan_root / "webapp"
+    (node / "node_modules").mkdir(parents=True)
+    (node / "node_modules" / "dep.js").write_bytes(b"z" * (5 * 1024 * 1024))
+    (node / "package.json").write_text("{}", encoding="utf-8")
+
+    tiny = scan_root / "tiny"
+    (tiny / "node_modules").mkdir(parents=True)
+    (tiny / "node_modules" / "s.js").write_bytes(b"s" * 1024)
+    (tiny / "package.json").write_text("{}", encoding="utf-8")
+
+    simctl_list = tmp_path / "simctl.txt"
+    simctl_list.write_text("", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "TMP_DIR": str(facts),
+            "PCH_TEST_MODE": "1",
+            "PCH_TEST_STORAGE_SIMCTL_LIST_FILE": str(simctl_list),
+            "PCH_PROJECT_SCAN_ROOTS": str(scan_root),
+            "PCH_STORAGE_DU_TIMEOUT": "5",
+            "PCH_STORAGE_TOTAL_DU_BUDGET": "30",
+        }
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; collect_storage', "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    rows = [
+        line.split("\t")
+        for line in (facts / "storage_paths.tsv").read_text(encoding="utf-8").splitlines()
+    ]
+    residue = [row for row in rows if row[0] == "project_residue"]
+    by_path = {row[2]: row for row in residue}
+
+    flutter_build = by_path[str(flutter / "build")]
+    assert "Flutter" in flutter_build[1] and "Fylish" in flutter_build[1]
+    assert int(flutter_build[3]) >= 5 * 1024  # KB
+    assert flutter_build[4] == "ok"
+    assert "flutter clean" in flutter_build[5]
+    assert flutter_build[6] == ""  # 탐지 전용: cleanup_id 없음
+
+    assert str(flutter / ".dart_tool") in by_path
+    node_row = by_path[str(node / "node_modules")]
+    assert "webapp" in node_row[1]
+    assert "npm install" in node_row[5]
+
+    # 4MB 플로어: tiny 프로젝트는 생략
+    assert str(tiny / "node_modules") not in by_path

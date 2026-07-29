@@ -237,6 +237,126 @@ _pch_collect_storage_simulators() {
     fi
 }
 
+# 개발 프로젝트 내부의 재생성 가능한 빌드 산출물 행 1개를 기록한다.
+# add_du_path와 같은 안전 규칙(절대경로, 제어문자 거부, 경로 dedup, du 예산)을 따르되
+# 성공 측정 시에도 공식 재생성 명령 안내를 note로 싣는다. 탐지 전용이며 cleanup_id는
+# 의도적으로 비워 둔다: 프로젝트 경로는 임의라서 recipe-ID 원칙과 충돌하므로
+# 이 도구는 "무엇이 왜 큰지 + 어떤 공식 명령으로 재생성되는지"까지만 책임진다.
+_pch_add_project_residue_row() {
+    local target_path="$1"
+    local label="$2"
+    local note="$3"
+    local size_kb
+    local measure_status="ok"
+    local measure_note="$note"
+
+    [[ -d "$target_path" && ! -L "$target_path" ]] || return 0
+    [[ "$target_path" == /* ]] || return 0
+    case "$label$target_path$note" in
+        *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
+    esac
+    case "$seen" in
+        *"|$target_path|"*) return 0 ;;
+    esac
+    seen="${seen}${target_path}|"
+
+    du_size_kb "$target_path"
+    size_kb="$DU_SIZE_RESULT"
+    if [[ "$size_kb" == "__PCH_TIMEOUT__" ]]; then
+        size_kb=0
+        measure_status="timed_out"
+        measure_note="빠른 검사의 시간 제한 때문에 크기 측정을 보류했습니다. 필요하면 PCH_STORAGE_DU_TIMEOUT=0으로 정밀 측정하세요."
+    fi
+    case "$size_kb" in ''|*[!0-9]*) size_kb=0 ;; esac
+    # 4MB 미만 잔여물은 노이즈만 만들므로 생략한다 (측정 보류 행은 정직하게 남긴다).
+    [[ "$size_kb" -ge 4096 || "$measure_status" == "timed_out" ]] || return 0
+    /usr/bin/printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "project_residue" "$label" "$target_path" "$size_kb" "$measure_status" "$measure_note" "" \
+        >> "$TMP_DIR/storage_paths.tsv"
+}
+
+_pch_collect_project_residue() {
+    # 개발 프로젝트가 자기 폴더 안에 쌓는 재생성 가능 산출물(Flutter build/,
+    # node_modules, Cargo target/ 등)을 표면화한다. 이 항목들은 .gitignore가
+    # 무시하고 macOS 저장공간 설정은 뭉뚱그리므로, 수 GB가 쌓여도 어떤 도구에도
+    # 보이지 않는 사각지대가 된다. 검색은 흔한 개발 루트로 한정하고 깊이와
+    # 개수를 제한해 빠른 검사 예산 안에 머문다.
+    local scan_roots="${PCH_PROJECT_SCAN_ROOTS:-$HOME/Documents:$HOME/Developer:$HOME/Projects:$HOME/IdeaProjects:$HOME/StudioProjects:$HOME/dev:$HOME/workspace:$HOME/src}"
+    local max_projects="${PCH_PROJECT_SCAN_LIMIT:-32}"
+    case "$max_projects" in ''|*[!0-9]*) max_projects=32 ;; esac
+    local seen_projects="|"
+    local found=0
+    local old_ifs="$IFS"
+    local root marker_file project_dir project_name
+
+    IFS=':'
+    set -- $scan_roots
+    IFS="$old_ifs"
+    for root in "$@"; do
+        [[ -d "$root" && ! -L "$root" ]] || continue
+        while IFS= read -r marker_file; do
+            [[ -n "$marker_file" ]] || continue
+            project_dir="${marker_file%/*}"
+            case "$seen_projects" in
+                *"|$project_dir|"*) continue ;;
+            esac
+            seen_projects="${seen_projects}${project_dir}|"
+            found=$((found + 1))
+            if [[ "$found" -gt "$max_projects" ]]; then
+                break 2
+            fi
+            project_name="$(/usr/bin/basename "$project_dir")"
+            case "$marker_file" in
+                */pubspec.yaml)
+                    _pch_add_project_residue_row "$project_dir/build" \
+                        "Flutter 빌드 산출물 · $project_name" \
+                        "프로젝트 폴더에서 flutter clean 으로 안전하게 비우고, 다음 빌드 때 재생성됩니다."
+                    _pch_add_project_residue_row "$project_dir/.dart_tool" \
+                        "Dart 도구 캐시 · $project_name" \
+                        "flutter clean 이 함께 정리합니다. 소스가 아니라 재생성 가능한 캐시입니다."
+                    ;;
+                */package.json)
+                    _pch_add_project_residue_row "$project_dir/node_modules" \
+                        "node_modules · $project_name" \
+                        "삭제해도 npm install(또는 pnpm/yarn install)로 재설치됩니다. lock 파일은 보존하세요."
+                    ;;
+                */Cargo.toml)
+                    _pch_add_project_residue_row "$project_dir/target" \
+                        "Rust 빌드 산출물 · $project_name" \
+                        "cargo clean 으로 안전하게 비우고, 다음 빌드 때 재생성됩니다."
+                    ;;
+                */Package.swift)
+                    _pch_add_project_residue_row "$project_dir/.build" \
+                        "SwiftPM 빌드 산출물 · $project_name" \
+                        "swift package clean 또는 .build 삭제로 재생성 가능합니다."
+                    ;;
+                */Podfile)
+                    _pch_add_project_residue_row "$project_dir/Pods" \
+                        "CocoaPods · $project_name" \
+                        "pod install 로 재생성됩니다. Podfile.lock은 반드시 보존하세요."
+                    ;;
+                */gradlew)
+                    _pch_add_project_residue_row "$project_dir/build" \
+                        "Gradle 빌드 산출물 · $project_name" \
+                        "./gradlew clean 으로 안전하게 비우고, 다음 빌드 때 재생성됩니다."
+                    _pch_add_project_residue_row "$project_dir/.gradle" \
+                        "Gradle 캐시 · $project_name" \
+                        "재생성 가능한 프로젝트 로컬 Gradle 캐시입니다."
+                    ;;
+            esac
+        done < <(/usr/bin/find "$root" -mindepth 1 -maxdepth 3 \
+            \( -type d \( -name node_modules -o -name build -o -name .git -o -name .dart_tool \
+                -o -name target -o -name Pods -o -name .build -o -name .gradle \
+                -o -name Library -o -name "*.app" \) -prune \) -o \
+            -type f \( -name pubspec.yaml -o -name package.json -o -name Cargo.toml \
+                -o -name Package.swift -o -name Podfile -o -name gradlew \) -print 2>/dev/null \
+            | /usr/bin/head -n 400)
+    done
+
+    record_collection_status "project_residue" "프로젝트 빌드 산출물" "ok" "false" \
+        "개발 프로젝트의 재생성 가능한 빌드 산출물을 확인했습니다."
+}
+
 _pch_collect_known_storage_paths() {
     # Chrome code-sign clone은 변동 폭이 크고 사용자가 가장 먼저 확인해야 하므로
     # 넓은 SDK/toolchain 측정보다 앞에서 시간 예산을 확보한다.
@@ -712,6 +832,7 @@ collect_storage() {
     _pch_collect_storage_applications
     _pch_collect_storage_simulators
     _pch_collect_known_storage_paths
+    _pch_collect_project_residue
     _pch_collect_storage_access_checks
     _pch_collect_storage_runtime_signals
 
