@@ -80,7 +80,7 @@
   },
   "vt_summary": {
     "enabled": "🛰️ <b>VirusTotal enabled</b> · {calls} lookups this scan · {hours}h cache · hash only (no file upload)",
-    "disabled": "ℹ️ VirusTotal disabled. To enable, set <code>enabled: true</code> and your API key in <code>data/config.json</code>. <a href='https://www.virustotal.com/gui/my-apikey' target='_blank'>Get an API key</a>"
+    "disabled": "ℹ️ VirusTotal disabled. To enable, set <code>enabled: true</code> and your API key in <code>data/config.json</code>. <a href='https://www.virustotal.com/gui/my-apikey' target='_blank' rel='noopener noreferrer' aria-label='Get a VirusTotal API key'>Get an API key</a>"
   },
   "explain_summary": "💡 What does this check?",
   "explain_warning": "🟡 Check advised:",

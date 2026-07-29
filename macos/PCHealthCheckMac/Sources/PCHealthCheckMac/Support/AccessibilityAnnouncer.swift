@@ -3,9 +3,9 @@ import Foundation
 import AppKit
 #endif
 
-/// Posts VoiceOver announcements for terminal outcomes only (scan complete,
-/// cleanup done, watch toggled). Failure paths already surface an error alert,
-/// which VoiceOver reads on its own, so they deliberately do not announce here.
+/// Posts VoiceOver announcements for terminal outcomes only (scan, cleanup,
+/// protection, watch, and approved browser-stop state changes). Failure paths
+/// already surface an error alert, so they deliberately do not announce here.
 ///
 /// All production announcements route through `announce(_:)`; `handler` is
 /// swapped in tests to assert exactly which terminal events speak.

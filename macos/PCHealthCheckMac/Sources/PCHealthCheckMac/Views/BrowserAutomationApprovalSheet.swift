@@ -13,6 +13,7 @@ struct BrowserAutomationApprovalSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("자동화 브라우저 정상 종료")
                         .font(.title3.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
                     Text("PID와 실행 시작 시각을 실행 직전에 다시 확인합니다.")
                         .font(.callout)
                         .foregroundStyle(.secondary)

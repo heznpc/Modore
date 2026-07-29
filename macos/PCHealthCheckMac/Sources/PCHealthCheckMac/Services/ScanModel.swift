@@ -145,6 +145,7 @@ final class ScanModel: ObservableObject {
             guard !Task.isCancelled else {
                 state = .idle
                 appendLog("검사를 취소했습니다.")
+                AccessibilityAnnouncer.announce("검사를 취소했습니다")
                 scanTask = nil
                 return
             }
