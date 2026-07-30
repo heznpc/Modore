@@ -12,6 +12,8 @@ struct CleanupPreview: Identifiable {
     let reclaimedKB: Int64
     let physicalDeltaKB: Int64
     let warning: String
+    let summary: String
+    let avoidWhen: String
     let processNote: String
     let blockedReason: String
     let runningProcesses: String
@@ -33,6 +35,8 @@ struct CleanupPreview: Identifiable {
         reclaimedKB = payload.reclaimedKB
         physicalDeltaKB = payload.physicalDeltaKB
         warning = payload.warning
+        summary = payload.summary
+        avoidWhen = payload.avoidWhen
         processNote = payload.processNote
         blockedReason = payload.blockedReason
         runningProcesses = payload.runningProcesses
@@ -109,6 +113,8 @@ private struct CleanupProtocolPayload {
     let reclaimedKB: Int64
     let physicalDeltaKB: Int64
     let warning: String
+    let summary: String
+    let avoidWhen: String
     let processNote: String
     let blockedReason: String
     let runningProcesses: String
@@ -137,6 +143,9 @@ private struct CleanupProtocolPayload {
             reclaimedKB: integer(values["reclaimedKB"]),
             physicalDeltaKB: integer(values["physicalDeltaKB"]),
             warning: values["warning"] ?? "",
+            // 구버전 런타임 미러에는 두 키가 없다. 설명이 비면 UI가 해당 줄을 숨긴다.
+            summary: values["description"] ?? "",
+            avoidWhen: values["avoidWhen"] ?? "",
             processNote: values["processNote"] ?? "",
             blockedReason: values["blockedReason"] ?? "",
             runningProcesses: values["runningProcesses"] ?? "",

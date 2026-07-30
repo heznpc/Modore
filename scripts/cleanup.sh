@@ -33,6 +33,8 @@ PROCESS_PATTERN=""
 PROCESS_POLICY="block"
 PROCESS_NOTE=""
 WARNING=""
+DESCRIPTION=""
+AVOID_WHEN=""
 PREVIEW_STATUS=""
 BLOCKED_REASON=""
 RUNNING_PROCESSES=""
@@ -472,6 +474,76 @@ define_simulator_recipe() {
     return 0
 }
 
+# 사용자가 앱을 벗어나 검색하지 않고도 판단할 수 있도록, 항목별로
+# "무엇인가"(DESCRIPTION)와 "언제 미뤄야 하는가"(AVOID_WHEN)를 제공한다.
+# WARNING이 삭제 후 결과를 설명하므로 여기서는 정체와 보류 조건만 담는다.
+apply_recipe_guidance() {
+    local recipe="$1"
+    case "$recipe" in
+        simulator_delete:*)
+            DESCRIPTION="선택한 iOS 시뮬레이터 기기와 그 안에 설치된 앱·데이터입니다."
+            AVOID_WHEN="이 기기에 남겨둘 테스트 상태나 로그인 세션이 있다면 두세요."
+            return 0
+            ;;
+        app_uninstall:*)
+            DESCRIPTION="이 앱과, 번들 ID로 정확히 귀속되는 사용자 데이터입니다."
+            AVOID_WHEN="앱을 다시 쓸 계획이거나 내보내지 않은 데이터가 있다면 두세요."
+            return 0
+            ;;
+    esac
+    case "$recipe" in
+        npm_cache)
+            DESCRIPTION="npm이 내려받아 보관하는 패키지 압축본 캐시입니다. 프로젝트 소스와 node_modules는 대상이 아닙니다."
+            AVOID_WHEN="네트워크가 느리거나, 오프라인에서 곧 npm install을 해야 한다면 두세요."
+            ;;
+        pnpm_store)
+            DESCRIPTION="여러 프로젝트가 공유하도록 pnpm이 패키지를 모아 두는 저장소입니다. 프로젝트 소스는 대상이 아닙니다."
+            AVOID_WHEN="여러 프로젝트를 자주 재설치하거나 오프라인 작업이 예정됐다면 두세요."
+            ;;
+        playwright_browsers)
+            DESCRIPTION="Playwright가 테스트용으로 내려받은 Chromium·Firefox·WebKit 바이너리입니다. 평소 쓰는 Chrome 앱과 프로필, 북마크와는 무관합니다."
+            AVOID_WHEN="곧 E2E 테스트를 돌려야 하는데 네트워크가 느리다면 두세요."
+            ;;
+        gradle_cache)
+            DESCRIPTION="Gradle이 받아 둔 의존성과 빌드 캐시입니다. 프로젝트 소스는 대상이 아닙니다."
+            AVOID_WHEN="오프라인에서 Android/JVM 빌드를 해야 한다면 두세요."
+            ;;
+        cocoapods_cache)
+            DESCRIPTION="CocoaPods가 받아 둔 Pod 아카이브 캐시입니다. Podfile과 프로젝트는 대상이 아닙니다."
+            AVOID_WHEN="오프라인에서 pod install을 해야 한다면 두세요."
+            ;;
+        pub_cache)
+            DESCRIPTION="Dart/Flutter가 받아 둔 패키지 캐시입니다. 앱 소스는 대상이 아닙니다."
+            AVOID_WHEN="오프라인에서 Flutter 빌드를 해야 한다면 두세요."
+            ;;
+        codex_runtime_cache)
+            DESCRIPTION="Codex가 내려받아 실행에 쓰는 런타임 설치본입니다. 대화 기록과 세션 파일은 대상이 아닙니다."
+            AVOID_WHEN="Codex 작업이 진행 중이라면 끝난 뒤에 하세요."
+            ;;
+        codex_temp_cache)
+            DESCRIPTION="Codex가 작업 중 만든 임시 파일입니다. 세션 기록과 로그 DB는 대상이 아닙니다."
+            AVOID_WHEN="Codex 작업이 진행 중이라면 끝난 뒤에 하세요."
+            ;;
+        claude_vm_bundles)
+            DESCRIPTION="Claude의 로컬 에이전트가 쓰는 가상 머신 이미지입니다. 대화 내용과 세션 작업공간은 대상이 아닙니다."
+            AVOID_WHEN="Cowork 세션이 진행 중이라면 저장하고 종료한 뒤에 하세요."
+            ;;
+        xcode_derived_data)
+            DESCRIPTION="Xcode가 빌드 중간 산출물과 코드 인덱스를 넣어 두는 폴더입니다. 소스와 Archive는 대상이 아닙니다."
+            AVOID_WHEN="지금 빌드나 인덱싱이 돌고 있다면 끝난 뒤에 하세요."
+            ;;
+        chrome_code_sign_clones)
+            DESCRIPTION="Chrome이 업데이트를 검증할 때 임시로 만드는 서명 복제본입니다. 북마크·비밀번호·프로필은 대상이 아닙니다."
+            AVOID_WHEN="Chrome이 업데이트를 적용하는 중이라면 끝난 뒤에 하세요."
+            ;;
+        innorix_ex)
+            DESCRIPTION="일부 국내 사이트가 파일 전송에 사용하는 INNORIX-EX 모듈과 자동 실행 항목입니다."
+            AVOID_WHEN="이 모듈을 요구하는 업무·금융 사이트를 곧 이용해야 한다면 두세요."
+            ;;
+    esac
+    return 0
+}
+
 define_recipe() {
     local recipe="$1"
     LABEL=""
@@ -480,6 +552,8 @@ define_recipe() {
     PROCESS_POLICY="block"
     PROCESS_NOTE=""
     WARNING=""
+    DESCRIPTION=""
+    AVOID_WHEN=""
     TARGETS=()
     APP_BUNDLE_ID=""
     TRASH_RUN=""
@@ -498,13 +572,15 @@ define_recipe() {
     TEST_STAGED_APPROVED_ORIGINAL=""
 
     if [[ "$recipe" == simulator_delete:* ]]; then
-        define_simulator_recipe "${recipe#simulator_delete:}"
-        return $?
+        define_simulator_recipe "${recipe#simulator_delete:}" || return $?
+        apply_recipe_guidance "$recipe"
+        return 0
     fi
 
     if [[ "$recipe" == app_uninstall:* ]]; then
-        define_app_recipe "${recipe#app_uninstall:}"
-        return $?
+        define_app_recipe "${recipe#app_uninstall:}" || return $?
+        apply_recipe_guidance "$recipe"
+        return 0
     fi
 
     case "$recipe" in
@@ -601,6 +677,7 @@ define_recipe() {
             ;;
         *) return 1 ;;
     esac
+    apply_recipe_guidance "$recipe"
     return 0
 }
 
@@ -764,9 +841,13 @@ process_display_name() {
         display_name="$LABEL"
     else
         case "$command" in
+            # 자동화/원격 디버깅 신호를 Chrome 이름보다 먼저 판정한다. 자동화로 띄운
+            # 브라우저를 평소 쓰는 Chrome으로 표시하면, 사용자는 창을 다 닫아도
+            # 차단이 풀리지 않는 이유를 알 수 없다.
+            *playwright*|*Playwright*|*remote-debugging-pipe*|*--headless*)
+                display_name="Playwright" ;;
             *"Google Chrome Helper"*) display_name="Google Chrome Helper" ;;
             *"Google Chrome"*) display_name="Google Chrome" ;;
-            *playwright*|*Playwright*|*remote-debugging-pipe*) display_name="Playwright" ;;
             *Codex*|*codex*|*node_repl*|*SkyComputerUseClient*) display_name="Codex" ;;
             *Claude*|*claude*|*local-agent-mode*) display_name="Claude" ;;
             *pnpm*) display_name="pnpm" ;;
@@ -1086,6 +1167,8 @@ emit_state() {
     emit "estimateMeasured" "$ESTIMATE_MEASURED"
     emit "actionMode" "$REMOVE_MODE"
     emit "warning" "$WARNING"
+    emit "description" "$DESCRIPTION"
+    emit "avoidWhen" "$AVOID_WHEN"
     emit "processNote" "$PROCESS_NOTE"
     emit "blockedReason" "${BLOCKED_REASON:-}"
     emit "runningProcesses" "${RUNNING_PROCESSES:-}"
