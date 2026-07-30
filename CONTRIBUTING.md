@@ -7,8 +7,8 @@ Thanks for considering a contribution. The most-wanted PRs are **whitelist addit
 ## Quick start
 
 ```bash
-git clone https://github.com/heznpc/pc-health-check.git
-cd pc-health-check
+git clone https://github.com/heznpc/modore.git
+cd modore
 python3 -m pip install -r requirements-dev.txt
 python3 -I -B -m pytest tests/ -q
 swift test --package-path macos/PCHealthCheckMac \

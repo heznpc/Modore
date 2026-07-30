@@ -14,7 +14,7 @@ Only the latest `main` and, once one exists, the most recent public release tag 
 
 **Please do not open public GitHub issues for security findings.**
 
-Use GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new) — the "Report a vulnerability" button on the repository's Security tab. This routes the report directly to the maintainer without going through public issues.
+Use GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/modore/security/advisories/new) — the "Report a vulnerability" button on the repository's Security tab. This routes the report directly to the maintainer without going through public issues.
 
 If Private Vulnerability Reporting is temporarily unavailable, do not put vulnerability details in a public issue. Retry the private advisory form later; this repository does not advertise an unverified fallback address.
 

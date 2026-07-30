@@ -7,12 +7,12 @@ This `docs/` folder is a static landing page ready for GitHub Pages.
 ### 1. Push to GitHub
 
 ```bash
-cd /path/to/pc-health-check
+cd /path/to/modore
 git init
 git add .
 git commit -m "Initial commit"
 git branch -M main
-git remote add origin https://github.com/heznpc/pc-health-check.git
+git remote add origin https://github.com/heznpc/modore.git
 git push -u origin main
 ```
 
@@ -25,7 +25,7 @@ git push -u origin main
 
 After ~1 minute your site is live at:
 ```
-https://heznpc.github.io/pc-health-check/
+https://heznpc.github.io/modore/
 ```
 
 ## Custom domain (optional)
@@ -67,7 +67,7 @@ That's it. No build step.
 
 ## Updating releases
 
-While the project is in source-preview status, both download cards in `docs/index.html` intentionally point to the repository. When the first public release is published, update and review both card links to `https://github.com/heznpc/pc-health-check/releases/latest`; they do not change automatically.
+While the project is in source-preview status, both download cards in `docs/index.html` intentionally point to the repository. When the first public release is published, update and review both card links to `https://github.com/heznpc/modore/releases/latest`; they do not change automatically.
 
 Build and verify the release artifacts first:
 

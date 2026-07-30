@@ -82,5 +82,5 @@ All notable changes to this project are documented here. Format loosely follows 
 
 Earlier internal iterations. Not formally released; replaced by 0.3.
 
-[Unreleased]: https://github.com/heznpc/pc-health-check/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/heznpc/pc-health-check/releases/tag/v0.3.0
+[Unreleased]: https://github.com/heznpc/modore/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/heznpc/modore/releases/tag/v0.3.0

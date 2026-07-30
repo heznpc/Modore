@@ -66,9 +66,9 @@ function Test-CachedSysinternalsBinary {
       Authenticode 서명을 통과하는지 확인.
 
     .DESCRIPTION
-      매 실행마다 검증해야 하는 이유: pc-health-check는 *다른 user-mode 악성코드의
+      매 실행마다 검증해야 하는 이유: Modore는 *다른 user-mode 악성코드의
       존재를 전제*로 하는 진단 도구. 캐시된 .exe가 변조됐을 시나리오를 위협 모델에
-      포함하지 않으면, pc-health-check 자체가 그 코드를 신뢰 실행하는 launcher가 됨.
+      포함하지 않으면, Modore 자체가 그 코드를 신뢰 실행하는 launcher가 됨.
 
       반환 객체 형태로 result + reason을 같이 돌려줘서 호출자가 사용자에게 의미
       있는 메시지를 띄울 수 있게 함. (이전 버전은 단순 bool이었으나, Assert가
