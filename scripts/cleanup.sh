@@ -600,8 +600,13 @@ define_recipe() {
             ;;
         playwright_browsers)
             LABEL="Playwright browser cache"
-            PROCESS_PATTERN='playwright|ms-playwright|playwright_chromiumdev_profile|--headless|remote-debugging-pipe'
-            PROCESS_NOTE="Playwright와 headless 브라우저를 먼저 종료하세요."
+            # 위험은 이 캐시 안의 바이너리가 실행 중일 때만 생긴다. --headless와
+            # remote-debugging-pipe는 Electron 앱이나 자동화 도구가 공통으로 쓰는
+            # 범용 Chromium 플래그여서, 그것까지 차단하면 캐시와 무관한 앱 때문에
+            # 사용자가 창을 모두 닫아도 차단을 풀 수 없다. 경로·실행기 이름으로
+            # Playwright에 실제로 귀속되는 프로세스만 차단한다.
+            PROCESS_PATTERN='[Pp]laywright'
+            PROCESS_NOTE="Playwright 테스트와 이 캐시로 실행한 브라우저를 먼저 종료하세요."
             WARNING="브라우저 바이너리는 다음 테스트 때 다시 다운로드됩니다."
             add_target_if_present "$HOME_ROOT/Library/Caches/ms-playwright"
             ;;
