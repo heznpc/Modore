@@ -1,5 +1,5 @@
 #!/bin/bash -p
-# PC Health Check Mac Edition - allowlisted local cleanup harness.
+# Modore - allowlisted local cleanup harness.
 #
 # Preview is read-only. Execute accepts recipe IDs only, requires an explicit
 # approval flag, rejects symlinked targets, and writes a local receipt.
@@ -1209,7 +1209,7 @@ stop_innorix() {
 prepare_trash_run() {
     local trash_root="$HOME_ROOT/.Trash"
     prepare_private_directory "$trash_root" || return 1
-    TRASH_RUN="$trash_root/PC Health Check-$(/bin/date -u '+%Y%m%dT%H%M%SZ')-$$"
+    TRASH_RUN="$trash_root/Modore-$(/bin/date -u '+%Y%m%dT%H%M%SZ')-$$"
     /bin/mkdir "$TRASH_RUN" || return 1
     /bin/chmod 700 "$TRASH_RUN" 2>/dev/null || return 1
 }

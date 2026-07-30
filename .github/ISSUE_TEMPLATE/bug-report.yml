@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible PC Health Check behavior that is not a security vulnerability.
+description: Report a reproducible Modore behavior that is not a security vulnerability.
 title: "[Bug] "
 labels: ["bug"]
 body:

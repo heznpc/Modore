@@ -1,12 +1,12 @@
 ﻿# ============================================================
-# PC 건강검진 - 메인 메뉴
+# Modore - 메인 메뉴
 # 역할: 컴맹도 쉽게 쓸 수 있는 대화형 메뉴
 # ============================================================
 
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSScriptRoot
 chcp 65001 | Out-Null
-$Host.UI.RawUI.WindowTitle = "PC 건강검진"
+$Host.UI.RawUI.WindowTitle = "Modore"
 
 function Invoke-Report {
     & "$PSScriptRoot\report.ps1"

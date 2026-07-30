@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PC 건강검진 - 규칙 엔진
+Modore - 규칙 엔진
 
 설계:
   - 순수 함수 라이브러리: 부작용 없음, 파일 I/O 없음 (로더 함수만 제외)
@@ -348,7 +348,7 @@ class RuleEngine:
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="PC 건강검진 규칙 엔진")
+    parser = argparse.ArgumentParser(description="Modore 규칙 엔진")
     parser.add_argument("--raw", required=True, help="scanner가 생성한 raw_facts.json")
     parser.add_argument("--rules", help="rules/ 디렉터리 (기본: 프로젝트 rules)")
     parser.add_argument("--whitelist", help="whitelist.json 경로 (기본: data/whitelist.json)")

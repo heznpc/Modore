@@ -345,7 +345,7 @@ extension ScanModel {
         let candidates = (storage.cleanupCandidates + storage.reviewCandidates + storage.developerToolchains).prefix(16)
         let lines = candidates.map { cleanupGuide(for: $0) }
         let text = """
-        PC 건강검진 Mac Edition 정리 가이드
+        Modore 정리 가이드
 
         원칙:
         - 삭제는 자동 실행하지 않으며, 앱의 고정 레시피도 미리보기와 개별 승인을 거칩니다.
@@ -359,17 +359,17 @@ extension ScanModel {
 
     func copyFullDiskAccessGuide() {
         let text = """
-        PC 건강검진 Mac Edition - Full Disk Access 안내
+        Modore - Full Disk Access 안내
 
         macOS는 Mail, Messages, Safari, 앱 컨테이너 같은 일부 영역을 개인정보 보호 설정으로 숨길 수 있습니다.
         리포트가 비어 보이거나 일부 앱 데이터가 빠진다면:
 
         1. 시스템 설정을 엽니다.
         2. 개인정보 보호 및 보안 > 전체 디스크 접근 권한으로 이동합니다.
-        3. PC Health Check Mac 앱 또는 Terminal을 허용합니다.
+        3. Modore 앱 또는 Terminal을 허용합니다.
         4. 앱을 다시 실행한 뒤 검사를 다시 돌립니다.
 
-        이 권한은 읽기 범위를 넓히기 위한 것이며, PC Health Check는 삭제를 자동 실행하지 않습니다.
+        이 권한은 읽기 범위를 넓히기 위한 것이며, Modore는 삭제를 자동 실행하지 않습니다.
         """
         copyToPasteboard(text)
     }

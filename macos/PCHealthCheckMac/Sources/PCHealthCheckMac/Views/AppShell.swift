@@ -60,7 +60,7 @@ struct ModernRootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .alert(
-            "PC Health Check",
+            "Modore",
             isPresented: Binding(
                 get: { model.errorMessage != nil },
                 set: { if !$0 { model.errorMessage = nil } }

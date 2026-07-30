@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# PC 건강검진 - Sysinternals 다운로드 검증 공통 모듈
+# Modore - Sysinternals 다운로드 검증 공통 모듈
 #
 # 왜: sigcheck.exe / autorunsc.exe는 https://live.sysinternals.com/
 # 에서 다운로드한 직후 실행되므로, TLS만 신뢰하면 CDN/DNS 침해가

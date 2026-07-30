@@ -893,7 +893,7 @@ def test_mac_builder_preserves_unrecognized_existing_app(project_root, tmp_path)
     )
     builder.chmod(0o755)
     build_directory = repository / "build" / "macos"
-    existing_app = build_directory / "PC Health Check Mac.app"
+    existing_app = build_directory / "Modore.app"
     existing_app.mkdir(parents=True)
     sentinel = existing_app / "user-file.txt"
     sentinel.write_text("preserve me\n", encoding="utf-8")

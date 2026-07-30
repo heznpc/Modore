@@ -1,6 +1,6 @@
 #!/bin/bash -p
 # ============================================================
-# PC 건강검진 Mac Edition - SwiftUI app launcher
+# Modore - SwiftUI app launcher
 # Finder에서 더블클릭하면 SwiftUI 앱을 빌드한 뒤 실행합니다.
 # ============================================================
 
@@ -19,10 +19,10 @@ if [[ "$(/usr/bin/uname)" != "Darwin" ]]; then
     exit 1
 fi
 
-echo "PC 건강검진 Mac Edition SwiftUI 앱을 준비합니다..."
+echo "Modore SwiftUI 앱을 준비합니다..."
 echo ""
 
-APP_PATH="$PWD/build/macos/PC Health Check Mac.app"
+APP_PATH="$PWD/build/macos/Modore.app"
 APP_BIN="$APP_PATH/Contents/MacOS/PCHealthCheckMac"
 app_binary_is_running() {
     /bin/ps -axo comm= | /usr/bin/awk -v target="$APP_BIN" \

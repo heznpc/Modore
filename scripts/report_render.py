@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""PC 건강검진 리포트 - HTML 렌더링(CSS, 테이블/섹션 렌더러, 조립)."""
+"""Modore 리포트 - HTML 렌더링(CSS, 테이블/섹션 렌더러, 조립)."""
 import html
 import os
 import urllib.parse

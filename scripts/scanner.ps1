@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# PC 건강검진 - 스캐너 오케스트레이터 (v0.3)
+# Modore - 스캐너 오케스트레이터 (v0.3)
 #
 # 역할: 각 섹션 모듈을 순차 호출해 raw facts를 수집하고,
 #       PowerShell rule_engine에 넘겨 최종 scan_result.json 생성.
@@ -102,7 +102,7 @@ $raw = [ordered]@{
     sections = [ordered]@{}
 }
 
-Write-Host "PC 건강검진을 시작합니다..." -ForegroundColor Cyan
+Write-Host "Modore을 시작합니다..." -ForegroundColor Cyan
 
 # ============================================================
 # 섹션 실행

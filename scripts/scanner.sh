@@ -1,6 +1,6 @@
 #!/bin/bash -p
 # ============================================================
-# PC 건강검진 - macOS 스캐너 오케스트레이터 (v0.3)
+# Modore - macOS 스캐너 오케스트레이터 (v0.3)
 #
 # 각 모듈(modules/macos/*.sh)을 순차 호출해 raw 데이터를 수집한 뒤,
 # scanner_helper.jxa.js가 rule engine을 적용해 scan_result.json을 생성.
@@ -59,7 +59,7 @@ if [[ "$(uname)" != "Darwin" ]]; then
     exit 1
 fi
 
-echo "PC 건강검진 (macOS) 시작..."
+echo "Modore (macOS) 시작..."
 
 COMPUTER_NAME="$(scutil --get ComputerName 2>/dev/null || hostname)"
 USER_NAME="$(whoami)"

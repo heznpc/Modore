@@ -149,8 +149,8 @@ const storageHtml = storage.volume ? `<div class="panel">
 const shareNotice = redacted
   ? "<div class=\"share redacted\">공유용 리포트입니다. PC 이름, 사용자 이름, 홈 디렉터리 경로를 자동으로 가렸습니다. 공유 전 내용을 한 번 더 확인하세요.</div>"
   : "<div class=\"share\">도움을 요청하려고 리포트를 공유할 때는 PC 이름, 사용자 이름, 경로에 포함된 개인 정보를 먼저 가리세요.</div>";
-const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PC 건강검진 Mac Edition 결과</title><style>${css}</style></head><body><main id="main"><div class="container">
-<h1>🩺 PC 건강검진 Mac Edition${redacted ? " 공유용" : ""} 결과</h1>
+const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Modore 결과</title><style>${css}</style></head><body><main id="main"><div class="container">
+<h1>🩺 Modore${redacted ? " 공유용" : ""} 결과</h1>
 <div class="meta">${esc(scan.computerName)} / ${esc(scan.userName)} · ${esc(scan.osVersion)} · 검사 시각: ${esc(scan.scannedAt)}</div>
 <div class="verdict ${esc(overall)}"><div class="icon">${icon}</div><div><div class="big">${esc(scan.summary.message)}</div><div>위험 ${esc(scan.summary.dangerCount)}건 · 확인 ${esc(scan.summary.warningCount)}건</div></div></div>
 <div class="panel"><h2>다음 행동</h2><ol>${actions.map(a => `<li>${esc(a)}</li>`).join("")}</ol>${shareNotice}</div>
@@ -163,7 +163,7 @@ ${storageHtml}
 <h2>열린 포트</h2>${table(s.listeningPorts || [], ["risk","port","process","note","path"])}
 <h2>자동 실행 종합 분석</h2>${table(s.autoruns || [], ["risk","category","entry","verified","note","image"])}
 <h2>최근 설치 프로그램</h2>${table(s.recentInstalls || [], ["risk","installDate","name","publisher","note"])}
-<div class="meta">PC 건강검진 v0.3 · 생성 시각 ${new Date().toLocaleString()}</div>
+<div class="meta">Modore v0.3 · 생성 시각 ${new Date().toLocaleString()}</div>
 </div></main></body></html>`;
 writeText(outputPath, html);
 console.log("HTML 리포트 생성: " + outputPath);
