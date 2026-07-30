@@ -9,6 +9,9 @@ umask 077
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset BASH_ENV ENV CDPATH GLOBIGNORE
 
+# shellcheck source=scripts/modules/support_dir.sh
+source "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/support_dir.sh"
+
 path_owner_uid() {
     if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
         /usr/bin/stat -f '%u' "$1" 2>/dev/null
@@ -76,7 +79,8 @@ else
     [[ -d "$HOME_ROOT/Library" && ! -L "$HOME_ROOT/Library" ]] || exit 64
     [[ -d "$HOME_ROOT/Library/Application Support" \
         && ! -L "$HOME_ROOT/Library/Application Support" ]] || exit 64
-    STATE_DIR="$HOME_ROOT/Library/Application Support/PC Health Check"
+    migrate_support_directory_if_needed "$HOME_ROOT/Library/Application Support" || true
+    STATE_DIR="$HOME_ROOT/Library/Application Support/$SUPPORT_DIR_NAME"
     HISTORY_LIMIT=336
     FREE_THRESHOLD_GB=20
     DROP_THRESHOLD_GB=8

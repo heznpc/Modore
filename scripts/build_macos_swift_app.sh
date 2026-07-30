@@ -367,6 +367,7 @@ RUNTIME_FILES=(
     "scripts/schedule.sh"
     "scripts/report.jxa.js"
     "scripts/scanner_helper.jxa.js"
+    "scripts/modules/support_dir.sh"
     "scripts/modules/macos/cpu.sh"
     "scripts/modules/macos/network.sh"
     "scripts/modules/macos/autoruns.sh"

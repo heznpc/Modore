@@ -10,6 +10,9 @@ umask 077
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset BASH_ENV ENV CDPATH GLOBIGNORE
 
+# shellcheck source=scripts/modules/support_dir.sh
+source "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/support_dir.sh"
+
 PROTOCOL_VERSION="1"
 APPROVAL_TTL_SECONDS=900
 OPERATION=""
@@ -218,10 +221,12 @@ configure_roots() {
         APPLICATIONS_ROOT="$(cd -P "$APPLICATIONS_ROOT" 2>/dev/null && /bin/pwd -P)" \
             || fail_usage "Applications 경로를 정규화할 수 없습니다."
     fi
-    RECEIPT_DIR="$HOME_ROOT/Library/Application Support/PC Health Check/cleanup-receipts"
-    APPROVAL_DIR="$HOME_ROOT/Library/Application Support/PC Health Check/cleanup-approvals"
-    STAGING_DIR="$HOME_ROOT/Library/Application Support/PC Health Check/cleanup-staging"
-    SIMULATOR_KEEP_FILE="$HOME_ROOT/Library/Application Support/PC Health Check/simulator-keep.txt"
+    migrate_support_directory_if_needed "$HOME_ROOT/Library/Application Support" || true
+    local support_dir="$HOME_ROOT/Library/Application Support/$SUPPORT_DIR_NAME"
+    RECEIPT_DIR="$support_dir/cleanup-receipts"
+    APPROVAL_DIR="$support_dir/cleanup-approvals"
+    STAGING_DIR="$support_dir/cleanup-staging"
+    SIMULATOR_KEEP_FILE="$support_dir/simulator-keep.txt"
     if [[ "${PCH_TEST_MODE:-0}" == "1" && -n "${PCH_SIMULATOR_KEEP_PATH:-}" ]]; then
         test_path_is_isolated "$PCH_SIMULATOR_KEEP_PATH" \
             || fail_usage "테스트 Simulator 보존 파일이 격리 홈을 벗어났습니다."

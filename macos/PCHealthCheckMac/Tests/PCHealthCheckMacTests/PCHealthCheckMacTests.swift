@@ -402,10 +402,10 @@ final class PCHealthCheckMacTests: XCTestCase {
 
         XCTAssertEqual(
             resolved.standardizedFileURL,
-            support.appendingPathComponent("PC Health Check/results").standardizedFileURL
+            support.appendingPathComponent("Modore/results").standardizedFileURL
         )
         XCTAssertTrue(RuntimeWorkspace.hasScanner(
-            at: support.appendingPathComponent("PC Health Check/runtime")
+            at: support.appendingPathComponent("Modore/runtime")
         ))
     }
 

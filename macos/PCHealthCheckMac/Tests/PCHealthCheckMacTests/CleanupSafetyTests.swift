@@ -4,6 +4,38 @@ import XCTest
 @testable import PCHealthCheckMac
 
 final class CleanupSafetyTests: XCTestCase {
+    func testLegacyApplicationSupportIsMovedOnceAndNeverMerged() throws {
+        let manager = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("modore-migration-\(UUID().uuidString)")
+        try manager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: root) }
+
+        let legacy = root.appendingPathComponent(RuntimeWorkspace.legacyApplicationSupportName)
+        let current = root.appendingPathComponent(RuntimeWorkspace.applicationSupportName)
+        try manager.createDirectory(
+            at: legacy.appendingPathComponent("cleanup-receipts"),
+            withIntermediateDirectories: true
+        )
+        let receipt = legacy.appendingPathComponent("cleanup-receipts/earlier.tsv")
+        try "kept".write(to: receipt, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(RuntimeWorkspace.migrateLegacyApplicationSupport(applicationSupportRoot: root))
+        let moved = current.appendingPathComponent("cleanup-receipts/earlier.tsv")
+        XCTAssertEqual(try String(contentsOf: moved, encoding: .utf8), "kept")
+        XCTAssertFalse(manager.fileExists(atPath: legacy.path))
+
+        // A second run has nothing to move, and a legacy directory that reappears
+        // beside an existing current directory is left alone rather than merged.
+        XCTAssertFalse(RuntimeWorkspace.migrateLegacyApplicationSupport(applicationSupportRoot: root))
+        try manager.createDirectory(at: legacy, withIntermediateDirectories: true)
+        let reappeared = legacy.appendingPathComponent("legacy-only.txt")
+        try "old".write(to: reappeared, atomically: true, encoding: .utf8)
+        XCTAssertFalse(RuntimeWorkspace.migrateLegacyApplicationSupport(applicationSupportRoot: root))
+        XCTAssertEqual(try String(contentsOf: reappeared, encoding: .utf8), "old")
+        XCTAssertEqual(try String(contentsOf: moved, encoding: .utf8), "kept")
+    }
+
     func testRunningCodeIdentityRejectsDifferentValidCode() {
         XCTAssertFalse(RuntimeWorkspace.codeAtURLMatchesRunningProcess(URL(fileURLWithPath: "/usr/bin/true")))
     }
@@ -43,14 +75,14 @@ final class CleanupSafetyTests: XCTestCase {
         blockedReason\t삭제 직전 대상이 바뀌었습니다.
         stagedRemainder\t/Users/test/staging/replacement
         stagedRemainder\t/Users/test/staging/approved-original
-        trashRun\t/Users/test/.Trash/PC Health Check-test
-        receipt\t/Users/test/Library/Application Support/PC Health Check/receipt.tsv
+        trashRun\t/Users/test/.Trash/Modore-test
+        receipt\t/Users/test/Library/Application Support/Modore/receipt.tsv
         """))
 
         XCTAssertTrue(failure.failureMessage.contains("삭제 직전 대상이 바뀌었습니다."))
         XCTAssertTrue(failure.failureMessage.contains("/Users/test/staging/replacement"))
         XCTAssertTrue(failure.failureMessage.contains("/Users/test/staging/approved-original"))
-        XCTAssertTrue(failure.failureMessage.contains("/Users/test/.Trash/PC Health Check-test"))
+        XCTAssertTrue(failure.failureMessage.contains("/Users/test/.Trash/Modore-test"))
         XCTAssertTrue(failure.failureMessage.contains("receipt.tsv"))
         XCTAssertEqual(failure.recoveryPathMessages.count, 4)
     }
@@ -77,8 +109,8 @@ final class CleanupSafetyTests: XCTestCase {
             applicationSupportRoot: support
         )
 
-        let expected = support.appendingPathComponent("PC Health Check/results")
-        let installedRuntime = support.appendingPathComponent("PC Health Check/runtime")
+        let expected = support.appendingPathComponent("Modore/results")
+        let installedRuntime = support.appendingPathComponent("Modore/runtime")
         XCTAssertEqual(resolved.standardizedFileURL, expected.standardizedFileURL)
         XCTAssertEqual(
             try String(contentsOf: installedRuntime.appendingPathComponent("runtime-manifest.txt")),
@@ -134,7 +166,7 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertTrue(execution.storageWatchScriptURL.path.hasPrefix(bundled.path + "/"))
         XCTAssertFalse(execution.scannerScriptURL.path.hasPrefix(installed.path + "/"))
 
-        let stagedRuntime = support.appendingPathComponent("PC Health Check/runtime")
+        let stagedRuntime = support.appendingPathComponent("Modore/runtime")
         try "#!/bin/bash\n# replaced after validation\nexit 99\n".write(
             to: stagedRuntime.appendingPathComponent("scripts/scanner.sh"),
             atomically: true,
@@ -176,7 +208,7 @@ final class CleanupSafetyTests: XCTestCase {
         let support = root.appendingPathComponent("support")
         try writeRuntime(at: bundled, marker: "tampered-bundle")
         try writeRuntime(at: attacker, marker: "attacker")
-        let expectedInstalled = support.appendingPathComponent("PC Health Check/results")
+        let expectedInstalled = support.appendingPathComponent("Modore/results")
         let environment = [
             "PCH_DEVELOPMENT_MODE": "1",
             "PCH_PROJECT_DIR": attacker.path,
@@ -325,7 +357,7 @@ final class CleanupSafetyTests: XCTestCase {
             expectedHomeURL: root
         ), .stale)
 
-        let mutableWatcher = root.appendingPathComponent("Application Support/PC Health Check/runtime/scripts/storage_watch.sh")
+        let mutableWatcher = root.appendingPathComponent("Application Support/Modore/runtime/scripts/storage_watch.sh")
         try writePlist(watcher: mutableWatcher)
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
@@ -429,7 +461,7 @@ final class CleanupSafetyTests: XCTestCase {
         )
         XCTAssertEqual(
             rejected.standardizedFileURL,
-            support.appendingPathComponent("PC Health Check/results").standardizedFileURL
+            support.appendingPathComponent("Modore/results").standardizedFileURL
         )
 
         let accepted = RuntimeWorkspace.resolve(
@@ -455,7 +487,7 @@ final class CleanupSafetyTests: XCTestCase {
             currentDirectory: root,
             applicationSupportRoot: support
         )
-        let stagedRuntime = support.appendingPathComponent("PC Health Check/runtime")
+        let stagedRuntime = support.appendingPathComponent("Modore/runtime")
         let unexpected = stagedRuntime.appendingPathComponent("sitecustomize.py")
         try "raise SystemExit\n".write(to: unexpected, atomically: true, encoding: .utf8)
 
@@ -466,7 +498,7 @@ final class CleanupSafetyTests: XCTestCase {
             applicationSupportRoot: support
         ))
         XCTAssertFalse(FileManager.default.fileExists(atPath: unexpected.path))
-        let supportDirectory = support.appendingPathComponent("PC Health Check")
+        let supportDirectory = support.appendingPathComponent("Modore")
         let preserved = try FileManager.default.contentsOfDirectory(
             at: supportDirectory,
             includingPropertiesForKeys: nil
@@ -483,7 +515,7 @@ final class CleanupSafetyTests: XCTestCase {
             .appendingPathComponent("pch-runtime-preservation-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("bundle/runtime")
-        let destination = root.appendingPathComponent("support/PC Health Check/runtime")
+        let destination = root.appendingPathComponent("support/Modore/runtime")
         let results = destination.deletingLastPathComponent().appendingPathComponent("results")
         try writeRuntime(at: source, marker: "v1")
         try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
@@ -542,7 +574,7 @@ final class CleanupSafetyTests: XCTestCase {
         let supportLink = root.appendingPathComponent("support-link")
         try FileManager.default.createDirectory(at: outsideSupport, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: supportLink, withDestinationURL: outsideSupport)
-        let expectedRuntime = supportLink.appendingPathComponent("PC Health Check/results")
+        let expectedRuntime = supportLink.appendingPathComponent("Modore/results")
 
         XCTAssertFalse(RuntimeWorkspace.prepareForExecution(
             projectRoot: expectedRuntime,
@@ -551,7 +583,7 @@ final class CleanupSafetyTests: XCTestCase {
             applicationSupportRoot: supportLink
         ))
         XCTAssertFalse(FileManager.default.fileExists(
-            atPath: outsideSupport.appendingPathComponent("PC Health Check/runtime").path
+            atPath: outsideSupport.appendingPathComponent("Modore/runtime").path
         ))
     }
 

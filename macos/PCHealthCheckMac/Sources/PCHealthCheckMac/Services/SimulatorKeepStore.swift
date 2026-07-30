@@ -25,7 +25,9 @@ struct SimulatorKeepState: Equatable {
 enum SimulatorKeepStore {
     private static var url: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/PC Health Check/simulator-keep.txt")
+            .appendingPathComponent("Library/Application Support")
+            .appendingPathComponent(RuntimeWorkspace.applicationSupportName)
+            .appendingPathComponent("simulator-keep.txt")
     }
 
     static func load() -> SimulatorKeepState {

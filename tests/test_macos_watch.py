@@ -228,7 +228,7 @@ def test_storage_watch_wrapper_rejects_changed_script(project_root, tmp_path):
 def test_schedule_requires_approval_and_stays_inside_test_home(project_root, tmp_path):
     home = tmp_path / "home"
     launch_agents = home / "Library" / "LaunchAgents"
-    state_dir = home / "Library" / "Application Support" / "PC Health Check"
+    state_dir = home / "Library" / "Application Support" / "Modore"
     env = os.environ.copy()
     env.update(
         {
