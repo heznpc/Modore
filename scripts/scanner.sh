@@ -30,12 +30,15 @@ AUTORUNS_MODULE="${PCH_PINNED_AUTORUNS_MODULE:-$MODULES_DIR/autoruns.sh}"
 SECURITY_MODULE="${PCH_PINNED_SECURITY_MODULE:-$MODULES_DIR/security.sh}"
 STORAGE_MODULE="${PCH_PINNED_STORAGE_MODULE:-$MODULES_DIR/storage.sh}"
 SCANNER_HELPER="${PCH_PINNED_SCANNER_HELPER:-$SCRIPT_DIR/scanner_helper.jxa.js}"
+# shellcheck source=scripts/modules/support_dir.sh
+source "$SCRIPT_DIR/modules/support_dir.sh"
 NO_VT=false
 
 if [[ -z "$CONFIG_PATH" ]]; then
-    if [[ -f "${HOME}/Library/Application Support/PC Health Check/config.json" ]]; then
+    migrate_support_directory_if_needed "${HOME}/Library/Application Support" || true
+    if [[ -f "${HOME}/Library/Application Support/$SUPPORT_DIR_NAME/config.json" ]]; then
         # User-owned config is shared by standalone and source app builds.
-        CONFIG_PATH="${HOME}/Library/Application Support/PC Health Check/config.json"
+        CONFIG_PATH="${HOME}/Library/Application Support/$SUPPORT_DIR_NAME/config.json"
     elif [[ -f "${PROJECT_DIR}/data/config.json" ]]; then
         # Source/archive CLI fallback: an explicitly created, ignored config.
         CONFIG_PATH="${PROJECT_DIR}/data/config.json"

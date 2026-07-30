@@ -32,7 +32,19 @@ $ProgressPreference = 'SilentlyContinue'
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $sourceLocalConfig = Join-Path $PSScriptRoot '..\data\config.json'
     $userConfig = if ($env:LOCALAPPDATA) {
-        Join-Path $env:LOCALAPPDATA 'PC Health Check\config.json'
+        # 제품명이 Modore로 바뀌기 전에 저장된 설정을 한 번만 옮긴다. 목적지가
+        # 이미 있으면 두 디렉터리를 병합하지 않고 새 쪽을 정답으로 둔다.
+        $legacyRoot = Join-Path $env:LOCALAPPDATA 'PC Health Check'
+        $currentRoot = Join-Path $env:LOCALAPPDATA 'Modore'
+        if ((Test-Path -LiteralPath $legacyRoot -PathType Container) -and
+            -not (Test-Path -LiteralPath $currentRoot)) {
+            try {
+                Move-Item -LiteralPath $legacyRoot -Destination $currentRoot -ErrorAction Stop
+            } catch {
+                # 이름 이동 실패가 검사를 막지 않는다. 옛 경로는 그대로 남는다.
+            }
+        }
+        Join-Path $currentRoot 'config.json'
     } else {
         $null
     }

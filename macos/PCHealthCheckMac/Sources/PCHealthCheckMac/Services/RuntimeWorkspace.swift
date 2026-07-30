@@ -88,7 +88,40 @@ struct RuntimeExecutionContext: Equatable, Sendable {
 }
 
 enum RuntimeWorkspace {
-    static let applicationSupportName = "PC Health Check"
+    static let applicationSupportName = "Modore"
+    static let legacyApplicationSupportName = "PC Health Check"
+
+    /// Moves state written under the pre-rename directory to the current one.
+    ///
+    /// Receipts, approvals, storage history and user config predate the rename,
+    /// so resolving the new name without this would orphan them. The move is a
+    /// same-volume rename, never a delete, and it stops if the destination
+    /// already exists rather than trying to merge two directories.
+    @discardableResult
+    static func migrateLegacyApplicationSupport(
+        applicationSupportRoot: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        let legacy = applicationSupportRoot.appendingPathComponent(legacyApplicationSupportName)
+        let current = applicationSupportRoot.appendingPathComponent(applicationSupportName)
+        guard isRealDirectory(legacy, fileManager: fileManager) else { return false }
+        guard !pathEntryExists(current) else { return false }
+        do {
+            try fileManager.moveItem(at: legacy, to: current)
+            return true
+        } catch {
+            // A failed rename must not stop a scan or a cleanup. The legacy
+            // directory stays where it is and remains readable by the owner.
+            return false
+        }
+    }
+
+    private static func isRealDirectory(_ url: URL, fileManager: FileManager) -> Bool {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path) else {
+            return false
+        }
+        return attributes[.type] as? FileAttributeType == .typeDirectory
+    }
     private static let developmentModeKey = "PCH_DEVELOPMENT_MODE"
 
     static func resolve(
@@ -100,6 +133,7 @@ enum RuntimeWorkspace {
         applicationSupportRoot: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support")
     ) -> URL {
+        migrateLegacyApplicationSupport(applicationSupportRoot: applicationSupportRoot)
         let supportDirectory = applicationSupportRoot.appendingPathComponent(applicationSupportName)
         let installedRuntime = supportDirectory.appendingPathComponent("runtime")
         let resultsDirectory = supportDirectory.appendingPathComponent("results")

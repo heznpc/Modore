@@ -74,11 +74,11 @@ Shared rules, whitelist data, i18n strings, and report vocabulary can be reused 
 | Distribution | Source ZIP | Source ZIP; optional Developer ID/notarized standalone DMG |
 | Network default | Local, except opt-in hash lookup/downloads | Local, except opt-in VirusTotal hash lookup |
 
-The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A standalone build validates the app's sealed code-signature resources, captures every interpreter input between signature checks, and executes those bytes through anonymous file descriptors. Owner-controlled Application Support is used only for the non-executable runtime mirror, migration state, local configuration, and a separate `results/` directory; app updates do not replace scan results or reports. It never executes the replaceable Application Support mirror and never depends on the developer's checkout path. User settings stay at `~/Library/Application Support/PC Health Check/config.json`; the tracked `data/config.example.json` contains no key.
+The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A standalone build validates the app's sealed code-signature resources, captures every interpreter input between signature checks, and executes those bytes through anonymous file descriptors. Owner-controlled Application Support is used only for the non-executable runtime mirror, migration state, local configuration, and a separate `results/` directory; app updates do not replace scan results or reports. It never executes the replaceable Application Support mirror and never depends on the developer's checkout path. User settings stay at `~/Library/Application Support/Modore/config.json`; the tracked `data/config.example.json` contains no key.
 
 **Locale as a first-class concern.** Generic scanners are built for global users; their false-positive rate on Korean banking PCs is the user-facing problem this project exists to solve. The whitelist is the differentiated layer, not the scanner.
 
-**Cleanup is local and approval-gated.** PC Health Check remains the pause before deletion, but the Mac Edition can execute audited recipes for rebuildable caches, Claude VM bundles, Xcode DerivedData, stale Chrome clones, and the known INNORIX user module. Installed apps are re-resolved by bundle ID and moved with exactly attributable containers/caches/preferences to a per-run Trash folder; Xcode and app bundles containing developer SDK/toolchain payloads are blocked. Individual Shutdown Simulator devices can be removed by a normalized UUID revalidated through `simctl`; Booted devices and locally preserved UUIDs are checked again immediately before deletion. Preview produces a short-lived approval manifest binding canonical paths, tree size, process state, and filesystem identity; execution remeasures before and after the same-volume staged move. Normal app termination waits for an approved destructive transaction to reach its receipt boundary instead of abandoning a child process. SDKs, Simulator runtimes, Codex session JSONL, Claude local-agent workspaces, and Codex databases have no cleanup recipe.
+**Cleanup is local and approval-gated.** Modore remains the pause before deletion, but the Mac Edition can execute audited recipes for rebuildable caches, Claude VM bundles, Xcode DerivedData, stale Chrome clones, and the known INNORIX user module. Installed apps are re-resolved by bundle ID and moved with exactly attributable containers/caches/preferences to a per-run Trash folder; Xcode and app bundles containing developer SDK/toolchain payloads are blocked. Individual Shutdown Simulator devices can be removed by a normalized UUID revalidated through `simctl`; Booted devices and locally preserved UUIDs are checked again immediately before deletion. Preview produces a short-lived approval manifest binding canonical paths, tree size, process state, and filesystem identity; execution remeasures before and after the same-volume staged move. Normal app termination waits for an approved destructive transaction to reach its receipt boundary instead of abandoning a child process. SDKs, Simulator runtimes, Codex session JSONL, Claude local-agent workspaces, and Codex databases have no cleanup recipe.
 
 **The incident comes before cleanup.** The Mac home screen is ordered as judgment → observed evidence → likely impact → recovery. A browser or developer-runtime process is never killed merely because it is old or large. A detached, long-running automation tree is labeled as a residue candidate, and the app preserves the local incident summary so a later scan can show what was observed at that time.
 
@@ -143,7 +143,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
    ```
    `VT_API_KEY` supplies the secret without writing it into the project, but network lookup still requires `virustotal.enabled` to be `true` in the local user config. The macOS/Linux `export` and current-session PowerShell forms are process-session values and are not written by Modore. The persistent Windows form is stored in the current user's registry hive on disk; use it only on a trusted single-user account and remove it when no longer needed.
 
-   **Option B — ignored user config:** the SwiftUI Mac app, including builds opened through `Mac앱실행.command`, uses `~/Library/Application Support/PC Health Check/config.json`. Script-only source/archive mode may copy `data/config.example.json` to the ignored `data/config.json`. Windows can also use `%LOCALAPPDATA%\PC Health Check\config.json`.
+   **Option B — ignored user config:** the SwiftUI Mac app, including builds opened through `Mac앱실행.command`, uses `~/Library/Application Support/Modore/config.json`. Script-only source/archive mode may copy `data/config.example.json` to the ignored `data/config.json`. Windows can also use `%LOCALAPPDATA%\Modore\config.json`.
    ```json
    "virustotal": {
      "enabled": true,
@@ -154,11 +154,11 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
    ```bash
    # macOS / Linux
    chmod 600 data/config.json
-   chmod 600 "$HOME/Library/Application Support/PC Health Check/config.json"
+   chmod 600 "$HOME/Library/Application Support/Modore/config.json"
 
    # Windows (PowerShell, owner-only ACL)
    icacls data\config.json /inheritance:r /grant:r "$env:USERNAME:F"
-   icacls "$env:LOCALAPPDATA\PC Health Check\config.json" /inheritance:r /grant:r "$env:USERNAME:F"
+   icacls "$env:LOCALAPPDATA\Modore\config.json" /inheritance:r /grant:r "$env:USERNAME:F"
    ```
 
 4. Run the scan. File hashes will be cross-checked against 70+ antivirus engines.
@@ -304,8 +304,8 @@ Distribution mode only runs from a clean `v<version>` tag at `HEAD` verified by 
 - **No telemetry.** The tool never sends usage analytics or error reports.
 - **No file uploads.** VirusTotal integration uses SHA-256 hashes only.
 - **Local cache only.** VT response cache lives in `%LOCALAPPDATA%/PC건강검진/` (Windows) or `~/Library/Caches/PC건강검진/` (macOS).
-- **Local cleanup receipts.** Mac cleanup receipts stay under `~/Library/Application Support/PC Health Check/cleanup-receipts/`; they contain local paths and are never uploaded.
-- **Local maintenance state.** Simulator keep UUIDs, bounded scan snapshots, and hourly free-space samples stay under `~/Library/Application Support/PC Health Check/` with owner-only permissions. They are never uploaded and can contain local paths, so exported support material should not include them.
+- **Local cleanup receipts.** Mac cleanup receipts stay under `~/Library/Application Support/Modore/cleanup-receipts/`; they contain local paths and are never uploaded.
+- **Local maintenance state.** Simulator keep UUIDs, bounded scan snapshots, and hourly free-space samples stay under `~/Library/Application Support/Modore/` with owner-only permissions. They are never uploaded and can contain local paths, so exported support material should not include them.
 - **Auditable.** VirusTotal calls are in `scripts/vt-lookup.ps1` / `scripts/scanner_helper.jxa.js`; optional Sysinternals downloads are in `scripts/sigcheck-helper.ps1` / `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api`.
 
 ## Contributing

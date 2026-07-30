@@ -622,7 +622,7 @@ const WHITELIST_PATH = env("PCH_PINNED_WHITELIST", env("PCH_WHITELIST_PATH", "da
 const RULES_DIR = env("PCH_RULES_DIR", "rules");
 const CONFIG_PATH = env("PCH_CONFIG_PATH", "data/config.json");
 const NO_VT = /^true$/i.test(env("PCH_NO_VT", "false"));
-const SIMULATOR_KEEP_PATH = env("PCH_SIMULATOR_KEEP_PATH", homeDir() + "/Library/Application Support/PC Health Check/simulator-keep.txt");
+const SIMULATOR_KEEP_PATH = env("PCH_SIMULATOR_KEEP_PATH", homeDir() + "/Library/Application Support/Modore/simulator-keep.txt");
 const simulatorKeepEntries = readText(SIMULATOR_KEEP_PATH, 64 * 1024)
   .split(/\r?\n/)
   .map(value => value.trim())

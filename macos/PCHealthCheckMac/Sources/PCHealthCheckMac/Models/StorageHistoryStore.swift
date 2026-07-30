@@ -9,7 +9,8 @@ enum StorageHistoryStore {
 
     static var stateDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/PC Health Check")
+            .appendingPathComponent("Library/Application Support")
+            .appendingPathComponent(RuntimeWorkspace.applicationSupportName)
     }
 
     static var historyURL: URL {

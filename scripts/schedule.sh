@@ -7,6 +7,9 @@ umask 077
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset BASH_ENV ENV CDPATH GLOBIGNORE
 
+# shellcheck source=scripts/modules/support_dir.sh
+source "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/support_dir.sh"
+
 LABEL="me.heznpc.pchealthcheck.storage-watch"
 ROOT_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /bin/pwd -P)"
 WATCH_SCRIPT="${PCH_STORAGE_WATCH_SCRIPT:-$ROOT_DIR/scripts/storage_watch.sh}"
@@ -60,7 +63,8 @@ fi
     && -d "$HOME_ROOT" && ! -L "$HOME_ROOT" ]] || exit 64
 HOME_ROOT="$(cd -P "$HOME_ROOT" && /bin/pwd -P)" || exit 64
 LAUNCH_AGENTS_DIR="$HOME_ROOT/Library/LaunchAgents"
-STATE_DIR="$HOME_ROOT/Library/Application Support/PC Health Check"
+migrate_support_directory_if_needed "$HOME_ROOT/Library/Application Support" || true
+STATE_DIR="$HOME_ROOT/Library/Application Support/$SUPPORT_DIR_NAME"
 PLIST="$LAUNCH_AGENTS_DIR/$LABEL.plist"
 DOMAIN="gui/$(/usr/bin/id -u)"
 

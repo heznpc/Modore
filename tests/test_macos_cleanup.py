@@ -257,6 +257,55 @@ def test_cleanup_blocks_live_related_process(project_root, tmp_path):
     assert browser.exists()
 
 
+def test_cleanup_migrates_state_written_before_the_rename(project_root, tmp_path):
+    home = tmp_path / "home"
+    support = home / "Library" / "Application Support"
+    legacy = support / "PC Health Check"
+    (legacy / "cleanup-receipts").mkdir(parents=True)
+    (legacy / "cleanup-receipts" / "earlier.tsv").write_text("kept", encoding="utf-8")
+    (legacy / "config.json").write_text("{}", encoding="utf-8")
+    cache_file = home / ".npm" / "entry"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_bytes(b"fixture")
+
+    preview = run_cleanup(project_root, home, "--preview", "npm_cache")
+    token = approval_token(parse_protocol(preview.stdout))
+    executed = run_cleanup_with_token_file(project_root, home, "npm_cache", token)
+    result = parse_protocol(executed.stdout)
+
+    assert executed.returncode == 0, executed.stderr
+    assert result["status"] == "complete"
+    current = support / "Modore"
+    # Receipts and configuration written under the old product name must follow
+    # the rename rather than being orphaned or deleted.
+    assert (current / "cleanup-receipts" / "earlier.tsv").read_text(encoding="utf-8") == "kept"
+    assert (current / "config.json").is_file()
+    assert not legacy.exists()
+    assert str(current) in str(result["receipt"])
+
+
+def test_rename_migration_never_merges_into_an_existing_directory(project_root, tmp_path):
+    home = tmp_path / "home"
+    support = home / "Library" / "Application Support"
+    legacy = support / "PC Health Check"
+    legacy.mkdir(parents=True)
+    (legacy / "legacy-only.txt").write_text("old", encoding="utf-8")
+    current = support / "Modore"
+    current.mkdir(parents=True)
+    (current / "current-only.txt").write_text("new", encoding="utf-8")
+    cache_file = home / ".npm" / "entry"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_bytes(b"fixture")
+
+    preview = run_cleanup(project_root, home, "--preview", "npm_cache")
+
+    assert preview.returncode == 0, preview.stderr
+    # Merging two state directories needs a judgement the harness cannot make,
+    # so the newer name wins and nothing is moved or removed.
+    assert (legacy / "legacy-only.txt").read_text(encoding="utf-8") == "old"
+    assert (current / "current-only.txt").read_text(encoding="utf-8") == "new"
+
+
 def test_unrelated_headless_browser_does_not_block_playwright_cache(project_root, tmp_path):
     home = tmp_path / "home"
     browser = home / "Library" / "Caches" / "ms-playwright" / "chromium" / "chrome"
@@ -338,7 +387,7 @@ def test_execute_rejects_target_drift_and_consumed_approval(project_root, tmp_pa
         home
         / "Library"
         / "Application Support"
-        / "PC Health Check"
+        / "Modore"
         / "cleanup-approvals"
     )
     assert replayed_blocked_attempt.returncode == 3
@@ -420,7 +469,7 @@ def test_expired_approval_is_consumed_without_cleanup(project_root, tmp_path):
         home
         / "Library"
         / "Application Support"
-        / "PC Health Check"
+        / "Modore"
         / "cleanup-approvals"
         / f"{token}.tsv"
     )
@@ -846,7 +895,7 @@ def test_simulator_recipe_honors_keep_list_and_deletes_only_verified_uuid(projec
     device = home / "Library" / "Developer" / "CoreSimulator" / "Devices" / uuid
     device.mkdir(parents=True)
     (device / "data.bin").write_bytes(b"fixture")
-    support = home / "Library" / "Application Support" / "PC Health Check"
+    support = home / "Library" / "Application Support" / "Modore"
     support.mkdir(parents=True)
     keep_file = support / "simulator-keep.txt"
     keep_file.write_text("iPhone 17 Pro Max\n", encoding="utf-8")
@@ -931,7 +980,7 @@ def test_simulator_delete_rechecks_state_and_keep_file_at_final_boundary(
     device = home / "Library" / "Developer" / "CoreSimulator" / "Devices" / uuid
     device.mkdir(parents=True)
     (device / "data.bin").write_bytes(b"fixture")
-    support = home / "Library" / "Application Support" / "PC Health Check"
+    support = home / "Library" / "Application Support" / "Modore"
     support.mkdir(parents=True)
     simctl_list = home / "simctl.txt"
     simctl_list.write_text(

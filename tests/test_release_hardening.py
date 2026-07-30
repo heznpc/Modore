@@ -1251,8 +1251,10 @@ def test_scanners_resolve_ignored_or_user_config_before_template(project_root):
     for source in (mac, windows):
         assert "config.example.json" in source
         assert "config.json" in source
-    assert "Library/Application Support/PC Health Check/config.json" in mac
-    assert mac.index("Library/Application Support/PC Health Check/config.json") < mac.index(
-        "${PROJECT_DIR}/data/config.json"
-    )
+    # The support directory component comes from the shared module so the rename
+    # migration keeps a single source of truth. Assert the composed path rather
+    # than a hard-coded product name.
+    user_config = 'Library/Application Support/$SUPPORT_DIR_NAME/config.json'
+    assert user_config in mac
+    assert mac.index(user_config) < mac.index("${PROJECT_DIR}/data/config.json")
     assert "LOCALAPPDATA" in windows

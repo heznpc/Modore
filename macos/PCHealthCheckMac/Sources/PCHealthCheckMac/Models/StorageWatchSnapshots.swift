@@ -27,9 +27,9 @@ enum StorageWatchSnapshotStore {
 
     static var snapshotURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/PC Health Check/storage-watch-paths.tsv"
-            )
+            .appendingPathComponent("Library/Application Support")
+            .appendingPathComponent(RuntimeWorkspace.applicationSupportName)
+            .appendingPathComponent("storage-watch-paths.tsv")
     }
 
     static func load(from url: URL = snapshotURL) -> [StorageWatchPathSnapshot] {
