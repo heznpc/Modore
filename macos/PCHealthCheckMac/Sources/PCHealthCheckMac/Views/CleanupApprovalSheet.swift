@@ -9,6 +9,7 @@ struct CleanupApprovalSheet: View {
             CleanupApprovalHeader(preview: preview)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    CleanupExplanation(preview: preview)
                     CleanupApprovalNotices(
                         preview: preview,
                         sizeChangeNotice: sizeChangeNotice,
@@ -48,6 +49,8 @@ struct CleanupApprovalSheet: View {
 
     private var accessibilityDetailText: String {
         var parts: [String] = []
+        if !preview.summary.isEmpty { parts.append(preview.summary) }
+        if !preview.avoidWhen.isEmpty { parts.append("미뤄야 할 때: " + preview.avoidWhen) }
         if let sizeChangeNotice { parts.append(sizeChangeNotice) }
         if !preview.blockedReason.isEmpty { parts.append(preview.blockedReason) }
         if !runningProcesses.isEmpty {
@@ -115,6 +118,14 @@ private struct CleanupApprovalNotices: View {
                         .lineLimit(2)
                         .accessibilityLabel("실행 중인 항목: \(process.name)")
                 }
+                // 차단 상태에서는 실행 버튼이 없고 '다시 확인'만 남는다. 왜 계속
+                // 차단되는지 알려주지 않으면 사용자는 같은 버튼을 반복해서 누르게 된다.
+                if preview.status == "blocked" {
+                    Text("위 항목이 실행 중인 동안에는 계속 차단됩니다. 해당 작업을 종료한 뒤 ‘다시 확인’을 누르세요.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -134,14 +145,54 @@ private struct CleanupTargets: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel("정리 대상 경로: \(target)")
             }
-            if !preview.warning.isEmpty {
-                Text(preview.warning)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("정리 대상과 주의사항")
+        .accessibilityLabel("정리 대상 경로 목록")
+    }
+}
+
+// 항목의 정체와 삭제 결과, 보류 조건을 승인 화면에서 함께 제시한다.
+// 이 정보가 없으면 사용자는 앱 밖에서 항목 이름을 검색해야 판단할 수 있다.
+private struct CleanupExplanation: View {
+    let preview: CleanupPreview
+
+    var body: some View {
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(rows, id: \.title) { row in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label(row.title, systemImage: row.icon)
+                            .font(.subheadline.weight(.semibold))
+                        Text(row.detail)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(row.title): \(row.detail)")
+                }
+            }
+        }
+    }
+
+    private struct Row {
+        let title: String
+        let icon: String
+        let detail: String
+    }
+
+    private var rows: [Row] {
+        var result: [Row] = []
+        if !preview.summary.isEmpty {
+            result.append(Row(title: "이 항목은", icon: "info.circle", detail: preview.summary))
+        }
+        if !preview.warning.isEmpty {
+            result.append(Row(title: "정리하면", icon: "arrow.triangle.2.circlepath", detail: preview.warning))
+        }
+        if !preview.avoidWhen.isEmpty {
+            result.append(Row(title: "미뤄야 할 때", icon: "hand.raised", detail: preview.avoidWhen))
+        }
+        return result
     }
 }
 
