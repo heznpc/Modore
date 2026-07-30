@@ -837,7 +837,7 @@ matching_processes() {
     [[ -n "$PROCESS_PATTERN" ]] || return 0
     process_snapshot \
         | /usr/bin/grep -E "$PROCESS_PATTERN" \
-        | /usr/bin/grep -v -E 'scripts/cleanup\.sh|PCHealthCheckMac|/usr/bin/grep -E' \
+        | /usr/bin/grep -v -E 'scripts/cleanup\.sh|Modore|/usr/bin/grep -E' \
         | /usr/bin/head -n 5 \
         | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' \
         | /usr/bin/cut -c 1-240 \
@@ -885,7 +885,7 @@ matching_processes_with_pid() {
     [[ -n "$PROCESS_PATTERN" ]] || return 0
     /bin/ps -axo pid=,command= 2>/dev/null \
         | /usr/bin/grep -E "$PROCESS_PATTERN" \
-        | /usr/bin/grep -v -E 'scripts/cleanup\.sh|PCHealthCheckMac|/usr/bin/grep -E' \
+        | /usr/bin/grep -v -E 'scripts/cleanup\.sh|Modore|/usr/bin/grep -E' \
         | /usr/bin/head -n 5 \
         | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' \
         || true

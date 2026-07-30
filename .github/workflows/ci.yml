@@ -113,13 +113,13 @@ jobs:
 
       - name: Build Mac SwiftUI app
         run: |
-          swift build --package-path macos/PCHealthCheckMac -c release \
+          swift build --package-path macos/Modore -c release \
             -Xswiftc -warnings-as-errors \
             -Xswiftc -strict-concurrency=complete
 
       - name: Test Mac SwiftUI models and safety state
         run: |
-          swift test --package-path macos/PCHealthCheckMac \
+          swift test --package-path macos/Modore \
             -Xswiftc -warnings-as-errors \
             -Xswiftc -strict-concurrency=complete
 

@@ -99,7 +99,7 @@ def run_cleanup_with_token_file(
 def test_macos_app_keeps_raw_approval_token_out_of_argv(project_root):
     source = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModelActions.swift"
+        / "macos/Modore/Sources/Modore/Services/ScanModelActions.swift"
     ).read_text(encoding="utf-8")
     execute_source = source.split("func executeCleanup", 1)[1].split(
         "func retryCleanupPreview", 1

@@ -321,8 +321,8 @@ WINDOWS_FILES = COMMON_FILES + [
 SWIFT_FILES = sorted(
     path.relative_to(PROJECT_ROOT).as_posix()
     for base in (
-        PROJECT_ROOT / "macos/PCHealthCheckMac/Sources",
-        PROJECT_ROOT / "macos/PCHealthCheckMac/Tests",
+        PROJECT_ROOT / "macos/Modore/Sources",
+        PROJECT_ROOT / "macos/Modore/Tests",
     )
     for path in base.rglob("*.swift")
     if ".build" not in path.parts
@@ -346,7 +346,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/modules/macos/autoruns.sh",
     "scripts/modules/macos/security.sh",
     "scripts/modules/macos/storage.sh",
-    "macos/PCHealthCheckMac/Package.swift",
+    "macos/Modore/Package.swift",
     "assets/macos/AppIcon.svg",
 ]
 MACOS_FILES = MACOS_BASE_FILES + SWIFT_FILES
@@ -936,8 +936,8 @@ def validate_zip(source: FileSource, artifact_name: str | None = None) -> dict:
 def swift_files_from_commit(commit: str) -> list[str]:
     result = run_git("ls-tree", "-r", "-z", "--name-only", commit, check=True)
     prefixes = (
-        "macos/PCHealthCheckMac/Sources/",
-        "macos/PCHealthCheckMac/Tests/",
+        "macos/Modore/Sources/",
+        "macos/Modore/Tests/",
     )
     return sorted(
         raw.decode("utf-8", errors="strict")

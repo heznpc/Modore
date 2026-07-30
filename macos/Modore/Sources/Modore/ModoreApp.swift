@@ -27,7 +27,7 @@ final class PCHealthCheckApplicationDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct PCHealthCheckMacApp: App {
+struct ModoreApp: App {
     @NSApplicationDelegateAdaptor(PCHealthCheckApplicationDelegate.self)
     private var applicationDelegate
     @StateObject private var model = ScanModel()

@@ -1,7 +1,7 @@
 import XCTest
-@testable import PCHealthCheckMac
+@testable import Modore
 
-final class PCHealthCheckMacTests: XCTestCase {
+final class ModoreTests: XCTestCase {
     func testScanEnvironmentRequiresExplicitVTConsentAndValidAndroidPaths() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-scan-environment-\(UUID().uuidString)")

@@ -11,7 +11,7 @@ git clone https://github.com/heznpc/modore.git
 cd modore
 python3 -m pip install -r requirements-dev.txt
 python3 -I -B -m pytest tests/ -q
-swift test --package-path macos/PCHealthCheckMac \
+swift test --package-path macos/Modore \
   -Xswiftc -warnings-as-errors \
   -Xswiftc -strict-concurrency=complete
 ```
@@ -67,7 +67,7 @@ This is the highest-value contribution: adding a legitimate local app that curre
 
 - [ ] `python3 -I -B -m pytest tests/ -q` passes.
 - [ ] `python3 -I -B scripts/release_smoke.py --check-only` passes.
-- [ ] If you touched the Mac app, `swift test --package-path macos/PCHealthCheckMac -Xswiftc -warnings-as-errors -Xswiftc -strict-concurrency=complete` passes.
+- [ ] If you touched the Mac app, `swift test --package-path macos/Modore -Xswiftc -warnings-as-errors -Xswiftc -strict-concurrency=complete` passes.
 - [ ] If you touched Mac packaging, `scripts/package_macos_release.sh --local` completes and its app, DMG, and sidecar metadata report the intended architectures/minimum OS. This never creates a publishable release.
 - [ ] If you touched a PowerShell script, run a parse check:
       `pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('scripts/<file>.ps1', [ref]\$null, [ref]\$null)"`.
