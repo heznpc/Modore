@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="heznpc-brand" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+    <linearGradient id="modore-brand" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#3276E8"/>
       <stop offset="0.52" stop-color="#4659D6"/>
       <stop offset="1" stop-color="#713FC2"/>
@@ -15,7 +15,7 @@
     </filter>
   </defs>
 
-  <rect x="56" y="56" width="912" height="912" rx="208" fill="url(#heznpc-brand)"/>
+  <rect x="56" y="56" width="912" height="912" rx="208" fill="url(#modore-brand)"/>
   <rect x="76" y="76" width="872" height="872" rx="190" fill="none" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="4"/>
 
   <g filter="url(#shadow)">

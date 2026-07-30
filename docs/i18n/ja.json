@@ -117,7 +117,7 @@
       "desc": "macOS 13+ SwiftUIアプリは <code>Mac앱실행.command</code>、スクリプトモードは <code>검사하기.command</code> を右クリック → 開く。System Data/Developerストレージバーの解釈は Mac Edition の機能です。",
       "btn": "Macソースを見る →"
     },
-    "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>。読めるソースを自分で確認できます。"
+    "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/modore' target='_blank' rel='noopener'>github.com/heznpc/modore</a>。読めるソースを自分で確認できます。"
   },
   "final": {
     "heading": "疑わしい今、<em>6分で答えが出ます。</em>",

@@ -117,7 +117,7 @@
       "desc": "macOS 13+ SwiftUI app via <code>Mac앱실행.command</code>; script mode via <code>검사하기.command</code> → Open. Decoding the System Data / Developer storage bar is a Mac Edition feature.",
       "btn": "View Mac source →"
     },
-    "github_side": "Clone or fork: <a href='https://github.com/heznpc/pc-health-check' target='_blank' rel='noopener'>github.com/heznpc/pc-health-check</a>. Inspect the readable source yourself."
+    "github_side": "Clone or fork: <a href='https://github.com/heznpc/modore' target='_blank' rel='noopener'>github.com/heznpc/modore</a>. Inspect the readable source yourself."
   },
   "final": {
     "heading": "Suspicious right now? <em>6 minutes to answers.</em>",

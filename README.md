@@ -3,7 +3,7 @@
 > A local workstation incident investigator for the moment you wonder: **is my PC doing something behind my back?**
 > It turns process, network, autorun, security, storage, and developer-runtime signals into plain-language evidence before you stop or delete anything.
 
-[🌐 **Website**](https://heznpc.github.io/pc-health-check/) · [📦 Releases (when published)](https://github.com/heznpc/pc-health-check/releases) · [🇰🇷 한국어 가이드](./사용법.txt) · [Architecture](./docs/ARCHITECTURE.md)
+[🌐 **Website**](https://heznpc.github.io/modore/) · [📦 Releases (when published)](https://github.com/heznpc/modore/releases) · [🇰🇷 한국어 가이드](./사용법.txt) · [Architecture](./docs/ARCHITECTURE.md)
 
 *Part of the Heznpc portfolio — Trust tier (Supporting).*
 
@@ -168,7 +168,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 ## Project structure
 
 ```
-pc-health-check/
+modore/
 ├── 검사하기.bat              Windows launcher (double-click)
 ├── 검사하기.command          macOS launcher (double-click)
 ├── Mac앱실행.command         macOS SwiftUI app builder/launcher
@@ -269,7 +269,7 @@ scripts/package_macos_release.sh --local
 PCH_CODESIGN_IDENTITY="Developer ID Application: ..." \
 PCH_CODESIGN_TEAM_ID="ABCDE12345" \
 PCH_CODESIGN_CERT_SHA256="<reviewed-64-hex-leaf-certificate-fingerprint>" \
-PCH_NOTARY_PROFILE="pc-health-check-notary" \
+PCH_NOTARY_PROFILE="modore-notary" \
 PCH_RELEASE_SIGNER_PUBLIC_KEY='ssh-ed25519 <reviewed-public-key-base64>' \
 PCH_RELEASE_SIGNER_SHA256='SHA256:<reviewed-fingerprint>' \
 scripts/package_macos_release.sh
@@ -318,7 +318,7 @@ Whitelist contributions are especially welcome. See [`CONTRIBUTING.md`](./CONTRI
 
 ## Security
 
-Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/pc-health-check/security/advisories/new). Do not place vulnerability details in a public issue; see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
+Vulnerability reports should go through GitHub's [Private Vulnerability Reporting](https://github.com/heznpc/modore/security/advisories/new). Do not place vulnerability details in a public issue; see [`SECURITY.md`](./SECURITY.md) for the full policy, scope, and response timeline.
 
 This project verifies all Sysinternals binaries via `Get-AuthenticodeSignature` against a Microsoft signer subject **on every invocation** — not only at first download — before executing them. The cached `.exe` under `%LOCALAPPDATA%` is re-validated each run because that directory is user-writable and the threat model this tool exists in (other user-mode malware may be present) requires treating the cache as untrusted between runs. By default, Sysinternals download prompts for user confirmation; setting `sysinternals.autoDownload` to `true` enables quiet download with the same signature gate.
 
