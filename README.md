@@ -189,6 +189,7 @@ modore/
 │   ├── menu.ps1              Windows interactive menu
 │   ├── scanner.ps1           Windows scanner
 │   ├── monitor.ps1           Windows 5-min idle monitor
+│   ├── idle_cpu.sh           Mac idle CPU observer with ancestor attribution
 │   ├── report.ps1            Windows HTML generator
 │   ├── rule_engine.ps1       Windows rule evaluator
 │   ├── vt-lookup.ps1         VirusTotal wrapper
