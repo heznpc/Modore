@@ -33,7 +33,7 @@ if [[ -x "$APP_BIN" ]] && app_binary_is_running; then
     echo "실행 중인 개발 앱에 안전한 종료를 요청합니다..."
     if ! /usr/bin/osascript -l JavaScript \
         -e 'ObjC.import("AppKit")' \
-        -e 'function run(argv) { const target = argv[0]; const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("me.heznpc.pchealthcheck.mac"); let count = 0; for (let index = 0; index < apps.count; index += 1) { const app = apps.objectAtIndex(index); const url = app.bundleURL; if (url && ObjC.unwrap(url.path) === target) { if (app.terminate) { count += 1; } } } return String(count); }' \
+        -e 'function run(argv) { const target = argv[0]; const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("me.heznpc.modore"); let count = 0; for (let index = 0; index < apps.count; index += 1) { const app = apps.objectAtIndex(index); const url = app.bundleURL; if (url && ObjC.unwrap(url.path) === target) { if (app.terminate) { count += 1; } } } return String(count); }' \
         -- "$APP_PATH" >/dev/null; then
         echo "실행 중인 앱에 종료를 요청하지 못했습니다. 앱을 직접 종료한 뒤 다시 실행하세요."
         read -r -p "엔터를 누르면 종료합니다..." _

@@ -106,7 +106,7 @@ enum StorageWatchService {
         let plistURL = URL(fileURLWithPath: plistPath)
         let expectedPlistURL = expectedHomeURL
             .appendingPathComponent("Library/LaunchAgents")
-            .appendingPathComponent("me.heznpc.pchealthcheck.storage-watch.plist")
+            .appendingPathComponent("me.heznpc.modore.storage-watch.plist")
         guard let watcherHash = expectedWatcherSHA256 ?? secureSHA256(
             at: expectedWatcherURL,
             maximumBytes: 1_048_576
@@ -150,7 +150,7 @@ enum StorageWatchService {
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
               let dictionary = plist as? [String: Any],
               Set(dictionary.keys) == expectedKeys,
-              dictionary["Label"] as? String == "me.heznpc.pchealthcheck.storage-watch",
+              dictionary["Label"] as? String == "me.heznpc.modore.storage-watch",
               let arguments = dictionary["ProgramArguments"] as? [String],
               arguments == expectedArguments,
               (dictionary["StartInterval"] as? NSNumber)?.intValue == 3600,

@@ -225,6 +225,41 @@ def test_storage_watch_wrapper_rejects_changed_script(project_root, tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="launchd plist tools are macOS-only")
+def test_schedule_removes_the_agent_installed_before_the_rename(project_root, tmp_path):
+    home = tmp_path / "home"
+    launch_agents = home / "Library" / "LaunchAgents"
+    state_dir = home / "Library" / "Application Support" / "Modore"
+    launch_agents.mkdir(parents=True)
+    legacy_plist = launch_agents / "me.heznpc.pchealthcheck.storage-watch.plist"
+    legacy_plist.write_bytes(
+        plistlib.dumps({"Label": "me.heznpc.pchealthcheck.storage-watch"})
+    )
+    legacy_plist.chmod(0o600)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_HOME_OVERRIDE": str(home),
+            "PCH_LAUNCH_AGENTS_DIR": str(launch_agents),
+            "PCH_STATE_DIR": str(state_dir),
+        }
+    )
+
+    installed = subprocess.run(
+        [str(project_root / "scripts" / "schedule.sh"), "--install", "--owner-approved"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+    )
+
+    assert installed.returncode == 0, installed.stderr
+    # Leaving the old label loaded would run the hourly watch twice and hide the
+    # stale agent from --status and --uninstall.
+    assert not legacy_plist.exists()
+    assert (launch_agents / "me.heznpc.modore.storage-watch.plist").is_file()
+
+
 def test_schedule_requires_approval_and_stays_inside_test_home(project_root, tmp_path):
     home = tmp_path / "home"
     launch_agents = home / "Library" / "LaunchAgents"
@@ -258,7 +293,7 @@ def test_schedule_requires_approval_and_stays_inside_test_home(project_root, tmp
     )
     assert installed.returncode == 0, installed.stderr
     assert parse_protocol(installed.stdout)["enabled"] == "true"
-    plist = launch_agents / "me.heznpc.pchealthcheck.storage-watch.plist"
+    plist = launch_agents / "me.heznpc.modore.storage-watch.plist"
     assert plist.is_file()
     assert not injected.exists()
     definition = plistlib.loads(plist.read_bytes())
@@ -274,7 +309,7 @@ def test_schedule_requires_approval_and_stays_inside_test_home(project_root, tmp
         '/usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /bin/bash -p'
     )
     assert definition == {
-        "Label": "me.heznpc.pchealthcheck.storage-watch",
+        "Label": "me.heznpc.modore.storage-watch",
         "ProgramArguments": [
             "/usr/bin/env",
             "-i",

@@ -242,7 +242,7 @@ final class CleanupSafetyTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let expectedWatcher = root.appendingPathComponent("Signed.app/Contents/Resources/runtime/scripts/storage_watch.sh")
         let staleWatcher = root.appendingPathComponent("Old.app/Contents/Resources/runtime/scripts/storage_watch.sh")
-        let plistURL = root.appendingPathComponent("Library/LaunchAgents/me.heznpc.pchealthcheck.storage-watch.plist")
+        let plistURL = root.appendingPathComponent("Library/LaunchAgents/me.heznpc.modore.storage-watch.plist")
         try FileManager.default.createDirectory(
             at: expectedWatcher.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -277,7 +277,7 @@ final class CleanupSafetyTests: XCTestCase {
                 arguments.insert("BASH_ENV=/tmp/payload", at: 2)
             }
             let payload: [String: Any] = [
-                "Label": "me.heznpc.pchealthcheck.storage-watch",
+                "Label": "me.heznpc.modore.storage-watch",
                 "ProgramArguments": arguments,
                 "StartInterval": 3600,
                 "RunAtLoad": true,
@@ -390,7 +390,7 @@ final class CleanupSafetyTests: XCTestCase {
         let launchAgents = root.appendingPathComponent("Library/LaunchAgents")
         let expectedWatcher = root.appendingPathComponent("runtime/scripts/storage_watch.sh")
         let plistURL = launchAgents.appendingPathComponent(
-            "me.heznpc.pchealthcheck.storage-watch.plist"
+            "me.heznpc.modore.storage-watch.plist"
         )
         try FileManager.default.createDirectory(
             at: expectedWatcher.deletingLastPathComponent(),

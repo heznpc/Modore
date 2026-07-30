@@ -10,7 +10,11 @@ unset BASH_ENV ENV CDPATH GLOBIGNORE
 # shellcheck source=scripts/modules/support_dir.sh
 source "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/support_dir.sh"
 
-LABEL="me.heznpc.pchealthcheck.storage-watch"
+LABEL="me.heznpc.modore.storage-watch"
+# 이름이 바뀌기 전에 설치된 에이전트는 옛 라벨로 계속 로드된 상태로 남는다.
+# 정리하지 않으면 시간당 감시가 두 벌 돌고, --status와 --uninstall이 옛 쪽을
+# 보지 못한다.
+LEGACY_LABEL="me.heznpc.pchealthcheck.storage-watch"
 ROOT_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /bin/pwd -P)"
 WATCH_SCRIPT="${PCH_STORAGE_WATCH_SCRIPT:-$ROOT_DIR/scripts/storage_watch.sh}"
 HOME_ROOT=""
@@ -66,7 +70,22 @@ LAUNCH_AGENTS_DIR="$HOME_ROOT/Library/LaunchAgents"
 migrate_support_directory_if_needed "$HOME_ROOT/Library/Application Support" || true
 STATE_DIR="$HOME_ROOT/Library/Application Support/$SUPPORT_DIR_NAME"
 PLIST="$LAUNCH_AGENTS_DIR/$LABEL.plist"
+LEGACY_PLIST="$LAUNCH_AGENTS_DIR/$LEGACY_LABEL.plist"
 DOMAIN="gui/$(/usr/bin/id -u)"
+
+# 옛 라벨로 로드된 에이전트와 그 plist를 제거한다. 설치와 제거 양쪽에서 부르며,
+# 없으면 아무 일도 하지 않는다. 실패는 무시한다. 새 에이전트 설치가 옛 항목
+# 정리에 실패해서 막히는 것이 더 나쁘다.
+remove_legacy_agent() {
+    if [[ "${PCH_TEST_MODE:-0}" != "1" ]]; then
+        /bin/launchctl bootout "$DOMAIN/$LEGACY_LABEL" >/dev/null 2>&1 || true
+    fi
+    if [[ -e "$LEGACY_PLIST" || -L "$LEGACY_PLIST" ]]; then
+        secure_owned_regular_file "$LEGACY_PLIST" || return 0
+        /bin/rm -f "$LEGACY_PLIST" || return 0
+    fi
+    return 0
+}
 
 emit() {
     /usr/bin/printf '%s\t%s\n' "$1" "${2:-}"
@@ -189,6 +208,7 @@ install_agent() {
     ensure_directory "$HOME_ROOT/Library/Application Support" || exit 1
     ensure_directory "$STATE_DIR" || exit 1
     launch_directories_are_safe || exit 1
+    remove_legacy_agent
     /bin/chmod 700 "$STATE_DIR" 2>/dev/null || true
     if [[ -e "$PLIST" || -L "$PLIST" ]]; then
         secure_owned_regular_file "$PLIST" || exit 1
@@ -268,6 +288,7 @@ uninstall_agent() {
         secure_owned_regular_file "$PLIST" || exit 1
         /bin/rm -f "$PLIST"
     fi
+    remove_legacy_agent
     status
 }
 
