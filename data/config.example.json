@@ -1,5 +1,5 @@
 {
-  "_comment": "PC Health Check configuration template. Copy this file to a local config path before adding a secret.",
+  "_comment": "Modore configuration template. Copy this file to a local config path before adding a secret.",
   "_howto": "VirusTotal API key: https://www.virustotal.com -> profile -> API Key",
 
   "virustotal": {

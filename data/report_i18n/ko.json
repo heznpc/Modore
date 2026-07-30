@@ -1,5 +1,5 @@
 {
-  "title": "PC 건강검진 결과",
+  "title": "Modore 결과",
   "meta_line": "{computer} / {user} · {os} · 검사 시각: {scannedAt}",
   "load_line": "현재 CPU {cpu}% · 메모리 {mem}% · 메모리 총 {totalGb} GB",
   "cards": {
@@ -153,7 +153,7 @@
       "share_warning": "도움을 요청하려고 리포트를 공유할 때는 PC 이름, 사용자 이름, 경로에 포함된 개인 정보를 먼저 가리세요."
     }
   },
-  "footer": "PC 건강검진 v0.3 · 생성 시각 {now}",
+  "footer": "Modore v0.3 · 생성 시각 {now}",
   "hidden_rows_note": "서명 검증된 정상 항목 {count}건은 숨겨졌습니다.",
   "muted": {
     "autorunsc_disabled": "Sysinternals autorunsc 미설치 또는 비활성화 상태. <code>data/config.json</code>의 <code>sysinternals.useAutorunsc</code>를 <code>true</code>로 바꾸세요.",

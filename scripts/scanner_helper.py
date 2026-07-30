@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PC 건강검진 - macOS 스캐너 헬퍼 (v0.3)
+Modore - macOS 스캐너 헬퍼 (v0.3)
 
 역할: scanner.sh가 수집한 raw 데이터를 파싱하여 raw_facts.json 생성,
       이후 rule_engine.py를 실행해 최종 scan_result.json 생성.

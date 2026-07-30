@@ -163,10 +163,10 @@ STATUS="normal"
 MESSAGE="저장공간 변화가 정상 범위입니다."
 if [[ "$FREE_KB" -lt "$FREE_THRESHOLD_KB" ]]; then
     STATUS="warning"
-    MESSAGE="남은 저장공간이 ${FREE_THRESHOLD_GB}GB 아래입니다. PC Health Check를 열어 원인을 확인하세요."
+    MESSAGE="남은 저장공간이 ${FREE_THRESHOLD_GB}GB 아래입니다. Modore를 열어 원인을 확인하세요."
 elif [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
     STATUS="warning"
-    MESSAGE="최근 점검 이후 저장공간이 ${DROP_THRESHOLD_GB}GB 이상 줄었습니다. PC Health Check를 열어 원인을 확인하세요."
+    MESSAGE="최근 점검 이후 저장공간이 ${DROP_THRESHOLD_GB}GB 이상 줄었습니다. Modore를 열어 원인을 확인하세요."
 fi
 
 NOW_EPOCH="$(/bin/date '+%s')"
@@ -307,7 +307,7 @@ if [[ "$STATUS" == "warning" && "$NOTIFY" == "1" ]]; then
         if [[ "$(/usr/bin/uname -s)" == "Darwin" && -x /usr/bin/osascript ]]; then
             /usr/bin/osascript \
                 -e 'on run argv' \
-                -e 'display notification (item 1 of argv) with title "PC Health Check"' \
+                -e 'display notification (item 1 of argv) with title "Modore"' \
                 -e 'end run' \
                 "$MESSAGE" >/dev/null 2>&1 || true
         fi

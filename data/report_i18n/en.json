@@ -1,5 +1,5 @@
 {
-  "title": "PC Health Check Report",
+  "title": "Modore Report",
   "meta_line": "{computer} / {user} · {os} · Scanned at: {scannedAt}",
   "load_line": "Current CPU {cpu}% · Memory {mem}% · Total memory {totalGb} GB",
   "cards": {
@@ -141,7 +141,7 @@
       "share_warning": "Before sharing this report for help, redact personal details in PC name, user name, and file paths."
     }
   },
-  "footer": "PC Health Check v0.3 · Generated {now}",
+  "footer": "Modore v0.3 · Generated {now}",
   "hidden_rows_note": "{count} verified-signed safe items hidden.",
   "muted": {
     "autorunsc_disabled": "Sysinternals autorunsc not installed or disabled. Set <code>sysinternals.useAutorunsc</code> to <code>true</code> in <code>data/config.json</code>.",

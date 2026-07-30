@@ -44,7 +44,7 @@ struct PCHealthCheckMacApp: App {
     }
 
     var body: some Scene {
-        Window("PC Health Check Mac", id: "main") {
+        Window("Modore", id: "main") {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 900, minHeight: 640)

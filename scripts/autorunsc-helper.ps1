@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# PC 건강검진 - Autorunsc (Sysinternals) 도우미
+# Modore - Autorunsc (Sysinternals) 도우미
 # 역할: 레지스트리 Run 키, 예약 작업, 서비스, 브라우저 확장,
 #       WMI 이벤트, WinLogon 후킹 등 모든 자동실행 항목 종합 분석
 #

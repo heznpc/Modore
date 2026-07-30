@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PC 건강검진 - 크로스플랫폼 i18n HTML 리포트 생성기 (v0.3)
+Modore - 크로스플랫폼 i18n HTML 리포트 생성기 (v0.3)
 
 입력: scan_result.json, monitor_result.json(선택), data/explain.json,
       data/report_i18n/<lang>.json
@@ -32,7 +32,7 @@ def main():
     script_dir = Path(__file__).resolve().parent
     project_dir = script_dir.parent
 
-    parser = argparse.ArgumentParser(description="PC 건강검진 i18n HTML 리포트 생성기")
+    parser = argparse.ArgumentParser(description="Modore i18n HTML 리포트 생성기")
     parser.add_argument("--scan", default=str(project_dir / "scan_result.json"))
     parser.add_argument("--monitor", default=str(project_dir / "monitor_result.json"))
     parser.add_argument("--explain", default=str(project_dir / "data" / "explain.json"))

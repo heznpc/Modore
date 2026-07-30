@@ -1,4 +1,4 @@
-﻿# PC 건강검진 - PowerShell HTML report generator (runtime, no Python required)
+﻿# Modore - PowerShell HTML report generator (runtime, no Python required)
 [CmdletBinding()]
 param(
     [string]$Scan = "$PSScriptRoot\..\scan_result.json",
@@ -100,9 +100,9 @@ a:focus-visible,button:focus-visible{outline:2px solid #2563eb;outline-offset:2p
 $html = @"
 <!doctype html>
 <html lang="ko">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PC 건강검진 결과</title><style>$css</style></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Modore 결과</title><style>$css</style></head>
 <body><main id="main"><div class="container">
-<h1>🩺 PC 건강검진 결과</h1>
+<h1>🩺 Modore 결과</h1>
 <div class="meta">$(H $scanObj.computerName) / $(H $scanObj.userName) · $(H $scanObj.osVersion) · 검사 시각: $(H $scanObj.scannedAt)</div>
 <div class="verdict $overall"><div class="icon">$icon</div><div><div class="big">$(H $summary.message)</div><div>위험 $($summary.dangerCount)건 · 확인 $($summary.warningCount)건</div></div></div>
 <div class="panel"><h2>다음 행동</h2><ol>$actionHtml</ol><div class="share">도움을 요청하려고 리포트를 공유할 때는 PC 이름, 사용자 이름, 경로에 포함된 개인 정보를 먼저 가리세요.</div></div>
@@ -114,7 +114,7 @@ $html = @"
 <h2>자동 실행 종합 분석</h2>$(Render-ListTable $sections.autoruns @('risk','category','entry','verified','note','image'))
 <h2>예약 작업</h2>$(Render-ListTable $sections.scheduledTasks @('risk','name','state','execute','note'))
 <h2>최근 설치 프로그램</h2>$(Render-ListTable $sections.recentInstalls @('risk','installDate','name','publisher','note'))
-<div class="meta">PC 건강검진 v0.3 · 생성 시각 $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</div>
+<div class="meta">Modore v0.3 · 생성 시각 $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</div>
 </div></main></body></html>
 "@
 

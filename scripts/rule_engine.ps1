@@ -1,4 +1,4 @@
-﻿# PC 건강검진 - PowerShell rule engine (runtime, no Python required)
+﻿# Modore - PowerShell rule engine (runtime, no Python required)
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Raw,

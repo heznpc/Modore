@@ -1,4 +1,4 @@
-# PC 건강검진 — PC Health Check
+# Modore — Modore
 
 > A local workstation incident investigator for the moment you wonder: **is my PC doing something behind my back?**
 > It turns process, network, autorun, security, storage, and developer-runtime signals into plain-language evidence before you stop or delete anything.
@@ -32,7 +32,7 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 
 ## Currently implemented
 
-- **Two OS editions under one brand**: PC Health Check for Windows and PC Health Check for Mac share the same promise — explain local PC state in plain language without deleting anything automatically.
+- **Two OS editions under one brand**: Modore for Windows and Modore for Mac share the same promise — explain local PC state in plain language without deleting anything automatically.
 - **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
 - **Mac Edition**: Bash + JXA scanner focused on macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and developer-runtime incidents. Every collector reports `ok`, `permission_denied`, `unavailable`, `timed_out`, or `failed`; a missing required collector can never become a safe verdict. Browser automation is grouped into roots with PID, parent, elapsed time, system/isolated channel, profile type, and a privacy-preserving controller label. The native SwiftUI app presents one incident judgment followed by evidence, likely impact, and approval-gated recovery; bounded local history keeps the judgment without storing raw commands or URLs. It also surfaces rebuildable build residue inside development projects (Flutter build/.dart_tool, node_modules, Cargo target, SwiftPM .build, Pods, Gradle build) — gitignored multi-GB directories invisible to other tools — with the official regeneration command instead of a delete button.
 - **Local recurrence watch**: an optional hourly LaunchAgent keeps a bounded owner-only free-space timeline. It notifies when free space falls below 20GB or drops by at least 8GB between checks; it never deletes anything.
@@ -49,12 +49,12 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 ## Planned
 
 - **Mac Edition Swift app** — deepen project-manifest parsing for SDK/runtime version requirements and expand attributable app-residue mappings without weakening the local approval boundary.
-- **Windows Edition maintenance** — Windows remains under the same PC Health Check brand, but new Windows-only storage features wait for real-device validation.
+- **Windows Edition maintenance** — Windows remains under the same Modore brand, but new Windows-only storage features wait for real-device validation.
 - **Additional locales** beyond ko/en/ja — community PRs welcome; the i18n loader already supports arbitrary codes.
 
 ## Editions
 
-PC Health Check is the brand. The OS editions are separate products under that brand, not feature-parity promises.
+Modore is the brand. The OS editions are separate products under that brand, not feature-parity promises.
 
 | Edition | Artifact | Focus | Validation rule |
 |---|---|---|---|
@@ -113,8 +113,8 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 3. Extract anywhere (USB, Desktop, Downloads — no installer needed), then double-click `검사하기.bat`.
 
 ### macOS
-1. No public DMG is currently published. Clone the source, then right-click `Mac앱실행.command` → **Open**. It builds and opens `build/macos/PC Health Check Mac.app`.
-2. When a release includes a notarized Universal 2 DMG, verify its SHA-256 metadata, open it, and drag **PC Health Check Mac** to Applications. No Swift toolchain is required for that artifact.
+1. No public DMG is currently published. Clone the source, then right-click `Mac앱실행.command` → **Open**. It builds and opens `build/macos/Modore.app`.
+2. When a release includes a notarized Universal 2 DMG, verify its SHA-256 metadata, open it, and drag **Modore** to Applications. No Swift toolchain is required for that artifact.
 3. For script-only mode, right-click `검사하기.command` → **Open**.
 4. Follow the menu or the SwiftUI app controls. Cleanup always requires an item preview and a second explicit approval.
 
@@ -141,7 +141,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
    # Windows PowerShell (persistent, current user)
    [System.Environment]::SetEnvironmentVariable('VT_API_KEY', 'your_key_here', 'User')
    ```
-   `VT_API_KEY` supplies the secret without writing it into the project, but network lookup still requires `virustotal.enabled` to be `true` in the local user config. The macOS/Linux `export` and current-session PowerShell forms are process-session values and are not written by PC Health Check. The persistent Windows form is stored in the current user's registry hive on disk; use it only on a trusted single-user account and remove it when no longer needed.
+   `VT_API_KEY` supplies the secret without writing it into the project, but network lookup still requires `virustotal.enabled` to be `true` in the local user config. The macOS/Linux `export` and current-session PowerShell forms are process-session values and are not written by Modore. The persistent Windows form is stored in the current user's registry hive on disk; use it only on a trusted single-user account and remove it when no longer needed.
 
    **Option B — ignored user config:** the SwiftUI Mac app, including builds opened through `Mac앱실행.command`, uses `~/Library/Application Support/PC Health Check/config.json`. Script-only source/archive mode may copy `data/config.example.json` to the ignored `data/config.json`. Windows can also use `%LOCALAPPDATA%\PC Health Check\config.json`.
    ```json

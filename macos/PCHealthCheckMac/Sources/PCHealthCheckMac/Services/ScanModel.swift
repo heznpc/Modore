@@ -132,7 +132,7 @@ final class ScanModel: ObservableObject {
         state = .running
         errorMessage = nil
         logStore.clear()
-        appendLog("PC 건강검진 Mac Edition 시작")
+        appendLog("Modore 시작")
         appendLog("프로젝트: \(projectRoot.path)")
 
         let root = projectRoot

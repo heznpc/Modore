@@ -1,5 +1,5 @@
 name: False positive or missing context
-description: Report a legitimate process or app that PC Health Check explains incorrectly.
+description: Report a legitimate process or app that Modore explains incorrectly.
 title: "[False positive] "
 labels: ["false-positive"]
 body:

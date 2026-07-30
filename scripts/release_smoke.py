@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build and validate release zip artifacts for PC Health Check.
+"""Build and validate release zip artifacts for Modore.
 
 This script is intentionally dependency-free. It creates OS-specific zip files
 from an allowlist so local scan artifacts, caches, and user config byproducts

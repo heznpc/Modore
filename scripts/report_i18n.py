@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""PC 건강검진 리포트 - 로컬라이제이션(i18n) 로더."""
+"""Modore 리포트 - 로컬라이제이션(i18n) 로더."""
 import os
 from pathlib import Path
 

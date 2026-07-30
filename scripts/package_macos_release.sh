@@ -7,7 +7,7 @@ export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset BASH_ENV ENV CDPATH GLOBIGNORE
 
 ROOT_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /bin/pwd -P)"
-APP_NAME="PC Health Check Mac.app"
+APP_NAME="Modore.app"
 VERSION="${PCH_APP_VERSION:-0.3.0}"
 MINIMUM_SYSTEM_VERSION="${PCH_MINIMUM_SYSTEM_VERSION:-13.0}"
 ARCH_REQUEST="${PCH_BUILD_ARCHS:-universal}"
@@ -840,7 +840,7 @@ run_clean /usr/bin/ditto --norsrc --noextattr --noacl "$APP_DIR" "$staging_dir/$
 run_clean /usr/bin/python3 -I -B "$AUDIT_SCRIPT" --allow-symlink Applications "$staging_dir"
 
 run_clean /usr/bin/hdiutil create \
-    -volname "PC Health Check Mac" \
+    -volname "Modore" \
     -srcfolder "$staging_dir" \
     -format UDZO \
     "$WORK_DMG_PATH" >/dev/null
@@ -1012,7 +1012,7 @@ import sys
 ) = sys.argv[1:]
 payload = {
     "schemaVersion": 1,
-    "product": "PC Health Check Mac",
+    "product": "Modore",
     "brand": "Heznpc",
     "artifact": artifact,
     "version": version,

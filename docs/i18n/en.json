@@ -1,10 +1,10 @@
 {
   "meta": {
-    "title": "PC Health Check — A local diagnostic for the PC that feels busy behind your back",
-    "description": "A local diagnostic that explains hidden-miner suspicion, Korean banking-plugin false positives, and macOS's vague System Data / Developer storage categories in context. PC Health Check ships as Windows Edition and Mac Edition, with traffic-light reports and hash-only VirusTotal lookup."
+    "title": "Modore — A local diagnostic for the PC that feels busy behind your back",
+    "description": "A local diagnostic that explains hidden-miner suspicion, Korean banking-plugin false positives, and macOS's vague System Data / Developer storage categories in context. Modore ships as Windows Edition and Mac Edition, with traffic-light reports and hash-only VirusTotal lookup."
   },
   "brand": {
-    "name": "PC Health Check"
+    "name": "Modore"
   },
   "nav": {
     "skip": "Skip to main content",
@@ -16,7 +16,7 @@
   "hero": {
     "tag": "v0.3 · Windows Edition / Mac Edition",
     "title": "A local diagnostic for the PC that feels <em>busy behind your back</em>.",
-    "subtitle": "When fans spin, CPU/GPU spikes, or unknown processes appear, PC Health Check gathers miner signals, autoruns, network context, and Korean security-plugin explanations before you delete anything.",
+    "subtitle": "When fans spin, CPU/GPU spikes, or unknown processes appear, Modore gathers miner signals, autoruns, network context, and Korean security-plugin explanations before you delete anything.",
     "cta_primary": "Run from source <span class='arrow'>→</span>",
     "cta_secondary": "Read the source",
     "meta": {
@@ -47,13 +47,13 @@
   "problem": {
     "kicker": "PROBLEM",
     "heading": "When you wonder \"is my PC secretly mining?\", <em>what should you check first?</em>",
-    "lead": "A slow PC, spinning fans, high CPU/GPU, and unknown startup entries create real anxiety. A Korean PC also carries banking, government, and e-commerce security plugins that often look suspicious. PC Health Check gathers evidence before you ignore everything or delete the wrong thing.",
+    "lead": "A slow PC, spinning fans, high CPU/GPU, and unknown startup entries create real anxiety. A Korean PC also carries banking, government, and e-commerce security plugins that often look suspicious. Modore gathers evidence before you ignore everything or delete the wrong thing.",
     "generic": {
       "label": "Generic scanner",
       "quote": "\"30 suspicious items detected.\""
     },
     "pch": {
-      "label": "PC Health Check",
+      "label": "Modore",
       "quote": "\"29 are banking software. 1 needs review.\"",
       "reasons": {
         "ipinside": "IPinside, normal",
