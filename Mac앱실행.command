@@ -23,7 +23,7 @@ echo "Modore SwiftUI 앱을 준비합니다..."
 echo ""
 
 APP_PATH="$PWD/build/macos/Modore.app"
-APP_BIN="$APP_PATH/Contents/MacOS/PCHealthCheckMac"
+APP_BIN="$APP_PATH/Contents/MacOS/Modore"
 app_binary_is_running() {
     /bin/ps -axo comm= | /usr/bin/awk -v target="$APP_BIN" \
         'BEGIN { found = 0 } $0 == target { found = 1 } END { exit(found ? 0 : 1) }'

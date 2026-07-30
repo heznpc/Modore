@@ -1,5 +1,5 @@
 import XCTest
-@testable import PCHealthCheckMac
+@testable import Modore
 
 @MainActor
 final class AccessibilityAnnouncerTests: XCTestCase {

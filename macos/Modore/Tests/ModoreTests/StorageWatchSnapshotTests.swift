@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import PCHealthCheckMac
+@testable import Modore
 
 final class StorageWatchSnapshotTests: XCTestCase {
     func testLoadsValidatedRowsAndGroupsOneDropEvent() throws {

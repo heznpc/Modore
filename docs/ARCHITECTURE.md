@@ -61,7 +61,7 @@ Changes to outbound networking, signature verification, cleanup targets, standal
 ## Verification map
 
 - `python3 -I -B -m pytest tests/ -q`: rule/report/runtime contracts and destructive-boundary tests in isolated fixtures.
-- `swift test --package-path macos/PCHealthCheckMac -Xswiftc -warnings-as-errors -Xswiftc -strict-concurrency=complete`: native model, selection, history, presentation, and runtime-staging tests under the CI compiler policy.
+- `swift test --package-path macos/Modore -Xswiftc -warnings-as-errors -Xswiftc -strict-concurrency=complete`: native model, selection, history, presentation, and runtime-staging tests under the CI compiler policy.
 - `python3 -I -B scripts/release_smoke.py`: OS-specific source allowlists plus secret/PII/archive-structure audit.
 - `scripts/package_macos_release.sh --local`: strict Universal 2 standalone app/DMG build under `dist/local/`, clearly unsigned for distribution and never overwriting a release artifact. Git, Swift/Xcode, Python audit, signing, and disk-image tools run from a minimal environment; metadata records the selected developer directory and Swift version.
 - `scripts/package_macos_release.sh`: clean exact signed-annotated-tag gate pinned to an externally supplied SSH public-key fingerprint and principal `heznpc`, Git replace-object rejection, source-prefix removal, architecture/minimum-OS validation, payload audit, externally pinned Developer ID Team ID and leaf-certificate SHA-256, hardened runtime, notarytool, stapling, Gatekeeper validation, final source revalidation, and sidecar release metadata when credentials are supplied externally.

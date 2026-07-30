@@ -261,7 +261,7 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
         encoding="utf-8",
     )
     executable_with_spaces = (
-        "/tmp/Modore.app/Contents/MacOS/PCHealthCheckMac"
+        "/tmp/Modore.app/Contents/MacOS/Modore"
     )
     (temp / "ps.txt").write_text(
         f"999999 test 12.5 1.0 1024 {executable_with_spaces}\n",
@@ -322,7 +322,7 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
     assert [item["cleanupId"] for item in cleanup] == ["cache_recipe"]
     raw_facts = json.loads(raw.read_text(encoding="utf-8"))
     assert raw_facts["sections"]["cpu"][0]["path"] == executable_with_spaces
-    assert raw_facts["sections"]["cpu"][0]["name"] == "PCHealthCheckMac"
+    assert raw_facts["sections"]["cpu"][0]["name"] == "Modore"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="JXA scanner helper is macOS-only")

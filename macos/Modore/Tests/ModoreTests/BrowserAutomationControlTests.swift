@@ -1,5 +1,5 @@
 import XCTest
-@testable import PCHealthCheckMac
+@testable import Modore
 
 final class BrowserAutomationControlTests: XCTestCase {
     // Regression (M4): a user-installed /Applications/Chromium.app is a real

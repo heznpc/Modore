@@ -206,7 +206,7 @@ modore/
 │   ├── artifact_audit.py     secret/PII/symlink release gate
 │   └── modules/macos/        macOS scanner sub-modules
 ├── macos/
-│   └── PCHealthCheckMac/     SwiftUI app, feature views, models, and Swift tests
+│   └── Modore/     SwiftUI app, feature views, models, and Swift tests
 ├── tests/                    pytest service and safety contracts
 └── docs/                     GitHub Pages landing (multilingual)
     ├── index.html
@@ -230,7 +230,7 @@ python3 -m http.server 8000
 
 ```bash
 python3 -I -B -m pytest tests/ -q
-swift test --package-path macos/PCHealthCheckMac \
+swift test --package-path macos/Modore \
   -Xswiftc -warnings-as-errors \
   -Xswiftc -strict-concurrency=complete
 ```

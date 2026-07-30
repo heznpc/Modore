@@ -105,8 +105,8 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     assert "scripts/build_macos_swift_app.sh" in module.MACOS_FILES
     assert "scripts/package_macos_release.sh" in module.MACOS_FILES
     assert "Mac앱실행.command" in module.MACOS_FILES
-    assert "macos/PCHealthCheckMac/Package.swift" in module.MACOS_FILES
-    swift_root = project_root / "macos" / "PCHealthCheckMac"
+    assert "macos/Modore/Package.swift" in module.MACOS_FILES
+    swift_root = project_root / "macos" / "Modore"
     swift_files = {
         path.relative_to(project_root).as_posix()
         for path in swift_root.rglob("*.swift")
@@ -142,7 +142,7 @@ def test_macos_distribution_script_requires_explicit_credentials(project_root):
 def test_macos_scan_completion_does_not_open_browser_automatically(project_root):
     source = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift"
+        / "macos/Modore/Sources/Modore/Services/ScanModel.swift"
     ).read_text(encoding="utf-8")
     finish_run = source.split("func finishRun", 1)[1].split(
         "private func refreshExistingResults", 1
@@ -154,15 +154,15 @@ def test_macos_scan_completion_does_not_open_browser_automatically(project_root)
 def test_macos_high_frequency_log_state_is_isolated(project_root):
     source = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanModel.swift"
+        / "macos/Modore/Sources/Modore/Services/ScanModel.swift"
     ).read_text(encoding="utf-8")
     watch_service = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/StorageWatchService.swift"
+        / "macos/Modore/Sources/Modore/Services/StorageWatchService.swift"
     ).read_text(encoding="utf-8")
     overview = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/StorageOverviewView.swift"
+        / "macos/Modore/Sources/Modore/Views/StorageOverviewView.swift"
     ).read_text(encoding="utf-8")
 
     assert "@Published var logText" not in source
@@ -175,7 +175,7 @@ def test_macos_high_frequency_log_state_is_isolated(project_root):
 def test_macos_ui_reserves_chromatic_status_colors_for_critical_states(project_root):
     source_root = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac"
+        / "macos/Modore/Sources/Modore"
     )
     sources = "\n".join(
         path.read_text(encoding="utf-8") for path in source_root.rglob("*.swift")
@@ -192,11 +192,11 @@ def test_macos_scanner_pins_the_exact_config_snapshot_used_for_network_consent(
 ):
     pipeline = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/ScanPipeline.swift"
+        / "macos/Modore/Sources/Modore/Services/ScanPipeline.swift"
     ).read_text(encoding="utf-8")
     runner = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Services/LocalProcessRunner.swift"
+        / "macos/Modore/Sources/Modore/Services/LocalProcessRunner.swift"
     ).read_text(encoding="utf-8")
     scanner = (project_root / "scripts/scanner.sh").read_text(encoding="utf-8")
 
@@ -262,7 +262,7 @@ def test_macos_timed_out_cleanup_measurements_remain_visible(project_root):
     helper = (project_root / "scripts/scanner_helper.jxa.js").read_text(encoding="utf-8")
     history = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Models/StorageChangeSummary.swift"
+        / "macos/Modore/Sources/Modore/Models/StorageChangeSummary.swift"
     ).read_text(encoding="utf-8")
 
     assert 'item.measureStatus === "timed_out"' in helper
@@ -472,11 +472,11 @@ def test_cleanup_ui_never_exposes_raw_process_commands(project_root):
     shell = (project_root / "scripts/cleanup.sh").read_text(encoding="utf-8")
     presentation = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Support/CleanupPresentation.swift"
+        / "macos/Modore/Sources/Modore/Support/CleanupPresentation.swift"
     ).read_text(encoding="utf-8")
     sheet = (
         project_root
-        / "macos/PCHealthCheckMac/Sources/PCHealthCheckMac/Views/CleanupApprovalSheet.swift"
+        / "macos/Modore/Sources/Modore/Views/CleanupApprovalSheet.swift"
     ).read_text(encoding="utf-8")
 
     assert "display_process_names" in shell

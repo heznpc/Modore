@@ -1,5 +1,5 @@
 import XCTest
-@testable import PCHealthCheckMac
+@testable import Modore
 
 final class IncidentAssessmentTests: XCTestCase {
     func testIncompleteRequiredCollectionPreventsClearAssessment() throws {

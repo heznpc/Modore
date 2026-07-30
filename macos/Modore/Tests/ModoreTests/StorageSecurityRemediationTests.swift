@@ -1,6 +1,6 @@
 import Darwin
 import XCTest
-@testable import PCHealthCheckMac
+@testable import Modore
 
 final class StorageSecurityRemediationTests: XCTestCase {
     func testDangerOnlySummaryContributesToUnifiedAttentionCount() throws {

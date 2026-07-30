@@ -689,7 +689,7 @@ fi
 
 PACKAGE_BUILD_DIR="$package_workspace/build"
 APP_DIR="$PACKAGE_BUILD_DIR/$APP_NAME"
-EXECUTABLE="$APP_DIR/Contents/MacOS/PCHealthCheckMac"
+EXECUTABLE="$APP_DIR/Contents/MacOS/Modore"
 AUDIT_SCRIPT="$BUILD_ROOT/scripts/artifact_audit.py"
 build_environment=(
     "PCH_APP_VERSION=$VERSION"

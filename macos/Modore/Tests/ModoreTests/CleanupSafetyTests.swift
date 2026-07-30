@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 import XCTest
-@testable import PCHealthCheckMac
+@testable import Modore
 
 final class CleanupSafetyTests: XCTestCase {
     func testLegacyApplicationSupportIsMovedOnceAndNeverMerged() throws {

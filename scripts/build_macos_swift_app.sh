@@ -7,10 +7,10 @@ export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset BASH_ENV ENV CDPATH GLOBIGNORE
 
 ROOT_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /bin/pwd -P)"
-PACKAGE_DIR="$ROOT_DIR/macos/PCHealthCheckMac"
+PACKAGE_DIR="$ROOT_DIR/macos/Modore"
 BUILD_DIR="${PCH_BUILD_DIR:-$ROOT_DIR/build/macos}"
 APP_NAME="Modore.app"
-EXECUTABLE_NAME="PCHealthCheckMac"
+EXECUTABLE_NAME="Modore"
 IDENTIFIER="me.heznpc.modore"
 APP_VERSION="${PCH_APP_VERSION:-0.3.0}"
 MINIMUM_SYSTEM_VERSION="${PCH_MINIMUM_SYSTEM_VERSION:-13.0}"

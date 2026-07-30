@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 import XCTest
-@testable import PCHealthCheckMac
+@testable import Modore
 
 final class LocalProcessRunnerTests: XCTestCase {
     func testEnvironmentIsMinimalAndRejectsInterpreterOverrides() throws {
