@@ -227,7 +227,7 @@ def test_cleanup_blocks_live_related_process(project_root, tmp_path):
         home,
         "--preview",
         "playwright_browsers",
-        processes="/tmp/chrome --headless --remote-debugging-pipe --token=do-not-expose\n",
+        processes="/opt/pw/ms-playwright/chromium-9999/headless_shell --token=do-not-expose\n",
     )
     payload = parse_protocol(preview.stdout)
 
@@ -240,7 +240,7 @@ def test_cleanup_blocks_live_related_process(project_root, tmp_path):
     assert payload["estimateMeasured"] == "false"
     assert payload["estimatedKB"] == "0"
     assert "do-not-expose" not in preview.stdout
-    assert "/tmp/chrome" not in preview.stdout
+    assert "/opt/pw" not in preview.stdout
     assert browser.exists()
 
     executed = run_cleanup(
@@ -251,9 +251,36 @@ def test_cleanup_blocks_live_related_process(project_root, tmp_path):
         "--owner-approved",
         "--approval-token",
         "0" * 64,
-        processes="/tmp/chrome --headless --remote-debugging-pipe --token=do-not-expose\n",
+        processes="/opt/pw/ms-playwright/chromium-9999/headless_shell --token=do-not-expose\n",
     )
     assert executed.returncode == 3
+    assert browser.exists()
+
+
+def test_unrelated_headless_browser_does_not_block_playwright_cache(project_root, tmp_path):
+    home = tmp_path / "home"
+    browser = home / "Library" / "Caches" / "ms-playwright" / "chromium" / "chrome"
+    browser.parent.mkdir(parents=True)
+    browser.write_text("fixture", encoding="utf-8")
+
+    # Electron 앱과 자동화 도구는 이 캐시와 무관하게 같은 Chromium 플래그를 쓴다.
+    # 그 프로세스까지 차단하면 사용자는 브라우저 창을 모두 닫아도 차단을 풀 수 없다.
+    preview = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "playwright_browsers",
+        processes=(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless\n"
+            "/Applications/Kiro.app/Contents/MacOS/Kiro Helper --remote-debugging-pipe\n"
+        ),
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0
+    assert payload["status"] == "ready"
+    assert payload["runningProcesses"] == ""
+    assert payload["estimateMeasured"] == "true"
     assert browser.exists()
 
 
@@ -494,7 +521,9 @@ def test_execute_rechecks_processes_at_destructive_boundary(project_root, tmp_pa
     browser.parent.mkdir(parents=True)
     browser.write_text("fixture", encoding="utf-8")
     late_processes = home / "late-processes.txt"
-    late_processes.write_text("/tmp/chrome --headless --remote-debugging-pipe\n", encoding="utf-8")
+    late_processes.write_text(
+        "/opt/pw/ms-playwright/chromium-9999/headless_shell\n", encoding="utf-8"
+    )
 
     preview = run_cleanup(project_root, home, "--preview", "playwright_browsers")
     payload = parse_protocol(preview.stdout)
