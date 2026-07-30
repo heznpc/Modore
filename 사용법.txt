@@ -162,6 +162,7 @@ Windows와 macOS 모두 지원합니다.
      ├─ scanner_helper.jxa.js ← macOS 데이터 집계
      ├─ build_macos_swift_app.sh ← macOS SwiftUI 앱 빌드
      ├─ monitor.ps1       ← 5분 CPU 관찰 (Windows)
+     ├─ idle_cpu.sh       ← 유휴 CPU 관찰 + 책임 프로세스 귀속 (Mac)
      ├─ report.ps1        ← Windows HTML 생성
      ├─ report.jxa.js     ← macOS HTML 생성
      ├─ vt-lookup.ps1     ← VirusTotal 조회
