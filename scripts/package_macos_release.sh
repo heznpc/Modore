@@ -723,7 +723,7 @@ fi
 bundle_identifier="$(/usr/bin/plutil -extract CFBundleIdentifier raw "$APP_DIR/Contents/Info.plist")"
 bundle_version="$(/usr/bin/plutil -extract CFBundleVersion raw "$APP_DIR/Contents/Info.plist")"
 bundle_short_version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$APP_DIR/Contents/Info.plist")"
-if [[ "$bundle_identifier" != "me.heznpc.pchealthcheck.mac" \
+if [[ "$bundle_identifier" != "me.heznpc.modore" \
     || "$bundle_version" != "$VERSION" \
     || "$bundle_short_version" != "$VERSION" ]]; then
     /usr/bin/printf 'ERROR: app identity/version does not match the package request.\n' >&2
