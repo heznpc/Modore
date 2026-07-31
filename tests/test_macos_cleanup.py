@@ -1,5 +1,6 @@
 import os
 import plistlib
+import re
 import stat
 import subprocess
 import sys
@@ -353,6 +354,76 @@ def pnpm_store_status(project_root, tmp_path, name: str, processes: str) -> str:
     assert preview.returncode == 0, preview.stderr
     assert store.is_dir(), "a preview must never delete anything"
     return str(parse_protocol(preview.stdout)["status"])
+
+
+def run_cleanup_with_pid_evidence(
+    project_root: Path, home: Path, recipe: str, pid_lines: str
+):
+    """Drive the PID-prefixed evidence path the way `ps` actually formats it.
+
+    `ps -axo pid=,command=` right-aligns the PID, so these lines begin with
+    whitespace. Nothing exercised this path before, which is why an anchored
+    pattern could silently produce no evidence for a block that did fire.
+    """
+    pid_file = home / "processes-with-pid.txt"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(pid_lines, encoding="utf-8")
+    # The gate reads `ps -axo command=`, which carries no PID, so the two
+    # snapshots must be given in the format each one really sees.
+    plain_lines = "".join(
+        re.sub(r"^\s*\d+\s+", "", line) + "\n"
+        for line in pid_lines.splitlines()
+        if line.strip()
+    )
+    return run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        recipe,
+        processes=plain_lines,
+        extra_env={"PCH_PROCESS_LIST_WITH_PID_FILE": str(pid_file)},
+    )
+
+
+def test_evidence_names_the_process_even_when_the_pattern_is_anchored(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    derived = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "App"
+    derived.mkdir(parents=True)
+    (derived / "log").write_bytes(b"fixture")
+
+    preview = run_cleanup_with_pid_evidence(
+        project_root,
+        home,
+        "xcode_derived_data",
+        "  901 /usr/bin/xcodebuild -scheme App build\n",
+    )
+    payload = parse_protocol(preview.stdout)
+
+    # Blocking without naming the blocker leaves the owner with nothing to act
+    # on, which is the same dead end an over-broad pattern produces.
+    assert payload["status"] == "blocked"
+    assert payload["runningProcesses"] == "Xcode/build tool · PID 901"
+    assert derived.is_dir()
+
+
+def test_pid_evidence_still_drops_the_tools_own_sizing_pass(project_root, tmp_path):
+    home = tmp_path / "home"
+    cache = home / "Library" / "Caches" / "ms-playwright"
+    cache.mkdir(parents=True)
+    (cache / "chromium").write_bytes(b"fixture")
+
+    preview = run_cleanup_with_pid_evidence(
+        project_root,
+        home,
+        "playwright_browsers",
+        "  902 /usr/bin/du -sk /Users/x/Library/Caches/ms-playwright\n",
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert payload["status"] == "ready"
+    assert payload["runningProcesses"] == ""
 
 
 def test_editor_node_processes_do_not_block_the_pnpm_store(project_root, tmp_path):

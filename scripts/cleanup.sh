@@ -182,6 +182,7 @@ configure_roots() {
         local test_path
         for test_path in \
             "${PCH_PROCESS_LIST_FILE:-}" \
+            "${PCH_PROCESS_LIST_WITH_PID_FILE:-}" \
             "${PCH_SIMCTL_LIST_FILE:-}" \
             "${PCH_SIMCTL_DELETE_LOG:-}" \
             "${PCH_TEST_LATE_PROCESS_LIST_FILE:-}" \
@@ -864,6 +865,16 @@ process_snapshot() {
     fi
 }
 
+process_snapshot_with_pid() {
+    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+        if [[ -n "${PCH_PROCESS_LIST_WITH_PID_FILE:-}" && -f "$PCH_PROCESS_LIST_WITH_PID_FILE" ]]; then
+            /bin/cat "$PCH_PROCESS_LIST_WITH_PID_FILE"
+        fi
+    else
+        /bin/ps -axo pid=,command= 2>/dev/null || true
+    fi
+}
+
 # 이 도구 자신과, 이 도구가 크기를 재려고 띄운 측정 프로세스를 증거에서 뺀다.
 #
 # 측정 프로세스를 빼야 하는 이유: storage.sh와 storage_watch.sh는 대상 경로를
@@ -932,19 +943,43 @@ display_process_names() {
     done | /usr/bin/awk '!seen[$0]++'
 }
 
+# `ps`는 PID를 자리수에 맞춰 오른쪽 정렬해 출력하므로 줄이 공백으로 시작한다.
+# 그래서 실행 위치를 뜻하는 `^` 앵커 패턴은 이 형식에서 절대 매칭되지 않는다.
+# 차단 판정은 PID 없는 표본을 쓰기 때문에 정상 동작하지만, 사용자에게 보여줄
+# 증거 목록만 비어서 "차단됐는데 무엇을 닫아야 하는지 알려주지 않는" 상태가
+# 됐다. 매칭할 때는 명령줄을 줄 앞으로 보내고, 표시할 때 PID를 되돌린다.
 matching_processes_with_pid() {
     [[ -n "$PROCESS_PATTERN" ]] || return 0
-    /bin/ps -axo pid=,command= 2>/dev/null \
+    process_snapshot_with_pid \
+        | /usr/bin/awk '
+            /^[[:space:]]*[0-9]+[[:space:]]/ {
+                pid = $1
+                line = $0
+                sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", line)
+                printf "%s\t%s\n", line, pid
+            }' \
         | /usr/bin/grep -E "$PROCESS_PATTERN" \
         | exclude_self_and_measurement \
         | /usr/bin/head -n 5 \
-        | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' \
+        | /usr/bin/awk -F'\t' '
+            NF >= 2 {
+                pid = $NF
+                command = $1
+                for (index_field = 2; index_field < NF; index_field++) {
+                    command = command "\t" $index_field
+                }
+                printf "%s %s\n", pid, command
+            }' \
+        | /usr/bin/sed -E 's/[[:space:]]+/ /g' \
+        | /usr/bin/cut -c 1-240 \
         || true
 }
 
 display_process_evidence() {
     local pid command display_name
-    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+    # PID 표본을 주지 않은 테스트는 이름만 확인한다. 실제 실행과, PID 표본을 준
+    # 테스트는 아래 경로를 지나므로 앵커 동작이 검증된다.
+    if [[ "${PCH_TEST_MODE:-0}" == "1" && -z "${PCH_PROCESS_LIST_WITH_PID_FILE:-}" ]]; then
         display_process_names
         return
     fi
