@@ -602,7 +602,12 @@ define_recipe() {
             # 그것들은 이 store에 쓰지 않으므로 사용자가 무엇을 닫아도 차단이
             # 풀리지 않는다. store에 쓰는 주체는 pnpm 자신이고, store에서 실행된
             # 바이너리는 경로로 잡힌다.
-            PROCESS_PATTERN='(^|/)pnpm( |$)|/Library/pnpm/'
+            # 맨 `node`는 편집기 언어 서버, MCP 서버, Electron 헬퍼를 전부 잡는다.
+            # 그것들은 이 store에 쓰지 않으므로 사용자가 무엇을 닫아도 차단이
+            # 풀리지 않는다. 다만 pnpm 자신이 `node <pnpm.cjs>` 형태로 실행되는
+            # 경우(corepack, standalone 설치)가 있어, 실행 이름만으로는 놓친다.
+            # 그래서 스크립트 이름까지 본다.
+            PROCESS_PATTERN='(^|/)pnpm( |$)|/Library/pnpm/|(^|/)pnpm\.(cjs|js|mjs)( |$)|corepack'
             PROCESS_NOTE="pnpm/Node 작업을 먼저 종료하세요."
             WARNING="공유 패키지 저장소가 다시 채워지며 다음 설치가 느려질 수 있습니다."
             add_target_if_present "$HOME_ROOT/Library/pnpm"
@@ -870,8 +875,13 @@ process_snapshot() {
 # 프로세스를 버려서, 프로젝트 경로 안에서 도는 무관한 프로세스까지 증거에서
 # 사라졌다. 그건 오탐이 아니라 미탐이다.
 exclude_self_and_measurement() {
+    # 측정 도구는 그것이 명령줄 **전체**를 차지할 때만 뺀다. 문자열 포함으로
+    # 걸러내면 `sh -c "pnpm install && du -sk ."`처럼 정당한 차단자가 du를
+    # 함께 부르기만 해도 증거에서 사라진다. 그건 오탐보다 위험한 미탐이다.
     /usr/bin/grep -v -E \
-        'scripts/cleanup\.sh|/usr/bin/grep -E|/usr/bin/du |/usr/bin/mdls |/usr/libexec/PlistBuddy |Contents/MacOS/Modore'
+        'scripts/cleanup\.sh|/usr/bin/grep -E|Contents/MacOS/Modore' \
+        | /usr/bin/grep -v -E \
+            '^(/usr/bin/du|/usr/bin/mdls|/usr/libexec/PlistBuddy)( -[^ ]+)* [^&|;]*$'
 }
 
 matching_processes() {
