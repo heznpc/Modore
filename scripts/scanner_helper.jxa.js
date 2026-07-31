@@ -298,7 +298,7 @@ function classify(fact, category, rules, wl) {
 }
 function applyRules(raw, rules, wl) {
   const result = Object.assign({}, raw, { findings: raw.findings || [], sections: {} });
-  const map = { cpu: "process", network: "network", listeningPorts: "process", autoruns: "autoruns", recentInstalls: "installs" };
+  const map = { cpu: "process", backgroundCpu: "process", network: "network", listeningPorts: "process", autoruns: "autoruns", recentInstalls: "installs" };
   for (const [name, facts] of Object.entries(raw.sections || {})) {
     if (Array.isArray(facts)) {
       const category = map[name] || "process";
@@ -672,6 +672,39 @@ raw.sections.cpu = tmp("ps.txt").trim().split(/\r?\n/).filter(Boolean).map(line 
   return { name: basename(path), pid_: Number(pid), cpu: Number(pcpu), memoryMB: Math.round(Number(rss) / 10.24) / 100, path, sig: null, vt: vt.file(path) };
 }).filter(Boolean).sort((a,b) => b.cpu - a.cpu);
 raw.sections.gpu = [];
+
+// 관측 구간 동안 실제로 CPU를 쓴 프로세스. cpu 섹션의 %cpu가 생애 평균인 것과
+// 달리 여기 cpuPercent는 두 시점 사이의 점유율이고, responsible*는 그 일을
+// 시작한 조상이다. 인터프리터 이름만 보고 무관한 앱을 범인으로 읽지 않으려면
+// 조상을 함께 봐야 한다.
+{
+  const observed = tmp("idle_cpu.tsv").split(/\r?\n/).filter(Boolean);
+  let windowSeconds = 0;
+  const rows = [];
+  observed.forEach(line => {
+    const parts = line.split("\t");
+    if (parts[0] === "windowSeconds") {
+      windowSeconds = Number(parts[1] || 0);
+      return;
+    }
+    if (parts[0] !== "process" || parts.length < 7) return;
+    const pid = Number(parts[2]);
+    const responsiblePid = Number(parts[4]);
+    if (!Number.isFinite(pid) || !Number.isFinite(responsiblePid)) return;
+    rows.push({
+      name: parts[3],
+      pid_: pid,
+      cpuPercent: Number(parts[1]) || 0,
+      responsiblePid: responsiblePid,
+      responsibleName: parts[5],
+      startedFromShell: parts[6] === "true",
+      selfResponsible: responsiblePid === pid
+    });
+  });
+  raw.sections.backgroundCpu = rows.map(row =>
+    Object.assign({ windowSeconds: windowSeconds }, row)
+  );
+}
 
 const connections = [];
 tmp("net.txt").split(/\r?\n/).forEach(line => {

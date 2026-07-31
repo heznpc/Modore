@@ -42,6 +42,29 @@
     }
   },
   {
+    "id": "background_cpu_shell_origin",
+    "description": "관측 구간에 CPU를 쓰는데 책임 조상이 로그인 셸 - 앱을 닫아도 멈추지 않는다",
+    "when": { "startedFromShell.equals": true, "cpuPercent.gte": 40 },
+    "then": {
+      "risk": "warning",
+      "note": "터미널에서 시작된 작업이 계속 CPU를 쓰고 있습니다. 어떤 앱의 파일을 읽고 있어도 그 앱을 닫으면 멈추지 않습니다. 책임 프로세스는 PID {responsiblePid} ({responsibleName})입니다.",
+      "finding": {
+        "category": "check_background_cpu",
+        "title": "터미널에서 남은 작업이 CPU를 쓰는 중: {name}",
+        "detail": "{note} 관측 구간 점유율 {cpuPercent}% · PID {pid_}"
+      }
+    }
+  },
+  {
+    "id": "background_cpu_sustained",
+    "description": "관측 구간 내내 한 코어 이상을 쓰는 프로세스",
+    "when": { "cpuPercent.gte": 90 },
+    "then": {
+      "risk": "info",
+      "note": "관측 구간 동안 한 코어 이상을 계속 썼습니다. 의도한 작업인지 확인하세요."
+    }
+  },
+  {
     "id": "temp_high_cpu",
     "description": "임시 폴더 고CPU 실행 - 채굴기 흔적",
     "when": {

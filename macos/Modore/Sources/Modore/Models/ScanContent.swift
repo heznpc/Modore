@@ -12,6 +12,7 @@ struct ScanContent {
         securityAttentionCount: 0,
         securityHasDanger: false,
         cpuRows: [],
+        backgroundCpuRows: [],
         networkRows: [],
         listeningPortRows: [],
         autorunRows: [],
@@ -28,6 +29,7 @@ struct ScanContent {
     let securityAttentionCount: Int
     let securityHasDanger: Bool
     let cpuRows: [CpuRow]
+    let backgroundCpuRows: [BackgroundCpuRow]
     let networkRows: [NetworkRow]
     let listeningPortRows: [ListeningPortRow]
     let autorunRows: [AutorunRow]
@@ -56,6 +58,7 @@ struct ScanContent {
         let sections = root["sections"] as? [String: Any]
         let findingRows = Self.rows(root["findings"])
         let cpuRows = Self.rows(sections?["cpu"])
+        let backgroundCpuRows = Self.rows(sections?["backgroundCpu"])
         let networkRows = Self.rows(sections?["network"])
         let listeningPortRows = Self.rows(sections?["listeningPorts"])
         let autorunRows = Self.rows(sections?["autoruns"])
@@ -65,6 +68,7 @@ struct ScanContent {
         let sectionRows = [
             "진단 결과": findingRows,
             "프로세스": cpuRows,
+            "유휴 CPU": backgroundCpuRows,
             "네트워크": networkRows,
             "수신 포트": listeningPortRows,
             "자동 실행": autorunRows,
@@ -80,6 +84,8 @@ struct ScanContent {
             securityAttentionCount: findingClassification.count,
             securityHasDanger: findingClassification.hasDanger,
             cpuRows: cpuRows.prefix(Self.maximumRowsPerSection).compactMap(CpuRow.init(json:)),
+            backgroundCpuRows: backgroundCpuRows.prefix(Self.maximumRowsPerSection)
+                .compactMap(BackgroundCpuRow.init(json:)),
             networkRows: networkRows.prefix(Self.maximumRowsPerSection).compactMap(NetworkRow.init(json:)),
             listeningPortRows: listeningPortRows.prefix(Self.maximumRowsPerSection)
                 .compactMap(ListeningPortRow.init(json:)),
@@ -102,6 +108,7 @@ struct ScanContent {
         securityAttentionCount: Int,
         securityHasDanger: Bool,
         cpuRows: [CpuRow],
+        backgroundCpuRows: [BackgroundCpuRow],
         networkRows: [NetworkRow],
         listeningPortRows: [ListeningPortRow],
         autorunRows: [AutorunRow],
@@ -117,6 +124,7 @@ struct ScanContent {
         self.securityAttentionCount = securityAttentionCount
         self.securityHasDanger = securityHasDanger
         self.cpuRows = cpuRows
+        self.backgroundCpuRows = backgroundCpuRows
         self.networkRows = networkRows
         self.listeningPortRows = listeningPortRows
         self.autorunRows = autorunRows

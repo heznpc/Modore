@@ -262,6 +262,45 @@ struct CpuRow: Identifiable {
     var requiresAttention: Bool { risk == "danger" || risk == "warning" }
 }
 
+/// A process that actually consumed CPU between two samples.
+///
+/// `CpuRow.cpu` is the decaying lifetime average `ps` reports, so a process that
+/// went quiet hours ago still reads high there. `cpuPercent` here is the share of
+/// the observation window, and `responsible*` names the ancestor that started the
+/// work, which is what tells the owner whether closing an app would stop it.
+struct BackgroundCpuRow: Identifiable {
+    let id = UUID()
+    let name: String
+    let pid: Int
+    let cpuPercent: Double
+    let responsiblePid: Int
+    let responsibleName: String
+    let startedFromShell: Bool
+    let selfResponsible: Bool
+    let windowSeconds: Int
+    let risk: String
+    let note: String
+
+    init?(json: [String: Any]) {
+        name = JsonRead.string(json, "name", "process")
+        pid = JsonRead.int(json, "pid_")
+        cpuPercent = JsonRead.double(json, "cpuPercent")
+        responsiblePid = JsonRead.int(json, "responsiblePid")
+        responsibleName = JsonRead.string(json, "responsibleName")
+        startedFromShell = JsonRead.bool(json, "startedFromShell") ?? false
+        selfResponsible = JsonRead.bool(json, "selfResponsible") ?? false
+        windowSeconds = JsonRead.int(json, "windowSeconds")
+        risk = JsonRead.string(json, "risk", "unknown")
+        note = JsonRead.string(json, "note")
+    }
+
+    var requiresAttention: Bool { risk == "danger" || risk == "warning" }
+
+    /// True when the work is not attributable to the application it appears
+    /// under, so quitting that application cannot stop it.
+    var isDetachedFromAnApp: Bool { startedFromShell && !selfResponsible }
+}
+
 struct NetworkRow: Identifiable {
     let id = UUID()
     let process: String

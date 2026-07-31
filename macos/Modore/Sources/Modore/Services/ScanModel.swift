@@ -66,12 +66,21 @@ final class ScanModel: ObservableObject {
     var securityFindings: [ScanFinding] { content.securityAttentionFindings }
     var storageAttentionFindings: [ScanFinding] { content.storageAttentionFindings }
     var cpuRows: [CpuRow] { content.cpuRows }
+    var backgroundCpuRows: [BackgroundCpuRow] { content.backgroundCpuRows }
     var networkRows: [NetworkRow] { content.networkRows }
     var listeningPortRows: [ListeningPortRow] { content.listeningPortRows }
     var autorunRows: [AutorunRow] { content.autorunRows }
     var recentInstalls: [RecentInstallRow] { content.recentInstalls }
     var truncatedSecuritySections: [String] { content.truncatedSections }
     var attentionCpuRows: [CpuRow] { cpuRows.filter(\.requiresAttention) }
+    var attentionBackgroundCpuRows: [BackgroundCpuRow] {
+        backgroundCpuRows.filter(\.requiresAttention)
+    }
+    /// Rows whose work cannot be stopped by quitting the application they appear
+    /// to belong to. These are the ones a process list alone misattributes.
+    var detachedBackgroundCpuRows: [BackgroundCpuRow] {
+        backgroundCpuRows.filter(\.isDetachedFromAnApp)
+    }
     var attentionNetworkRows: [NetworkRow] { networkRows.filter(\.requiresAttention) }
     var attentionListeningPortRows: [ListeningPortRow] {
         listeningPortRows.filter(\.requiresAttention)
