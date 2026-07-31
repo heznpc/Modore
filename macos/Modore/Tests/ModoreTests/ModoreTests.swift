@@ -551,4 +551,58 @@ final class ModoreTests: XCTestCase {
             encoding: .utf8
         )
     }
+
+    // 흔적 원장: 제거 대상과 "발견했지만 제거하지 않는" 항목이 절대 섞이지 않아야
+    // 한다. 섞이면 승인 화면이 공유 데이터를 삭제 목록처럼 보여주게 된다.
+    func testRetainedResidueNeverEntersRemovalTargets() throws {
+        let protocolText = [
+            "version\t1",
+            "operation\tpreview",
+            "status\tready",
+            "actionMode\ttrash",
+            "recipeId\tapp_uninstall:me.example.suite.editor",
+            "label\tSuite Editor",
+            "estimatedKB\t2048",
+            "estimateMeasured\ttrue",
+            "approvalToken\t" + String(repeating: "a", count: 64),
+            "target\t/Users/example/Applications/Suite Editor.app",
+            "target\t/Users/example/Library/Containers/me.example.suite.editor",
+            "sharedResidue\t/Users/example/Library/Group Containers/ABCDE12345.me.example.suite",
+            "reviewResidue\t/Users/example/Library/Application Support/Suite Editor",
+        ].joined(separator: "\n")
+
+        let preview = try XCTUnwrap(CleanupPreview(protocolText: protocolText))
+
+        XCTAssertEqual(preview.targets.count, 2)
+        XCTAssertEqual(preview.sharedResidue, [
+            "/Users/example/Library/Group Containers/ABCDE12345.me.example.suite"
+        ])
+        XCTAssertEqual(preview.reviewResidue, [
+            "/Users/example/Library/Application Support/Suite Editor"
+        ])
+        for retained in preview.sharedResidue + preview.reviewResidue {
+            XCTAssertFalse(preview.targets.contains(retained))
+        }
+        XCTAssertTrue(preview.canExecute)
+    }
+
+    // 구버전 런타임 미러는 새 키를 보내지 않는다. 그때도 승인 흐름은 그대로 동작해야 한다.
+    func testMissingResidueKeysDecodeAsEmptyLedger() throws {
+        let protocolText = [
+            "version\t1",
+            "status\tready",
+            "recipeId\tnpm_cache",
+            "label\tnpm cache",
+            "estimatedKB\t1024",
+            "estimateMeasured\ttrue",
+            "approvalToken\t" + String(repeating: "b", count: 64),
+            "target\t/Users/example/.npm",
+        ].joined(separator: "\n")
+
+        let preview = try XCTUnwrap(CleanupPreview(protocolText: protocolText))
+
+        XCTAssertTrue(preview.sharedResidue.isEmpty)
+        XCTAssertTrue(preview.reviewResidue.isEmpty)
+        XCTAssertTrue(preview.canExecute)
+    }
 }
