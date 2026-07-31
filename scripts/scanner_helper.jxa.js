@@ -280,16 +280,18 @@ function classify(fact, category, rules, wl) {
     const then = rule.then || {};
     const newRisk = then.risk || "unknown";
     risk = mergeRisk(risk, newRisk);
-    if (then.note) {
-      const rendered = format(then.note, fact);
-      if (notes.indexOf(rendered) === -1) notes.push(rendered);
-    }
+    const renderedNote = then.note ? format(then.note, fact) : "";
+    if (renderedNote && notes.indexOf(renderedNote) === -1) notes.push(renderedNote);
     if (then.finding) {
+      // `{note}` in a finding template means this rule's own note. The merged
+      // note does not exist yet here, so looking it up on the raw fact rendered
+      // every finding detail with a leading "?".
+      const findingFact = Object.assign({}, fact, { note: renderedNote });
       findings.push({
         level: newRisk,
         category: then.finding.category,
-        title: format(then.finding.title, fact),
-        detail: format(then.finding.detail, fact)
+        title: format(then.finding.title, findingFact),
+        detail: format(then.finding.detail, findingFact)
       });
     }
   }
@@ -299,17 +301,30 @@ function classify(fact, category, rules, wl) {
 function applyRules(raw, rules, wl) {
   const result = Object.assign({}, raw, { findings: raw.findings || [], sections: {} });
   const map = { cpu: "process", backgroundCpu: "process", network: "network", listeningPorts: "process", autoruns: "autoruns", recentInstalls: "installs" };
+  // 한 프로세스가 여러 섹션에 등장할 수 있다. cpu와 backgroundCpu가 그렇다.
+  // 이름으로 판정하는 규칙은 양쪽에서 발동해 같은 프로세스를 두 번 세고, 그중
+  // 하나는 그 섹션에 없는 필드가 "?"로 남은 열화된 사본이 된다. 규칙을 억제하면
+  // cpu에 안 잡히고 backgroundCpu에만 잡히는 프로세스의 탐지를 잃으므로, 규칙은
+  // 그대로 두고 finding을 PID까지 포함해 중복 제거한다.
+  const seenFindings = new Set();
+  const collect = (finding, owner) => {
+    const pid = owner && owner.pid_ !== undefined ? String(owner.pid_) : "";
+    const key = [finding.level, finding.category, finding.title, pid].join("\u0000");
+    if (seenFindings.has(key)) return;
+    seenFindings.add(key);
+    result.findings.push(finding);
+  };
   for (const [name, facts] of Object.entries(raw.sections || {})) {
     if (Array.isArray(facts)) {
       const category = map[name] || "process";
       result.sections[name] = facts.map(f => {
         const cls = classify(f, category, rules, wl);
-        result.findings.push(...cls.findings);
+        cls.findings.forEach(finding => collect(finding, f));
         return Object.assign({}, f, { risk: cls.risk, note: cls.note });
       });
     } else if (name === "defender" || name === "macosSecurity") {
       const cls = classify(facts || {}, "defender", rules, wl);
-      result.findings.push(...cls.findings);
+      cls.findings.forEach(finding => collect(finding, facts));
       result.sections[name] = facts;
     } else {
       result.sections[name] = facts;

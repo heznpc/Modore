@@ -306,18 +306,22 @@ class RuleEngine:
             r_risk = then.get("risk", "info")
             final_risk = _merge_risks(final_risk, r_risk)
             note = then.get("note")
-            if note:
-                rendered = _format_template(note, fact)
-                if rendered not in notes:
-                    notes.append(rendered)
+            rendered_note = _format_template(note, fact) if note else ""
+            if rendered_note and rendered_note not in notes:
+                notes.append(rendered_note)
 
             finding_spec = then.get("finding")
             if finding_spec:
+                # `{note}` in a finding template means this rule's own note. The
+                # merged note does not exist yet here, so looking it up on the
+                # raw fact rendered every finding detail with a leading "?".
+                finding_fact = dict(fact)
+                finding_fact["note"] = rendered_note
                 findings.append({
                     "level": r_risk,
                     "category": finding_spec.get("category", category),
-                    "title": _format_template(finding_spec.get("title", ""), fact),
-                    "detail": _format_template(finding_spec.get("detail", ""), fact),
+                    "title": _format_template(finding_spec.get("title", ""), finding_fact),
+                    "detail": _format_template(finding_spec.get("detail", ""), finding_fact),
                     "ruleId": rule["id"],
                 })
 
@@ -401,6 +405,30 @@ def apply_rules_to_raw(engine: RuleEngine, raw: Dict[str, Any]) -> Dict[str, Any
         "recentInstalls": "installs",
     }
 
+    # 한 프로세스가 여러 섹션에 등장할 수 있다. cpu와 backgroundCpu가 그렇다.
+    # 이름으로 판정하는 규칙은 양쪽에서 발동해 같은 프로세스를 두 번 세고, 그중
+    # 하나는 그 섹션에 없는 필드가 "?"로 남은 열화된 사본이 된다. 규칙을
+    # 억제하면 cpu에 안 잡히고 backgroundCpu에만 잡히는 프로세스의 탐지를
+    # 잃으므로, 규칙은 그대로 두고 finding을 PID까지 포함해 중복 제거한다.
+    seen_findings: set = set()
+
+    def _collect(finding: Dict[str, Any], owner: Optional[Dict[str, Any]]) -> None:
+        key = (
+            finding["level"],
+            finding["category"],
+            finding["title"],
+            (owner or {}).get("pid_"),
+        )
+        if key in seen_findings:
+            return
+        seen_findings.add(key)
+        result["findings"].append({
+            "level": finding["level"],
+            "category": finding["category"],
+            "title": finding["title"],
+            "detail": finding["detail"],
+        })
+
     for sect_name, facts in sections.items():
         if isinstance(facts, list):
             category = section_to_category.get(sect_name, "process")
@@ -409,24 +437,14 @@ def apply_rules_to_raw(engine: RuleEngine, raw: Dict[str, Any]) -> Dict[str, Any
             for f in classified:
                 # _findings 를 top-level findings로 수확
                 for finding in f.pop("_findings", []):
-                    result["findings"].append({
-                        "level": finding["level"],
-                        "category": finding["category"],
-                        "title": finding["title"],
-                        "detail": finding["detail"],
-                    })
+                    _collect(finding, f)
                 cleaned.append(f)
             out_sections[sect_name] = cleaned
         elif isinstance(facts, dict) and sect_name in ("defender", "macosSecurity"):
             # 딕셔너리 섹션 = 단일 fact 취급
             cls = engine.classify(facts, "defender")
             for finding in cls["findings"]:
-                result["findings"].append({
-                    "level": finding["level"],
-                    "category": finding["category"],
-                    "title": finding["title"],
-                    "detail": finding["detail"],
-                })
+                _collect(finding, facts)
             out_sections[sect_name] = facts
         else:
             out_sections[sect_name] = facts
