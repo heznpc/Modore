@@ -591,14 +591,18 @@ define_recipe() {
     case "$recipe" in
         npm_cache)
             LABEL="npm cache"
-            PROCESS_PATTERN='(^|/)(npm|npx)( |$)'
+            PROCESS_PATTERN='^(\S*/)?(npm|npx)( |$)|/\.npm/_cacache'
             PROCESS_NOTE="npm/npx 작업을 먼저 종료하세요."
             WARNING="패키지는 다음 설치 때 다시 다운로드됩니다."
             add_target_if_present "$HOME_ROOT/.npm"
             ;;
         pnpm_store)
             LABEL="pnpm store"
-            PROCESS_PATTERN='(^|/)(pnpm|node)( |$)'
+            # 맨 `node`는 편집기 언어 서버, MCP 서버, Electron 헬퍼를 전부 잡는다.
+            # 그것들은 이 store에 쓰지 않으므로 사용자가 무엇을 닫아도 차단이
+            # 풀리지 않는다. store에 쓰는 주체는 pnpm 자신이고, store에서 실행된
+            # 바이너리는 경로로 잡힌다.
+            PROCESS_PATTERN='(^|/)pnpm( |$)|/Library/pnpm/'
             PROCESS_NOTE="pnpm/Node 작업을 먼저 종료하세요."
             WARNING="공유 패키지 저장소가 다시 채워지며 다음 설치가 느려질 수 있습니다."
             add_target_if_present "$HOME_ROOT/Library/pnpm"
@@ -617,42 +621,53 @@ define_recipe() {
             ;;
         gradle_cache)
             LABEL="Gradle cache"
-            PROCESS_PATTERN='GradleDaemon|org\.gradle|(^|/)(gradle|gradlew)( |$)'
+            # org.gradle을 그냥 좁히면 classpath로만 캐시를 쥔 Kotlin daemon을
+            # 놓치므로, 실행 이름은 좁히고 대상 경로 토큰으로 보완한다.
+            PROCESS_PATTERN='GradleDaemon|org\.gradle\.(launcher|wrapper)|(^|/)(gradle|gradlew)( |$)|/\.gradle/caches/'
             PROCESS_NOTE="Gradle 빌드와 daemon을 먼저 종료하세요."
             WARNING="Gradle 의존성과 빌드 캐시는 다음 빌드 때 다시 생성됩니다."
             add_target_if_present "$HOME_ROOT/.gradle/caches"
             ;;
         cocoapods_cache)
             LABEL="CocoaPods cache"
-            PROCESS_PATTERN='(^|/)(pod)( |$)'
+            PROCESS_PATTERN='^(\S*/)?pod( |$)|/Caches/CocoaPods/'
             PROCESS_NOTE="pod install/update 작업을 먼저 종료하세요."
             WARNING="Pod 아카이브는 다음 설치 때 다시 다운로드됩니다."
             add_target_if_present "$HOME_ROOT/Library/Caches/CocoaPods"
             ;;
         pub_cache)
             LABEL="Dart/Flutter pub cache"
-            PROCESS_PATTERN='(^|/)(dart|flutter)( |$)'
+            # Flutter SDK 설치 경로가 /flutter로 끝나서, SDK 디렉터리를 인자로
+            # 주는 모든 명령이 걸렸다. 실행 위치만 본다. analysis server는
+            # package: 해석을 위해 pub cache를 실제로 읽으므로 남긴다.
+            PROCESS_PATTERN='^(\S*/)?(dart|flutter)( |$)|dart-sdk/bin/dart|flutter_tools'
             PROCESS_NOTE="Dart/Flutter 작업을 먼저 종료하세요."
             WARNING="패키지는 다음 pub get 때 다시 다운로드됩니다."
             add_target_if_present "$HOME_ROOT/.pub-cache"
             ;;
         codex_runtime_cache)
             LABEL="Codex runtime cache"
-            PROCESS_PATTERN='Codex\.app|/codex|node_repl|SkyComputerUseClient'
+            # `/codex`는 이름이 codex로 시작하는 저장소 안의 모든 프로세스를
+            # 잡으면서, 정작 `~/.codex/`는 `/.codex`라서 놓친다. 실행 이름은
+            # 앵커로 잡고 대상 디렉터리는 경로 토큰으로 잡는다.
+            PROCESS_PATTERN='Codex\.app/Contents/MacOS/Codex|(^|/)codex( |$)|(^|/)node_repl( |$)|SkyComputerUseClient|/\.cache/codex-runtimes/'
             PROCESS_NOTE="Codex 앱과 진행 중인 Codex 작업을 먼저 종료하세요."
             WARNING="Codex 런타임은 다음 사용 때 다시 설치될 수 있습니다. 세션 JSONL은 건드리지 않습니다."
             add_target_if_present "$HOME_ROOT/.cache/codex-runtimes"
             ;;
         codex_temp_cache)
             LABEL="Codex temporary cache"
-            PROCESS_PATTERN='Codex\.app|/codex|node_repl|SkyComputerUseClient'
+            PROCESS_PATTERN='Codex\.app/Contents/MacOS/Codex|(^|/)codex( |$)|(^|/)node_repl( |$)|SkyComputerUseClient|/\.codex/\.tmp'
             PROCESS_NOTE="Codex 앱과 진행 중인 Codex 작업을 먼저 종료하세요."
             WARNING="임시 런타임 파일만 정리합니다. .codex/sessions와 로그 DB는 건드리지 않습니다."
             add_target_if_present "$HOME_ROOT/.codex/.tmp"
             ;;
         claude_vm_bundles)
             LABEL="Claude Cowork VM bundles"
-            PROCESS_PATTERN='Claude\.app|/claude|claude-code|local-agent-mode'
+            # /claude와 claude-code는 vm_bundles를 쓰지 않는 별개 제품(Claude
+            # Code CLI)을 잡고, local-agent-mode는 이 recipe가 보존한다고 선언한
+            # 디렉터리를 잡는다. vm_bundles를 쓰는 주체는 Claude Desktop뿐이다.
+            PROCESS_PATTERN='Claude\.app/Contents/MacOS/Claude|Claude Helper|/vm_bundles/'
             PROCESS_NOTE="Claude Desktop/Code/Cowork를 완전히 종료하세요."
             WARNING="로컬 에이전트 VM 이미지는 다시 생성될 수 있습니다. 세션 작업공간은 보존합니다."
             add_target_if_present "$HOME_ROOT/Library/Application Support/Claude/vm_bundles"
@@ -663,14 +678,21 @@ define_recipe() {
             # 특히 Simulator.app이 그 안에 있어서, 번들 경로만 보면 시뮬레이터를
             # 띄워둔 것만으로 정리가 영구히 막힌다. Xcode 본체와 실제 빌드
             # 서비스만 차단 대상으로 둔다.
-            PROCESS_PATTERN='Xcode\.app/Contents/MacOS/Xcode|xcodebuild|XCBBuildService|SourceKitService'
+            # xcodebuild를 앵커해 빌드 로그 파일명 오탐을 없앤다. SourceKitService는
+            # 남긴다. Xcode 세션이 DerivedData/Index.noindex를 mmap하고 있어 삭제 시
+            # 인덱스가 손상되는데, 명령줄만으로 SwiftPM 세션과 구분할 수 없다.
+            PROCESS_PATTERN='Xcode\.app/Contents/MacOS/Xcode|^(\S*/)?xcodebuild( |$)|XCBBuildService|SourceKitService'
             PROCESS_NOTE="Xcode와 진행 중인 Apple 플랫폼 빌드를 먼저 종료하세요."
             WARNING="소스와 Archive는 보존되지만 다음 빌드가 오래 걸릴 수 있습니다."
             add_target_if_present "$HOME_ROOT/Library/Developer/Xcode/DerivedData"
             ;;
         chrome_code_sign_clones)
             LABEL="Chrome code-sign clones"
-            PROCESS_PATTERN='Google Chrome|playwright_chromiumdev_profile|--headless|remote-debugging-pipe'
+            # --headless와 remote-debugging-pipe는 이 클론과 인과관계가 없다.
+            # LibreOffice 변환, Edge, Electron 헬퍼까지 잡으면서 정작 클론을
+            # 만드는 주체인 Chrome 업데이터는 놓치고 있었다. 삭제가 실제로
+            # 위험한 순간은 업데이트 적용 중이므로 본체와 업데이터를 남긴다.
+            PROCESS_PATTERN='Google Chrome\.app/Contents/(MacOS|Frameworks)/|com\.google\.Chrome\.code_sign_clone|GoogleSoftwareUpdate|(^|/)ksadmin( |$)'
             PROCESS_NOTE="Chrome과 브라우저 자동화를 완전히 종료하세요."
             WARNING="Chrome 임시 code-sign clone만 정리합니다. 브라우저 프로필은 대상이 아닙니다."
             local candidate
@@ -837,11 +859,26 @@ process_snapshot() {
     fi
 }
 
+# 이 도구 자신과, 이 도구가 크기를 재려고 띄운 측정 프로세스를 증거에서 뺀다.
+#
+# 측정 프로세스를 빼야 하는 이유: storage.sh와 storage_watch.sh는 대상 경로를
+# 인자로 주는 `du -sk`를 실제로 띄운다. 매칭이 전체 명령줄 기준이므로 그 du가
+# 자기 대상 경로에 걸려, 사용자가 닫을 수 없는 프로세스 때문에 정리가 차단된다.
+# storage_watch는 LaunchAgent로 매시간 돈다.
+#
+# 반대로 자기 제외는 좁혀야 한다. 이전에는 명령줄에 제품명이 들어간 모든
+# 프로세스를 버려서, 프로젝트 경로 안에서 도는 무관한 프로세스까지 증거에서
+# 사라졌다. 그건 오탐이 아니라 미탐이다.
+exclude_self_and_measurement() {
+    /usr/bin/grep -v -E \
+        'scripts/cleanup\.sh|/usr/bin/grep -E|/usr/bin/du |/usr/bin/mdls |/usr/libexec/PlistBuddy |Contents/MacOS/Modore'
+}
+
 matching_processes() {
     [[ -n "$PROCESS_PATTERN" ]] || return 0
     process_snapshot \
         | /usr/bin/grep -E "$PROCESS_PATTERN" \
-        | /usr/bin/grep -v -E 'scripts/cleanup\.sh|Modore|/usr/bin/grep -E' \
+        | exclude_self_and_measurement \
         | /usr/bin/head -n 5 \
         | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' \
         | /usr/bin/cut -c 1-240 \
@@ -855,19 +892,19 @@ process_display_name() {
         display_name="$LABEL"
     else
         case "$command" in
-            # 자동화/원격 디버깅 신호를 Chrome 이름보다 먼저 판정한다. 자동화로 띄운
-            # 브라우저를 평소 쓰는 Chrome으로 표시하면, 사용자는 창을 다 닫아도
-            # 차단이 풀리지 않는 이유를 알 수 없다.
-            *playwright*|*Playwright*|*remote-debugging-pipe*|*--headless*)
-                display_name="Playwright" ;;
+            # 제품 이름을 먼저 판정한다. 자동화 플래그를 앞에 두면 Chrome 업데이터,
+            # Claude Desktop, Codex의 headless 런타임이 모두 "Playwright"로 표시돼
+            # 사용자가 무엇을 닫아야 하는지 알 수 없다. Playwright 자신은 이제
+            # 경로와 실행기 이름으로만 매칭되므로 앞에 둘 이유가 없다.
+            *playwright*|*Playwright*) display_name="Playwright" ;;
             *"Google Chrome Helper"*) display_name="Google Chrome Helper" ;;
-            *"Google Chrome"*) display_name="Google Chrome" ;;
+            *"Google Chrome"*|*ksadmin*|*GoogleSoftwareUpdate*) display_name="Google Chrome" ;;
             *Codex*|*codex*|*node_repl*|*SkyComputerUseClient*) display_name="Codex" ;;
             *Claude*|*claude*|*local-agent-mode*) display_name="Claude" ;;
             *pnpm*) display_name="pnpm" ;;
             *npm*|*npx*|*node*) display_name="Node/npm" ;;
             *GradleDaemon*|*org.gradle*|*gradlew*) display_name="Gradle" ;;
-            *CocoaPods*|*"/pod "*) display_name="CocoaPods" ;;
+            *CocoaPods*|*"/pod "*|pod\ *|pod) display_name="CocoaPods" ;;
             *flutter*|*dart*) display_name="Dart/Flutter" ;;
             *Xcode*|*xcodebuild*|*XCBBuildService*|*SourceKitService*) display_name="Xcode/build tool" ;;
             *INNORIX*|*innorix*) display_name="INNORIX" ;;
@@ -889,7 +926,7 @@ matching_processes_with_pid() {
     [[ -n "$PROCESS_PATTERN" ]] || return 0
     /bin/ps -axo pid=,command= 2>/dev/null \
         | /usr/bin/grep -E "$PROCESS_PATTERN" \
-        | /usr/bin/grep -v -E 'scripts/cleanup\.sh|Modore|/usr/bin/grep -E' \
+        | exclude_self_and_measurement \
         | /usr/bin/head -n 5 \
         | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' \
         || true
@@ -1209,7 +1246,10 @@ stop_innorix() {
     /bin/launchctl disable "$domain/com.innorix.innorixes" >/dev/null 2>&1 || true
     /usr/bin/pkill -TERM -f "$HOME_ROOT/Applications/INNORIX-EX/innorixes.app" >/dev/null 2>&1 || true
     /bin/sleep 1
-    if process_snapshot | /usr/bin/grep -E 'INNORIX-EX|innorixes\.app|innorixes' | /usr/bin/grep -v 'scripts/cleanup\.sh' >/dev/null 2>&1; then
+    # 자체 파이프라인 대신 matching_processes를 재사용한다. 이전에는 제외가
+    # cleanup.sh 하나뿐이어서 확인용 grep 자신이 ps 결과에 잡혔고, INNORIX가
+    # 돌지 않아도 "종료하지 못했다"며 실행이 항상 중단됐다.
+    if [[ -n "$(matching_processes)" ]]; then
         return 1
     fi
     return 0
