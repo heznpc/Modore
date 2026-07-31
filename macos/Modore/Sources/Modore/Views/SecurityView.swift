@@ -5,6 +5,7 @@ struct SecurityPage: View {
     @State private var showsProtectionDetails = false
     @State private var showsCollectionCoverage = false
     @State private var showsProcesses = false
+    @State private var showsBackgroundCpu = false
     @State private var showsNetwork = false
     @State private var showsListeningPorts = false
     @State private var showsAutoruns = false
@@ -44,8 +45,10 @@ struct SecurityPage: View {
                 )
             }
 
-            if !model.cpuRows.isEmpty || !model.networkRows.isEmpty || !model.listeningPortRows.isEmpty {
+            if !model.cpuRows.isEmpty || !model.backgroundCpuRows.isEmpty
+                || !model.networkRows.isEmpty || !model.listeningPortRows.isEmpty {
                 Section {
+                    backgroundCpuDisclosure
                     processDisclosure
                     networkDisclosure
                     listeningPortsDisclosure
@@ -98,6 +101,37 @@ struct SecurityPage: View {
             }
         }
         .macSettingsFormStyle()
+    }
+
+    @ViewBuilder
+    private var backgroundCpuDisclosure: some View {
+        if !model.backgroundCpuRows.isEmpty {
+            DisclosureGroup(isExpanded: $showsBackgroundCpu) {
+                ForEach(model.backgroundCpuRows) { row in
+                    if row.requiresAttention {
+                        SecurityRiskDetailRow(
+                            symbol: "gauge.with.needle",
+                            title: backgroundCpuTitle(row),
+                            detail: backgroundCpuMetadata(row),
+                            risk: row.risk
+                        )
+                    } else {
+                        SecurityDetailRow(
+                            symbol: "gauge.with.needle",
+                            title: backgroundCpuTitle(row),
+                            detail: backgroundCpuMetadata(row)
+                        )
+                    }
+                }
+            } label: {
+                SecurityDisclosureLabel(
+                    symbol: "gauge.with.needle",
+                    title: "관측 구간 CPU 사용",
+                    detail: backgroundCpuSummary,
+                    value: "\(model.backgroundCpuRows.count)개"
+                )
+            }
+        }
     }
 
     @ViewBuilder
@@ -290,6 +324,34 @@ struct SecurityPage: View {
         [install.installDate, install.publisher, install.note]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
+    }
+
+    private func backgroundCpuTitle(_ row: BackgroundCpuRow) -> String {
+        row.isDetachedFromAnApp ? "\(row.name) · 터미널에서 시작됨" : row.name
+    }
+
+    private func backgroundCpuMetadata(_ row: BackgroundCpuRow) -> String {
+        var values = [String(format: "관측 구간 %.1f%%", row.cpuPercent), "PID \(row.pid)"]
+        // 책임 조상이 자신과 다를 때만 밝힌다. 같으면 중복이고, 다를 때가 바로
+        // 프로세스 이름만 보고 엉뚱한 앱을 범인으로 읽게 되는 경우다.
+        if !row.selfResponsible && !row.responsibleName.isEmpty {
+            values.append("시작: \(row.responsibleName) · PID \(row.responsiblePid)")
+        }
+        if !row.note.isEmpty { values.append(row.note) }
+        return values.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    private var backgroundCpuSummary: String {
+        let window = model.backgroundCpuRows.first?.windowSeconds ?? 0
+        let measured = window > 0
+            ? "\(window)초 동안 실제로 CPU를 쓴 프로세스입니다."
+            : "관측 구간 동안 실제로 CPU를 쓴 프로세스입니다."
+        let detached = model.detachedBackgroundCpuRows.count
+        guard detached > 0 else {
+            return measured + " 아래 실행 프로세스 목록의 값은 생애 평균이라 다를 수 있습니다."
+        }
+        return measured
+            + " 그중 \(detached)개는 터미널에서 시작돼, 관련 앱을 닫아도 멈추지 않습니다."
     }
 
     private func processMetadata(_ row: CpuRow) -> String {

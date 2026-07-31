@@ -326,6 +326,45 @@ def main() -> int:
 
 
     # ============================================================
+    # 1b. 관측 구간 동안 실제로 CPU를 쓴 프로세스
+    # ============================================================
+    # cpu 섹션의 %cpu는 생애 평균이라 지금 조용한 프로세스도 높게 보인다.
+    # 여기 cpuPercent는 두 시점 사이의 점유율이고, responsible*는 그 일을
+    # 시작한 조상이다. JXA 쌍둥이와 같은 키를 유지해야 패리티가 성립한다.
+    background_cpu = []
+    background_window = 0
+    for line in _read_tmp("idle_cpu.tsv").split("\n"):
+        parts = line.rstrip("\n").split("\t")
+        if parts[0] == "windowSeconds" and len(parts) >= 2:
+            try:
+                background_window = int(parts[1])
+            except ValueError:
+                background_window = 0
+            continue
+        if parts[0] != "process" or len(parts) < 7:
+            continue
+        try:
+            pid_value = int(parts[2])
+            responsible_pid = int(parts[4])
+            percent = float(parts[1])
+        except ValueError:
+            continue
+        background_cpu.append(OrderedDict([
+            ("windowSeconds", background_window),
+            ("name", parts[3]),
+            ("pid_", pid_value),
+            ("cpuPercent", percent),
+            ("responsiblePid", responsible_pid),
+            ("responsibleName", parts[5]),
+            ("startedFromShell", parts[6] == "true"),
+            ("selfResponsible", responsible_pid == pid_value),
+        ]))
+    for row in background_cpu:
+        row["windowSeconds"] = background_window
+    raw["sections"]["backgroundCpu"] = background_cpu
+
+
+    # ============================================================
     # 2. GPU (macOS 제한적)
     # ============================================================
     raw["sections"]["gpu"] = []

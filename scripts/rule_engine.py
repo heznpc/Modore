@@ -379,6 +379,7 @@ def apply_rules_to_raw(engine: RuleEngine, raw: Dict[str, Any]) -> Dict[str, Any
 
     섹션별 카테고리 매핑:
       cpu           -> process
+      backgroundCpu -> process  (관측 구간 점유율 + 책임 조상)
       network       -> network
       listeningPorts -> process  (프로세스 이름 기반)
       autoruns      -> autoruns
@@ -393,6 +394,7 @@ def apply_rules_to_raw(engine: RuleEngine, raw: Dict[str, Any]) -> Dict[str, Any
 
     section_to_category = {
         "cpu": "process",
+        "backgroundCpu": "process",
         "network": "network",
         "listeningPorts": "process",
         "autoruns": "autoruns",
