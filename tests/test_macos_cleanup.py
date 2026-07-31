@@ -306,6 +306,44 @@ def test_rename_migration_never_merges_into_an_existing_directory(project_root, 
     assert (current / "current-only.txt").read_text(encoding="utf-8") == "new"
 
 
+def test_simulator_alone_does_not_block_xcode_derived_data(project_root, tmp_path):
+    home = tmp_path / "home"
+    derived = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "App-abc"
+    derived.mkdir(parents=True)
+    (derived / "build.log").write_text("fixture", encoding="utf-8")
+
+    # Simulator.app lives inside Xcode.app but never writes DerivedData. Matching
+    # the bundle path blocked the cleanup for as long as a simulator stayed open.
+    ready = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "xcode_derived_data",
+        processes=(
+            "/Applications/Xcode.app/Contents/Developer/Applications/"
+            "Simulator.app/Contents/MacOS/Simulator\n"
+        ),
+    )
+    ready_payload = parse_protocol(ready.stdout)
+
+    assert ready.returncode == 0, ready.stderr
+    assert ready_payload["status"] == "ready"
+    assert ready_payload["runningProcesses"] == ""
+
+    blocked = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "xcode_derived_data",
+        processes="/Applications/Xcode.app/Contents/MacOS/Xcode\n",
+    )
+    blocked_payload = parse_protocol(blocked.stdout)
+
+    # Xcode itself still blocks, since a build in flight owns this directory.
+    assert blocked_payload["status"] == "blocked"
+    assert derived.is_dir()
+
+
 def test_unrelated_headless_browser_does_not_block_playwright_cache(project_root, tmp_path):
     home = tmp_path / "home"
     browser = home / "Library" / "Caches" / "ms-playwright" / "chromium" / "chrome"
