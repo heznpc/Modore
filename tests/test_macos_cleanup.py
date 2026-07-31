@@ -344,37 +344,60 @@ def test_simulator_alone_does_not_block_xcode_derived_data(project_root, tmp_pat
     assert derived.is_dir()
 
 
-def test_editor_node_processes_do_not_block_the_pnpm_store(project_root, tmp_path):
-    home = tmp_path / "home"
+def pnpm_store_status(project_root, tmp_path, name: str, processes: str) -> str:
+    home = tmp_path / name
     store = home / "Library" / "pnpm" / "store"
     store.mkdir(parents=True)
     (store / "package.tgz").write_bytes(b"fixture")
+    preview = run_cleanup(project_root, home, "--preview", "pnpm_store", processes=processes)
+    assert preview.returncode == 0, preview.stderr
+    assert store.is_dir(), "a preview must never delete anything"
+    return str(parse_protocol(preview.stdout)["status"])
 
+
+def test_editor_node_processes_do_not_block_the_pnpm_store(project_root, tmp_path):
     # Language servers, MCP servers and Electron helpers all run as bare node and
     # never write this store, so blocking on them left no action the owner could
-    # take. pnpm itself still blocks.
-    ready = run_cleanup(
-        project_root,
-        home,
-        "--preview",
-        "pnpm_store",
-        processes=(
-            "/Users/x/.local/share/mise/installs/node/22/bin/node /opt/lsp/tsserver.js\n"
-            "/Applications/Editor.app/Contents/MacOS/Editor Helper --type=utility\n"
-        ),
-    )
-    blocked = run_cleanup(
-        project_root,
-        home,
-        "--preview",
-        "pnpm_store",
-        processes="/opt/homebrew/bin/pnpm install\n",
-    )
+    # take.
+    assert pnpm_store_status(
+        project_root, tmp_path, "editors",
+        "/Users/x/.local/share/mise/installs/node/22/bin/node /opt/lsp/tsserver.js\n"
+        "/Applications/Editor.app/Contents/MacOS/Editor Helper --type=utility\n",
+    ) == "ready"
 
-    assert parse_protocol(ready.stdout)["status"] == "ready"
-    assert parse_protocol(ready.stdout)["runningProcesses"] == ""
-    assert parse_protocol(blocked.stdout)["status"] == "blocked"
-    assert store.is_dir()
+
+def test_pnpm_still_blocks_however_it_was_launched(project_root, tmp_path):
+    # Narrowing away bare node must not lose pnpm itself. corepack and standalone
+    # installs run it as `node <pnpm.cjs>`, which the executable name alone misses,
+    # and a binary running out of the store is holding the store.
+    assert pnpm_store_status(
+        project_root, tmp_path, "direct", "/opt/homebrew/bin/pnpm install\n"
+    ) == "blocked"
+    assert pnpm_store_status(
+        project_root, tmp_path, "via-node",
+        "/usr/local/bin/node /opt/pnpm/dist/pnpm.cjs install\n",
+    ) == "blocked"
+    assert pnpm_store_status(
+        project_root, tmp_path, "from-store",
+        "/Users/x/Library/pnpm/global/5/.bin/somecli\n",
+    ) == "blocked"
+
+
+def test_excluding_sizing_tools_never_hides_a_real_blocker(project_root, tmp_path):
+    # The tool sizes these paths with du on an hourly schedule, so its own
+    # measurement must not read as a blocker. Excluding by substring instead of
+    # by whole command line would have suppressed a genuine pnpm install that
+    # happened to run du in the same tree, which is worse than a false block.
+    assert pnpm_store_status(
+        project_root, tmp_path, "sizing-only",
+        "/usr/bin/du -sk /Users/x/Library/pnpm\n",
+    ) == "ready"
+    assert pnpm_store_status(
+        project_root, tmp_path, "sizing-beside-blocker",
+        "/bin/sh -c pnpm install && /usr/bin/du -sk .\n"
+        "/opt/homebrew/bin/pnpm install\n"
+        "/usr/bin/du -sk /Users/x/Library/pnpm\n",
+    ) == "blocked"
 
 
 def test_headless_converters_do_not_block_chrome_clone_cleanup(project_root, tmp_path):
