@@ -659,7 +659,11 @@ define_recipe() {
             ;;
         xcode_derived_data)
             LABEL="Xcode DerivedData"
-            PROCESS_PATTERN='Xcode\.app|xcodebuild|XCBBuildService|SourceKitService'
+            # Xcode.app 번들 안에는 DerivedData와 무관한 실행 파일도 들어 있다.
+            # 특히 Simulator.app이 그 안에 있어서, 번들 경로만 보면 시뮬레이터를
+            # 띄워둔 것만으로 정리가 영구히 막힌다. Xcode 본체와 실제 빌드
+            # 서비스만 차단 대상으로 둔다.
+            PROCESS_PATTERN='Xcode\.app/Contents/MacOS/Xcode|xcodebuild|XCBBuildService|SourceKitService'
             PROCESS_NOTE="Xcode와 진행 중인 Apple 플랫폼 빌드를 먼저 종료하세요."
             WARNING="소스와 Archive는 보존되지만 다음 빌드가 오래 걸릴 수 있습니다."
             add_target_if_present "$HOME_ROOT/Library/Developer/Xcode/DerivedData"
