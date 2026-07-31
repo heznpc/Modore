@@ -344,6 +344,124 @@ def test_simulator_alone_does_not_block_xcode_derived_data(project_root, tmp_pat
     assert derived.is_dir()
 
 
+def test_editor_node_processes_do_not_block_the_pnpm_store(project_root, tmp_path):
+    home = tmp_path / "home"
+    store = home / "Library" / "pnpm" / "store"
+    store.mkdir(parents=True)
+    (store / "package.tgz").write_bytes(b"fixture")
+
+    # Language servers, MCP servers and Electron helpers all run as bare node and
+    # never write this store, so blocking on them left no action the owner could
+    # take. pnpm itself still blocks.
+    ready = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "pnpm_store",
+        processes=(
+            "/Users/x/.local/share/mise/installs/node/22/bin/node /opt/lsp/tsserver.js\n"
+            "/Applications/Editor.app/Contents/MacOS/Editor Helper --type=utility\n"
+        ),
+    )
+    blocked = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "pnpm_store",
+        processes="/opt/homebrew/bin/pnpm install\n",
+    )
+
+    assert parse_protocol(ready.stdout)["status"] == "ready"
+    assert parse_protocol(ready.stdout)["runningProcesses"] == ""
+    assert parse_protocol(blocked.stdout)["status"] == "blocked"
+    assert store.is_dir()
+
+
+def test_headless_converters_do_not_block_chrome_clone_cleanup(project_root, tmp_path):
+    home = tmp_path / "home"
+    var_folders = home / "VarFoldersRoot" / "aa" / "bb" / "X"
+    clone = var_folders / "com.google.Chrome.code_sign_clone"
+    clone.mkdir(parents=True)
+    (clone / "payload").write_bytes(b"fixture")
+
+    # The same generic Chromium flags that over-blocked the Playwright cache were
+    # still here, catching LibreOffice and Edge, while missing the Chrome updater
+    # that actually creates and consumes this clone.
+    ready = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "chrome_code_sign_clones",
+        processes=(
+            "/Applications/LibreOffice.app/Contents/MacOS/soffice --headless --convert-to pdf\n"
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge --headless=new\n"
+        ),
+    )
+    blocked = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "chrome_code_sign_clones",
+        processes="/Library/Google/GoogleSoftwareUpdate/ksadmin --print-tickets\n",
+    )
+
+    assert parse_protocol(ready.stdout)["status"] == "ready"
+    assert parse_protocol(blocked.stdout)["status"] == "blocked"
+    assert clone.is_dir()
+
+
+def test_claude_code_cli_does_not_block_desktop_vm_bundles(project_root, tmp_path):
+    home = tmp_path / "home"
+    bundles = home / "Library" / "Application Support" / "Claude" / "vm_bundles"
+    bundles.mkdir(parents=True)
+    (bundles / "image.raw").write_bytes(b"fixture")
+
+    # Claude Code is a different product and does not use these bundles, and
+    # local-agent-mode named the very directory this recipe promises to preserve.
+    ready = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "claude_vm_bundles",
+        processes=(
+            "/Users/x/.local/bin/claude --print\n"
+            "/usr/bin/du -sk /Users/x/Library/Application Support/Claude/local-agent-mode\n"
+        ),
+    )
+    blocked = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "claude_vm_bundles",
+        processes="/Applications/Claude.app/Contents/MacOS/Claude\n",
+    )
+
+    assert parse_protocol(ready.stdout)["status"] == "ready"
+    assert parse_protocol(blocked.stdout)["status"] == "blocked"
+    assert bundles.is_dir()
+
+
+def test_own_measurement_processes_never_block_a_cleanup(project_root, tmp_path):
+    home = tmp_path / "home"
+    cache = home / "Library" / "Caches" / "ms-playwright"
+    cache.mkdir(parents=True)
+    (cache / "chromium").write_bytes(b"fixture")
+
+    # storage_watch.sh runs hourly and sizes these very paths with du. Matching a
+    # whole command line meant the tool's own measurement blocked the cleanup,
+    # naming a process the owner cannot close.
+    preview = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "playwright_browsers",
+        processes="/usr/bin/du -sk /Users/x/Library/Caches/ms-playwright\n",
+    )
+
+    assert parse_protocol(preview.stdout)["status"] == "ready"
+    assert parse_protocol(preview.stdout)["runningProcesses"] == ""
+
+
 def test_unrelated_headless_browser_does_not_block_playwright_cache(project_root, tmp_path):
     home = tmp_path / "home"
     browser = home / "Library" / "Caches" / "ms-playwright" / "chromium" / "chrome"
