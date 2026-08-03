@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""session_atlas 계약 테스트: 교차 도구 조인, 고아 판정, 메타데이터 전용 보장."""
+"""session_atlas 계약 테스트: 교차 도구 조인, 고아 판정, 보존 판정, 메타데이터 전용 보장."""
 import json
+import os
+import time
 
 import pytest
 
@@ -99,6 +101,59 @@ def test_store_statuses_report_missing_tools(atlas_home):
     assert by_name["Cursor"]["status"] == "missing"
     assert by_name["Codex"]["count"] == 1
     assert by_name["Claude"]["count"] == 2
+
+
+@pytest.fixture
+def retention_home(tmp_path):
+    """보존 판정용: 나이가 통제된 Claude 세션 5개와 살아있는/사라진 워크스페이스."""
+    home = tmp_path / "home"
+    ws_live = tmp_path / "alive" / "proj"
+    ws_live.mkdir(parents=True)
+    ws_gone = tmp_path / "gone" / "proj"  # 일부러 만들지 않음
+    now = time.time()
+
+    def session(name, workspace, age_days):
+        path = (home / ".claude" / "projects"
+                / str(workspace).replace("/", "-") / f"{name}.jsonl")
+        _write(path, _jsonl({"type": "user", "cwd": str(workspace)}))
+        stamp = now - age_days * 86400
+        os.utime(path, (stamp, stamp))
+
+    session("s30", ws_live, 30)   # 관측 최고령 → 윈도우 앵커, D-0
+    session("s24", ws_live, 24)   # D-6: 살아있는 이야기의 만료 임박
+    session("s25", ws_gone, 25)   # D-5: 고아의 만료 임박
+    session("s02a", ws_live, 2)   # 안전
+    session("s02b", ws_live, 2)
+    return home, ws_live, ws_gone
+
+
+def test_retention_infers_rolling_window(retention_home):
+    home, _, _ = retention_home
+    retention = session_atlas.build_atlas(home)["retention"]
+    claude = next(s for s in retention["stores"] if s["store"] == "Claude")
+    assert claude["mode"] == "rolling"
+    assert claude["window_days"] == 30
+    assert claude["stalled"] is False
+
+
+def test_retention_flags_precarious_boundary(retention_home):
+    home, ws_live, ws_gone = retention_home
+    expiring = session_atlas.build_atlas(home)["retention"]["expiring"]
+    assert len(expiring) == 3  # D-0, D-6(살아있음), D-5(고아) — 신선한 세션은 제외
+    assert expiring[0]["days_left"] == 0  # 임박순 정렬
+    alive = [e for e in expiring if e["story_alive"]]
+    assert {e["workspace"] for e in alive} == {str(ws_live)}
+    gone = next(e for e in expiring if not e["story_alive"])
+    assert gone["workspace"] == str(ws_gone)
+    assert gone["days_left"] == 5
+
+
+def test_retention_insufficient_on_small_stores(atlas_home):
+    home, _, _ = atlas_home
+    retention = session_atlas.build_atlas(home)["retention"]
+    claude = next(s for s in retention["stores"] if s["store"] == "Claude")
+    assert claude["mode"] == "insufficient"
+    assert retention["expiring"] == []
 
 
 @pytest.mark.parametrize("raw,expected", [

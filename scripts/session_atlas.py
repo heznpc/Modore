@@ -28,6 +28,12 @@ CODEX_META_KEYS = ("id", "cwd")
 CLAUDE_SCAN_LINES = 25
 MAX_LINE_BYTES = 65536
 
+# Retention judgment thresholds (observation-based estimates, never vendor claims).
+RETENTION_MIN_SESSIONS = 5      # below this a window cannot be inferred honestly
+ROLLING_WINDOW_DAYS = (20, 45)  # oldest-session age in this band suggests auto-cleanup
+EXPIRY_SOON_DAYS = 7            # sessions this close to the inferred window are flagged
+STALLED_STORE_DAYS = 21         # no new session for this long → store no longer written
+
 VSCODE_FORKS = (
     ("VS Code", "Code"),
     ("Kiro", "Kiro"),
@@ -232,6 +238,51 @@ def collect_gemini(home: Path) -> tuple[list[dict], dict]:
     return records, {"store": "Gemini", "status": "ok", "count": len(records), "unrecognized": 0}
 
 
+def build_retention(records: list[dict], now_ts: float) -> dict:
+    """Per-store retention judgment from session-file age distribution alone.
+
+    A store whose oldest surviving session sits in the rolling band is judged
+    "rolling" and its observed oldest age becomes the estimated window; sessions
+    within EXPIRY_SOON_DAYS of that window are flagged, split by whether their
+    workspace still exists (a living story about to lose its transcript versus
+    an orphan whose loss likely goes unnoticed).
+    """
+    stores: list[dict] = []
+    expiring: list[dict] = []
+    by_tool: dict[str, list[dict]] = {}
+    for item in records:
+        if item["kind"] == "session":
+            by_tool.setdefault(item["tool"], []).append(item)
+    for tool in sorted(by_tool):
+        sessions = by_tool[tool]
+        ages = [(now_ts - s["last_active"]) / 86400 for s in sessions]
+        oldest = max(ages)
+        newest = min(ages)
+        entry = {"store": tool, "sessions": len(sessions),
+                 "oldest_days": round(oldest), "stalled": newest > STALLED_STORE_DAYS}
+        if len(sessions) < RETENTION_MIN_SESSIONS:
+            entry["mode"] = "insufficient"
+        elif ROLLING_WINDOW_DAYS[0] <= oldest <= ROLLING_WINDOW_DAYS[1]:
+            entry["mode"] = "rolling"
+            entry["window_days"] = round(oldest)
+            for session, age in zip(sessions, ages):
+                days_left = round(oldest - age)
+                if days_left <= EXPIRY_SOON_DAYS:
+                    workspace = session["workspace"]
+                    expiring.append({
+                        "tool": tool,
+                        "workspace": workspace,
+                        "days_left": days_left,
+                        "size_bytes": session["size_bytes"],
+                        "story_alive": bool(workspace) and Path(workspace).exists(),
+                    })
+        else:
+            entry["mode"] = "long"
+        stores.append(entry)
+    expiring.sort(key=lambda e: (e["days_left"], -e["size_bytes"]))
+    return {"stores": stores, "expiring": expiring}
+
+
 def build_atlas(home: Path) -> dict:
     codex_records, codex_status = collect_codex(home)
     claude_records, claude_status = collect_claude(home)
@@ -289,6 +340,7 @@ def build_atlas(home: Path) -> dict:
         "stores": stores,
         "groups": finished,
         "unresolved_sessions": unresolved_count,
+        "retention": build_retention(records, time.time()),
     }
 
 
@@ -331,6 +383,27 @@ def render_report(atlas: dict, limit: int) -> str:
         lines.append(f"{rank:2d}. [{'|'.join(marks) or '단일'}] {label}")
         lines.append(f"     {tools} | 워크스페이스 {len(group['workspaces'])}"
                      f" | {_format_size(group['size_bytes'])} | 최근 {group['last_active']}")
+    retention = atlas.get("retention", {})
+    if retention.get("stores"):
+        lines.append("")
+        lines.append("보존 판정 (파일 나이 관측 기반 추정)")
+        mode_label = {"rolling": "롤링", "long": "장기 보존", "insufficient": "관측 부족"}
+        for store in retention["stores"]:
+            bits = [mode_label.get(store["mode"], store["mode"])]
+            if store["mode"] == "rolling":
+                bits[0] = f"롤링 약 {store['window_days']}일"
+            bits.append(f"최고 {store['oldest_days']}일")
+            if store["stalled"]:
+                bits.append("기록 중단 의심")
+            lines.append(f"  {store['store']}: " + " · ".join(bits))
+        expiring = retention.get("expiring", [])
+        if expiring:
+            alive = [e for e in expiring if e["story_alive"]]
+            lines.append(f"  만료 임박(D-{EXPIRY_SOON_DAYS} 이내) {len(expiring)}건"
+                         f" — 살아있는 워크스페이스 {len(alive)} · 고아 {len(expiring) - len(alive)}")
+            for entry in alive[:5]:
+                lines.append(f"    D-{entry['days_left']} {entry['workspace']}"
+                             f" ({entry['tool']}, {_format_size(entry['size_bytes'])})")
     return "\n".join(lines)
 
 
