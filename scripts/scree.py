@@ -330,7 +330,7 @@ def collect_worktrees(home: Path) -> dict:
             if commit_raw and commit_raw.strip().isdigit():
                 last_commit = time.strftime("%Y-%m-%d",
                                             time.localtime(int(commit_raw.strip())))
-            items.append({
+            item = {
                 "path": str(worktree),
                 "repo": str(repo),
                 "branch": branch_raw.strip() if branch_raw else None,
@@ -339,7 +339,11 @@ def collect_worktrees(home: Path) -> dict:
                 "unpushed_commits": unpushed,
                 "last_commit": last_commit,
                 "verdict": verdict,
-            })
+                "evidence": "preview",
+            }
+            if verdict == "rebuildable":
+                item["requires_revalidation"] = True
+            items.append(item)
     items.sort(key=lambda w: (w["verdict"], w["last_commit"] or "", w["path"]))
     return {"items": items, "registered_missing": registered_missing}
 
@@ -432,14 +436,19 @@ def build_scree(home: Path) -> dict:
     for group in groups.values():
         workspaces = sorted(group.pop("workspaces"))
         existing = [w for w in workspaces if Path(w).exists()]
-        finished.append({
+        entry = {
             **group,
             "workspaces": workspaces,
             "worktrees": [w for w in workspaces if "/worktrees/" in w],
             "orphan": not existing,
             "cross_tool": len(group["tools"]) > 1,
             "last_active": time.strftime("%Y-%m-%d %H:%M", time.localtime(group["last_active"])),
-        })
+        }
+        if entry["orphan"]:
+            # The only fact checked is path absence; a moved/renamed/unmounted
+            # workspace looks identical, so consumers get the basis explicitly.
+            entry["orphan_basis"] = "path_missing"
+        finished.append(entry)
     finished.sort(key=lambda g: (g["last_active"], g["key"]), reverse=True)
     return {
         "contract": ("metadata-only output; whitelisted keys; deterministic join; "

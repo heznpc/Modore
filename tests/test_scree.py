@@ -84,6 +84,7 @@ def test_orphan_workspace_is_flagged(scree_home):
     result = scree.build_scree(home)
     group = next(g for g in result["groups"] if g["key"] == f"ws:{ws2}")
     assert group["orphan"] is True
+    assert group["orphan_basis"] == "path_missing"  # 판정 근거를 데이터로 명시
     assert group["cross_tool"] is False
 
 
@@ -203,10 +204,13 @@ def test_worktree_rebuildable_after_push_then_dirty_flips_back(worktree_home, tm
     items = scree.collect_worktrees(home)["items"]
     wt1 = next(i for i in items if i["path"].endswith("wt1"))
     assert wt1["verdict"] == "rebuildable"  # 전부 푸시됨 + clean
+    assert wt1["evidence"] == "preview"
+    assert wt1["requires_revalidation"] is True  # 파괴적 소비자는 재검증 의무
     (repo / ".claude" / "worktrees" / "wt1" / "new.txt").write_text("d", encoding="utf-8")
     items = scree.collect_worktrees(home)["items"]
     wt1 = next(i for i in items if i["path"].endswith("wt1"))
     assert wt1["verdict"] == "protected"  # dirty → 다시 유일본
+    assert "requires_revalidation" not in wt1
 
 
 def test_worktree_anchor_breaks_are_reported(worktree_home):
