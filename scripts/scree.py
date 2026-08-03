@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Moraine: judge what AI agents leave behind, joined by workspace/repo.
+"""Scree: judge what AI agents leave behind, joined by workspace/repo.
 
-Like the rock debris a glacier leaves as it retreats, local agent session
-stores, worktrees, and state directories accumulate after every run. Moraine
-maps and judges them deterministically.
+Like the rock debris that piles up at the foot of a slope, local agent session
+stores, worktrees, and state directories accumulate under every run. Scree
+maps and judges that debris field deterministically.
 
 Answers, deterministically and without any LLM: which tools (Claude Code, Codex,
 Gemini CLI, VS Code forks) worked in the same workspace or repository, when, and
@@ -382,7 +382,7 @@ def build_retention(records: list[dict], now_ts: float) -> dict:
     return {"stores": stores, "expiring": expiring}
 
 
-def build_moraine(home: Path) -> dict:
+def build_scree(home: Path) -> dict:
     codex_records, codex_status = collect_codex(home)
     claude_records, claude_status = collect_claude(home)
     fork_records, fork_statuses = collect_vscode_forks(home)
@@ -452,10 +452,10 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes / 1024:.0f}KB"
 
 
-def render_report(moraine: dict, limit: int) -> str:
-    lines = ["Moraine — 에이전트가 남긴 것들의 지도 (메타데이터 전용 · 결정적 조인)"]
+def render_report(scree: dict, limit: int) -> str:
+    lines = ["Scree — 에이전트가 남긴 것들의 지도 (메타데이터 전용 · 결정적 조인)"]
     store_bits = []
-    for store in moraine["stores"]:
+    for store in scree["stores"]:
         if store["status"] == "missing":
             store_bits.append(f"{store['store']} 없음")
         else:
@@ -464,11 +464,11 @@ def render_report(moraine: dict, limit: int) -> str:
                 note += f"+부속 {store['subtranscripts']}"
             store_bits.append(f"{store['store']} {store['count']}건{note}")
     lines.append("저장소: " + " · ".join(store_bits))
-    groups = moraine["groups"]
+    groups = scree["groups"]
     cross = sum(1 for g in groups if g["cross_tool"])
     orphan = sum(1 for g in groups if g["orphan"])
     lines.append(f"그룹 {len(groups)}개 — 교차 도구 {cross} · 고아 {orphan}"
-                 f" · 미해석 세션 {moraine['unresolved_sessions']}")
+                 f" · 미해석 세션 {scree['unresolved_sessions']}")
     lines.append("")
     for rank, group in enumerate(groups[:limit], start=1):
         marks = []
@@ -483,7 +483,7 @@ def render_report(moraine: dict, limit: int) -> str:
         lines.append(f"{rank:2d}. [{'|'.join(marks) or '단일'}] {label}")
         lines.append(f"     {tools} | 워크스페이스 {len(group['workspaces'])}"
                      f" | {_format_size(group['size_bytes'])} | 최근 {group['last_active']}")
-    retention = moraine.get("retention", {})
+    retention = scree.get("retention", {})
     if retention.get("stores"):
         lines.append("")
         lines.append("보존 판정 (파일 나이 관측 기반 추정)")
@@ -504,7 +504,7 @@ def render_report(moraine: dict, limit: int) -> str:
             for entry in alive[:5]:
                 lines.append(f"    D-{entry['days_left']} {entry['workspace']}"
                              f" ({entry['tool']}, {_format_size(entry['size_bytes'])})")
-    worktrees = moraine.get("worktrees", {})
+    worktrees = scree.get("worktrees", {})
     if worktrees.get("items"):
         items = worktrees["items"]
         counts: dict[str, int] = {}
@@ -525,15 +525,15 @@ def render_report(moraine: dict, limit: int) -> str:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Join local agent session stores by workspace/repo.")
-    parser.add_argument("--json", action="store_true", help="print the full moraine as JSON")
+    parser.add_argument("--json", action="store_true", help="print the full scree as JSON")
     parser.add_argument("--limit", type=int, default=12, help="groups to show in the text report")
     parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    moraine = build_moraine(args.home)
+    scree = build_scree(args.home)
     if args.json:
-        print(json.dumps(moraine, ensure_ascii=False, indent=2))
+        print(json.dumps(scree, ensure_ascii=False, indent=2))
     else:
-        print(render_report(moraine, args.limit))
+        print(render_report(scree, args.limit))
     return 0
 
 
