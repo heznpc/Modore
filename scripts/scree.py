@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Scree: judge what AI agents leave behind, joined by workspace/repo.
+"""Scree, Modore's session-and-residue audit module: judge what AI agents leave behind.
 
 Like the rock debris that piles up at the foot of a slope, local agent session
 stores, worktrees, and state directories accumulate under every run. Scree
@@ -453,7 +453,7 @@ def _format_size(size_bytes: int) -> str:
 
 
 def render_report(scree: dict, limit: int) -> str:
-    lines = ["Scree — 에이전트가 남긴 것들의 지도 (메타데이터 전용 · 결정적 조인)"]
+    lines = ["Modore scree — 에이전트가 남긴 것들의 지도 (메타데이터 전용 · 결정적 조인)"]
     store_bits = []
     for store in scree["stores"]:
         if store["status"] == "missing":
