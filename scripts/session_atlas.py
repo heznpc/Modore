@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -238,6 +239,100 @@ def collect_gemini(home: Path) -> tuple[list[dict], dict]:
     return records, {"store": "Gemini", "status": "ok", "count": len(records), "unrecognized": 0}
 
 
+WORKTREE_SCAN_SKIP = {"node_modules", ".git", ".build", "build", "dist", "Pods",
+                      "DerivedData", "__pycache__", ".venv", "venv", "target"}
+
+
+def _git(args: list[str], cwd: Path) -> Optional[str]:
+    try:
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                              text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _find_worktree_containers(root: Path, max_depth: int = 5) -> list[Path]:
+    found: list[Path] = []
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        candidate = current / ".claude" / "worktrees"
+        if candidate.is_dir():
+            found.append(candidate)
+        if depth >= max_depth:
+            continue
+        try:
+            children = list(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if (child.is_dir() and not child.is_symlink()
+                    and not child.name.startswith(".")
+                    and child.name not in WORKTREE_SCAN_SKIP):
+                stack.append((child, depth + 1))
+    return found
+
+
+def collect_worktrees(home: Path) -> dict:
+    """Anchor judgment for agent-created git worktrees, via read-only git queries.
+
+    A worktree is unique work ("protected") while it is dirty or carries commits
+    unreachable from every remote; only a clean, fully pushed worktree is judged
+    "rebuildable". Registration in the parent repo and registry entries whose
+    directory disappeared are reported as anchor breaks.
+    """
+    containers: list[Path] = []
+    for root in (home / "IdeaProjects", home / "Documents"):
+        if root.is_dir():
+            containers.extend(_find_worktree_containers(root))
+    items: list[dict] = []
+    registered_missing: list[dict] = []
+    for container in sorted(set(containers)):
+        repo = container.parent.parent
+        listed: set[str] = set()
+        porcelain = _git(["worktree", "list", "--porcelain"], repo)
+        for line in (porcelain or "").splitlines():
+            if line.startswith("worktree "):
+                listed.add(str(Path(line.split(" ", 1)[1]).resolve()))
+        container_prefix = str(container.resolve()) + "/"
+        for path in sorted(listed):
+            if path.startswith(container_prefix) and not Path(path).exists():
+                registered_missing.append({"repo": str(repo), "path": path})
+        for worktree in sorted(p for p in container.iterdir() if p.is_dir()):
+            status = _git(["status", "--porcelain"], worktree)
+            unpushed_raw = _git(["rev-list", "--count", "HEAD", "--not", "--remotes"],
+                                worktree)
+            branch_raw = _git(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
+            commit_raw = _git(["log", "-1", "--format=%ct"], worktree)
+            dirty = bool(status.strip()) if status is not None else None
+            unpushed = None
+            if unpushed_raw and unpushed_raw.strip().isdigit():
+                unpushed = int(unpushed_raw.strip())
+            if dirty is None and unpushed is None:
+                verdict = "unreadable"
+            elif dirty or (unpushed or 0) > 0:
+                verdict = "protected"
+            else:
+                verdict = "rebuildable"
+            last_commit = None
+            if commit_raw and commit_raw.strip().isdigit():
+                last_commit = time.strftime("%Y-%m-%d",
+                                            time.localtime(int(commit_raw.strip())))
+            items.append({
+                "path": str(worktree),
+                "repo": str(repo),
+                "branch": branch_raw.strip() if branch_raw else None,
+                "registered": str(worktree.resolve()) in listed,
+                "dirty": dirty,
+                "unpushed_commits": unpushed,
+                "last_commit": last_commit,
+                "verdict": verdict,
+            })
+    items.sort(key=lambda w: (w["verdict"], w["last_commit"] or "", w["path"]))
+    return {"items": items, "registered_missing": registered_missing}
+
+
 def build_retention(records: list[dict], now_ts: float) -> dict:
     """Per-store retention judgment from session-file age distribution alone.
 
@@ -341,6 +436,7 @@ def build_atlas(home: Path) -> dict:
         "groups": finished,
         "unresolved_sessions": unresolved_count,
         "retention": build_retention(records, time.time()),
+        "worktrees": collect_worktrees(home),
     }
 
 
@@ -404,6 +500,22 @@ def render_report(atlas: dict, limit: int) -> str:
             for entry in alive[:5]:
                 lines.append(f"    D-{entry['days_left']} {entry['workspace']}"
                              f" ({entry['tool']}, {_format_size(entry['size_bytes'])})")
+    worktrees = atlas.get("worktrees", {})
+    if worktrees.get("items"):
+        items = worktrees["items"]
+        counts: dict[str, int] = {}
+        for item in items:
+            counts[item["verdict"]] = counts.get(item["verdict"], 0) + 1
+        lines.append("")
+        lines.append("워크트리 앵커 판정 (git 등록부·푸시 상태, 읽기 전용)")
+        lines.append(f"  총 {len(items)}개 — 보호(유일본) {counts.get('protected', 0)}"
+                     f" · 재생성 가능 {counts.get('rebuildable', 0)}"
+                     f" · 판독 불가 {counts.get('unreadable', 0)}"
+                     f" · 미등록 {sum(1 for i in items if not i['registered'])}")
+        if worktrees["registered_missing"]:
+            lines.append(f"  등록부 고아(등록됐지만 디스크 소멸) {len(worktrees['registered_missing'])}건")
+        for item in [i for i in items if i["verdict"] == "rebuildable"][:6]:
+            lines.append(f"    재생성 가능: {item['path']} (마지막 커밋 {item['last_commit'] or '?'})")
     return "\n".join(lines)
 
 
