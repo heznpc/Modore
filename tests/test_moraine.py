@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""session_atlas 계약 테스트: 교차 도구 조인, 고아·보존·워크트리 판정, 메타데이터 전용 보장."""
+"""moraine 계약 테스트: 교차 도구 조인, 고아·보존·워크트리 판정, 메타데이터 전용 보장."""
 import json
 import os
 import shutil
@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-import session_atlas
+import moraine
 
 
 def _jsonl(*objs) -> str:
@@ -22,7 +22,7 @@ def _write(path, text: str) -> None:
 
 
 @pytest.fixture
-def atlas_home(tmp_path):
+def moraine_home(tmp_path):
     """가짜 홈: 5개 도구가 같은 워크스페이스를 만졌고, Claude 세션 하나는 고아."""
     home = tmp_path / "home"
     ws1 = tmp_path / "work" / "proj-a"
@@ -57,10 +57,10 @@ def atlas_home(tmp_path):
     return home, ws1, ws2
 
 
-def test_cross_tool_group_joins_by_repo(atlas_home):
-    home, ws1, _ = atlas_home
-    atlas = session_atlas.build_atlas(home)
-    group = next(g for g in atlas["groups"] if g["key"] == "github.com/heznpc/proj-a")
+def test_cross_tool_group_joins_by_repo(moraine_home):
+    home, ws1, _ = moraine_home
+    result = moraine.build_moraine(home)
+    group = next(g for g in result["groups"] if g["key"] == "github.com/heznpc/proj-a")
     assert group["grouped_by"] == "repo"
     assert set(group["tools"]) == {"Codex", "Claude", "VS Code", "Kiro", "Gemini"}
     assert group["tools"]["Claude"] == 1  # weight-0 subtranscript aggregate must not inflate
@@ -69,37 +69,37 @@ def test_cross_tool_group_joins_by_repo(atlas_home):
     assert group["workspaces"] == [str(ws1)]
 
 
-def test_subtranscripts_counted_by_size_without_opening(atlas_home):
-    home, _, _ = atlas_home
-    atlas = session_atlas.build_atlas(home)
-    claude_store = next(s for s in atlas["stores"] if s["store"] == "Claude")
+def test_subtranscripts_counted_by_size_without_opening(moraine_home):
+    home, _, _ = moraine_home
+    result = moraine.build_moraine(home)
+    claude_store = next(s for s in result["stores"] if s["store"] == "Claude")
     assert claude_store["count"] == 2
     assert claude_store["subtranscripts"] == 1
-    group = next(g for g in atlas["groups"] if g["key"] == "github.com/heznpc/proj-a")
+    group = next(g for g in result["groups"] if g["key"] == "github.com/heznpc/proj-a")
     assert group["size_bytes"] > 0
 
 
-def test_orphan_workspace_is_flagged(atlas_home):
-    home, _, ws2 = atlas_home
-    atlas = session_atlas.build_atlas(home)
-    group = next(g for g in atlas["groups"] if g["key"] == f"ws:{ws2}")
+def test_orphan_workspace_is_flagged(moraine_home):
+    home, _, ws2 = moraine_home
+    result = moraine.build_moraine(home)
+    group = next(g for g in result["groups"] if g["key"] == f"ws:{ws2}")
     assert group["orphan"] is True
     assert group["cross_tool"] is False
 
 
-def test_atlas_never_carries_session_content(atlas_home):
-    home, _, _ = atlas_home
-    dumped = json.dumps(session_atlas.build_atlas(home), ensure_ascii=False)
+def test_moraine_never_carries_session_content(moraine_home):
+    home, _, _ = moraine_home
+    dumped = json.dumps(moraine.build_moraine(home), ensure_ascii=False)
     assert "SECRET_CODEX_CONTENT" not in dumped
     assert "SECRET_CLAUDE_CONTENT" not in dumped
     assert "SECRET_SUBAGENT_CONTENT" not in dumped
     assert "customTitle" not in dumped
 
 
-def test_store_statuses_report_missing_tools(atlas_home):
-    home, _, _ = atlas_home
-    atlas = session_atlas.build_atlas(home)
-    by_name = {s["store"]: s for s in atlas["stores"]}
+def test_store_statuses_report_missing_tools(moraine_home):
+    home, _, _ = moraine_home
+    result = moraine.build_moraine(home)
+    by_name = {s["store"]: s for s in result["stores"]}
     assert by_name["Cursor"]["status"] == "missing"
     assert by_name["Codex"]["count"] == 1
     assert by_name["Claude"]["count"] == 2
@@ -131,7 +131,7 @@ def retention_home(tmp_path):
 
 def test_retention_infers_rolling_window(retention_home):
     home, _, _ = retention_home
-    retention = session_atlas.build_atlas(home)["retention"]
+    retention = moraine.build_moraine(home)["retention"]
     claude = next(s for s in retention["stores"] if s["store"] == "Claude")
     assert claude["mode"] == "rolling"
     assert claude["window_days"] == 30
@@ -140,7 +140,7 @@ def test_retention_infers_rolling_window(retention_home):
 
 def test_retention_flags_precarious_boundary(retention_home):
     home, ws_live, ws_gone = retention_home
-    expiring = session_atlas.build_atlas(home)["retention"]["expiring"]
+    expiring = moraine.build_moraine(home)["retention"]["expiring"]
     assert len(expiring) == 3  # D-0, D-6(살아있음), D-5(고아) — 신선한 세션은 제외
     assert expiring[0]["days_left"] == 0  # 임박순 정렬
     alive = [e for e in expiring if e["story_alive"]]
@@ -150,9 +150,9 @@ def test_retention_flags_precarious_boundary(retention_home):
     assert gone["days_left"] == 5
 
 
-def test_retention_insufficient_on_small_stores(atlas_home):
-    home, _, _ = atlas_home
-    retention = session_atlas.build_atlas(home)["retention"]
+def test_retention_insufficient_on_small_stores(moraine_home):
+    home, _, _ = moraine_home
+    retention = moraine.build_moraine(home)["retention"]
     claude = next(s for s in retention["stores"] if s["store"] == "Claude")
     assert claude["mode"] == "insufficient"
     assert retention["expiring"] == []
@@ -187,7 +187,7 @@ def worktree_home(tmp_path):
 
 def test_worktree_protected_without_remote(worktree_home):
     home, _, _ = worktree_home
-    items = session_atlas.collect_worktrees(home)["items"]
+    items = moraine.collect_worktrees(home)["items"]
     wt1 = next(i for i in items if i["path"].endswith("wt1"))
     assert wt1["verdict"] == "protected"  # 원격 어디에도 없는 커밋 = 유일본
     assert wt1["registered"] is True
@@ -200,11 +200,11 @@ def test_worktree_rebuildable_after_push_then_dirty_flips_back(worktree_home, tm
     git("init", "-q", "--bare", str(bare), cwd=tmp_path)
     git("remote", "add", "origin", str(bare))
     git("push", "-q", "origin", "--all")
-    items = session_atlas.collect_worktrees(home)["items"]
+    items = moraine.collect_worktrees(home)["items"]
     wt1 = next(i for i in items if i["path"].endswith("wt1"))
     assert wt1["verdict"] == "rebuildable"  # 전부 푸시됨 + clean
     (repo / ".claude" / "worktrees" / "wt1" / "new.txt").write_text("d", encoding="utf-8")
-    items = session_atlas.collect_worktrees(home)["items"]
+    items = moraine.collect_worktrees(home)["items"]
     wt1 = next(i for i in items if i["path"].endswith("wt1"))
     assert wt1["verdict"] == "protected"  # dirty → 다시 유일본
 
@@ -215,7 +215,7 @@ def test_worktree_anchor_breaks_are_reported(worktree_home):
     git("worktree", "add", "-q", str(repo / ".claude" / "worktrees" / "wt2"),
         "-b", "feat2")
     shutil.rmtree(repo / ".claude" / "worktrees" / "wt2")
-    result = session_atlas.collect_worktrees(home)
+    result = moraine.collect_worktrees(home)
     ghost = next(i for i in result["items"] if i["path"].endswith("ghost"))
     assert ghost["registered"] is False
     assert any(e["path"].endswith("wt2") for e in result["registered_missing"])
@@ -227,4 +227,4 @@ def test_worktree_anchor_breaks_are_reported(worktree_home):
     ("ssh://git@github.com:22/heznpc/proj-a", "github.com/heznpc/proj-a"),
 ])
 def test_repo_url_normalization(raw, expected):
-    assert session_atlas.normalize_repo_url(raw) == expected
+    assert moraine.normalize_repo_url(raw) == expected
