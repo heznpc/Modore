@@ -10,10 +10,17 @@ Answers, deterministically and without any LLM: which tools (Claude Code, Codex,
 Gemini CLI, VS Code forks) worked in the same workspace or repository, when, and
 how much of each store belongs to workspaces that no longer exist.
 
-Privacy contract (metadata-only):
-- reads at most the first few JSONL lines per session file;
-- extracts only the whitelisted metadata keys below — never message/content fields;
+Privacy contract (metadata-only output):
+- parses at most the leading JSONL lines of each session file in memory;
+  message/content fields inside those lines are decoded but discarded — only
+  the whitelisted metadata keys below are ever retained or emitted;
+- nested subagent transcripts are never opened at all (stat() only);
 - writes nothing; all output goes to stdout.
+
+Judgment limits (preview-grade evidence, not deletion authorization):
+- an "orphan" workspace may in fact have been moved, renamed, or unmounted;
+- "rebuildable" trusts local remote-tracking refs, which can lag the live
+  remote; any destructive consumer must revalidate before acting.
 """
 from __future__ import annotations
 
@@ -435,7 +442,8 @@ def build_scree(home: Path) -> dict:
         })
     finished.sort(key=lambda g: (g["last_active"], g["key"]), reverse=True)
     return {
-        "contract": "metadata-only; whitelisted keys; deterministic join; no content read",
+        "contract": ("metadata-only output; whitelisted keys; deterministic join; "
+                     "leading lines parsed in memory, content never retained"),
         "stores": stores,
         "groups": finished,
         "unresolved_sessions": unresolved_count,
