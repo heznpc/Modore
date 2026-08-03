@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""session_atlas 계약 테스트: 교차 도구 조인, 고아 판정, 보존 판정, 메타데이터 전용 보장."""
+"""session_atlas 계약 테스트: 교차 도구 조인, 고아·보존·워크트리 판정, 메타데이터 전용 보장."""
 import json
 import os
+import shutil
+import subprocess
 import time
 
 import pytest
@@ -154,6 +156,69 @@ def test_retention_insufficient_on_small_stores(atlas_home):
     claude = next(s for s in retention["stores"] if s["store"] == "Claude")
     assert claude["mode"] == "insufficient"
     assert retention["expiring"] == []
+
+
+@pytest.fixture
+def worktree_home(tmp_path):
+    """앵커 판정용: 실제 git 레포 + 에이전트 워크트리."""
+    if not shutil.which("git"):
+        pytest.skip("git 미설치 환경")
+    home = tmp_path / "home"
+    repo = home / "IdeaProjects" / "repoA"
+    repo.mkdir(parents=True)
+    config = tmp_path / "gitconfig"
+    config.write_text("[user]\n\temail = t@example.com\n\tname = t\n"
+                      "[init]\n\tdefaultBranch = main\n", encoding="utf-8")
+    env = {**os.environ, "HOME": str(home),
+           "GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_SYSTEM": "/dev/null"}
+
+    def git(*args, cwd=repo):
+        subprocess.run(["git", *args], cwd=cwd, check=True,
+                       capture_output=True, env=env)
+
+    git("init", "-q")
+    (repo / "f.txt").write_text("x", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "init")
+    git("worktree", "add", "-q", str(repo / ".claude" / "worktrees" / "wt1"),
+        "-b", "feat1")
+    return home, repo, git
+
+
+def test_worktree_protected_without_remote(worktree_home):
+    home, _, _ = worktree_home
+    items = session_atlas.collect_worktrees(home)["items"]
+    wt1 = next(i for i in items if i["path"].endswith("wt1"))
+    assert wt1["verdict"] == "protected"  # 원격 어디에도 없는 커밋 = 유일본
+    assert wt1["registered"] is True
+    assert wt1["unpushed_commits"] >= 1
+
+
+def test_worktree_rebuildable_after_push_then_dirty_flips_back(worktree_home, tmp_path):
+    home, repo, git = worktree_home
+    bare = tmp_path / "origin.git"
+    git("init", "-q", "--bare", str(bare), cwd=tmp_path)
+    git("remote", "add", "origin", str(bare))
+    git("push", "-q", "origin", "--all")
+    items = session_atlas.collect_worktrees(home)["items"]
+    wt1 = next(i for i in items if i["path"].endswith("wt1"))
+    assert wt1["verdict"] == "rebuildable"  # 전부 푸시됨 + clean
+    (repo / ".claude" / "worktrees" / "wt1" / "new.txt").write_text("d", encoding="utf-8")
+    items = session_atlas.collect_worktrees(home)["items"]
+    wt1 = next(i for i in items if i["path"].endswith("wt1"))
+    assert wt1["verdict"] == "protected"  # dirty → 다시 유일본
+
+
+def test_worktree_anchor_breaks_are_reported(worktree_home):
+    home, repo, git = worktree_home
+    (repo / ".claude" / "worktrees" / "ghost").mkdir()
+    git("worktree", "add", "-q", str(repo / ".claude" / "worktrees" / "wt2"),
+        "-b", "feat2")
+    shutil.rmtree(repo / ".claude" / "worktrees" / "wt2")
+    result = session_atlas.collect_worktrees(home)
+    ghost = next(i for i in result["items"] if i["path"].endswith("ghost"))
+    assert ghost["registered"] is False
+    assert any(e["path"].endswith("wt2") for e in result["registered_missing"])
 
 
 @pytest.mark.parametrize("raw,expected", [
