@@ -144,6 +144,7 @@ def test_retention_flags_precarious_boundary(retention_home):
     expiring = scree.build_scree(home)["retention"]["expiring"]
     assert len(expiring) == 3  # D-0, D-6(살아있음), D-5(고아) — 신선한 세션은 제외
     assert expiring[0]["days_left"] == 0  # 임박순 정렬
+    assert all(e["source"].endswith(".jsonl") for e in expiring)  # 보존 실행에 쓸 실물 경로
     alive = [e for e in expiring if e["story_alive"]]
     assert {e["workspace"] for e in alive} == {str(ws_live)}
     gone = next(e for e in expiring if not e["story_alive"])
