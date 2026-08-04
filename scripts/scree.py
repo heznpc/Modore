@@ -97,6 +97,7 @@ def _record(tool: str, kind: str, source: Path, workspace: Optional[str], *,
     return {
         "tool": tool,
         "kind": kind,
+        "source": str(source),
         "workspace": _canon_workspace(workspace) if workspace else None,
         "repo_url": normalize_repo_url(repo_url) if repo_url else None,
         "branch": branch,
@@ -382,6 +383,7 @@ def build_retention(records: list[dict], now_ts: float) -> dict:
                     expiring.append({
                         "tool": tool,
                         "workspace": workspace,
+                        "source": session.get("source"),
                         "days_left": days_left,
                         "size_bytes": session["size_bytes"],
                         "story_alive": bool(workspace) and Path(workspace).exists(),
