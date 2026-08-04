@@ -233,3 +233,80 @@ def test_worktree_anchor_breaks_are_reported(worktree_home):
 ])
 def test_repo_url_normalization(raw, expected):
     assert scree.normalize_repo_url(raw) == expected
+
+
+# ---- preserve: the one deliberate content-touching path ----------------
+
+def test_mask_text_redacts_known_secret_shapes(tmp_path):
+    home = tmp_path / "home"
+    masked = scree.mask_text(
+        "contact me at ren@example.com, key sk-abcdefghijklmnopqrst, "
+        f"token ghp_abcdefghijklmnopqrstuvwx, path {home}/proj, "
+        "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dQw4w9WgXcQ_dQw4w9WgXcQ, "
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAA==\n-----END RSA PRIVATE KEY-----",
+        home,
+    )
+    assert "ren@example.com" not in masked and "<email-redacted>" in masked
+    assert "sk-abcdefghijklmnopqrst" not in masked and "<api-key-redacted>" in masked
+    assert "ghp_abcdefghijklmnopqrstuvwx" not in masked
+    assert str(home) not in masked and "~/proj" in masked
+    assert "eyJhbGciOiJIUzI1NiJ9" not in masked and "<jwt-redacted>" in masked
+    assert "MIIBogIBAA==" not in masked and "<private-key-redacted>" in masked
+
+
+def test_preserve_masks_by_default_and_raw_opts_out(tmp_path):
+    home = tmp_path / "home"
+    session = home / ".claude" / "projects" / "p" / "s.jsonl"
+    _write(session, _jsonl(
+        {"type": "user", "message": {"role": "user",
+         "content": [{"type": "text", "text": "my email is secret@example.com"}]}},
+    ))
+    masked = scree.render_preserve(session, home, raw=False)
+    assert "secret@example.com" not in masked
+    assert "<email-redacted>" in masked
+    raw = scree.render_preserve(session, home, raw=True)
+    assert "secret@example.com" in raw
+
+
+def test_preserve_is_single_file_only_no_bulk_export():
+    # No parameter accepts a directory, glob, or list — the function signature
+    # itself is the single-session guarantee, not a runtime check.
+    import inspect
+    params = list(inspect.signature(scree.render_preserve).parameters)
+    assert params == ["source", "home", "raw"]
+
+
+def test_preserve_refuses_oversized_file(tmp_path, monkeypatch):
+    session = tmp_path / "big.jsonl"
+    session.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(scree, "MAX_PRESERVE_BYTES", 1)
+    with pytest.raises(ValueError, match="exceeds"):
+        scree.render_preserve(session, tmp_path, raw=False)
+
+
+def test_preserve_missing_source_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        scree.render_preserve(tmp_path / "nope.jsonl", tmp_path, raw=False)
+
+
+def test_cli_preserve_writes_masked_file(tmp_path, capsys):
+    home = tmp_path / "home"
+    session = home / "s.jsonl"
+    _write(session, _jsonl(
+        {"type": "user", "message": {"role": "user",
+         "content": [{"type": "text", "text": "call me at ren@example.com"}]}},
+    ))
+    out = tmp_path / "out.md"
+    rc = scree.main(["preserve", str(session), "--home", str(home), "--out", str(out)])
+    assert rc == 0
+    assert "ren@example.com" not in out.read_text(encoding="utf-8")
+    assert "<email-redacted>" in out.read_text(encoding="utf-8")
+
+
+def test_cli_report_default_unchanged_without_subcommand(tmp_path, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    rc = scree.main(["--json", "--home", str(home)])
+    assert rc == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert "groups" in parsed and "retention" in parsed

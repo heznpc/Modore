@@ -21,6 +21,12 @@ Judgment limits (preview-grade evidence, not deletion authorization):
 - an "orphan" workspace may in fact have been moved, renamed, or unmounted;
 - "rebuildable" trusts local remote-tracking refs, which can lag the live
   remote; any destructive consumer must revalidate before acting.
+
+Preservation export (the one deliberate exception to the no-content contract):
+`scree.py preserve <source>` reads one session file named by the caller — never
+discovered automatically — and writes a masked Markdown export. Single-session,
+explicit, mask-by-default: the same shape as hydroject's `export`. Everything
+above this line in the module never calls it.
 """
 from __future__ import annotations
 
@@ -28,6 +34,7 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -542,12 +549,128 @@ def render_report(scree: dict, limit: int) -> str:
     return "\n".join(lines)
 
 
+MAX_PRESERVE_BYTES = 8 * 1024 * 1024
+
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
+_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----")
+_API_KEY_RE = re.compile(
+    r"\b(?:sk|pk)-[A-Za-z0-9]{16,}\b"
+    r"|\bgh[opsu]_[A-Za-z0-9]{16,}\b"
+    r"|\bAKIA[0-9A-Z]{16}\b"
+    r"|\bASIA[0-9A-Z]{16}\b"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}\b"
+    r"|\bAIza[A-Za-z0-9_-]{20,}\b"
+    r"|\bglpat-[A-Za-z0-9_-]{16,}\b")
+
+
+def mask_text(text: str, home: Path) -> str:
+    """Default-on redaction: email, JWT, PEM private keys, known API-key
+    prefixes, and the caller's home path. Order matters — keys before the
+    generic home-path swap so a key embedded in a home-relative path still
+    gets caught by its own pattern first."""
+    text = _PRIVATE_KEY_RE.sub("<private-key-redacted>", text)
+    text = _JWT_RE.sub("<jwt-redacted>", text)
+    text = _API_KEY_RE.sub("<api-key-redacted>", text)
+    text = _EMAIL_RE.sub("<email-redacted>", text)
+    home_str = str(home)
+    if home_str:
+        text = text.replace(home_str, "~")
+    return text
+
+
+def _extract_turn(line: dict) -> Optional[tuple[str, str]]:
+    """Best-effort (role, text) from one Claude or Codex JSONL line."""
+    message = line.get("message") if isinstance(line.get("message"), dict) else None
+    payload = line.get("payload") if isinstance(line.get("payload"), dict) else None
+    container = message or payload
+    if not isinstance(container, dict):
+        return None
+    role = container.get("role") or line.get("type")
+    content = container.get("content")
+    if isinstance(content, str):
+        return (str(role or "?"), content)
+    if isinstance(content, list):
+        parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+        joined = "\n".join(p for p in parts if p)
+        return (str(role or "?"), joined) if joined else None
+    return None
+
+
+def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
+    if not source.is_file():
+        raise FileNotFoundError(f"no such session file: {source}")
+    if source.stat().st_size > MAX_PRESERVE_BYTES:
+        raise ValueError(f"refusing to export {source}: exceeds {MAX_PRESERVE_BYTES} bytes "
+                         "(single-session exports are meant to be reviewed, not bulk-dumped)")
+    lines = ["# Preserved session export", "",
+             f"Source: `{source if raw else str(source).replace(str(home), '~')}`",
+             f"Masking: {'DISABLED (--raw)' if raw else 'default-on (email/JWT/API-key/private-key/home-path)'}",
+             ""]
+    turns = 0
+    for raw_line in source.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not raw_line.strip():
+            continue
+        try:
+            parsed = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        turn = _extract_turn(parsed)
+        if turn is None:
+            continue
+        role, text = turn
+        if not raw:
+            text = mask_text(text, home)
+        lines.append(f"## {role}")
+        lines.append("")
+        lines.append(text)
+        lines.append("")
+        turns += 1
+    if turns == 0:
+        lines.append("_(no recognizable turns — file kept in its original session-store format)_")
+    return "\n".join(lines)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Join local agent session stores by workspace/repo.")
-    parser.add_argument("--json", action="store_true", help="print the full scree as JSON")
-    parser.add_argument("--limit", type=int, default=12, help="groups to show in the text report")
+    parser = argparse.ArgumentParser(description="Judge what AI agents leave behind.")
+    sub = parser.add_subparsers(dest="command")
+
+    report = sub.add_parser("report", help="print the join/retention/worktree judgment (default)")
+    report.add_argument("--json", action="store_true", help="print the full scree as JSON")
+    report.add_argument("--limit", type=int, default=12, help="groups to show in the text report")
+    report.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
+    preserve = sub.add_parser(
+        "preserve", help="export ONE named session file as masked Markdown (single-session, explicit)")
+    preserve.add_argument("source", type=Path,
+                          help="session file path, e.g. from a report's retention.expiring[].source")
+    preserve.add_argument("--out", type=Path, default=None, help="write to this file instead of stdout")
+    preserve.add_argument("--raw", action="store_true",
+                          help="disable masking (explicit opt-out, off by default)")
+    preserve.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
+    parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--limit", type=int, default=12, help=argparse.SUPPRESS)
     parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     args = parser.parse_args(argv)
+
+    if args.command == "preserve":
+        try:
+            text = render_preserve(args.source, args.home, raw=args.raw)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"preserve: {exc}", file=sys.stderr)
+            return 1
+        if args.out:
+            args.out.write_text(text, encoding="utf-8")
+            print(f"wrote {args.out}")
+        else:
+            print(text)
+        return 0
+
     scree = build_scree(args.home)
     if args.json:
         print(json.dumps(scree, ensure_ascii=False, indent=2))
