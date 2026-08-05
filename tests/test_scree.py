@@ -247,6 +247,31 @@ def test_repo_url_normalization(raw, expected):
     assert scree.normalize_repo_url(raw) == expected
 
 
+def test_lineage_classifies_paths_and_case_ghosts(tmp_path):
+    """세션 기록 속 작업 경로의 보편 사실: 현존/git 여부 + 케이스 유령 병합."""
+    home = tmp_path / "home"
+    ws_plain = tmp_path / "Work" / "proj-a"
+    ws_plain.mkdir(parents=True)
+    ws_git = tmp_path / "Work" / "proj-b"
+    (ws_git / ".git").mkdir(parents=True)
+    ws_gone = tmp_path / "gone" / "proj-c"  # 세션 기록만 남은 소멸 경로
+    variant = str(ws_plain).replace("proj-a", "PROJ-A")  # macOS 케이스 유령
+    proj = home / ".claude" / "projects" / "p"
+    _write(proj / "s1.jsonl", _jsonl({"type": "user", "cwd": str(ws_plain)}))
+    _write(proj / "s2.jsonl", _jsonl({"type": "user", "cwd": variant}))
+    _write(proj / "s3.jsonl", _jsonl({"type": "user", "cwd": str(ws_git)}))
+    _write(proj / "s4.jsonl", _jsonl({"type": "user", "cwd": str(ws_gone)}))
+
+    lineage = scree.build_scree(home)["lineage"]
+    assert lineage["summary"] == {"total": 3, "alive_git": 1, "alive_plain": 1,
+                                  "vanished": 1, "case_ghosts": 1}
+    ghost = next(p for p in lineage["paths"] if p.get("case_variants"))
+    assert sorted(ghost["case_variants"]) == sorted([str(ws_plain), variant])
+    assert ghost["exists"] is True and ghost["has_git"] is False
+    gone = next(p for p in lineage["paths"] if not p["exists"])
+    assert gone["path"] == str(ws_gone) and gone["has_git"] is False
+
+
 # ---- preserve: the one deliberate content-touching path ----------------
 
 def test_mask_text_redacts_known_secret_shapes(tmp_path):
