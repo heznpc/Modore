@@ -36,6 +36,20 @@ Every app build embeds an explicit runtime allowlist under `Contents/Resources/r
 - `Support/`: bounded scan-log state plus small presentation and process-safety helpers.
 - `Tests/`: pure state, parsing, accounting, and runtime-install tests.
 
+## Session & residue audit (scree)
+
+- `scripts/scree.py` is a deterministic, stdlib-only CLI module beside the scanner: it joins local
+  AI-agent traces (Claude Code, Codex, Gemini CLI, VS Code forks) by workspace/repository, estimates
+  per-store rolling retention windows, flags sessions near expiry inside still-living workspaces,
+  marks orphaned workspaces with an explicit `orphan_basis`, and judges agent git worktrees
+  protected-versus-rebuildable from read-only registry/push state.
+- Contract: leading JSONL lines are decoded in memory but message content is never retained or
+  emitted; nested subagent transcripts are attributed by `stat()` without being opened; every
+  verdict is `evidence: preview` with a `requires_revalidation` duty for destructive consumers.
+- The one deliberate exception is `scree.py preserve <source>`: a single-session, caller-named,
+  mask-by-default Markdown export for records about to expire. There is no bulk-export path, and
+  no cleanup recipe consumes scree output.
+
 ## Cleanup invariants
 
 - No caller-supplied deletion path.
@@ -60,7 +74,7 @@ Changes to outbound networking, signature verification, cleanup targets, standal
 
 ## Verification map
 
-- `python3 -I -B -m pytest tests/ -q`: rule/report/runtime contracts and destructive-boundary tests in isolated fixtures.
+- `python3 -I -B -m pytest tests/ -q`: rule/report/runtime contracts and destructive-boundary tests in isolated fixtures — including `tests/test_scree.py`, which pins scree's no-content-leak, masking, and single-session-export contracts.
 - `swift test --package-path macos/Modore -Xswiftc -warnings-as-errors -Xswiftc -strict-concurrency=complete`: native model, selection, history, presentation, and runtime-staging tests under the CI compiler policy.
 - `python3 -I -B scripts/release_smoke.py`: OS-specific source allowlists plus secret/PII/archive-structure audit.
 - `scripts/package_macos_release.sh --local`: strict Universal 2 standalone app/DMG build under `dist/local/`, clearly unsigned for distribution and never overwriting a release artifact. Git, Swift/Xcode, Python audit, signing, and disk-image tools run from a minimal environment; metadata records the selected developer directory and Swift version.

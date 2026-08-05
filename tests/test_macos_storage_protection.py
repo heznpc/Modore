@@ -239,6 +239,65 @@ def test_storage_du_budget_is_shared_by_simulators_and_later_paths(
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="JXA scanner helper is macOS-only")
+def test_jxa_recipe_less_ai_cache_surfaces_in_developer_toolchains_only(
+    project_root, tmp_path
+):
+    """A large ai_cache row with no cleanupId (e.g. an Ollama model blob) must be
+    visible somewhere in the app — but never enter cleanupCandidates, since no
+    delete recipe exists for it."""
+    if not shutil.which("osascript"):
+        pytest.skip("osascript is unavailable")
+
+    temp = tmp_path / "facts"
+    temp.mkdir()
+    (temp / "storage_df.txt").write_text(
+        "/dev/disk 104857600 52428800 52428800 50% /\n", encoding="utf-8"
+    )
+    for name in (
+        "net.txt", "listen.txt", "plists.txt", "security.txt", "load.txt",
+        "storage_access.tsv", "storage_runtime.tsv", "storage_simulators.tsv",
+    ):
+        (temp / name).write_text("", encoding="utf-8")
+    (temp / "storage_paths.tsv").write_text(
+        "ai_cache\tOllama model blobs\t/Users/test/.ollama/models\t11534336\tok\t\t\n"
+        "protected_history\tOllama SSH private key\t/Users/test/.ollama/id_ed25519\t4\tok\t\t\n",
+        encoding="utf-8",
+    )
+    (temp / "ps.txt").write_text("999999 test 0.0 0.0 1024 /bin/bash\n", encoding="utf-8")
+    output = tmp_path / "scan.json"
+    raw = tmp_path / "raw.json"
+    rules = tmp_path / "rules"
+    rules.mkdir()
+    env = os.environ.copy()
+    env.update({
+        "TMP_DIR": str(temp),
+        "PCH_OUTPUT": str(output),
+        "PCH_RAW_PATH": str(raw),
+        "PCH_RULES_DIR": str(rules),
+        "PCH_CONFIG_PATH": str(tmp_path / "config.json"),
+        "PCH_WHITELIST_PATH": str(tmp_path / "whitelist.json"),
+        "PCH_SIMULATOR_KEEP_PATH": str(tmp_path / "simulator-keep.txt"),
+        "PCH_NO_VT": "true",
+    })
+    (tmp_path / "simulator-keep.txt").write_text("", encoding="utf-8")
+
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", str(project_root / "scripts" / "scanner_helper.jxa.js")],
+        capture_output=True, text=True, encoding="utf-8", env=env, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    storage = json.loads(output.read_text(encoding="utf-8"))["sections"]["storage"]
+
+    dev_labels = [item["label"] for item in storage["developerToolchains"]]
+    assert "Ollama model blobs" in dev_labels
+    cleanup_labels = [item["label"] for item in storage["cleanupCandidates"]]
+    assert "Ollama model blobs" not in cleanup_labels  # no cleanupId → never a delete button
+    review_labels = [item["label"] for item in storage["reviewCandidates"]]
+    assert "Ollama SSH private key" in review_labels
+    assert "Ollama model blobs" not in review_labels
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="JXA scanner helper is macOS-only")
 def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
     project_root, tmp_path
 ):

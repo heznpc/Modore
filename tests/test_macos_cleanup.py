@@ -266,6 +266,7 @@ def test_cleanup_blocks_live_related_process(project_root, tmp_path):
     assert browser.exists()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="migrates the macOS Application Support layout")
 def test_cleanup_migrates_state_written_before_the_rename(project_root, tmp_path):
     home = tmp_path / "home"
     support = home / "Library" / "Application Support"

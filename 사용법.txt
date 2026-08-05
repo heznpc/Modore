@@ -63,6 +63,16 @@ Windows와 macOS 모두 지원합니다.
   - PC 이름, 사용자 이름, 홈 디렉터리 경로를 자동으로 가립니다.
   - 공유 전에는 내용을 한 번 더 확인하세요.
 
+  AI 세션·잔여물 감사 (macOS, 터미널 선택 기능):
+  - python3 scripts/scree.py
+    → Claude Code/Codex/Gemini/VS Code 계열이 어떤 프로젝트를 만졌는지,
+      어떤 세션이 곧 자동 삭제되는지(보존 예보), 사라진 프로젝트를 가리키는
+      고아 세션과 에이전트 워크트리의 보호/재생성 여부를 판정해 보여줍니다.
+    대화 내용은 읽어도 저장·출력하지 않습니다(메타데이터 전용).
+  - python3 scripts/scree.py preserve <세션파일경로>
+    → 곧 만료되는 세션 하나를 마크다운으로 백업합니다. 이메일·API 키·개인키·
+      홈경로는 기본으로 가려지며, 한 번에 한 파일만 내보냅니다.
+
 
 [ 로컬 전용 / 보안 원칙 ]
 
@@ -158,6 +168,7 @@ Windows와 macOS 모두 지원합니다.
      ├─ scanner.sh        ← macOS 스캐너
      ├─ cleanup.sh        ← macOS 정리 미리보기/승인 실행
      ├─ storage_watch.sh  ← 저장공간 급감 감시
+     ├─ scree.py          ← AI 세션·잔여물 감사 (교차 도구 조인/보존 예보/워크트리 판정)
      ├─ schedule.sh       ← 감시 LaunchAgent 켜기/끄기
      ├─ scanner_helper.jxa.js ← macOS 데이터 집계
      ├─ build_macos_swift_app.sh ← macOS SwiftUI 앱 빌드
