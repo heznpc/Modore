@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Modore — A local diagnostic for the PC that feels busy behind your back",
-    "description": "A local diagnostic that explains hidden-miner suspicion, Korean banking-plugin false positives, and macOS's vague System Data / Developer storage categories in context. Modore ships as Windows Edition and Mac Edition, with traffic-light reports and hash-only VirusTotal lookup."
+    "description": "A local diagnostic that explains hidden-miner suspicion, Korean banking-plugin false positives, and macOS's vague System Data / Developer storage categories in context. Modore ships as Windows Edition and Mac Edition, with traffic-light reports and hash-only VirusTotal lookup. It also judges what AI agents left behind — session retention windows and sole-copy worktrees — entirely locally."
   },
   "brand": {
     "name": "Modore"
@@ -16,7 +16,7 @@
   "hero": {
     "tag": "v0.3 · Windows Edition / Mac Edition",
     "title": "A local diagnostic for the PC that feels <em>busy behind your back</em>.",
-    "subtitle": "When fans spin, CPU/GPU spikes, or unknown processes appear, Modore gathers miner signals, autoruns, network context, and Korean security-plugin explanations before you delete anything.",
+    "subtitle": "When fans spin, CPU/GPU spikes, or unknown processes appear, Modore gathers miner signals, autoruns, network context, and Korean security-plugin explanations before you delete anything. It also answers the AI-era questions: which projects your Claude/Codex agents touched, which session records quietly expire in days, and which worktrees hold the only copy of your work.",
     "cta_primary": "Run from source <span class='arrow'>→</span>",
     "cta_secondary": "Read the source",
     "meta": {
@@ -76,9 +76,18 @@
     "kicker": "HOW IT WORKS",
     "heading": "8 diagnostics → 1 HTML report.",
     "lead": "No tracking installer. OS-specific scripts collect system state, then Windows assembles an HTML report while Mac uses a system-component SwiftUI utility plus HTML export.",
-    "p1": { "title": "Collect", "desc": "Processes, network, ports, autoruns, security posture. Sysinternals + launchd + VirusTotal hash lookup." },
-    "p2": { "title": "Normalize", "desc": "Match against Korean software whitelist, assign traffic-light verdict. OS-agnostic schema." },
-    "p3": { "title": "Render", "desc": "Windows gets a single HTML report. Mac gets a native SwiftUI utility plus HTML export. No tracking installer or report upload." }
+    "p1": {
+      "title": "Collect",
+      "desc": "Processes, network, ports, autoruns, security posture. Sysinternals + launchd + VirusTotal hash lookup."
+    },
+    "p2": {
+      "title": "Normalize",
+      "desc": "Match against Korean software whitelist, assign traffic-light verdict. OS-agnostic schema."
+    },
+    "p3": {
+      "title": "Render",
+      "desc": "Windows gets a single HTML report. Mac gets a native SwiftUI utility plus HTML export. No tracking installer or report upload."
+    }
   },
   "privacy": {
     "kicker": "PRIVACY · AUDITABLE",
