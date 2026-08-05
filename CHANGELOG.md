@@ -15,6 +15,7 @@ All notable changes to this project are documented here. Format loosely follows 
 - **Project build-residue detection (Mac Edition).** The storage scan now finds rebuildable build artifacts *inside* development projects — Flutter `build/`+`.dart_tool/`, `node_modules/`, Cargo `target/`, SwiftPM `.build/`, `Pods/`, Gradle `build/`+`.gradle/` — under common dev roots (override with `PCH_PROJECT_SCAN_ROOTS`). These directories are gitignored and lumped into "Documents" by macOS, so multi-GB residue is invisible to every other tool. Detection-only by design: rows carry the official regeneration command (`flutter clean`, `cargo clean`, …) and never a cleanup recipe, because per-project paths conflict with the recipe-ID safety principle. Sub-4MB residue is skipped as noise.
 
 ### Fixed
+- **DMG artifact naming still carried the old brand.** `package_macos_release.sh` produced `PC-Health-Check-Mac-v…` archives in all three modes (local-unsigned, signed-not-notarized, release); they now emit `Modore-Mac-v…`, matching the README's `modore-v*` promise. Verified with a fresh `--local` dry-run.
 - **README rename artifacts.** The title rendered as "Modore — Modore" since the product rename, and the release-artifact naming still promised `pch-v*` archives; both now match the Modore brand (`modore-v*`).
 
 ### Fixed (live UX pass on the Mac incident workflow — 2026-07-13)
