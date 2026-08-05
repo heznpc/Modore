@@ -284,7 +284,6 @@ COMMON_FILES = [
     "SECURITY.md",
     "CONTRIBUTING.md",
     "CHANGELOG.md",
-    "docs/ko/guide.md",
     "docs/ARCHITECTURE.md",
     "data/config.example.json",
     "data/explain.json",

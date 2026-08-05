@@ -102,6 +102,11 @@
       "kext": "カーネルドライバ",
       "bho": "ブラウザフック",
       "persist": "常時実行"
+    },
+    "tag": {
+      "suspect": "要確認",
+      "normal": "正常",
+      "check": "確認"
     }
   },
   "how": {
@@ -160,13 +165,13 @@
     },
     "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/modore' target='_blank' rel='noopener'>github.com/heznpc/modore</a>。読めるソースを自分で確認できます。"
   },
-  "final": {
-    "heading": "気になる今、<em>数分で答えが出ます。</em>",
-    "lead": "登録不要。メールアドレス不要。レポートは自分のブラウザでのみ開かれます。",
-    "cta": "ソースを見る <span class='arrow'>→</span>"
+  "closing": {
+    "lead": "登録不要、メール不要、アップロード不要 — 自分で検証できます。",
+    "cta": "ソースを読む →"
   },
   "footer": {
     "license": "MIT License",
+    "author": "制作・保守: <a href=\"https://github.com/heznpc\" target=\"_blank\" rel=\"noopener\">heznpc</a>。",
     "version": "v0.3.0",
     "credits": "Microsoft Sysinternals · Objective-See · Malware Zeroコミュニティに感謝。"
   }
