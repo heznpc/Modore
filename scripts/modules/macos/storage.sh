@@ -421,6 +421,40 @@ _pch_collect_known_storage_paths() {
     add_du_path "ai_review" "Claude WebStorage DB" "$HOME/Library/Application Support/Claude/WebStorage"
     add_du_path "ai_review" "Claude shared protocol DB" "$HOME/Library/Application Support/Claude/shared_proto_db"
     add_du_path "protected_history" "Claude pending uploads" "$HOME/Library/Application Support/Claude/pending-uploads"
+
+    # Ollama: model blobs are reclaimable via `ollama pull`; the SSH keypair never is.
+    add_du_path "ai_cache" "Ollama model blobs" "$HOME/.ollama/models"
+    add_du_path "protected_history" "Ollama SSH private key" "$HOME/.ollama/id_ed25519"
+    add_du_path "protected_history" "Ollama SSH public key" "$HOME/.ollama/id_ed25519.pub"
+
+    # Kiro (AWS IDE): session/workspace state is protected; editor caches are reclaimable.
+    add_du_path "protected_history" "Kiro sessions" "$HOME/.kiro/sessions"
+    add_du_path "protected_history" "Kiro workspace roots" "$HOME/.kiro/workspace-roots"
+    add_du_path "protected_history" "Kiro settings" "$HOME/.kiro/settings"
+    add_du_path "ai_cache" "Kiro logs" "$HOME/.kiro/logs"
+    add_du_path "protected_history" "Kiro app workspace state" "$HOME/Library/Application Support/Kiro/User"
+    add_du_path "protected_history" "Kiro WebStorage" "$HOME/Library/Application Support/Kiro/WebStorage"
+    add_du_path "ai_cache" "Kiro app logs" "$HOME/Library/Application Support/Kiro/logs"
+    add_du_path "ai_cache" "Kiro blob cache" "$HOME/Library/Application Support/Kiro/blob_storage"
+    add_du_path "ai_cache" "Kiro cached extension data" "$HOME/Library/Application Support/Kiro/CachedData"
+    add_du_path "ai_cache" "Kiro GPU cache" "$HOME/Library/Application Support/Kiro/GPUCache"
+    add_du_path "ai_cache" "Kiro cached profile data" "$HOME/Library/Application Support/Kiro/CachedProfilesData"
+
+    # VS Code: user workspace/settings state is protected; editor caches are reclaimable.
+    add_du_path "protected_history" "VS Code workspace state" "$HOME/Library/Application Support/Code/User"
+    add_du_path "ai_cache" "VS Code cached extension VSIX downloads" "$HOME/Library/Application Support/Code/CachedExtensionVSIXs"
+    add_du_path "ai_cache" "VS Code cache" "$HOME/Library/Application Support/Code/Cache"
+    add_du_path "ai_cache" "VS Code cached data" "$HOME/Library/Application Support/Code/CachedData"
+    add_du_path "ai_cache" "VS Code GPU cache" "$HOME/Library/Application Support/Code/GPUCache"
+    add_du_path "ai_cache" "VS Code cached profile data" "$HOME/Library/Application Support/Code/CachedProfilesData"
+
+    # Gemini CLI: chat history and project registry are protected; scratch tmp is reclaimable.
+    add_du_path "protected_history" "Gemini CLI history" "$HOME/.gemini/history"
+    add_du_path "protected_history" "Gemini CLI project registry" "$HOME/.gemini/projects.json"
+    add_du_path "protected_history" "Gemini CLI settings" "$HOME/.gemini/settings.json"
+    add_du_path "protected_history" "Gemini CLI trusted folders" "$HOME/.gemini/trustedFolders.json"
+    add_du_path "ai_cache" "Gemini CLI scratch cache" "$HOME/.gemini/tmp"
+
     add_du_path "cache" "User caches" "$HOME/Library/Caches"
     add_du_path "cache" "CLI/tool caches" "$HOME/.cache"
     add_du_path "temp" "System temporary files" "/private/tmp"

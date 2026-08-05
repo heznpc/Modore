@@ -8,6 +8,7 @@ actually responsible for the work.
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,7 @@ def parse_values(stdout: str) -> dict[str, str]:
     return values
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the idle CPU observer is macOS-only")
 def test_rate_comes_from_the_delta_not_the_lifetime_average(project_root, tmp_path):
     # 4321 has burned a lot of CPU over its life but nothing during the window.
     # 4322 has a small lifetime total and consumed a full core during the window.
@@ -74,6 +76,7 @@ def test_rate_comes_from_the_delta_not_the_lifetime_average(project_root, tmp_pa
     assert rows[0][0] == "100.0"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the idle CPU observer is macOS-only")
 def test_work_started_from_a_terminal_is_not_blamed_on_an_unrelated_app(
     project_root, tmp_path
 ):
@@ -102,6 +105,7 @@ def test_work_started_from_a_terminal_is_not_blamed_on_an_unrelated_app(
     assert from_shell == "true"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the idle CPU observer is macOS-only")
 def test_ancestors_resolve_to_the_owning_application(project_root, tmp_path):
     table = (
         "1 0 0:00.00 /sbin/launchd\n"
@@ -125,6 +129,7 @@ def test_ancestors_resolve_to_the_owning_application(project_root, tmp_path):
     assert from_shell == "false"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the idle CPU observer is macOS-only")
 def test_quiet_processes_and_row_limits_are_bounded(project_root, tmp_path):
     lines_first = ["1 0 0:00.00 /sbin/launchd"]
     lines_second = ["1 0 0:00.00 /sbin/launchd"]

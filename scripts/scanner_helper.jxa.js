@@ -789,7 +789,13 @@ const cleanupCandidates = storageItems.filter(item =>
     (item.risk === "warning" || item.measureStatus === "timed_out")
 );
 const reviewKinds = ["ai_review", "protected_history"];
-const developerKinds = ["android_sdk", "android_component", "simulator_devices", "simulator_cache", "simulator_runtime", "toolchain", "archive", "project_residue"];
+// ai_cache items never carry a cleanupId (no delete recipe exists for them yet), so
+// cleanupCandidates always excludes them regardless of risk. Without this bucket they
+// were silently absent from every list the app renders — e.g. an 11GB Ollama model
+// cache would be measured but never shown. developerToolchains already means
+// "detected, not auto-cleaned, shown for the owner to judge" (see project_residue),
+// which is exactly ai_cache's contract.
+const developerKinds = ["android_sdk", "android_component", "simulator_devices", "simulator_cache", "simulator_runtime", "toolchain", "archive", "project_residue", "ai_cache"];
 raw.sections.storage = {
   volume: storageVolume,
   cleanupCandidates: cleanupCandidates.slice(0, 20),
