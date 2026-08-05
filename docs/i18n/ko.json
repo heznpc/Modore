@@ -1,22 +1,23 @@
 {
   "meta": {
-    "title": "Modore — 내 PC가 몰래 일하는지 설명해주는 로컬 진단 도구",
-    "description": "몰래 채굴 의심, 한국 뱅킹 플러그인 오탐, macOS의 불친절한 System Data/Developer 저장공간 표시를 맥락으로 설명하는 로컬 진단 도구. Windows Edition과 Mac Edition으로 나뉘며, 신호등 리포트와 해시 기반 VirusTotal 조회를 제공합니다. AI 에이전트가 남긴 세션·작업 흔적의 보존 시한과 유일본 여부까지 로컬에서 판정합니다."
+    "title": "Modore — AI 에이전트가 남긴 것들을 판정하는 로컬 감사",
+    "description": "Claude Code·Codex·Gemini·AI IDE 세션 흔적을 로컬에서 결정적으로, 메타데이터만으로 감사합니다 — 보존 예보, 고아 세션, 유일본 워크트리 판정까지 판정 경로에 LLM이 전혀 없습니다. PC가 이유 없이 바쁠 때도 같은 원칙으로 설명합니다: 채굴 의심, 자동실행, 한국 뱅킹 플러그인 오탐을 신호등 리포트와 해시 기반 VirusTotal 조회로 보여줍니다."
   },
   "brand": {
     "name": "Modore"
   },
   "nav": {
     "skip": "본문으로 건너뛰기",
-    "problem": "문제",
+    "sessions": "AI 세션",
+    "problem": "왜 바쁘지?",
     "how": "동작 방식",
     "privacy": "프라이버시",
     "download": "소스"
   },
   "hero": {
-    "tag": "v0.3 · Windows Edition / Mac Edition",
-    "title": "내 PC가 <em>몰래 일하는지</em> 설명해주는 로컬 진단 도구.",
-    "subtitle": "팬이 돌고 CPU/GPU가 튀고 모르는 프로세스가 보일 때, Modore은 채굴기 신호·자동실행·네트워크·한국 보안 플러그인 맥락을 모아 삭제 전 판단 근거를 보여줍니다. AI 시대의 새 질문 — Claude·Codex 같은 에이전트가 어떤 프로젝트를 만졌고, 어떤 세션 기록이 며칠 뒤 조용히 사라지며, 어떤 작업트리가 유일본인지 — 도 같은 방식으로 판정합니다.",
+    "tag": "v0.3 · Mac Edition / Windows Edition",
+    "title": "<em>AI 에이전트가 남긴 것들</em>을 판정하는 로컬 감사.",
+    "subtitle": "Claude Code·Codex·Gemini 같은 도구가 작업한 Mac에서, Modore는 다른 도구가 묻지 않는 질문에 답합니다 — 어떤 세션이 어떤 프로젝트를 만졌고, 어떤 트랜스크립트가 며칠 뒤 조용히 만료되며, 어떤 워크트리가 미푸시 작업의 유일본인지 — 판정 경로에 LLM 없이 결정적으로. 같은 근거 우선 원칙이 이유 없이 바쁜 PC에도 그대로 적용됩니다.",
     "cta_primary": "소스에서 실행 <span class='arrow'>→</span>",
     "cta_secondary": "소스 읽어보기",
     "meta": {
@@ -41,13 +42,44 @@
       "appdata": "AppData · 미서명"
     }
   },
+  "scree": {
+    "kicker": "AI 세션 · MAC EDITION",
+    "heading": "에이전트가 남긴 것들의 결정적 지도.",
+    "lead": "scree는 Claude Code·Codex·Gemini CLI·VS Code 계열 세션 저장소를 워크스페이스·레포 단위로 겹쳐 판정합니다 — 메타데이터 전용, 판정 경로에 LLM 없음. 모든 판정은 재검증 의무가 명시된 미리보기 등급 증거입니다.",
+    "terminal": {
+      "title": "scree — 세션·잔여물 감사",
+      "path": "$ python3 scripts/scree.py"
+    },
+    "cards": {
+      "join": {
+        "title": "교차 도구 조인",
+        "desc": "어떤 도구들이 어느 워크스페이스·레포를 언제 만졌는지 — Claude Code·Codex·Gemini CLI·VS Code 계열 저장소 전체에 걸쳐."
+      },
+      "retention": {
+        "title": "보존 예보",
+        "desc": "파일 나이 기반으로 추정한 저장소별 보존 윈도우, 아직 활성 상태인 프로젝트 안에서 곧 만료되는 세션에는 D-day 표시."
+      },
+      "sole_copy": {
+        "title": "유일본 판정",
+        "desc": "에이전트 워크트리와 main에서 이탈한 본체 체크아웃: 읽기 전용 git 증거로 보호(dirty 또는 미푸시) 대 재생성 가능을 가릅니다."
+      },
+      "lineage": {
+        "title": "고아·계보",
+        "desc": "사라진 워크스페이스를 가리키는 세션, 그리고 세션 기록이 기억하는 모든 작업 경로를 현존+git / 현존+비git / 소멸로 분류."
+      }
+    },
+    "contract": {
+      "title": "본문 무보존 계약",
+      "desc": "선두 JSONL 줄은 메모리에서 디코드되지만 메시지 본문은 절대 보존·방출되지 않습니다. 부속 트랜스크립트는 열지 않고 stat()만으로 귀속됩니다 — 테스트로 고정."
+    }
+  },
   "ticker": {
-    "label": "화이트리스트에 포함된 프로그램 · RECOGNIZED SOFTWARE"
+    "label": "인식하는 프로그램"
   },
   "problem": {
     "kicker": "PROBLEM",
-    "heading": "\"내 PC가 몰래 채굴 중인가?\" 싶을 때, <em>무엇을 먼저 확인해야 하나?</em>",
-    "lead": "느려진 PC, 멈추지 않는 팬, 높은 CPU/GPU, 모르는 자동실행 항목은 불안을 만듭니다. 한국 PC에는 뱅킹·공공기관·쇼핑몰 보안 플러그인도 많아 정상 항목과 진짜 확인 대상을 구분하기 어렵습니다. Modore은 바로 삭제하기 전에 근거를 모읍니다.",
+    "heading": "내 PC가 왜 이렇게 <em>바쁘지</em>?",
+    "lead": "느려진 PC, 멈추지 않는 팬, 높은 CPU/GPU, 모르는 자동실행 항목은 불안을 만듭니다. 한국 PC에는 뱅킹·공공기관·쇼핑몰 보안 플러그인도 많아 정상 항목과 진짜 확인 대상을 구분하기 어렵습니다. Modore는 바로 삭제하기 전에 근거를 모읍니다.",
     "generic": {
       "label": "범용 스캐너",
       "quote": "\"의심스러운 항목 30건이 발견되었습니다.\""
@@ -118,18 +150,18 @@
     "lead": "현재 공개 설치 산출물은 없습니다. 소스를 직접 실행하거나, 서명·공증·Gatekeeper·SHA-256 메타데이터가 있는 릴리스를 기다려 주세요.",
     "windows": {
       "title": "Windows Edition",
-      "desc": "Windows 10 / 11 · PowerShell 5.1. 소스 확인 후 <code>검사하기.bat</code> 실행.",
+      "desc": "Windows 10 / 11 · PowerShell 5.1. 소스 확인 후 <code>scan.bat</code> 실행.",
       "btn": "Windows 소스 보기 →"
     },
     "macos": {
       "title": "Mac Edition",
-      "desc": "macOS 13+ SwiftUI 앱은 <code>Mac앱실행.command</code>, 스크립트 모드는 <code>검사하기.command</code> 우클릭 → 열기. System Data/Developer 저장공간 막대 해석은 Mac Edition 기능입니다.",
+      "desc": "macOS 13+ SwiftUI 앱은 <code>run-mac-app.command</code>, 스크립트 모드는 <code>scan.command</code> 우클릭 → 열기. AI 세션 감사(scree)와 System Data/Developer 저장공간 해석은 Mac Edition 기능입니다.",
       "btn": "Mac 소스 보기 →"
     },
     "github_side": "클론이나 포크: <a href='https://github.com/heznpc/modore' target='_blank' rel='noopener'>github.com/heznpc/modore</a>. 읽을 수 있는 소스로 직접 확인."
   },
   "final": {
-    "heading": "의심되는 지금, <em>6분이면 답이 나옵니다.</em>",
+    "heading": "궁금한 지금, <em>몇 분이면 답이 나옵니다.</em>",
     "lead": "가입 없음. 이메일 없음. 결과는 내 브라우저에서만 열립니다.",
     "cta": "소스 보기 <span class='arrow'>→</span>"
   },
