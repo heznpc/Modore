@@ -11,31 +11,36 @@
 
 ---
 
-## The problem
+## The two questions it answers
 
-The first symptom is usually not a clear malware alert. It is a fan that will not stop, CPU/GPU load while the PC is idle, an unknown process in Task Manager, a strange network connection, or disk space disappearing overnight. On an AI-assisted development Mac, it can also be a detached browser automation daemon, several simulators, an abandoned local agent, or a cache that immediately grows back. The natural question is: **is this computer infected, misconfigured, or still running work I thought had ended?**
+### 1. Is my PC doing something behind my back?
 
-Generic malware scanners are great at detection but terrible at **context**. For Korean users, running any reputable scanner typically produces something like:
+A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange network connection, disk space vanishing overnight. Generic scanners detect but do not explain — and on a Korean banking/government PC they cry wolf over IPinside, nProtect, MagicLine and the rest of the mandated plugin set until users either panic-uninstall critical software or learn to ignore every warning. Modore is the second opinion: it joins process, network, autorun, security, and storage signals, checks miner-like runtime patterns, recognizes the Korean plugin set with a locale-aware whitelist, and explains every finding in plain Korean, English, or Japanese with a 🟢🟡🔴 verdict. Nothing is ever deleted automatically.
 
-> ⚠️ **30 suspicious items found**
-> - `I3GProc.exe` — unsigned network helper
-> - `nosstarter.exe` — listening on local port
-> - `MagicLine4NP.exe` — kernel driver, no publisher
-> - `WIZVERA.exe` — browser helper, always on
-> - … 26 more
+### 2. What did my AI tools leave behind? (Mac)
 
-**29 of those may be legitimate banking/government security plugins.** Users can't tell which is which, so they either panic and uninstall critical software, or learn to ignore warnings entirely — both dangerous outcomes.
+On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, the machine fills with traces no other tool audits: session stores that silently expire on rolling windows, agent git worktrees holding the only copy of unpushed work, orphaned sessions pointing at deleted projects, gigabytes of rebuildable model and editor caches, and paths whose only surviving record is a session transcript. **scree**, Modore's session-and-residue audit, judges all of it — deterministically, metadata-only, with no LLM anywhere in the judgment path:
 
-This project is a **second-opinion diagnostic reporter** that recognizes Korean software, checks miner-like runtime signals, and explains each finding in plain Korean (or English/Japanese).
+```bash
+python3 scripts/scree.py                          # join · retention forecast · orphans · sole-copy verdicts · lineage
+python3 scripts/scree.py preserve <session-file>  # masked single-session export before it expires
+```
+
+- **Cross-tool join** — which tools touched which workspace/repository, when, across Claude Code, Codex, Gemini CLI, and VS Code-fork stores.
+- **Retention forecast** — per-store rolling windows estimated from file ages, with D-day flags for sessions about to expire inside still-active projects.
+- **Sole-copy judgment** — agent worktrees *and* primary checkouts stranded off main: protected (dirty or unpushed commits) versus rebuildable, from read-only git evidence, every verdict preview-grade with an explicit revalidation duty.
+- **Orphans & lineage** — sessions pointing at vanished workspaces (`orphan_basis: path_missing`), and every remembered work path classified alive+git / alive+plain / vanished, with macOS case-variant ghosts merged.
+- **Contract** — leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by `stat()` without being opened; pinned by tests. `preserve` is the single deliberate exception: one caller-named file, mask-by-default (`--raw` opts out), no bulk export.
 
 ---
 
-## Currently implemented
+## What ships today
 
 - **Two OS editions under one brand**: Modore for Windows and Modore for Mac share the same promise — explain local PC state in plain language without deleting anything automatically.
 - **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
-- **Mac Edition**: Bash + JXA scanner focused on macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and developer-runtime incidents. Every collector reports `ok`, `permission_denied`, `unavailable`, `timed_out`, or `failed`; a missing required collector can never become a safe verdict. Browser automation is grouped into roots with PID, parent, elapsed time, system/isolated channel, profile type, and a privacy-preserving controller label. The native SwiftUI app presents one incident judgment followed by evidence, likely impact, and approval-gated recovery; bounded local history keeps the judgment without storing raw commands or URLs. It also surfaces rebuildable build residue inside development projects (Flutter build/.dart_tool, node_modules, Cargo target, SwiftPM .build, Pods, Gradle build) — gitignored multi-GB directories invisible to other tools — with the official regeneration command instead of a delete button.
-- **Session & residue audit — scree (Mac Edition, `scripts/scree.py`)**: a deterministic, metadata-only module that joins local AI-agent traces — Claude Code, Codex, Gemini CLI, and VS Code-fork workspace stores — by workspace and repository. It reports cross-tool activity groups, estimates per-store rolling retention windows and flags sessions about to expire inside still-active workspaces, marks orphaned workspaces with an explicit judgment basis (`orphan_basis: path_missing`), and judges agent git worktrees protected (dirty or unpushed commits) versus rebuildable using read-only git queries. Every verdict is preview-grade evidence carrying an explicit revalidation duty for destructive consumers. Leading JSONL lines are decoded in memory but message content is never retained or emitted; nested subagent transcripts are attributed via `stat()` without ever being opened; `--json` serves the full result to external read-only consumers. The no-content-leak contract is pinned by tests. A single deliberate exception — `scree.py preserve <source>` — reads one caller-named session file and exports it as mask-by-default Markdown (email/JWT/API-key/private-key/home-path redacted; `--raw` opts out explicitly) before its retention window closes; there is no bulk-export path. A lineage map classifies every work path the session records remember — alive with git, alive plain, or vanished (the records as its only surviving trace) — merging macOS case-variant ghosts so a repo recorded as both `APP/…` and `App/…` counts once.
+- **Mac Edition scanner**: Bash + JXA collectors for macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and developer-runtime incidents. Every collector reports `ok`, `permission_denied`, `unavailable`, `timed_out`, or `failed`; a missing required collector can never become a safe verdict.
+- **Mac Edition app**: the native SwiftUI app presents one incident judgment followed by evidence, likely impact, and approval-gated recovery; bounded local history keeps the judgment without storing raw commands or URLs. Browser automation is grouped into roots with PID, parent, elapsed time, channel, profile type, and a privacy-preserving controller label.
+- **Storage decoded, AI residue included**: rebuildable build residue inside dev projects (Flutter, node_modules, Cargo, SwiftPM, Pods, Gradle) with the official regeneration command instead of a delete button, plus a mapped AI-tool residue layer — Claude and Codex stores path by path, and Ollama model blobs, Kiro, VS Code, and Gemini CLI caches split into reclaimable versus protected.
 - **Local recurrence watch**: an optional hourly LaunchAgent keeps a bounded owner-only free-space timeline. It notifies when free space falls below 20GB or drops by at least 8GB between checks; it never deletes anything.
 - **Suspicion-to-evidence workflow**: CPU/GPU load, idle CPU samples, miner process names, miner-pool ports, network endpoints, autoruns, signatures, and optional VirusTotal hash lookups are shown together so a user can decide what deserves a closer look before removing anything.
 - **Locale-aware whitelist**: 73 known-good entries across 7 categories (system, browser, korean_common, banking_security, dev_tools, hardware, cloud), plus 20 miner blacklist entries, 6 RAT blacklist entries, and 13 miner-pool ports. Covers IPinside, nProtect, INISAFE, MagicLine, Veraport, XecureWeb, Ahnlab V3, Alyac, and the rest of the Korean banking/government plugin set.
@@ -60,7 +65,7 @@ Modore is the brand. The OS editions are separate products under that brand, not
 | Edition | Artifact | Focus | Validation rule |
 |---|---|---|---|
 | Windows Edition | `modore-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
-| Mac Edition | `modore-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | macOS security context plus decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
+| Mac Edition | `modore-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | macOS security context, decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions, and the scree AI-agent session/residue audit | Mac-only features ship after local macOS validation |
 
 Shared rules, whitelist data, i18n strings, and report vocabulary can be reused where they genuinely match. OS-specific collectors stay separate.
 
@@ -197,6 +202,7 @@ modore/
 │   ├── sigcheck-helper.ps1   Sysinternals sigcheck wrapper
 │   ├── autorunsc-helper.ps1  Sysinternals autorunsc wrapper
 │   ├── scanner.sh            macOS scanner
+│   ├── scree.py              AI-agent session & residue audit (metadata-only)
 │   ├── cleanup.sh            allowlisted macOS preview/execute harness
 │   ├── storage_watch.sh      free-space monitor + bounded drop-time path snapshot
 │   ├── schedule.sh           local LaunchAgent toggle harness
@@ -298,8 +304,10 @@ Distribution mode only runs from a clean `v<version>` tag at `HEAD` verified by 
 | AppCleaner | Mac | Mac users | Removes an app and related files | This adds system/developer context and bundle-ID-verified Trash moves; AppCleaner may still discover app-name-based residue that cannot be attributed safely |
 | Malware Zero (malzero.xyz) | Win | Korean users | PUP removal | Older UX, no per-finding explanations |
 | HijackThis / FRST | Win | Tech-savvy | Log analysis | Not novice-friendly |
+| SpecStory | Win/Mac | AI coding users | Saves and searches AI coding sessions | scree does not archive content; it judges retention risk, orphans, and sole-copy work, metadata-only |
+| Agent Sessions | Mac | Claude Code / Codex users | Browses local session logs | scree adds the cross-tool join, expiry forecast, and worktree/checkout/lineage verdicts |
 
-**The gap this fills**: suspicion-to-evidence triage for "is my PC secretly doing something?", with plain-Korean explanations, locale-aware banking software context, miner/runtime signals, storage context, and privacy-safe VT lookup.
+**The gap this fills**: suspicion-to-evidence triage for "is my PC secretly doing something?", with plain-Korean explanations, locale-aware banking software context, miner/runtime signals, storage context, and privacy-safe VT lookup — plus, on a Mac, a deterministic metadata-only answer to "what did my AI agents leave behind?".
 
 ## Privacy
 
