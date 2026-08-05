@@ -1,4 +1,4 @@
-# Modore — Modore
+# Modore
 
 > A local workstation incident investigator for the moment you wonder: **is my PC doing something behind my back?**
 > It turns process, network, autorun, security, storage, and developer-runtime signals into plain-language evidence before you stop or delete anything.
@@ -59,8 +59,8 @@ Modore is the brand. The OS editions are separate products under that brand, not
 
 | Edition | Artifact | Focus | Validation rule |
 |---|---|---|---|
-| Windows Edition | `pch-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
-| Mac Edition | `pch-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | macOS security context plus decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
+| Windows Edition | `modore-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
+| Mac Edition | `modore-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | macOS security context plus decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
 
 Shared rules, whitelist data, i18n strings, and report vocabulary can be reused where they genuinely match. OS-specific collectors stay separate.
 
@@ -110,7 +110,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 
 ### Windows
 1. While the repository is in source-preview status, clone it or use GitHub's source archive.
-2. Once a verified release exists, prefer its `pch-v*-win.zip` and compare the published SHA-256 metadata.
+2. Once a verified release exists, prefer its `modore-v*-win.zip` and compare the published SHA-256 metadata.
 3. Extract anywhere (USB, Desktop, Downloads — no installer needed), then double-click `검사하기.bat`.
 
 ### macOS

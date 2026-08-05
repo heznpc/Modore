@@ -309,6 +309,45 @@ def collect_worktrees(home: Path) -> dict:
     registered_missing: list[dict] = []
     for container in sorted(set(containers)):
         repo = container.parent.parent
+        # The primary checkout itself can be stranded on a non-default branch by
+        # an agent session that never opened a PR — the same unique-work risk as
+        # a worktree, but invisible to worktree listing. Judge it with the same
+        # protected/rebuildable rules and mark it stray_checkout.
+        repo_branch_raw = _git(["symbolic-ref", "--short", "HEAD"], repo)
+        repo_branch = repo_branch_raw.strip() if repo_branch_raw else None
+        if repo_branch and repo_branch not in ("main", "master"):
+            status = _git(["status", "--porcelain"], repo)
+            unpushed_raw = _git(["rev-list", "--count", "HEAD", "--not", "--remotes"], repo)
+            commit_raw = _git(["log", "-1", "--format=%ct"], repo)
+            dirty = bool(status.strip()) if status is not None else None
+            unpushed = None
+            if unpushed_raw and unpushed_raw.strip().isdigit():
+                unpushed = int(unpushed_raw.strip())
+            if dirty is None and unpushed is None:
+                verdict = "unreadable"
+            elif dirty or (unpushed or 0) > 0:
+                verdict = "protected"
+            else:
+                verdict = "rebuildable"
+            last_commit = None
+            if commit_raw and commit_raw.strip().isdigit():
+                last_commit = time.strftime("%Y-%m-%d",
+                                            time.localtime(int(commit_raw.strip())))
+            stray = {
+                "path": str(repo),
+                "repo": str(repo),
+                "branch": repo_branch,
+                "registered": True,
+                "dirty": dirty,
+                "unpushed_commits": unpushed,
+                "last_commit": last_commit,
+                "verdict": verdict,
+                "evidence": "preview",
+                "stray_checkout": True,
+            }
+            if verdict == "rebuildable":
+                stray["requires_revalidation"] = True
+            items.append(stray)
         listed: set[str] = set()
         porcelain = _git(["worktree", "list", "--porcelain"], repo)
         for line in (porcelain or "").splitlines():
@@ -538,10 +577,15 @@ def render_report(scree: dict, limit: int) -> str:
             counts[item["verdict"]] = counts.get(item["verdict"], 0) + 1
         lines.append("")
         lines.append("워크트리 앵커 판정 (git 등록부·푸시 상태, 읽기 전용)")
+        strays = [i for i in items if i.get("stray_checkout")]
         lines.append(f"  총 {len(items)}개 — 보호(유일본) {counts.get('protected', 0)}"
                      f" · 재생성 가능 {counts.get('rebuildable', 0)}"
                      f" · 판독 불가 {counts.get('unreadable', 0)}"
-                     f" · 미등록 {sum(1 for i in items if not i['registered'])}")
+                     f" · 미등록 {sum(1 for i in items if not i['registered'])}"
+                     f" · 본체 이탈 {len(strays)}")
+        for item in strays:
+            lines.append(f"    본체 이탈: {item['path']} @ {item['branch']}"
+                         f" ({item['verdict']}, 미푸시 {item['unpushed_commits']})")
         if worktrees["registered_missing"]:
             lines.append(f"  등록부 고아(등록됐지만 디스크 소멸) {len(worktrees['registered_missing'])}건")
         for item in [i for i in items if i["verdict"] == "rebuildable"][:6]:
