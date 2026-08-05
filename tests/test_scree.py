@@ -214,6 +214,18 @@ def test_worktree_rebuildable_after_push_then_dirty_flips_back(worktree_home, tm
     assert "requires_revalidation" not in wt1
 
 
+def test_primary_checkout_stranded_on_feature_branch_is_judged(worktree_home):
+    home, repo, git = worktree_home
+    items = scree.collect_worktrees(home)["items"]
+    assert not any(i.get("stray_checkout") for i in items)  # main 위에선 이탈 아님
+    git("checkout", "-q", "-b", "feature/stranded")
+    items = scree.collect_worktrees(home)["items"]
+    stray = next(i for i in items if i.get("stray_checkout"))
+    assert stray["branch"] == "feature/stranded"
+    assert stray["verdict"] == "protected"  # 원격에 없는 커밋 = 유일본
+    assert stray["path"] == str(repo)
+
+
 def test_worktree_anchor_breaks_are_reported(worktree_home):
     home, repo, git = worktree_home
     (repo / ".claude" / "worktrees" / "ghost").mkdir()
