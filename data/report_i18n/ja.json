@@ -1,5 +1,5 @@
 {
-  "title": "PCヘルスチェック レポート",
+  "title": "Modore レポート",
   "meta_line": "{computer} / {user} · {os} · 検査時刻: {scannedAt}",
   "load_line": "現在 CPU {cpu}% · メモリ {mem}% · 総メモリ {totalGb} GB",
   "cards": {
@@ -141,7 +141,7 @@
       "share_warning": "支援を受けるためにレポートを共有する前に、PC名・ユーザー名・ファイルパス内の個人情報を伏せてください。"
     }
   },
-  "footer": "PCヘルスチェック v0.3 · 生成 {now}",
+  "footer": "Modore v0.3 · 生成 {now}",
   "hidden_rows_note": "署名検証済みの正常項目 {count} 件は非表示。",
   "muted": {
     "autorunsc_disabled": "Sysinternals autorunsc が未インストールか無効です。<code>data/config.json</code>の<code>sysinternals.useAutorunsc</code>を<code>true</code>に設定してください。",
