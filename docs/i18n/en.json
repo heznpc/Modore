@@ -102,6 +102,11 @@
       "kext": "Kernel driver",
       "bho": "Browser hook",
       "persist": "Always-on"
+    },
+    "tag": {
+      "suspect": "SUSPECT",
+      "normal": "NORMAL",
+      "check": "CHECK"
     }
   },
   "how": {
@@ -160,14 +165,14 @@
     },
     "github_side": "Clone or fork: <a href='https://github.com/heznpc/modore' target='_blank' rel='noopener'>github.com/heznpc/modore</a>. Inspect the readable source yourself."
   },
-  "final": {
-    "heading": "Curious right now? <em>Minutes to answers.</em>",
-    "lead": "No sign-up. No email. The report opens in your browser, and only your browser.",
-    "cta": "View source <span class='arrow'>→</span>"
+  "closing": {
+    "lead": "No sign-up, no email, no upload — verify it yourself.",
+    "cta": "Read the source →"
   },
   "footer": {
     "license": "MIT License",
     "version": "v0.3.0",
+    "author": "Built and maintained by <a href=\"https://github.com/heznpc\" target=\"_blank\" rel=\"noopener\">heznpc</a>.",
     "credits": "Thanks to Microsoft Sysinternals · Objective-See · the Malware Zero community."
   }
 }

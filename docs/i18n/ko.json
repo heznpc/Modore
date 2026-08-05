@@ -102,6 +102,11 @@
       "kext": "커널 드라이버",
       "bho": "브라우저 훅",
       "persist": "상시 실행"
+    },
+    "tag": {
+      "suspect": "의심",
+      "normal": "정상",
+      "check": "확인"
     }
   },
   "how": {
@@ -160,14 +165,14 @@
     },
     "github_side": "클론이나 포크: <a href='https://github.com/heznpc/modore' target='_blank' rel='noopener'>github.com/heznpc/modore</a>. 읽을 수 있는 소스로 직접 확인."
   },
-  "final": {
-    "heading": "궁금한 지금, <em>몇 분이면 답이 나옵니다.</em>",
-    "lead": "가입 없음. 이메일 없음. 결과는 내 브라우저에서만 열립니다.",
-    "cta": "소스 보기 <span class='arrow'>→</span>"
+  "closing": {
+    "lead": "가입도, 이메일도, 업로드도 없습니다 — 직접 검증하세요.",
+    "cta": "소스 읽어보기 →"
   },
   "footer": {
     "license": "MIT License",
     "version": "v0.3.0",
+    "author": "제작·유지보수: <a href=\"https://github.com/heznpc\" target=\"_blank\" rel=\"noopener\">heznpc</a>.",
     "credits": "Microsoft Sysinternals · Objective-See · Malware Zero 커뮤니티에 감사."
   }
 }

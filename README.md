@@ -3,7 +3,7 @@
 > **A local audit of what your AI agents left behind.** On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, Modore answers the questions no other tool asks: which sessions touched which projects, which transcripts silently expire in a few days, which agent worktrees hold the only copy of unpushed work, and which paths survive nowhere except in a session record — deterministically, metadata-only, with no LLM anywhere in the judgment path.
 > The same evidence-first approach also covers the PC that feels busy for no reason: process, network, autorun, security, and storage signals turned into plain-language evidence before you stop or delete anything.
 
-[🌐 **Website**](https://heznpc.github.io/modore/) · [📦 Releases (when published)](https://github.com/heznpc/modore/releases) · [🇰🇷 한국어 가이드](./docs/ko/guide.md) · [Architecture](./docs/ARCHITECTURE.md)
+[🌐 **Website**](https://heznpc.github.io/modore/) · [📦 Releases (when published)](https://github.com/heznpc/modore/releases) · [Architecture](./docs/ARCHITECTURE.md)
 
 *Part of the Heznpc portfolio — Trust tier (Supporting).*
 
@@ -131,6 +131,15 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 - **Windows**: PowerShell 5.1+ (built into Windows 10/11).
 - **Development / tests only**: Python 3.11+ for pytest, release-smoke packaging, and local docs preview.
 
+### Troubleshooting
+
+- **The precise Windows scan needs 5 quiet minutes.** It includes an idle-CPU observation window; close video/game workloads and let the machine sit idle so it can catch "using CPU while doing nothing" processes.
+- **"This script cannot be run on this system" (Windows).** Open PowerShell as the current user and run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+- **A console window flashes and closes immediately (`scan.bat`).** Right-click → "Run as administrator".
+- **macOS "developer cannot be verified" warning.** Right-click the file → **Open** (only needed once).
+- **Fully portable.** Copy the whole `modore/` folder to a USB drive and run it from any Windows or Mac machine — no installer.
+- **Not an antivirus replacement.** Pair Windows Defender / macOS Gatekeeper (built in) with Malwarebytes Free for a second opinion when something looks wrong.
+
 ## Enabling VirusTotal lookup (optional, off by default)
 
 1. Sign up at [virustotal.com](https://www.virustotal.com) — free.
@@ -181,7 +190,6 @@ modore/
 ├── run-mac-app.command       macOS SwiftUI app builder/launcher
 ├── README.md                 This file
 ├── docs/
-│   ├── ko/guide.md           Korean user guide
 │   ├── index.html            GitHub Pages landing (multilingual)
 │   ├── style.css
 │   ├── script.js

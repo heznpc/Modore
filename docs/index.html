@@ -217,12 +217,12 @@ worktree anchor judgment (git registry · push state, read-only)
         <h3><span class="icon">⚠</span><span data-i18n="problem.generic.label">Generic scanner</span></h3>
         <p class="quote" data-i18n="problem.generic.quote">"30 suspicious items detected."</p>
         <ul class="compare-list">
-          <li><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.reasons.unsigned">Unsigned net hook</span></li>
-          <li><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.reasons.port">Port listener</span></li>
-          <li><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.reasons.kext">Kernel driver</span></li>
-          <li><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.reasons.bho">Browser hook</span></li>
-          <li><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.reasons.persist">Always-on</span></li>
-          <li><span class="tool-name">+ 25 more...</span><span class="reason"></span></li>
+          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.reasons.unsigned">Unsigned net hook</span></li>
+          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.reasons.port">Port listener</span></li>
+          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.reasons.kext">Kernel driver</span></li>
+          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.reasons.bho">Browser hook</span></li>
+          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.reasons.persist">Always-on</span></li>
+          <li><span class="tag"></span><span class="tool-name">+ 25 more...</span><span class="reason"></span></li>
         </ul>
       </div>
 
@@ -230,12 +230,12 @@ worktree anchor judgment (git registry · push state, read-only)
         <h3><span class="icon">🩺</span><span data-i18n="problem.pch.label">Modore</span></h3>
         <p class="quote" data-i18n="problem.pch.quote">"29 are banking software. 1 needs review."</p>
         <ul class="compare-list">
-          <li class="safe"><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.pch.reasons.ipinside">IPinside, normal</span></li>
-          <li class="safe"><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.pch.reasons.inisafe">INISAFE, normal</span></li>
-          <li class="safe"><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.pch.reasons.dream">DreamSecurity</span></li>
-          <li class="safe"><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.pch.reasons.wizvera">E-signature tool</span></li>
-          <li class="safe"><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.pch.reasons.bank">Banking security</span></li>
-          <li class="check"><span class="tool-name">MPSch.exe</span><span class="reason" data-i18n="problem.pch.reasons.unknown">Unknown → VT check</span></li>
+          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.pch.reasons.ipinside">IPinside, normal</span></li>
+          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.pch.reasons.inisafe">INISAFE, normal</span></li>
+          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.pch.reasons.dream">DreamSecurity</span></li>
+          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.pch.reasons.wizvera">E-signature tool</span></li>
+          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.pch.reasons.bank">Banking security</span></li>
+          <li class="check"><span class="tag" data-i18n="problem.tag.check">CHECK</span><span class="tool-name">MPSch.exe</span><span class="reason" data-i18n="problem.pch.reasons.unknown">Unknown → VT check</span></li>
         </ul>
       </div>
     </div>
@@ -371,15 +371,12 @@ worktree anchor judgment (git registry · push state, read-only)
 </section>
 
 <!-- ======================================================
-     FINAL CTA
+     CLOSING NOTE
      ====================================================== -->
-<section class="final-cta">
+<section class="closing-note">
   <div class="container">
-    <h2 data-i18n="final.heading">Curious right now? <em>Minutes to answers.</em></h2>
-    <p data-i18n="final.lead">No sign-up. No email. The report opens in your browser, and only your browser.</p>
-    <div class="hero-actions" style="justify-content:center;">
-      <a href="#download" class="btn btn-primary" data-i18n="final.cta">View source <span class="arrow">→</span></a>
-    </div>
+    <p data-i18n="closing.lead">No sign-up, no email, no upload — verify it yourself.</p>
+    <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" data-i18n="closing.cta">Read the source →</a>
   </div>
 </section>
 
@@ -393,8 +390,10 @@ worktree anchor judgment (git registry · push state, read-only)
       &nbsp;·&nbsp;
       <span data-i18n="footer.version">v0.3.0</span>
     </div>
-    <div class="credits" data-i18n="footer.credits">
-      Thanks to Microsoft Sysinternals · Objective-See · the Malware Zero community.
+    <div class="credits">
+      <span data-i18n="footer.author">Built and maintained by <a href="https://github.com/heznpc" target="_blank" rel="noopener">heznpc</a>.</span>
+      &nbsp;·&nbsp;
+      <span data-i18n="footer.credits">Thanks to Microsoft Sysinternals · Objective-See · the Malware Zero community.</span>
     </div>
   </div>
 </footer>

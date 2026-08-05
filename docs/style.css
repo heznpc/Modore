@@ -1,6 +1,7 @@
 /* ============================================================
-   Modore - 랜딩 (v2)
-   다크 에디토리얼 + 터미널. GitHub dark 계열 팔레트.
+   Modore - landing (v3)
+   Case-file / evidence-log register: numbered exhibits over a
+   flat audit-log surface, not a rounded SaaS card grid.
    ============================================================ */
 
 :root {
@@ -14,7 +15,7 @@
   --text-muted: #8b949e;
   --text-subtle: #8b949e;
 
-  --accent: #ffd84d;             /* 대표 강조색: 시그니처 노랑 (신호등 중간) */
+  --accent: #ffd84d;             /* signature yellow (the traffic-light "check" tone) */
   --accent-soft: #fde68a;
   --link: #58a6ff;
 
@@ -24,6 +25,8 @@
   --yellow-soft: #fbbf2420;
   --red: #f85149;
   --red-soft: #f8514920;
+
+  --radius: 4px;
 
   --font-sans: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Segoe UI',
                'Hiragino Sans', 'Noto Sans JP', sans-serif;
@@ -123,7 +126,7 @@ a:hover { opacity: .75; }
    HERO
    ============================================================ */
 .hero {
-  padding: 80px 0 60px;
+  padding: 72px 0 56px;
   border-bottom: 1px solid var(--border-subtle);
   position: relative;
   overflow: hidden;
@@ -132,9 +135,12 @@ a:hover { opacity: .75; }
   content: '';
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(ellipse 80% 60% at 80% -20%, rgba(255, 216, 77, 0.08), transparent 60%),
-    radial-gradient(ellipse 50% 40% at 10% 100%, rgba(88, 166, 255, 0.06), transparent 60%);
+  background-image: repeating-linear-gradient(
+    transparent, transparent 27px, var(--border-subtle) 28px
+  );
+  mask-image: linear-gradient(to bottom, black, transparent 85%);
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent 85%);
+  opacity: 0.5;
   pointer-events: none;
 }
 .hero-inner {
@@ -145,30 +151,21 @@ a:hover { opacity: .75; }
   align-items: center;
 }
 .hero-tag {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 12px;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 100px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 24px;
+  color: var(--text-subtle);
+  margin-bottom: 20px;
   letter-spacing: 0.04em;
 }
 .hero-tag .pulse {
   width: 6px; height: 6px;
   background: var(--green);
   border-radius: 50%;
-  box-shadow: 0 0 0 3px var(--green-soft);
-  animation: pulse 2s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  flex-shrink: 0;
 }
 
 /* Keyboard focus visibility (WCAG 2.4.7). */
@@ -201,45 +198,43 @@ button:focus-visible,
   html {
     scroll-behavior: auto;
   }
-  .hero-tag .pulse,
   .ticker-track {
     animation: none !important;
   }
   a,
   button,
-  .report-preview,
   .dl-card,
   .skip-link {
     transition: none !important;
   }
 }
 .hero h1 {
-  font-size: clamp(34px, 5vw, 54px);
-  font-weight: 900;
-  line-height: 1.08;
-  letter-spacing: -0.028em;
+  font-size: clamp(32px, 4.6vw, 48px);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
   margin-bottom: 20px;
 }
-.hero h1 .accent { color: var(--accent); }
+.hero h1 em { color: var(--accent); font-style: normal; }
 .hero-subtitle {
-  font-size: 17px;
+  font-size: 16px;
   color: var(--text-muted);
   margin-bottom: 32px;
   max-width: 520px;
   line-height: 1.6;
 }
-.hero-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 28px; }
+.hero-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 28px; }
 .btn {
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 11px 20px;
-  border-radius: 8px;
+  padding: 10px 18px;
+  border-radius: var(--radius);
   font-weight: 600;
   font-size: 14px;
   border: 1px solid transparent;
   cursor: pointer;
-  transition: all .15s;
-  font-family: inherit;
-  letter-spacing: -0.01em;
+  transition: border-color .15s, background .15s;
+  font-family: var(--font-mono);
+  letter-spacing: 0;
 }
 .btn:hover { opacity: 1; }
 .btn-primary {
@@ -266,17 +261,13 @@ button:focus-visible,
 .hero-meta span { display: flex; align-items: center; gap: 6px; }
 .hero-meta .dot { color: var(--border); }
 
-/* --- HERO RIGHT: 리포트 미리보기 --- */
+/* --- HERO RIGHT: scan report mockup, presented flat like a real window --- */
 .report-preview {
   background: var(--bg-1);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 24px 48px rgba(0,0,0,0.35), 0 4px 12px rgba(0,0,0,0.2);
+  border-radius: 6px;
   overflow: hidden;
-  transform: perspective(1000px) rotateY(-2deg) rotateX(1deg);
-  transition: transform .4s ease;
 }
-.report-preview:hover { transform: perspective(1000px) rotateY(0) rotateX(0); }
 .preview-titlebar {
   background: var(--bg-2);
   padding: 10px 14px;
@@ -399,31 +390,42 @@ button:focus-visible,
 
 /* ============================================================
    SECTION BASE
+   Sections are numbered exhibits in a running log, not slides.
    ============================================================ */
+main { counter-reset: exhibit; }
 .section {
-  padding: 96px 0;
+  counter-increment: exhibit;
+  padding: 80px 0;
   border-bottom: 1px solid var(--border-subtle);
 }
 .section-kicker {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--text-subtle);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  margin-bottom: 12px;
+  letter-spacing: 0.08em;
+  margin-bottom: 14px;
+}
+.section-kicker::before {
+  content: counter(exhibit, decimal-leading-zero);
+  color: var(--accent);
+  font-size: 13px;
 }
 .section h2 {
-  font-size: clamp(28px, 3.5vw, 42px);
-  font-weight: 800;
-  letter-spacing: -0.025em;
-  line-height: 1.15;
-  margin-bottom: 20px;
+  font-size: clamp(26px, 3.2vw, 38px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin-bottom: 18px;
   max-width: 720px;
 }
 .section h2 em { color: var(--accent); font-style: normal; }
 .section .lead {
-  font-size: 17px;
+  font-size: 16px;
   color: var(--text-muted);
   max-width: 640px;
   line-height: 1.65;
@@ -441,8 +443,8 @@ button:focus-visible,
 .compare-col {
   background: var(--bg-1);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 28px;
+  border-radius: var(--radius);
+  padding: 26px;
   position: relative;
 }
 .compare-col.bad { border-left: 3px solid var(--red); }
@@ -473,19 +475,10 @@ button:focus-visible,
   display: flex; align-items: baseline; gap: 10px;
 }
 .compare-list li:first-child { border-top: 0; }
-.compare-list li::before { font-weight: 600; font-size: 11px; width: 56px; flex-shrink: 0; }
-.compare-col.bad .compare-list li::before {
-  content: '⚠ 의심';
-  color: var(--red);
-}
-.compare-col.good .compare-list li.safe::before {
-  content: '✓ 정상';
-  color: var(--green);
-}
-.compare-col.good .compare-list li.check::before {
-  content: '! 확인';
-  color: var(--yellow);
-}
+.compare-list li .tag { font-weight: 600; font-size: 11px; width: 56px; flex-shrink: 0; }
+.compare-col.bad .compare-list li .tag { color: var(--red); }
+.compare-col.good .compare-list li.safe .tag { color: var(--green); }
+.compare-col.good .compare-list li.check .tag { color: var(--yellow); }
 .compare-list li .tool-name { color: var(--text); }
 .compare-list li .reason { color: var(--text-subtle); font-size: 11px; margin-left: auto; }
 
@@ -502,13 +495,14 @@ button:focus-visible,
 .pipe-node {
   background: var(--bg-1);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 22px;
+  border-top: 2px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 20px;
 }
 .pipe-node .label {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--accent);
+  color: var(--text-subtle);
   margin-bottom: 8px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -577,11 +571,20 @@ button:focus-visible,
   line-height: 1.6;
   padding-left: 28px;
 }
+/* The scree cards describe capabilities, not verified claims —
+   a neutral marker instead of the privacy section's checkmark. */
+#scree .privacy-point h3::before {
+  content: '›';
+  color: var(--accent);
+  background: transparent;
+  border-radius: 0;
+  font-weight: 700;
+}
 
 .code-block {
   background: var(--bg-1);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   overflow: hidden;
 }
 .code-header {
@@ -622,15 +625,14 @@ button:focus-visible,
 .dl-card {
   background: var(--bg-1);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 28px 24px;
-  transition: border-color .15s, transform .15s;
+  border-radius: var(--radius);
+  padding: 26px 22px;
+  transition: border-color .15s;
   display: block;
   color: var(--text);
 }
 .dl-card:hover {
   border-color: var(--accent);
-  transform: translateY(-2px);
   opacity: 1;
 }
 .dl-card .os-mark {
@@ -641,7 +643,7 @@ button:focus-visible,
   color: var(--accent);
   border: 1px solid var(--accent);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius);
   margin-bottom: 14px;
   letter-spacing: 0.05em;
 }
@@ -663,25 +665,24 @@ button:focus-visible,
 }
 
 /* ============================================================
-   FINAL CTA
+   CLOSING NOTE
+   A short, direct statement — not a conversion banner.
    ============================================================ */
-.final-cta {
-  text-align: center;
-  padding: 112px 32px;
+.closing-note {
+  padding: 48px 0;
   border-bottom: 1px solid var(--border-subtle);
+  text-align: center;
 }
-.final-cta h2 {
-  font-size: clamp(28px, 4vw, 44px);
-  font-weight: 900;
-  letter-spacing: -0.028em;
-  margin-bottom: 14px;
-  line-height: 1.15;
-  max-width: none;
-}
-.final-cta p {
+.closing-note p {
   color: var(--text-muted);
-  font-size: 16px;
-  margin-bottom: 32px;
+  font-size: 15px;
+  max-width: 480px;
+  margin: 0 auto 16px;
+  line-height: 1.6;
+}
+.closing-note a {
+  font-family: var(--font-mono);
+  font-weight: 600;
 }
 
 /* ============================================================
@@ -706,7 +707,7 @@ footer .credits { font-size: 12px; }
    ============================================================ */
 @media (max-width: 900px) {
   .hero-inner { grid-template-columns: 1fr; gap: 48px; }
-  .report-preview { transform: none; max-width: 520px; margin: 0 auto; }
+  .report-preview { max-width: 520px; margin: 0 auto; }
   .compare { grid-template-columns: 1fr; }
   .pipeline { grid-template-columns: 1fr; }
   .pipe-arrow { transform: rotate(90deg); justify-self: center; }
@@ -717,7 +718,7 @@ footer .credits { font-size: 12px; }
 @media (max-width: 640px) {
   .container { padding: 0 20px; }
   .topbar-inner { padding: 12px 20px; }
-  .section { padding: 64px 0; }
-  .final-cta { padding: 80px 20px; }
+  .section { padding: 56px 0; }
+  .closing-note { padding: 40px 20px; }
   .hero { padding: 48px 0 32px; }
 }
