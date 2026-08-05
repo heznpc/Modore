@@ -1,18 +1,18 @@
 /**
- * Modore - 랜딩 페이지 i18n 로더
+ * Modore - landing page i18n loader
  *
- * 동작:
- *  1. URL ?lang=XX 있으면 그걸로
- *  2. 없으면 localStorage에 저장된 선호
- *  3. 없으면 navigator.language 추론
- *  4. 그것도 실패하면 기본값(ko)
+ * Behavior:
+ *  1. URL ?lang=XX if present
+ *  2. Otherwise, the preference stored in localStorage
+ *  3. Otherwise, inferred from navigator.language
+ *  4. Otherwise, the default (en)
  *
- * 번역 추가 방법:
- *  docs/i18n/<code>.json 파일 만들고 SUPPORTED에 추가만 하면 됨.
+ * To add a translation:
+ *  create docs/i18n/<code>.json and add the code to SUPPORTED.
  */
 
-const SUPPORTED = ['ko', 'en', 'ja'];
-const DEFAULT_LANG = 'ko';
+const SUPPORTED = ['en', 'ko', 'ja'];
+const DEFAULT_LANG = 'en';
 const STORAGE_KEY = 'pch.lang';
 
 // ----- 언어 결정 -----

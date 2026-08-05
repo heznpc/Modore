@@ -558,63 +558,63 @@ def _format_size(size_bytes: int) -> str:
 
 
 def render_report(scree: dict, limit: int) -> str:
-    lines = ["Modore scree — 에이전트가 남긴 것들의 지도 (메타데이터 전용 · 결정적 조인)"]
+    lines = ["Modore scree — a map of what agents left behind (metadata-only · deterministic join)"]
     store_bits = []
     for store in scree["stores"]:
         if store["status"] == "missing":
-            store_bits.append(f"{store['store']} 없음")
+            store_bits.append(f"{store['store']} none")
         else:
-            note = f"+미해석 {store['unrecognized']}" if store["unrecognized"] else ""
+            note = f"+unresolved {store['unrecognized']}" if store["unrecognized"] else ""
             if store.get("subtranscripts"):
-                note += f"+부속 {store['subtranscripts']}"
-            store_bits.append(f"{store['store']} {store['count']}건{note}")
-    lines.append("저장소: " + " · ".join(store_bits))
+                note += f"+nested {store['subtranscripts']}"
+            store_bits.append(f"{store['store']} {store['count']}{note}")
+    lines.append("stores: " + " · ".join(store_bits))
     groups = scree["groups"]
     cross = sum(1 for g in groups if g["cross_tool"])
     orphan = sum(1 for g in groups if g["orphan"])
-    lines.append(f"그룹 {len(groups)}개 — 교차 도구 {cross} · 고아 {orphan}"
-                 f" · 미해석 세션 {scree['unresolved_sessions']}")
+    lines.append(f"{len(groups)} groups — cross-tool {cross} · orphan {orphan}"
+                 f" · unresolved sessions {scree['unresolved_sessions']}")
     lineage_summary = scree.get("lineage", {}).get("summary")
     if lineage_summary:
-        lineage_line = (f"작업 경로 {lineage_summary['total']}:"
-                        f" 현존+git {lineage_summary['alive_git']}"
-                        f" · 현존+비git {lineage_summary['alive_plain']}"
-                        f" · 소멸 {lineage_summary['vanished']}")
+        lineage_line = (f"work paths {lineage_summary['total']}:"
+                        f" alive+git {lineage_summary['alive_git']}"
+                        f" · alive+plain {lineage_summary['alive_plain']}"
+                        f" · vanished {lineage_summary['vanished']}")
         if lineage_summary.get("case_ghosts"):
-            lineage_line += f" · 케이스 유령 {lineage_summary['case_ghosts']}"
+            lineage_line += f" · case ghosts {lineage_summary['case_ghosts']}"
         lines.append(lineage_line)
     lines.append("")
     for rank, group in enumerate(groups[:limit], start=1):
         marks = []
         if group["cross_tool"]:
-            marks.append("교차")
+            marks.append("cross-tool")
         if group["orphan"]:
-            marks.append("고아")
+            marks.append("orphan")
         if group["worktrees"]:
-            marks.append(f"워크트리 {len(group['worktrees'])}")
+            marks.append(f"worktree {len(group['worktrees'])}")
         tools = " · ".join(f"{name} {count}" for name, count in sorted(group["tools"].items()))
         label = group["key"] if group["grouped_by"] == "repo" else group["key"][3:]
-        lines.append(f"{rank:2d}. [{'|'.join(marks) or '단일'}] {label}")
-        lines.append(f"     {tools} | 워크스페이스 {len(group['workspaces'])}"
-                     f" | {_format_size(group['size_bytes'])} | 최근 {group['last_active']}")
+        lines.append(f"{rank:2d}. [{'|'.join(marks) or 'single'}] {label}")
+        lines.append(f"     {tools} | workspaces {len(group['workspaces'])}"
+                     f" | {_format_size(group['size_bytes'])} | last active {group['last_active']}")
     retention = scree.get("retention", {})
     if retention.get("stores"):
         lines.append("")
-        lines.append("보존 판정 (파일 나이 관측 기반 추정)")
-        mode_label = {"rolling": "롤링", "long": "장기 보존", "insufficient": "관측 부족"}
+        lines.append("retention forecast (estimated from observed file ages)")
+        mode_label = {"rolling": "rolling", "long": "long retention", "insufficient": "insufficient data"}
         for store in retention["stores"]:
             bits = [mode_label.get(store["mode"], store["mode"])]
             if store["mode"] == "rolling":
-                bits[0] = f"롤링 약 {store['window_days']}일"
-            bits.append(f"최고 {store['oldest_days']}일")
+                bits[0] = f"rolling ~{store['window_days']}d"
+            bits.append(f"oldest {store['oldest_days']}d")
             if store["stalled"]:
-                bits.append("기록 중단 의심")
+                bits.append("recording may have stalled")
             lines.append(f"  {store['store']}: " + " · ".join(bits))
         expiring = retention.get("expiring", [])
         if expiring:
             alive = [e for e in expiring if e["story_alive"]]
-            lines.append(f"  만료 임박(D-{EXPIRY_SOON_DAYS} 이내) {len(expiring)}건"
-                         f" — 살아있는 워크스페이스 {len(alive)} · 고아 {len(expiring) - len(alive)}")
+            lines.append(f"  expiring soon (within D-{EXPIRY_SOON_DAYS}) {len(expiring)}"
+                         f" — alive workspaces {len(alive)} · orphaned {len(expiring) - len(alive)}")
             for entry in alive[:5]:
                 lines.append(f"    D-{entry['days_left']} {entry['workspace']}"
                              f" ({entry['tool']}, {_format_size(entry['size_bytes'])})")
@@ -625,20 +625,20 @@ def render_report(scree: dict, limit: int) -> str:
         for item in items:
             counts[item["verdict"]] = counts.get(item["verdict"], 0) + 1
         lines.append("")
-        lines.append("워크트리 앵커 판정 (git 등록부·푸시 상태, 읽기 전용)")
+        lines.append("worktree anchor judgment (git registry · push state, read-only)")
         strays = [i for i in items if i.get("stray_checkout")]
-        lines.append(f"  총 {len(items)}개 — 보호(유일본) {counts.get('protected', 0)}"
-                     f" · 재생성 가능 {counts.get('rebuildable', 0)}"
-                     f" · 판독 불가 {counts.get('unreadable', 0)}"
-                     f" · 미등록 {sum(1 for i in items if not i['registered'])}"
-                     f" · 본체 이탈 {len(strays)}")
+        lines.append(f"  total {len(items)} — protected (sole-copy) {counts.get('protected', 0)}"
+                     f" · rebuildable {counts.get('rebuildable', 0)}"
+                     f" · unreadable {counts.get('unreadable', 0)}"
+                     f" · unregistered {sum(1 for i in items if not i['registered'])}"
+                     f" · stray checkouts {len(strays)}")
         for item in strays:
-            lines.append(f"    본체 이탈: {item['path']} @ {item['branch']}"
-                         f" ({item['verdict']}, 미푸시 {item['unpushed_commits']})")
+            lines.append(f"    stray checkout: {item['path']} @ {item['branch']}"
+                         f" ({item['verdict']}, unpushed {item['unpushed_commits']})")
         if worktrees["registered_missing"]:
-            lines.append(f"  등록부 고아(등록됐지만 디스크 소멸) {len(worktrees['registered_missing'])}건")
+            lines.append(f"  registry orphans (registered but vanished on disk) {len(worktrees['registered_missing'])}")
         for item in [i for i in items if i["verdict"] == "rebuildable"][:6]:
-            lines.append(f"    재생성 가능: {item['path']} (마지막 커밋 {item['last_commit'] or '?'})")
+            lines.append(f"    rebuildable: {item['path']} (last commit {item['last_commit'] or '?'})")
     return "\n".join(lines)
 
 
