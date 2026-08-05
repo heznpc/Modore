@@ -1,4 +1,4 @@
-# Modore — Modore
+# Modore
 
 > A local workstation incident investigator for the moment you wonder: **is my PC doing something behind my back?**
 > It turns process, network, autorun, security, storage, and developer-runtime signals into plain-language evidence before you stop or delete anything.
@@ -36,8 +36,9 @@ This project is a **second-opinion diagnostic reporter** that recognizes Korean 
 - **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
 - **Mac Edition**: Bash + JXA scanner focused on macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and developer-runtime incidents. Every collector reports `ok`, `permission_denied`, `unavailable`, `timed_out`, or `failed`; a missing required collector can never become a safe verdict. Browser automation is grouped into roots with PID, parent, elapsed time, system/isolated channel, profile type, and a privacy-preserving controller label. The native SwiftUI app presents one incident judgment followed by evidence, likely impact, and approval-gated recovery; bounded local history keeps the judgment without storing raw commands or URLs. It also surfaces rebuildable build residue inside development projects (Flutter build/.dart_tool, node_modules, Cargo target, SwiftPM .build, Pods, Gradle build) — gitignored multi-GB directories invisible to other tools — with the official regeneration command instead of a delete button.
 - **Local recurrence watch**: an optional hourly LaunchAgent keeps a bounded owner-only free-space timeline. It notifies when free space falls below 20GB or drops by at least 8GB between checks; it never deletes anything.
+- **Session & residue audit — scree (Mac Edition, `scripts/scree.py`)**: a deterministic, metadata-only module that joins local AI-agent traces — Claude Code, Codex, Gemini CLI, and VS Code-fork workspace stores — by workspace and repository. It reports cross-tool activity groups, estimates per-store rolling retention windows and flags sessions about to expire inside still-active workspaces, marks orphaned workspaces with an explicit judgment basis (`orphan_basis: path_missing`), and judges agent git worktrees protected (dirty or unpushed commits) versus rebuildable using read-only git queries. Every verdict is preview-grade evidence carrying an explicit revalidation duty for destructive consumers. Leading JSONL lines are decoded in memory but message content is never retained or emitted; nested subagent transcripts are attributed via `stat()` without ever being opened; `--json` serves the full result to external read-only consumers. The no-content-leak contract is pinned by tests. A single deliberate exception — `scree.py preserve <source>` — reads one caller-named session file and exports it as mask-by-default Markdown (email/JWT/API-key/private-key/home-path redacted; `--raw` opts out explicitly) before its retention window closes; there is no bulk-export path.
 - **Suspicion-to-evidence workflow**: CPU/GPU load, idle CPU samples, miner process names, miner-pool ports, network endpoints, autoruns, signatures, and optional VirusTotal hash lookups are shown together so a user can decide what deserves a closer look before removing anything.
-- **Locale-aware whitelist**: 72 known-good entries across 7 categories (system, browser, korean_common, banking_security, dev_tools, hardware, cloud), plus 19 miner blacklist entries, 5 RAT blacklist entries, and 13 miner-pool ports. Covers IPinside, nProtect, INISAFE, MagicLine, Veraport, XecureWeb, Ahnlab V3, Alyac, and the rest of the Korean banking/government plugin set.
+- **Locale-aware whitelist**: 73 known-good entries across 7 categories (system, browser, korean_common, banking_security, dev_tools, hardware, cloud), plus 20 miner blacklist entries, 6 RAT blacklist entries, and 13 miner-pool ports. Covers IPinside, nProtect, INISAFE, MagicLine, Veraport, XecureWeb, Ahnlab V3, Alyac, and the rest of the Korean banking/government plugin set.
 - **Traffic-light output** (🟢 safe / 🟡 check / 🔴 danger) so non-technical users can act on the report.
 - **VirusTotal lookup (opt-in)**: SHA-256 hash query only. 48h local cache, 16s rate-limit, respects the public API quota (4 req/min, 500/day).
 - **Single-file HTML report**: opens in the user's browser and works offline. The shipped OS-native reports include user-clicked Google/VirusTotal investigation links; opening one shares the selected search term, IP address, or hash with that site. The Python development report also includes collapsible novice-friendly explanations. On Mac, HTML is an export/share artifact; the SwiftUI utility interface is the primary experience.
@@ -58,8 +59,8 @@ Modore is the brand. The OS editions are separate products under that brand, not
 
 | Edition | Artifact | Focus | Validation rule |
 |---|---|---|---|
-| Windows Edition | `pch-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
-| Mac Edition | `pch-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | macOS security context plus decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
+| Windows Edition | `modore-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
+| Mac Edition | `modore-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | macOS security context plus decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
 
 Shared rules, whitelist data, i18n strings, and report vocabulary can be reused where they genuinely match. OS-specific collectors stay separate.
 
@@ -109,7 +110,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 
 ### Windows
 1. While the repository is in source-preview status, clone it or use GitHub's source archive.
-2. Once a verified release exists, prefer its `pch-v*-win.zip` and compare the published SHA-256 metadata.
+2. Once a verified release exists, prefer its `modore-v*-win.zip` and compare the published SHA-256 metadata.
 3. Extract anywhere (USB, Desktop, Downloads — no installer needed), then double-click `검사하기.bat`.
 
 ### macOS

@@ -260,6 +260,7 @@ def test_schedule_removes_the_agent_installed_before_the_rename(project_root, tm
     assert (launch_agents / "me.heznpc.modore.storage-watch.plist").is_file()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="launchd plist tools are macOS-only")
 def test_schedule_requires_approval_and_stays_inside_test_home(project_root, tmp_path):
     home = tmp_path / "home"
     launch_agents = home / "Library" / "LaunchAgents"
