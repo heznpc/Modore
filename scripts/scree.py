@@ -395,6 +395,45 @@ def collect_worktrees(home: Path) -> dict:
     return {"items": items, "registered_missing": registered_missing}
 
 
+def build_lineage(records: list[dict]) -> dict:
+    """Universal facts about every work path seen in session records: does it
+    still exist, and is it a git repo. Session records are often the only
+    surviving trace of vanished work, so this is the map of what the sessions
+    remember versus what the disk still holds.
+
+    Case-insensitive filesystems (macOS default) let the same path be recorded
+    under several casings; variants are grouped by casefold, reported once with
+    their spellings, and never double-counted. Metadata only: path strings,
+    existence, and a `.git` presence check — no session content involved.
+    """
+    by_key: dict[str, set[str]] = {}
+    for item in records:
+        workspace = item.get("workspace")
+        if workspace:
+            by_key.setdefault(workspace.casefold(), set()).add(workspace)
+    paths: list[dict] = []
+    alive_git = alive_plain = vanished = ghosts = 0
+    for key in sorted(by_key):
+        variants = sorted(by_key[key])
+        exists = any(Path(v).exists() for v in variants)
+        has_git = exists and any((Path(v) / ".git").exists() for v in variants)
+        entry: dict = {"path": variants[0], "exists": exists, "has_git": has_git}
+        if len(variants) > 1:
+            entry["case_variants"] = variants
+            ghosts += 1
+        paths.append(entry)
+        if not exists:
+            vanished += 1
+        elif has_git:
+            alive_git += 1
+        else:
+            alive_plain += 1
+    return {"paths": paths,
+            "summary": {"total": len(paths), "alive_git": alive_git,
+                        "alive_plain": alive_plain, "vanished": vanished,
+                        "case_ghosts": ghosts}}
+
+
 def build_retention(records: list[dict], now_ts: float) -> dict:
     """Per-store retention judgment from session-file age distribution alone.
 
@@ -504,6 +543,7 @@ def build_scree(home: Path) -> dict:
         "stores": stores,
         "groups": finished,
         "unresolved_sessions": unresolved_count,
+        "lineage": build_lineage(records),
         "retention": build_retention(records, time.time()),
         "worktrees": collect_worktrees(home),
     }
@@ -534,6 +574,15 @@ def render_report(scree: dict, limit: int) -> str:
     orphan = sum(1 for g in groups if g["orphan"])
     lines.append(f"그룹 {len(groups)}개 — 교차 도구 {cross} · 고아 {orphan}"
                  f" · 미해석 세션 {scree['unresolved_sessions']}")
+    lineage_summary = scree.get("lineage", {}).get("summary")
+    if lineage_summary:
+        lineage_line = (f"작업 경로 {lineage_summary['total']}:"
+                        f" 현존+git {lineage_summary['alive_git']}"
+                        f" · 현존+비git {lineage_summary['alive_plain']}"
+                        f" · 소멸 {lineage_summary['vanished']}")
+        if lineage_summary.get("case_ghosts"):
+            lineage_line += f" · 케이스 유령 {lineage_summary['case_ghosts']}"
+        lines.append(lineage_line)
     lines.append("")
     for rank, group in enumerate(groups[:limit], start=1):
         marks = []
