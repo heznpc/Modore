@@ -57,6 +57,11 @@ EXECUTION_FAILURE_STATUS="partial"
 # 실제 측정/승인 매니페스트 값이 채워진 뒤에만 true가 된다.
 # false인 estimatedKB는 자리 표시 값이므로 크기로 표시하면 안 된다.
 ESTIMATE_MEASURED="false"
+# 앱 흔적 원장. 설치 이후 생긴 잔여물 중 소유를 증명하지 못한 것과 다른 앱과
+# 공유될 수 있는 것은 삭제 대상(TARGETS)과 분리해 보고만 한다. 목록에서 아예
+# 빼면 사용자가 앱 밖에서 직접 찾아 지우게 되고, 그때 공유 데이터까지 잃는다.
+SHARED_RESIDUE=()
+REVIEW_RESIDUE=()
 STAGED_REMAINDERS=()
 TEST_STAGED_APPROVED_ORIGINAL=""
 
@@ -185,6 +190,7 @@ configure_roots() {
             "${PCH_PROCESS_LIST_WITH_PID_FILE:-}" \
             "${PCH_SIMCTL_LIST_FILE:-}" \
             "${PCH_SIMCTL_DELETE_LOG:-}" \
+            "${PCH_TEST_APP_GROUPS_FILE:-}" \
             "${PCH_TEST_LATE_PROCESS_LIST_FILE:-}" \
             "${PCH_TEST_LATE_SIMCTL_LIST_FILE:-}" \
             "${PCH_TEST_LATE_SIMULATOR_KEEP_FILE:-}" \
@@ -283,6 +289,120 @@ app_contains_protected_developer_payload() {
     return 1
 }
 
+group_id_is_valid() {
+    local group="$1"
+    case "$group" in
+        ""|*..*|*/*) return 1 ;;
+    esac
+    [[ "$group" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{1,199}$ ]]
+}
+
+# 앱이 서명 시점에 선언한 App Group만 소유 근거로 인정한다. 폴더 이름이 비슷하다는
+# 사실은 근거가 아니므로, 선언을 읽지 못하면 아무 그룹도 반환하지 않는다.
+app_declared_groups() {
+    local app_path="$1"
+    local bundle_id line declared group
+    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+        [[ -n "${PCH_TEST_APP_GROUPS_FILE:-}" && -f "$PCH_TEST_APP_GROUPS_FILE" ]] || return 0
+        bundle_id="$(read_bundle_id "$app_path")"
+        [[ -n "$bundle_id" ]] || return 0
+        while IFS= read -r line; do
+            declared="${line%%|*}"
+            group="${line#*|}"
+            [[ "$declared" == "$bundle_id" ]] || continue
+            group_id_is_valid "$group" || continue
+            /usr/bin/printf "%s\n" "$group"
+        done < "$PCH_TEST_APP_GROUPS_FILE"
+        return 0
+    fi
+    /usr/bin/codesign -d --entitlements :- --xml "$app_path" 2>/dev/null \
+        | /usr/bin/plutil -extract com.apple.security.application-groups xml1 -o - - 2>/dev/null \
+        | /usr/bin/sed -n "s|.*<string>\(.*\)</string>.*|\1|p"
+}
+
+app_target_declared_groups() {
+    local target
+    for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
+        [[ "$target" == *.app ]] || continue
+        app_declared_groups "$target"
+    done
+}
+
+# 다른 설치 앱도 같은 그룹을 선언했다면 공유 데이터다. 이때는 삭제하지 않고 보고만 한다.
+group_container_is_exclusive() {
+    local group="$1"
+    local app_path other_group
+    local candidates=()
+    shopt -s nullglob
+    candidates=("$APPLICATIONS_ROOT"/*.app "$HOME_ROOT/Applications"/*.app "$HOME_ROOT/Applications"/*/*.app)
+    shopt -u nullglob
+    for app_path in ${candidates[@]+"${candidates[@]}"}; do
+        [[ -d "$app_path" && ! -L "$app_path" ]] || continue
+        [[ "$(read_bundle_id "$app_path")" != "$APP_BUNDLE_ID" ]] || continue
+        while IFS= read -r other_group; do
+            if [[ "$other_group" == "$group" ]]; then
+                return 1
+            fi
+        done < <(app_declared_groups "$app_path")
+    done
+    return 0
+}
+
+add_shared_residue() {
+    local target="$1"
+    [[ -e "$target" || -L "$target" ]] || return 0
+    SHARED_RESIDUE+=("$target")
+}
+
+add_review_residue() {
+    local target="$1"
+    local declared
+    [[ -e "$target" || -L "$target" ]] || return 0
+    for declared in ${TARGETS[@]+"${TARGETS[@]}"}; do
+        if [[ "$declared" == "$target" ]]; then
+            return 0
+        fi
+    done
+    REVIEW_RESIDUE+=("$target")
+}
+
+# 설치 이후 생긴 잔여물을 세 등급으로 나눈다. 번들 ID로 정확히 귀속되는 것만
+# 삭제 대상에 넣고, 공유 가능성이 있거나 이름으로만 추정되는 것은 분리해 보고한다.
+collect_app_residue_ledger() {
+    local bundle_id="$1"
+    local group group_path label_residue declared_any="false"
+
+    add_target_if_present "$HOME_ROOT/Library/Cookies/$bundle_id.binarycookies"
+    add_target_if_present "$HOME_ROOT/Library/HTTPStorages/$bundle_id.binarycookies"
+    add_target_if_present "$HOME_ROOT/Library/Caches/$bundle_id.ShipIt"
+
+    while IFS= read -r group; do
+        group_id_is_valid "$group" || continue
+        declared_any="true"
+        group_path="$HOME_ROOT/Library/Group Containers/$group"
+        [[ -e "$group_path" || -L "$group_path" ]] || continue
+        if group_container_is_exclusive "$group"; then
+            add_target_if_present "$group_path"
+        else
+            add_shared_residue "$group_path"
+        fi
+    done < <(app_target_declared_groups)
+
+    if [[ "$declared_any" == "false" ]]; then
+        shopt -s nullglob
+        for group_path in "$HOME_ROOT/Library/Group Containers"/*."$bundle_id"; do
+            add_shared_residue "$group_path"
+        done
+        shopt -u nullglob
+    fi
+
+    if [[ -n "$LABEL" && "$LABEL" != */* && "$LABEL" != "." && "$LABEL" != ".." ]]; then
+        for label_residue in "$HOME_ROOT/Library/Application Support/$LABEL" "$HOME_ROOT/Library/Caches/$LABEL" "$HOME_ROOT/Library/Logs/$LABEL"; do
+            add_review_residue "$label_residue"
+        done
+    fi
+}
+
 define_app_recipe() {
     local bundle_id="$1"
     local app_path found_app="false" app_label="" escaped pattern=""
@@ -353,6 +473,7 @@ define_app_recipe() {
         fi
     done
     shopt -u nullglob
+    collect_app_residue_ledger "$bundle_id"
     return 0
 }
 
@@ -572,6 +693,8 @@ define_recipe() {
     SIMULATOR_UUID=""
     RECIPE_BLOCK_REASON=""
     PREVIEW_APPROVAL_TOKEN=""
+    SHARED_RESIDUE=()
+    REVIEW_RESIDUE=()
     EXECUTION_MANIFEST=""
     TRANSACTION_JOURNAL=""
     EXECUTION_FAILURE_STATUS="partial"
@@ -1277,6 +1400,16 @@ emit_state() {
     if [[ "${#STAGED_REMAINDERS[@]}" -gt 0 ]]; then
         for staged in "${STAGED_REMAINDERS[@]}"; do
             emit "stagedRemainder" "$staged"
+        done
+    fi
+    if [[ "${#SHARED_RESIDUE[@]}" -gt 0 ]]; then
+        for target in "${SHARED_RESIDUE[@]}"; do
+            emit "sharedResidue" "$target"
+        done
+    fi
+    if [[ "${#REVIEW_RESIDUE[@]}" -gt 0 ]]; then
+        for target in "${REVIEW_RESIDUE[@]}"; do
+            emit "reviewResidue" "$target"
         done
     fi
 }

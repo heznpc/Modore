@@ -14,6 +14,8 @@ def parse_protocol(text: str) -> dict[str, object]:
     values: dict[str, object] = {}
     targets: list[str] = []
     staged_remainders: list[str] = []
+    shared_residue: list[str] = []
+    review_residue: list[str] = []
     for line in text.splitlines():
         if "\t" not in line:
             continue
@@ -22,10 +24,16 @@ def parse_protocol(text: str) -> dict[str, object]:
             targets.append(value)
         elif key == "stagedRemainder":
             staged_remainders.append(value)
+        elif key == "sharedResidue":
+            shared_residue.append(value)
+        elif key == "reviewResidue":
+            review_residue.append(value)
         else:
             values[key] = value
     values["targets"] = targets
     values["stagedRemainders"] = staged_remainders
+    values["sharedResidue"] = shared_residue
+    values["reviewResidue"] = review_residue
     return values
 
 
@@ -1291,3 +1299,123 @@ def test_simulator_delete_rechecks_state_and_keep_file_at_final_boundary(
     assert reason_fragment in str(result["blockedReason"])
     assert device.is_dir()
     assert not delete_log.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS bundle tools are required")
+def test_app_uninstall_collects_bundle_keyed_residue_created_after_install(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    bundle_id = "me.example.ledger"
+    app = home / "ApplicationsRoot" / "Ledger App.app"
+    info = app / "Contents" / "Info.plist"
+    info.parent.mkdir(parents=True)
+    with info.open("wb") as handle:
+        plistlib.dump({"CFBundleIdentifier": bundle_id}, handle)
+    cookies = home / "Library" / "Cookies" / f"{bundle_id}.binarycookies"
+    storage_cookies = (
+        home / "Library" / "HTTPStorages" / f"{bundle_id}.binarycookies"
+    )
+    updater = home / "Library" / "Caches" / f"{bundle_id}.ShipIt"
+    for residue in (cookies, storage_cookies):
+        residue.parent.mkdir(parents=True, exist_ok=True)
+        residue.write_bytes(b"fixture")
+    updater.mkdir(parents=True)
+    (updater / "staged").write_text("fixture", encoding="utf-8")
+    preview = run_cleanup(
+        project_root, home, "--preview", f"app_uninstall:{bundle_id}"
+    )
+    payload = parse_protocol(preview.stdout)
+    assert preview.returncode == 0, preview.stderr
+    for residue in (cookies, storage_cookies, updater):
+        assert str(residue) in payload["targets"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS bundle tools are required")
+def test_group_container_is_removed_only_when_no_other_app_declares_it(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    bundle_id = "me.example.solo"
+    app = home / "ApplicationsRoot" / "Solo App.app"
+    info = app / "Contents" / "Info.plist"
+    info.parent.mkdir(parents=True)
+    with info.open("wb") as handle:
+        plistlib.dump({"CFBundleIdentifier": bundle_id}, handle)
+    group = "ABCDE12345.me.example.solo"
+    group_path = home / "Library" / "Group Containers" / group
+    group_path.mkdir(parents=True)
+    (group_path / "data").write_text("fixture", encoding="utf-8")
+    groups_file = home / "groups.txt"
+    groups_file.write_text(f"{bundle_id}|{group}\n", encoding="utf-8")
+    preview = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        f"app_uninstall:{bundle_id}",
+        extra_env={"PCH_TEST_APP_GROUPS_FILE": str(groups_file)},
+    )
+    payload = parse_protocol(preview.stdout)
+    assert preview.returncode == 0, preview.stderr
+    assert str(group_path) in payload["targets"]
+    assert str(group_path) not in payload["sharedResidue"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS bundle tools are required")
+def test_shared_group_container_is_reported_but_never_removed(project_root, tmp_path):
+    home = tmp_path / "home"
+    bundle_id = "me.example.suite.editor"
+    sibling_id = "me.example.suite.viewer"
+    for name, identifier in (
+        ("Suite Editor.app", bundle_id),
+        ("Suite Viewer.app", sibling_id),
+    ):
+        info = home / "ApplicationsRoot" / name / "Contents" / "Info.plist"
+        info.parent.mkdir(parents=True)
+        with info.open("wb") as handle:
+            plistlib.dump({"CFBundleIdentifier": identifier}, handle)
+    group = "ABCDE12345.me.example.suite"
+    group_path = home / "Library" / "Group Containers" / group
+    group_path.mkdir(parents=True)
+    (group_path / "shared.db").write_text("fixture", encoding="utf-8")
+    groups_file = home / "groups.txt"
+    groups_file.write_text(
+        f"{bundle_id}|{group}\n{sibling_id}|{group}\n", encoding="utf-8"
+    )
+    preview = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        f"app_uninstall:{bundle_id}",
+        extra_env={"PCH_TEST_APP_GROUPS_FILE": str(groups_file)},
+    )
+    payload = parse_protocol(preview.stdout)
+    assert preview.returncode == 0, preview.stderr
+    assert str(group_path) in payload["sharedResidue"]
+    assert str(group_path) not in payload["targets"]
+    assert group_path.is_dir()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS bundle tools are required")
+def test_name_derived_residue_is_review_only(project_root, tmp_path):
+    home = tmp_path / "home"
+    bundle_id = "me.example.named"
+    app = home / "ApplicationsRoot" / "Named App.app"
+    info = app / "Contents" / "Info.plist"
+    info.parent.mkdir(parents=True)
+    with info.open("wb") as handle:
+        plistlib.dump({"CFBundleIdentifier": bundle_id}, handle)
+    guessed = home / "Library" / "Application Support" / "Named App"
+    guessed.mkdir(parents=True)
+    (guessed / "state.json").write_text("fixture", encoding="utf-8")
+    exact = home / "Library" / "Application Support" / bundle_id
+    exact.mkdir(parents=True)
+    preview = run_cleanup(
+        project_root, home, "--preview", f"app_uninstall:{bundle_id}"
+    )
+    payload = parse_protocol(preview.stdout)
+    assert preview.returncode == 0, preview.stderr
+    assert str(exact) in payload["targets"]
+    assert str(guessed) in payload["reviewResidue"]
+    assert str(guessed) not in payload["targets"]
+    assert guessed.is_dir()
