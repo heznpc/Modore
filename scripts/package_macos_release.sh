@@ -810,13 +810,13 @@ if [[ "$MODE" == "local" ]]; then
         local_build_id="$local_build_id-dirty"
     fi
     output_dir="$DIST_DIR/local"
-    artifact_name="PC-Health-Check-Mac-v$VERSION-local-unsigned-$architecture_label-$local_build_id.dmg"
+    artifact_name="Modore-Mac-v$VERSION-local-unsigned-$architecture_label-$local_build_id.dmg"
 elif [[ "$SKIP_NOTARIZATION" == "1" ]]; then
     output_dir="$DIST_DIR/local"
-    artifact_name="PC-Health-Check-Mac-v$VERSION-signed-not-notarized-$architecture_label-$short_commit.dmg"
+    artifact_name="Modore-Mac-v$VERSION-signed-not-notarized-$architecture_label-$short_commit.dmg"
 else
     output_dir="$DIST_DIR"
-    artifact_name="PC-Health-Check-Mac-v$VERSION-$architecture_label.dmg"
+    artifact_name="Modore-Mac-v$VERSION-$architecture_label.dmg"
 fi
 DMG_PATH="$output_dir/$artifact_name"
 METADATA_PATH="$DMG_PATH.metadata.json"
