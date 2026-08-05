@@ -16,6 +16,7 @@ struct CleanupApprovalSheet: View {
                         runningProcesses: runningProcesses
                     )
                     CleanupTargets(preview: preview)
+                    CleanupRetainedResidue(preview: preview)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 8)
@@ -60,6 +61,12 @@ struct CleanupApprovalSheet: View {
             parts.append("정리 대상: " + preview.targets.joined(separator: ", "))
         }
         if !preview.warning.isEmpty { parts.append(preview.warning) }
+        if !preview.sharedResidue.isEmpty {
+            parts.append("공유 가능성이 있어 제거하지 않는 항목: " + preview.sharedResidue.joined(separator: ", "))
+        }
+        if !preview.reviewResidue.isEmpty {
+            parts.append("이름으로만 추정해 제거하지 않는 항목: " + preview.reviewResidue.joined(separator: ", "))
+        }
         return parts.joined(separator: ". ")
     }
 }
@@ -126,6 +133,64 @@ private struct CleanupApprovalNotices: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+        }
+    }
+}
+
+// 설치 이후 생긴 잔여물 중 이번 실행에서 제거하지 않는 항목을 함께 보여준다.
+// 화면에서 감추면 사용자가 Finder에서 직접 지우게 되고, 그때 공유 데이터까지
+// 함께 잃는다. 그래서 경로와 제외 이유를 같은 자리에서 밝힌다.
+private struct CleanupRetainedResidue: View {
+    let preview: CleanupPreview
+
+    var body: some View {
+        if !preview.sharedResidue.isEmpty || !preview.reviewResidue.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("발견했지만 제거하지 않음")
+                    .font(.headline)
+                if !preview.sharedResidue.isEmpty {
+                    residueGroup(
+                        title: "다른 앱과 공유될 수 있는 데이터",
+                        detail: "이 앱만 사용한다고 증명하지 못했습니다. 함께 지우면 남은 앱의 데이터도 사라집니다.",
+                        symbol: "person.2",
+                        paths: preview.sharedResidue
+                    )
+                }
+                if !preview.reviewResidue.isEmpty {
+                    residueGroup(
+                        title: "이름으로만 추정한 항목",
+                        detail: "앱 이름과 같은 폴더입니다. 번들 ID로 귀속을 확인할 수 없어 직접 검토가 필요합니다.",
+                        symbol: "questionmark.folder",
+                        paths: preview.reviewResidue
+                    )
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("제거하지 않는 잔여물 목록")
+        }
+    }
+
+    private func residueGroup(
+        title: String,
+        detail: String,
+        symbol: String,
+        paths: [String]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Label(title, systemImage: symbol)
+                .font(.subheadline.weight(.semibold))
+            Text(detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(paths, id: \.self) { path in
+                Text(path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("제거하지 않는 경로: \(path)")
             }
         }
     }

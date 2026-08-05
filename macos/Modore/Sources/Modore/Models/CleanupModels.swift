@@ -20,6 +20,8 @@ struct CleanupPreview: Identifiable {
     let approvalToken: String
     let targets: [String]
     let stagedRemainders: [String]
+    let sharedResidue: [String]
+    let reviewResidue: [String]
     let receipt: String
     let trashRun: String
 
@@ -43,6 +45,8 @@ struct CleanupPreview: Identifiable {
         approvalToken = payload.approvalToken
         targets = payload.targets
         stagedRemainders = payload.stagedRemainders
+        sharedResidue = payload.sharedResidue
+        reviewResidue = payload.reviewResidue
         receipt = payload.receipt
         trashRun = payload.trashRun
     }
@@ -102,6 +106,14 @@ struct CleanupPreview: Identifiable {
     }
 }
 
+private struct ParsedProtocolLines {
+    let values: [String: String]
+    let targets: [String]
+    let stagedRemainders: [String]
+    let sharedResidue: [String]
+    let reviewResidue: [String]
+}
+
 private struct CleanupProtocolPayload {
     let operation: String
     let status: String
@@ -121,6 +133,8 @@ private struct CleanupProtocolPayload {
     let approvalToken: String
     let targets: [String]
     let stagedRemainders: [String]
+    let sharedResidue: [String]
+    let reviewResidue: [String]
     let receipt: String
     let trashRun: String
 
@@ -152,6 +166,8 @@ private struct CleanupProtocolPayload {
             approvalToken: values["approvalToken"] ?? "",
             targets: parsed.targets,
             stagedRemainders: parsed.stagedRemainders,
+            sharedResidue: parsed.sharedResidue,
+            reviewResidue: parsed.reviewResidue,
             receipt: values["receipt"] ?? "",
             trashRun: values["trashRun"] ?? ""
         )
@@ -159,10 +175,12 @@ private struct CleanupProtocolPayload {
 
     private static func parseLines(
         _ text: String
-    ) -> (values: [String: String], targets: [String], stagedRemainders: [String]) {
+    ) -> ParsedProtocolLines {
         var values: [String: String] = [:]
         var targets: [String] = []
         var stagedRemainders: [String] = []
+        var sharedResidue: [String] = []
+        var reviewResidue: [String] = []
         for rawLine in text.split(whereSeparator: \.isNewline) {
             let parts = rawLine.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2 else { continue }
@@ -172,11 +190,21 @@ private struct CleanupProtocolPayload {
                 targets.append(value)
             } else if key == "stagedRemainder" {
                 stagedRemainders.append(value)
+            } else if key == "sharedResidue" {
+                sharedResidue.append(value)
+            } else if key == "reviewResidue" {
+                reviewResidue.append(value)
             } else {
                 values[key] = value
             }
         }
-        return (values, targets, stagedRemainders)
+        return ParsedProtocolLines(
+            values: values,
+            targets: targets,
+            stagedRemainders: stagedRemainders,
+            sharedResidue: sharedResidue,
+            reviewResidue: reviewResidue
+        )
     }
 
     private static func integer(_ value: String?) -> Int64 {
