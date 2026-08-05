@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "PCヘルスチェック — PCが裏で動いていないか説明するローカル診断",
-    "description": "隠れたマイニングの疑い、韓国の銀行プラグインの誤判定、macOSの曖昧なSystem Data/Developerストレージ表示を文脈付きで説明するローカル診断ツール。PCヘルスチェックは Windows Edition と Mac Edition に分かれ、シグナル形式のレポートとハッシュのみのVirusTotal照会を提供します。"
+    "description": "隠れたマイニングの疑い、韓国の銀行プラグインの誤判定、macOSの曖昧なSystem Data/Developerストレージ表示を文脈付きで説明するローカル診断ツール。PCヘルスチェックは Windows Edition と Mac Edition に分かれ、シグナル形式のレポートとハッシュのみのVirusTotal照会を提供します。 AIエージェントが残したセッション・作業痕跡の保存期限と唯一コピー判定もローカルで行います。"
   },
   "brand": {
     "name": "PCヘルスチェック"
@@ -16,7 +16,7 @@
   "hero": {
     "tag": "v0.3 · Windows Edition / Mac Edition",
     "title": "PCが<em>裏で勝手に動いていないか</em>説明するローカル診断。",
-    "subtitle": "ファンが回り続ける、CPU/GPUが跳ねる、知らないプロセスがある。PCヘルスチェックはマイニングの兆候、自動実行、ネットワーク、韓国セキュリティプラグインの文脈を集め、削除前の判断材料を示します。",
+    "subtitle": "ファンが回り続ける、CPU/GPUが跳ねる、知らないプロセスがある。PCヘルスチェックはマイニングの兆候、自動実行、ネットワーク、韓国セキュリティプラグインの文脈を集め、削除前の判断材料を示します。 さらにAI時代の新しい質問 — Claude・Codexなどのエージェントがどのプロジェクトに触れ、どのセッション記録が数日後に静かに消え、どの作業ツリーが唯一のコピーなのか — も同じ方式で判定します。",
     "cta_primary": "ソースから実行 <span class='arrow'>→</span>",
     "cta_secondary": "ソースを読む",
     "meta": {
@@ -76,9 +76,18 @@
     "kicker": "HOW IT WORKS",
     "heading": "8種の診断 → 1つのHTMLレポート。",
     "lead": "追跡型インストーラなし。OS別スクリプトがシステムを収集し、WindowsはHTMLレポート、Macはシステムコンポーネント中心のSwiftUIユーティリティとHTML書き出しに組み立てます。",
-    "p1": { "title": "収集", "desc": "プロセス・ネットワーク・ポート・自動実行・セキュリティ状態。Sysinternals + launchd + VirusTotalハッシュ照会。" },
-    "p2": { "title": "正規化", "desc": "韓国SWホワイトリストと照合してシグナル判定。OS非依存の共通スキーマ。" },
-    "p3": { "title": "レンダリング", "desc": "Windowsは単一HTMLレポート。MacはネイティブSwiftUIユーティリティとHTML書き出し。追跡型インストーラやレポートアップロードはありません。" }
+    "p1": {
+      "title": "収集",
+      "desc": "プロセス・ネットワーク・ポート・自動実行・セキュリティ状態。Sysinternals + launchd + VirusTotalハッシュ照会。"
+    },
+    "p2": {
+      "title": "正規化",
+      "desc": "韓国SWホワイトリストと照合してシグナル判定。OS非依存の共通スキーマ。"
+    },
+    "p3": {
+      "title": "レンダリング",
+      "desc": "Windowsは単一HTMLレポート。MacはネイティブSwiftUIユーティリティとHTML書き出し。追跡型インストーラやレポートアップロードはありません。"
+    }
   },
   "privacy": {
     "kicker": "PRIVACY · AUDITABLE",
