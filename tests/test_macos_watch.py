@@ -224,6 +224,63 @@ def test_storage_watch_wrapper_rejects_changed_script(project_root, tmp_path):
     assert not marker.exists()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+def test_storage_watch_runs_through_the_wrapper_the_launch_agent_uses(project_root, tmp_path):
+    """The LaunchAgent pipes the script into `bash -p` on stdin, where BASH_SOURCE
+    is unset. Every other test here runs it as a file path, so a top-level
+    `source "$(dirname "${BASH_SOURCE[0]}")/..."` passed them all while aborting
+    under `set -u` on every scheduled run. Exercise the real invocation."""
+    schedule = (project_root / "scripts" / "schedule.sh").read_text(encoding="utf-8")
+    wrapper = schedule.split("WATCH_WRAPPER='", 1)[1].split("'\n", 1)[0]
+    script = project_root / "scripts" / "storage_watch.sh"
+    expected_hash = hashlib.sha256(script.read_bytes()).hexdigest()
+    state_dir = tmp_path / "state"
+
+    result = subprocess.run(
+        [
+            "/usr/bin/env", "-i",
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+            f"HOME={tmp_path}",
+            "PCH_TEST_MODE=1",
+            f"PCH_STATE_DIR={state_dir}",
+            "PCH_TEST_FREE_KB=" + str(50 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY=0",
+            "/bin/bash", "-p", "-c", wrapper, "--", expected_hash, str(script),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    assert "unbound variable" not in result.stderr
+    assert parse_protocol(result.stdout)["status"] == "normal"
+
+
+def test_storage_watch_state_directory_name_matches_the_shared_module(project_root):
+    """storage_watch.sh must stay self-contained because the wrapper hash-pins only
+    that file and cannot source a sibling over stdin. Self-contained means the name
+    is duplicated, so pin the two copies together."""
+    module = (project_root / "scripts" / "modules" / "support_dir.sh").read_text(encoding="utf-8")
+    watch = (project_root / "scripts" / "storage_watch.sh").read_text(encoding="utf-8")
+
+    for name in ("SUPPORT_DIR_NAME", "LEGACY_SUPPORT_DIR_NAME"):
+        declaration = next(
+            line.strip() for line in module.splitlines() if line.startswith(f"{name}=")
+        )
+        assert declaration in watch, f"{name} drifted from modules/support_dir.sh"
+
+    sourced = [
+        line.strip()
+        for line in watch.splitlines()
+        if line.lstrip().startswith(("source ", ". "))
+    ]
+    assert not sourced, (
+        "storage_watch.sh runs from stdin under the LaunchAgent, where BASH_SOURCE is "
+        f"unset and the wrapper hash-pins only this file; found {sourced}"
+    )
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="launchd plist tools are macOS-only")
 def test_schedule_removes_the_agent_installed_before_the_rename(project_root, tmp_path):
     home = tmp_path / "home"
