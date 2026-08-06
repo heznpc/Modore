@@ -49,7 +49,7 @@ A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange
 - **VirusTotal lookup (opt-in)**: SHA-256 hash query only. 48h local cache, 16s rate-limit, respects the public API quota (4 req/min, 500/day).
 - **Single-file HTML report**: opens in the user's browser and works offline. The shipped OS-native reports include user-clicked Google/VirusTotal investigation links; opening one shares the selected search term, IP address, or hash with that site. The Python development report also includes collapsible novice-friendly explanations. On Mac, HTML is an export/share artifact; the SwiftUI utility interface is the primary experience.
 - **Local-only by default**: the Mac SwiftUI app and script mode run local scanners only. There is no AI/LLM integration, no OpenAI/Claude/Codex API call, no token spend, no account login, and no report upload. The optional automatic VirusTotal API lookup is the only network request initiated by a Mac scan and sends file SHA-256 hashes only. Windows can separately download Microsoft Sysinternals tools only after the configured consent step.
-- **i18n**: English, Korean, Japanese landing-page strings (`docs/i18n/`) and Python development-report strings (`data/report_i18n/`). English is the source language; the Korean whitelist/explanation depth is the specialized layer, not the default voice.
+- **i18n**: English is the source language everywhere. The Python development report keeps en/ko/ja strings (`data/report_i18n/`); the Korean whitelist/explanation depth is a specialized data layer, not the default voice.
 - **Rule engine + tests**: declarative JSON rules in `rules/` (autoruns, defender, installs, network, process) evaluated by OS-native runtime engines. Pytest covers report/rule/cleanup/release contracts; Swift tests cover stable selection, protected data, storage accounting, cleanup protocol parsing, and standalone runtime staging.
 - **Read-the-source distribution**: source release ZIPs contain readable PowerShell/Bash/JXA and Swift code, no bundled DLLs, and no telemetry. A separately produced Developer ID/notarized DMG may contain the compiled Mac app, but its scanner/rules remain bundled as readable resources and the source ZIP remains the audit surface.
 
@@ -57,7 +57,7 @@ A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange
 
 - **Mac Edition Swift app** — deepen project-manifest parsing for SDK/runtime version requirements and expand attributable app-residue mappings without weakening the local approval boundary.
 - **Windows Edition maintenance** — Windows remains under the same Modore brand, but new Windows-only storage features wait for real-device validation.
-- **Additional locales** beyond en/ko/ja — community PRs welcome; the i18n loader already supports arbitrary codes.
+- **Additional report locales** beyond en/ko/ja — community PRs welcome; the report i18n loader (`data/report_i18n/`) already supports arbitrary codes.
 
 ## Editions
 
@@ -190,10 +190,8 @@ modore/
 ├── run-mac-app.command       macOS SwiftUI app builder/launcher
 ├── README.md                 This file
 ├── docs/
-│   ├── index.html            GitHub Pages landing (multilingual)
-│   ├── style.css
-│   ├── script.js
-│   └── i18n/{en,ko,ja}.json
+│   ├── index.html            GitHub Pages landing (static, English)
+│   └── style.css
 ├── data/
 │   ├── whitelist.json        Korean programs + miner blacklist DB
 │   ├── explain.json          Plain-language explanations per check
@@ -234,7 +232,7 @@ modore/
 
 ## Landing page
 
-The `docs/` folder is the project landing page, designed for GitHub Pages. It supports English · Korean · Japanese with a language switcher. To add another language, drop a new `docs/i18n/<code>.json` file and add the code to the language list in `script.js`.
+The `docs/` folder is the project landing page, designed for GitHub Pages. It is a static, script-free English page: two HTML/CSS files, no client-side i18n runtime.
 
 To serve locally:
 ```bash

@@ -45,25 +45,7 @@ python3 -m http.server 8000
 # open http://localhost:8000
 ```
 
-Test with different languages via URL param:
-- `http://localhost:8000/?lang=ko`
-- `http://localhost:8000/?lang=en`
-- `http://localhost:8000/?lang=ja`
-
-## Adding a language
-
-1. Copy `docs/i18n/en.json` to `docs/i18n/<code>.json` (e.g. `zh.json`, `fr.json`, `es.json`)
-2. Translate each value (keep the keys in English)
-3. Edit `docs/script.js`:
-   ```js
-   const SUPPORTED = ['ko', 'en', 'ja', 'zh'];  // add code here
-   ```
-4. Edit `docs/index.html` — add a button inside `<div class="lang-switcher">`:
-   ```html
-   <button class="lang-btn" data-lang="zh">中文</button>
-   ```
-
-That's it. No build step.
+The page is static English-only HTML/CSS — no build step, no client-side i18n runtime.
 
 ## Updating releases
 
