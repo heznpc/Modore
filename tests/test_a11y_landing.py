@@ -21,11 +21,6 @@ def style_css() -> str:
     return (DOCS / "style.css").read_text(encoding="utf-8")
 
 
-@pytest.fixture(scope="module")
-def script_js() -> str:
-    return (DOCS / "script.js").read_text(encoding="utf-8")
-
-
 def test_exactly_one_main_landmark(index_html):
     assert len(re.findall(r"<main\b", index_html)) == 1
 
@@ -38,13 +33,15 @@ def test_skip_link_is_first_focusable(index_html):
     assert 'class="skip-link"' in tag and 'href="#' in tag
 
 
-def test_language_buttons_expose_pressed_state(index_html, script_js):
-    lang_buttons = re.findall(r'<button class="lang-btn[^"]*"[^>]*>', index_html)
-    assert lang_buttons, "language buttons not found"
-    assert all("aria-pressed=" in b for b in lang_buttons)
-    assert all("aria-label=" in b for b in lang_buttons)
-    # The switcher must keep aria-pressed in sync, not just the CSS class.
-    assert "aria-pressed" in script_js
+def test_landing_is_static_english_only(index_html):
+    # The landing ships one language with no client-side i18n runtime.
+    assert "lang-switcher" not in index_html
+    assert "data-i18n" not in index_html
+    assert "<script" not in index_html
+    assert '<html lang="en">' in index_html
+    # Head metadata must carry real English content, not loader placeholders.
+    description = re.search(r'<meta name="description" content="([^"]*)"', index_html)
+    assert description is not None and len(description.group(1)) > 50
 
 
 def test_reduced_motion_gates_the_animations(style_css):
@@ -77,13 +74,13 @@ def test_heading_levels_do_not_skip_after_sections(index_html):
         assert current <= previous + 1, f"heading level skips from h{previous} to h{current}"
 
 
-def test_translatable_accessible_names_cover_skip_link_and_report_preview(index_html):
-    skip = re.search(r'<a class="skip-link"[^>]*>', index_html)
+def test_accessible_names_cover_skip_link_and_report_preview(index_html):
+    skip = re.search(r'<a class="skip-link"[^>]*>[^<]+</a>', index_html)
     preview = re.search(r'<div class="report-preview"[^>]*>', index_html)
-    assert skip is not None and 'data-i18n="nav.skip"' in skip.group(0)
+    assert skip is not None
     assert preview is not None
     assert 'role="img"' in preview.group(0)
-    assert "aria-label:preview.accessible_summary" in preview.group(0)
+    assert 'aria-label="' in preview.group(0)
     assert len(re.findall(r'class="preview-(?:titlebar|body)" aria-hidden="true"', index_html)) == 2
 
 

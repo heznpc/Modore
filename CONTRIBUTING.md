@@ -98,28 +98,17 @@ Open a discussion or draft issue first for any of these.
 
 ## i18n contributions
 
-Translations live in two places:
+Translations live in one place:
 
-- `docs/i18n/{ko,en,ja}.json` — landing page strings.
-- `data/report_i18n/{ko,en,ja}.json` — HTML report strings.
+- `data/report_i18n/{en,ko,ja}.json` — Python development-report strings.
 
-To add a new language:
+The landing page (`docs/`) is a static English-only page with no i18n runtime; it is not a translation target.
 
-1. Copy `en.json` from both directories.
+To add a new report language:
+
+1. Copy `data/report_i18n/en.json`.
 2. Rename to `<code>.json` where `<code>` is a [BCP 47 primary subtag](https://en.wikipedia.org/wiki/IETF_language_tag) (e.g., `zh`, `vi`, `id`).
 3. Translate values only — keep keys exactly as in `en.json`.
-4. Add the code to the `SUPPORTED` array in `docs/script.js`.
-
-**Important — XSS hygiene:** translation strings can include a small whitelist of HTML tags (`<em>`, `<strong>`, `<code>`, `<a>`, `<br>`, `<span>`) for typography. Everything else is stripped by the sanitizer in `docs/script.js`. **Do not** include `<script>`, `<iframe>`, `<img>`, `on*` event handlers, or `javascript:` URLs — they'll be silently removed, and a PR with deliberate attempts will be rejected.
-
-If you modify `sanitizeHTML` in `docs/script.js`, **always re-run the sanitizer smoke test**:
-
-```bash
-cd docs && python3 -m http.server 8000
-# open http://localhost:8000/sanitize-test.html
-```
-
-All rows must be green. If any are red, the sanitizer regressed — fix before opening the PR. The test harness lives at `docs/sanitize-test.html` and covers the standard XSS surface (script/iframe/img/svg, `javascript:`/`data:`/`vbscript:` schemes with case + whitespace + entity-encoded bypasses, `on*` handler injection, nested elements, comment nodes).
 
 ---
 

@@ -3,35 +3,30 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title data-i18n="meta.title">Modore</title>
-  <meta name="description" data-i18n-attr="content:meta.description" content="">
-  <meta property="og:title" data-i18n-attr="content:meta.title" content="">
-  <meta property="og:description" data-i18n-attr="content:meta.description" content="">
+  <title>Modore — A local audit of what your AI agents left behind</title>
+  <meta name="description" content="A local, deterministic, metadata-only audit of Claude Code, Codex, Gemini, and AI IDE session traces — retention forecasts, orphaned sessions, and sole-copy worktrees, with no LLM anywhere in the judgment path. Modore also explains the PC that feels busy for no reason.">
+  <meta property="og:title" content="Modore — A local audit of what your AI agents left behind">
+  <meta property="og:description" content="A local, deterministic, metadata-only audit of Claude Code, Codex, Gemini, and AI IDE session traces — retention forecasts, orphaned sessions, and sole-copy worktrees, with no LLM anywhere in the judgment path.">
   <meta property="og:type" content="website">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2218%22 fill=%22%230d1117%22/><text x=%2250%22 y=%2274%22 font-size=%2266%22 font-family=%22Menlo,monospace%22 font-weight=%22700%22 text-anchor=%22middle%22 fill=%22%23ffd84d%22>M</text></svg>">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<a class="skip-link" href="#main" data-i18n="nav.skip">Skip to main content</a>
+<a class="skip-link" href="#main">Skip to main content</a>
 
 <header class="topbar">
   <div class="topbar-inner">
     <a href="#" class="brand">
       <span class="brand-mark">M</span>
-      <span class="brand-name" data-i18n="brand.name">Modore</span>
+      <span class="brand-name">Modore</span>
     </a>
     <nav class="nav">
-      <a href="#scree" data-i18n="nav.sessions">AI Sessions</a>
-      <a href="#problem" data-i18n="nav.problem">Why Busy?</a>
-      <a href="#how" data-i18n="nav.how">How</a>
-      <a href="#privacy" data-i18n="nav.privacy">Privacy</a>
-      <a href="#download" data-i18n="nav.download">Source</a>
+      <a href="#scree">AI Sessions</a>
+      <a href="#problem">Why Busy?</a>
+      <a href="#how">How</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#download">Source</a>
       <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="github-link">GitHub</a>
-      <div class="lang-switcher" id="langSwitcher">
-        <button class="lang-btn active" data-lang="en" aria-label="English" aria-pressed="true">EN</button>
-        <button class="lang-btn" data-lang="ko" aria-label="한국어" aria-pressed="false">KO</button>
-        <button class="lang-btn" data-lang="ja" aria-label="日本語" aria-pressed="false">JA</button>
-      </div>
     </nav>
   </div>
 </header>
@@ -45,29 +40,29 @@
     <div>
       <div class="hero-tag">
         <span class="pulse"></span>
-        <span data-i18n="hero.tag">v0.3 · Mac Edition / Windows Edition</span>
+        <span>v0.3 · Mac Edition / Windows Edition</span>
       </div>
-      <h1 data-i18n="hero.title">A local audit of <em>what your AI agents left behind</em>.</h1>
-      <p class="hero-subtitle" data-i18n="hero.subtitle">
+      <h1>A local audit of <em>what your AI agents left behind</em>.</h1>
+      <p class="hero-subtitle">
         On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, Modore answers the questions no other tool asks: which sessions touched which projects, which transcripts quietly expire in days, and which worktrees hold the only copy of unpushed work — deterministically, with no LLM in the judgment path. The same evidence-first approach also covers the PC that feels busy for no reason.
       </p>
       <div class="hero-actions">
-        <a href="#download" class="btn btn-primary" data-i18n="hero.cta_primary">Run from source <span class="arrow">→</span></a>
-        <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="btn btn-ghost" data-i18n="hero.cta_secondary">Read the source</a>
+        <a href="#download" class="btn btn-primary">Run from source <span class="arrow">→</span></a>
+        <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="btn btn-ghost">Read the source</a>
       </div>
       <div class="hero-meta">
-        <span><span data-i18n="hero.meta.free">Free</span></span>
+        <span><span>Free</span></span>
         <span class="dot">·</span>
-        <span><span data-i18n="hero.meta.oss">MIT open source</span></span>
+        <span><span>MIT open source</span></span>
         <span class="dot">·</span>
-        <span><span data-i18n="hero.meta.no_install">No install</span></span>
+        <span><span>No install</span></span>
         <span class="dot">·</span>
-        <span data-i18n="hero.meta.loc">Readable source</span>
+        <span>Readable source</span>
       </div>
     </div>
 
     <!-- Traffic-light scan report mockup -->
-    <div class="report-preview" role="img" data-i18n-attr="aria-label:preview.accessible_summary" aria-label="Example scan result: 3 items to review, 0 threats, 93 safe">
+    <div class="report-preview" role="img" aria-label="Example scan result: 3 items to review, 0 threats, 93 safe">
       <div class="preview-titlebar" aria-hidden="true">
         <div class="preview-dots"><span></span><span></span><span></span></div>
         <div class="preview-url">file:///modore/scan-result.html</div>
@@ -76,33 +71,33 @@
         <div class="preview-verdict">
           <div class="icon">🟡</div>
           <div class="text">
-            <div class="label" data-i18n="preview.verdict_label">WARNING</div>
-            <div class="msg" data-i18n="preview.verdict_msg">3 items to review · 0 threats</div>
+            <div class="label">WARNING</div>
+            <div class="msg">3 items to review · 0 threats</div>
           </div>
         </div>
         <div class="preview-cards">
-          <div class="preview-card red"><div class="count">0</div><div class="label" data-i18n="preview.danger">Danger</div></div>
-          <div class="preview-card yellow"><div class="count">3</div><div class="label" data-i18n="preview.check">Check</div></div>
-          <div class="preview-card green"><div class="count">93</div><div class="label" data-i18n="preview.safe">Safe</div></div>
+          <div class="preview-card red"><div class="count">0</div><div class="label">Danger</div></div>
+          <div class="preview-card yellow"><div class="count">3</div><div class="label">Check</div></div>
+          <div class="preview-card green"><div class="count">93</div><div class="label">Safe</div></div>
         </div>
         <div class="preview-table">
           <div class="preview-row">
-            <span class="pbadge safe" data-i18n="preview.rows.safe">SAFE</span>
+            <span class="pbadge safe">SAFE</span>
             <span class="name">I3GProc.exe</span>
-            <span class="meta" data-i18n="preview.rows.banking">IPinside · Banking</span>
+            <span class="meta">IPinside · Banking</span>
           </div>
           <div class="preview-row">
-            <span class="pbadge safe" data-i18n="preview.rows.safe">SAFE</span>
+            <span class="pbadge safe">SAFE</span>
             <span class="name">KakaoTalk.exe</span>
-            <span class="meta" data-i18n="preview.rows.signed">Kakao · Signed</span>
+            <span class="meta">Kakao · Signed</span>
           </div>
           <div class="preview-row">
-            <span class="pbadge check" data-i18n="preview.rows.check">CHECK</span>
+            <span class="pbadge check">CHECK</span>
             <span class="name">MPSch.exe</span>
-            <span class="meta" data-i18n="preview.rows.appdata">AppData · Unsigned</span>
+            <span class="meta">AppData · Unsigned</span>
           </div>
           <div class="preview-row">
-            <span class="pbadge safe" data-i18n="preview.rows.safe">SAFE</span>
+            <span class="pbadge safe">SAFE</span>
             <span class="name">chrome.exe</span>
             <span class="meta">Google · VT 0/72</span>
           </div>
@@ -117,42 +112,42 @@
      ====================================================== -->
 <section id="scree" class="section">
   <div class="container">
-    <div class="section-kicker" data-i18n="scree.kicker">AI SESSIONS · MAC EDITION</div>
-    <h2 data-i18n="scree.heading">A deterministic map of what agents left behind.</h2>
-    <p class="lead" data-i18n="scree.lead">
+    <div class="section-kicker">AI SESSIONS · MAC EDITION</div>
+    <h2>A deterministic map of what agents left behind.</h2>
+    <p class="lead">
       scree joins Claude Code, Codex, Gemini CLI, and VS Code-fork session stores by workspace and repository — metadata-only, no LLM anywhere in the judgment path. Every verdict is preview-grade evidence with an explicit revalidation duty.
     </p>
 
     <div class="privacy-block">
       <div class="privacy-points">
         <div class="privacy-point">
-          <h3 data-i18n="scree.cards.join.title">Cross-tool join</h3>
-          <p data-i18n="scree.cards.join.desc">Which tools touched which workspace/repository, when — across Claude Code, Codex, Gemini CLI, and VS Code-fork stores.</p>
+          <h3>Cross-tool join</h3>
+          <p>Which tools touched which workspace/repository, when — across Claude Code, Codex, Gemini CLI, and VS Code-fork stores.</p>
         </div>
         <div class="privacy-point">
-          <h3 data-i18n="scree.cards.retention.title">Retention forecast</h3>
-          <p data-i18n="scree.cards.retention.desc">Per-store rolling windows estimated from file ages, with D-day flags for sessions about to expire inside still-active projects.</p>
+          <h3>Retention forecast</h3>
+          <p>Per-store rolling windows estimated from file ages, with D-day flags for sessions about to expire inside still-active projects.</p>
         </div>
         <div class="privacy-point">
-          <h3 data-i18n="scree.cards.sole_copy.title">Sole-copy judgment</h3>
-          <p data-i18n="scree.cards.sole_copy.desc">Agent worktrees and primary checkouts stranded off main: protected (dirty or unpushed) versus rebuildable, from read-only git evidence.</p>
+          <h3>Sole-copy judgment</h3>
+          <p>Agent worktrees and primary checkouts stranded off main: protected (dirty or unpushed) versus rebuildable, from read-only git evidence.</p>
         </div>
         <div class="privacy-point">
-          <h3 data-i18n="scree.cards.lineage.title">Orphans &amp; lineage</h3>
-          <p data-i18n="scree.cards.lineage.desc">Sessions pointing at vanished workspaces, and every remembered work path classified alive+git / alive+plain / vanished.</p>
+          <h3>Orphans &amp; lineage</h3>
+          <p>Sessions pointing at vanished workspaces, and every remembered work path classified alive+git / alive+plain / vanished.</p>
         </div>
         <div class="privacy-point">
-          <h3 data-i18n="scree.contract.title">No-content-leak contract</h3>
-          <p data-i18n="scree.contract.desc">Leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by stat() without being opened — pinned by tests.</p>
+          <h3>No-content-leak contract</h3>
+          <p>Leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by stat() without being opened — pinned by tests.</p>
         </div>
       </div>
 
       <div class="code-block">
         <div class="code-header">
-          <span class="filename" data-i18n="scree.terminal.title">scree — session &amp; residue audit</span>
+          <span class="filename">scree — session &amp; residue audit</span>
           <span class="link">scripts/scree.py · <a href="https://github.com/heznpc/modore/blob/main/scripts/scree.py" target="_blank" rel="noopener">GitHub</a></span>
         </div>
-<pre><span class="v" data-i18n="scree.terminal.path">$ python3 scripts/scree.py</span>
+<pre><span class="v">$ python3 scripts/scree.py</span>
 <span class="c">Modore scree — a map of what agents left behind (metadata-only · deterministic join)</span>
 stores: claude-code 148 · codex 2807 · gemini-cli 103 · vscode-fork 30
 12 groups — cross-tool 5 · orphan 3 · unresolved sessions 0
@@ -170,11 +165,11 @@ worktree anchor judgment (git registry · push state, read-only)
 </section>
 
 <!-- ======================================================
-     TICKER: 인식하는 한국 SW 이름
+     TICKER: recognized Korean software names
      ====================================================== -->
 <section class="ticker-section">
   <div class="container">
-    <div class="ticker-label" data-i18n="ticker.label">Recognized software</div>
+    <div class="ticker-label">Recognized software</div>
     <div class="ticker">
       <div class="ticker-track" id="tickerTrack">
         <span class="ok">IPinside</span>
@@ -206,36 +201,36 @@ worktree anchor judgment (git registry · push state, read-only)
      ====================================================== -->
 <section id="problem" class="section">
   <div class="container">
-    <div class="section-kicker" data-i18n="problem.kicker">PROBLEM</div>
-    <h2 data-i18n="problem.heading">Why is my PC this <em>busy</em>?</h2>
-    <p class="lead" data-i18n="problem.lead">
+    <div class="section-kicker">PROBLEM</div>
+    <h2>Why is my PC this <em>busy</em>?</h2>
+    <p class="lead">
       A slow PC, spinning fans, high CPU/GPU, and unknown startup entries create real anxiety. A Korean PC also carries banking, government, and e-commerce security plugins that often look suspicious. Modore gathers evidence before you ignore everything or delete the wrong thing.
     </p>
 
     <div class="compare">
       <div class="compare-col bad">
-        <h3><span class="icon">⚠</span><span data-i18n="problem.generic.label">Generic scanner</span></h3>
-        <p class="quote" data-i18n="problem.generic.quote">"30 suspicious items detected."</p>
+        <h3><span class="icon">⚠</span><span>Generic scanner</span></h3>
+        <p class="quote">"30 suspicious items detected."</p>
         <ul class="compare-list">
-          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.reasons.unsigned">Unsigned net hook</span></li>
-          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.reasons.port">Port listener</span></li>
-          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.reasons.kext">Kernel driver</span></li>
-          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.reasons.bho">Browser hook</span></li>
-          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.reasons.persist">Always-on</span></li>
+          <li><span class="tag">SUSPECT</span><span class="tool-name">I3GProc.exe</span><span class="reason">Unsigned net hook</span></li>
+          <li><span class="tag">SUSPECT</span><span class="tool-name">nosstarter.exe</span><span class="reason">Port listener</span></li>
+          <li><span class="tag">SUSPECT</span><span class="tool-name">MagicLine4NP.exe</span><span class="reason">Kernel driver</span></li>
+          <li><span class="tag">SUSPECT</span><span class="tool-name">WIZVERA.exe</span><span class="reason">Browser hook</span></li>
+          <li><span class="tag">SUSPECT</span><span class="tool-name">INISAFEWeb.exe</span><span class="reason">Always-on</span></li>
           <li><span class="tag"></span><span class="tool-name">+ 25 more...</span><span class="reason"></span></li>
         </ul>
       </div>
 
       <div class="compare-col good">
-        <h3><span class="icon">🩺</span><span data-i18n="problem.pch.label">Modore</span></h3>
-        <p class="quote" data-i18n="problem.pch.quote">"29 are banking software. 1 needs review."</p>
+        <h3><span class="icon">🩺</span><span>Modore</span></h3>
+        <p class="quote">"29 are banking software. 1 needs review."</p>
         <ul class="compare-list">
-          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.pch.reasons.ipinside">IPinside, normal</span></li>
-          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.pch.reasons.inisafe">INISAFE, normal</span></li>
-          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.pch.reasons.dream">DreamSecurity</span></li>
-          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.pch.reasons.wizvera">E-signature tool</span></li>
-          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.pch.reasons.bank">Banking security</span></li>
-          <li class="check"><span class="tag" data-i18n="problem.tag.check">CHECK</span><span class="tool-name">MPSch.exe</span><span class="reason" data-i18n="problem.pch.reasons.unknown">Unknown → VT check</span></li>
+          <li class="safe"><span class="tag">NORMAL</span><span class="tool-name">I3GProc.exe</span><span class="reason">IPinside, normal</span></li>
+          <li class="safe"><span class="tag">NORMAL</span><span class="tool-name">nosstarter.exe</span><span class="reason">INISAFE, normal</span></li>
+          <li class="safe"><span class="tag">NORMAL</span><span class="tool-name">MagicLine4NP.exe</span><span class="reason">DreamSecurity</span></li>
+          <li class="safe"><span class="tag">NORMAL</span><span class="tool-name">WIZVERA.exe</span><span class="reason">E-signature tool</span></li>
+          <li class="safe"><span class="tag">NORMAL</span><span class="tool-name">INISAFEWeb.exe</span><span class="reason">Banking security</span></li>
+          <li class="check"><span class="tag">CHECK</span><span class="tool-name">MPSch.exe</span><span class="reason">Unknown → VT check</span></li>
         </ul>
       </div>
     </div>
@@ -243,35 +238,35 @@ worktree anchor judgment (git registry · push state, read-only)
 </section>
 
 <!-- ======================================================
-     HOW IT WORKS - 파이프라인
+     HOW IT WORKS - pipeline
      ====================================================== -->
 <section id="how" class="section">
   <div class="container">
-    <div class="section-kicker" data-i18n="how.kicker">HOW IT WORKS</div>
-    <h2 data-i18n="how.heading">8 diagnostics &rarr; 1 HTML report.</h2>
-    <p class="lead" data-i18n="how.lead">
+    <div class="section-kicker">HOW IT WORKS</div>
+    <h2>8 diagnostics &rarr; 1 HTML report.</h2>
+    <p class="lead">
       No tracking installer. OS-specific scripts collect system state, then Windows assembles an HTML report while Mac uses a system-component SwiftUI utility plus HTML export.
     </p>
 
     <div class="pipeline">
       <div class="pipe-node">
         <div class="label">01 · COLLECT</div>
-        <h3 data-i18n="how.p1.title">Collect</h3>
-        <p data-i18n="how.p1.desc">Processes, network, ports, autoruns, security posture. Sysinternals + launchd + VirusTotal hash lookup.</p>
+        <h3>Collect</h3>
+        <p>Processes, network, ports, autoruns, security posture. Sysinternals + launchd + VirusTotal hash lookup.</p>
         <code>scanner.ps1 · scanner.sh</code>
       </div>
       <div class="pipe-arrow">→</div>
       <div class="pipe-node">
         <div class="label">02 · NORMALIZE</div>
-        <h3 data-i18n="how.p2.title">Normalize</h3>
-        <p data-i18n="how.p2.desc">Match against Korean software whitelist, assign traffic-light verdict. OS-agnostic schema.</p>
+        <h3>Normalize</h3>
+        <p>Match against Korean software whitelist, assign traffic-light verdict. OS-agnostic schema.</p>
         <code>scan_result.json</code>
       </div>
       <div class="pipe-arrow">→</div>
       <div class="pipe-node">
         <div class="label">03 · RENDER</div>
-        <h3 data-i18n="how.p3.title">Render</h3>
-        <p data-i18n="how.p3.desc">Windows gets a single HTML report. Mac gets a native SwiftUI utility plus HTML export. No tracking installer or report upload.</p>
+        <h3>Render</h3>
+        <p>Windows gets a single HTML report. Mac gets a native SwiftUI utility plus HTML export. No tracking installer or report upload.</p>
         <code>scan-result.html</code>
       </div>
     </div>
@@ -279,33 +274,33 @@ worktree anchor judgment (git registry · push state, read-only)
 </section>
 
 <!-- ======================================================
-     PRIVACY - 실제 코드로 증명
+     PRIVACY - proven with the actual code
      ====================================================== -->
 <section id="privacy" class="section">
   <div class="container">
-    <div class="section-kicker" data-i18n="privacy.kicker">PRIVACY · AUDITABLE</div>
-    <h2 data-i18n="privacy.heading">Don't take "we're safe" on faith — <em>read the code</em>.</h2>
-    <p class="lead" data-i18n="privacy.lead">
+    <div class="section-kicker">PRIVACY · AUDITABLE</div>
+    <h2>Don't take "we're safe" on faith — <em>read the code</em>.</h2>
+    <p class="lead">
       Every network call is in the source. VirusTotal lookups send <strong>only the SHA-256 hash</strong>; file contents never leave your machine. Here's the actual call site.
     </p>
 
     <div class="privacy-block">
       <div class="privacy-points">
         <div class="privacy-point">
-          <h3 data-i18n="privacy.points.hash.title">Hash only, no file upload</h3>
-          <p data-i18n="privacy.points.hash.desc"><code>Get-FileHash</code> computes SHA-256 locally. The GET request carries just the hash. If the hash is unknown, we return "unknown" — we never upload the file.</p>
+          <h3>Hash only, no file upload</h3>
+          <p><code>Get-FileHash</code> computes SHA-256 locally. The GET request carries just the hash. If the hash is unknown, we return "unknown" — we never upload the file.</p>
         </div>
         <div class="privacy-point">
-          <h3 data-i18n="privacy.points.telemetry.title">Zero telemetry</h3>
-          <p data-i18n="privacy.points.telemetry.desc">No usage stats, no error reports, nothing sent to us. Diagnostic runtime outbound calls are limited to opt-in VirusTotal lookups and optional Sysinternals downloads.</p>
+          <h3>Zero telemetry</h3>
+          <p>No usage stats, no error reports, nothing sent to us. Diagnostic runtime outbound calls are limited to opt-in VirusTotal lookups and optional Sysinternals downloads.</p>
         </div>
         <div class="privacy-point">
-          <h3 data-i18n="privacy.points.local.title">Local cache only</h3>
-          <p data-i18n="privacy.points.local.desc">VT responses cache in %LOCALAPPDATA% (Windows) or ~/Library/Caches (macOS) for 48h. No cloud account, no sync.</p>
+          <h3>Local cache only</h3>
+          <p>VT responses cache in %LOCALAPPDATA% (Windows) or ~/Library/Caches (macOS) for 48h. No cloud account, no sync.</p>
         </div>
         <div class="privacy-point">
-          <h3 data-i18n="privacy.points.audit.title">Source you can read</h3>
-          <p data-i18n="privacy.points.audit.desc">Readable PowerShell · Bash · JXA source. Release zips do not bundle prebuilt diagnostic binaries. <code>grep -R "Invoke-RestMethod\|Invoke-WebRequest\|curl\|virustotal.com/api" scripts/</code> finds outbound calls.</p>
+          <h3>Source you can read</h3>
+          <p>Readable PowerShell · Bash · JXA source. Release zips do not bundle prebuilt diagnostic binaries. <code>grep -R "Invoke-RestMethod\|Invoke-WebRequest\|curl\|virustotal.com/api" scripts/</code> finds outbound calls.</p>
         </div>
       </div>
 
@@ -343,28 +338,28 @@ worktree anchor judgment (git registry · push state, read-only)
      ====================================================== -->
 <section id="download" class="section">
   <div class="container">
-    <div class="section-kicker" data-i18n="download.kicker">SOURCE PREVIEW</div>
-    <h2 data-i18n="download.heading">Review and build the source.</h2>
-    <p class="lead" data-i18n="download.lead">
+    <div class="section-kicker">SOURCE PREVIEW</div>
+    <h2>Review and build the source.</h2>
+    <p class="lead">
       No public installer is available yet. Run the reviewed source, or wait for a release with signing, notarization, Gatekeeper, and SHA-256 metadata.
     </p>
 
     <div class="download-grid">
       <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="dl-card">
         <span class="os-mark">MAC</span>
-        <h3 data-i18n="download.macos.title">Mac Edition</h3>
-        <p data-i18n="download.macos.desc">macOS 13+ SwiftUI app via <code>run-mac-app.command</code>; script mode via <code>scan.command</code> → Open. The AI-agent session audit (scree) and System Data/Developer storage decoding are Mac Edition features.</p>
-        <span class="dl-link" data-i18n="download.macos.btn">View Mac source →</span>
+        <h3>Mac Edition</h3>
+        <p>macOS 13+ SwiftUI app via <code>run-mac-app.command</code>; script mode via <code>scan.command</code> → Open. The AI-agent session audit (scree) and System Data/Developer storage decoding are Mac Edition features.</p>
+        <span class="dl-link">View Mac source →</span>
       </a>
       <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="dl-card">
         <span class="os-mark">WIN</span>
-        <h3 data-i18n="download.windows.title">Windows Edition</h3>
-        <p data-i18n="download.windows.desc">Windows 10 / 11 · PowerShell 5.1. Review the source, then run <code>scan.bat</code>.</p>
-        <span class="dl-link" data-i18n="download.windows.btn">View Windows source →</span>
+        <h3>Windows Edition</h3>
+        <p>Windows 10 / 11 · PowerShell 5.1. Review the source, then run <code>scan.bat</code>.</p>
+        <span class="dl-link">View Windows source →</span>
       </a>
     </div>
 
-    <p class="github-side" data-i18n="download.github_side">
+    <p class="github-side">
       Clone or fork: <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener">github.com/heznpc/modore</a>. Inspect the readable source yourself.
     </p>
   </div>
@@ -375,8 +370,8 @@ worktree anchor judgment (git registry · push state, read-only)
      ====================================================== -->
 <section class="closing-note">
   <div class="container">
-    <p data-i18n="closing.lead">No sign-up, no email, no upload — verify it yourself.</p>
-    <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" data-i18n="closing.cta">Read the source →</a>
+    <p>No sign-up, no email, no upload — verify it yourself.</p>
+    <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener">Read the source →</a>
   </div>
 </section>
 
@@ -386,18 +381,17 @@ worktree anchor judgment (git registry · push state, read-only)
     <div>
       <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener">GitHub</a>
       &nbsp;·&nbsp;
-      <span data-i18n="footer.license">MIT License</span>
+      <span>MIT License</span>
       &nbsp;·&nbsp;
-      <span data-i18n="footer.version">v0.3.0</span>
+      <span>v0.3.0</span>
     </div>
     <div class="credits">
-      <span data-i18n="footer.author">Built and maintained by <a href="https://github.com/heznpc" target="_blank" rel="noopener">heznpc</a>.</span>
+      <span>Built and maintained by <a href="https://github.com/heznpc" target="_blank" rel="noopener">heznpc</a>.</span>
       &nbsp;·&nbsp;
-      <span data-i18n="footer.credits">Thanks to Microsoft Sysinternals · Objective-See · the Malware Zero community.</span>
+      <span>Thanks to Microsoft Sysinternals · Objective-See · the Malware Zero community.</span>
     </div>
   </div>
 </footer>
 
-<script src="script.js"></script>
 </body>
 </html>
