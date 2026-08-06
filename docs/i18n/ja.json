@@ -1,22 +1,23 @@
 {
   "meta": {
-    "title": "Modore — PCが裏で動いていないか説明するローカル診断",
-    "description": "隠れたマイニングの疑い、韓国の銀行プラグインの誤判定、macOSの曖昧なSystem Data/Developerストレージ表示を文脈付きで説明するローカル診断ツール。Modoreは Windows Edition と Mac Edition に分かれ、シグナル形式のレポートとハッシュのみのVirusTotal照会を提供します。 AIエージェントが残したセッション・作業痕跡の保存期限と唯一コピー判定もローカルで行います。"
+    "title": "Modore — AIエージェントが残したものを判定するローカル監査",
+    "description": "Claude Code・Codex・Gemini・AI IDEのセッション痕跡をローカルで決定的に、メタデータのみで監査します — 保存期限予測、孤立セッション、唯一コピーのworktree判定まで、判定経路にLLMは一切ありません。理由もなく忙しいPCも同じ原則で説明します: マイニング疑惑、自動実行、韓国銀行プラグインの誤判定をシグナル形式のレポートとハッシュのみのVirusTotal照会で示します。"
   },
   "brand": {
     "name": "Modore"
   },
   "nav": {
     "skip": "本文へ移動",
-    "problem": "問題",
+    "sessions": "AIセッション",
+    "problem": "なぜ忙しい?",
     "how": "仕組み",
     "privacy": "プライバシー",
     "download": "ソース"
   },
   "hero": {
-    "tag": "v0.3 · Windows Edition / Mac Edition",
-    "title": "PCが<em>裏で勝手に動いていないか</em>説明するローカル診断。",
-    "subtitle": "ファンが回り続ける、CPU/GPUが跳ねる、知らないプロセスがある。Modoreはマイニングの兆候、自動実行、ネットワーク、韓国セキュリティプラグインの文脈を集め、削除前の判断材料を示します。 さらにAI時代の新しい質問 — Claude・Codexなどのエージェントがどのプロジェクトに触れ、どのセッション記録が数日後に静かに消え、どの作業ツリーが唯一のコピーなのか — も同じ方式で判定します。",
+    "tag": "v0.3 · Mac Edition / Windows Edition",
+    "title": "<em>AIエージェントが残したもの</em>を判定するローカル監査。",
+    "subtitle": "Claude Code・Codex・Geminiなどのツールが作業したMacで、Modoreは他のツールが問わない質問に答えます — どのセッションがどのプロジェクトに触れ、どのトランスクリプトが数日後に静かに期限切れになり、どのworktreeが未pushの作業の唯一コピーなのか — 判定経路にLLMを置かず決定的に。同じ根拠優先の原則が、理由もなく忙しいPCにもそのまま当てはまります。",
     "cta_primary": "ソースから実行 <span class='arrow'>→</span>",
     "cta_secondary": "ソースを読む",
     "meta": {
@@ -41,12 +42,43 @@
       "appdata": "AppData · 未署名"
     }
   },
+  "scree": {
+    "kicker": "AIセッション · MAC EDITION",
+    "heading": "エージェントが残したものの決定的な地図。",
+    "lead": "screeはClaude Code・Codex・Gemini CLI・VS Code系のセッションストアをワークスペース・リポジトリ単位で重ね合わせて判定します — メタデータのみ、判定経路にLLMなし。すべての判定は再検証義務が明示されたプレビュー等級の証拠です。",
+    "terminal": {
+      "title": "scree — セッション・残留物監査",
+      "path": "$ python3 scripts/scree.py"
+    },
+    "cards": {
+      "join": {
+        "title": "クロスツール結合",
+        "desc": "どのツールがどのワークスペース・リポジトリにいつ触れたか — Claude Code・Codex・Gemini CLI・VS Code系ストア全体にわたって。"
+      },
+      "retention": {
+        "title": "保存期限予測",
+        "desc": "ファイルの経過日数から推定したストアごとのローリングウィンドウ。まだ活動中のプロジェクト内で期限切れが近いセッションにはD-day表示。"
+      },
+      "sole_copy": {
+        "title": "唯一コピー判定",
+        "desc": "エージェントworktreeとmainから外れた本体チェックアウト: 読み取り専用のgit証拠から、保護(dirtyまたは未push)と再構築可能を区別。"
+      },
+      "lineage": {
+        "title": "孤立・系譜",
+        "desc": "消えたワークスペースを指すセッション、そしてセッション記録が覚えているすべての作業パスをalive+git / alive+plain / vanishedに分類。"
+      }
+    },
+    "contract": {
+      "title": "本文非保持契約",
+      "desc": "先頭のJSONL行はメモリ上でデコードされますが、メッセージ本文は決して保持・出力されません。付随トランスクリプトは開かずstat()のみで帰属— テストで固定。"
+    }
+  },
   "ticker": {
-    "label": "ホワイトリスト収録ソフトウェア · RECOGNIZED SOFTWARE"
+    "label": "認識済みソフトウェア"
   },
   "problem": {
     "kicker": "PROBLEM",
-    "heading": "「PCが勝手にマイニングしている?」と思った時、<em>まず何を確認するべきか?</em>",
+    "heading": "なぜPCがこんなに<em>忙しい</em>のか?",
     "lead": "遅くなったPC、止まらないファン、高いCPU/GPU、知らない自動実行項目は不安を生みます。韓国のPCには銀行・公的機関・ECサイトのセキュリティプラグインも多く、正常な項目と確認すべき項目の区別が難しいものです。Modoreは削除の前に根拠を集めます。",
     "generic": {
       "label": "汎用スキャナ",
@@ -70,6 +102,11 @@
       "kext": "カーネルドライバ",
       "bho": "ブラウザフック",
       "persist": "常時実行"
+    },
+    "tag": {
+      "suspect": "要確認",
+      "normal": "正常",
+      "check": "確認"
     }
   },
   "how": {
@@ -118,23 +155,23 @@
     "lead": "現在、公開インストーラはありません。確認済みのソースを実行するか、署名・公証・Gatekeeper・SHA-256メタデータ付きリリースをお待ちください。",
     "windows": {
       "title": "Windows Edition",
-      "desc": "Windows 10 / 11 · PowerShell 5.1。ソースを確認して <code>검사하기.bat</code> を実行。",
+      "desc": "Windows 10 / 11 · PowerShell 5.1。ソースを確認して <code>scan.bat</code> を実行。",
       "btn": "Windowsソースを見る →"
     },
     "macos": {
       "title": "Mac Edition",
-      "desc": "macOS 13+ SwiftUIアプリは <code>Mac앱실행.command</code>、スクリプトモードは <code>검사하기.command</code> を右クリック → 開く。System Data/Developerストレージバーの解釈は Mac Edition の機能です。",
+      "desc": "macOS 13+ SwiftUIアプリは <code>run-mac-app.command</code>、スクリプトモードは <code>scan.command</code> を右クリック → 開く。AIセッション監査(scree)とSystem Data/Developerストレージバーの解釈は Mac Edition の機能です。",
       "btn": "Macソースを見る →"
     },
     "github_side": "クローン・フォーク: <a href='https://github.com/heznpc/modore' target='_blank' rel='noopener'>github.com/heznpc/modore</a>。読めるソースを自分で確認できます。"
   },
-  "final": {
-    "heading": "疑わしい今、<em>6分で答えが出ます。</em>",
-    "lead": "登録不要。メールアドレス不要。レポートは自分のブラウザでのみ開かれます。",
-    "cta": "ソースを見る <span class='arrow'>→</span>"
+  "closing": {
+    "lead": "登録不要、メール不要、アップロード不要 — 自分で検証できます。",
+    "cta": "ソースを読む →"
   },
   "footer": {
     "license": "MIT License",
+    "author": "制作・保守: <a href=\"https://github.com/heznpc\" target=\"_blank\" rel=\"noopener\">heznpc</a>。",
     "version": "v0.3.0",
     "credits": "Microsoft Sysinternals · Objective-See · Malware Zeroコミュニティに感謝。"
   }

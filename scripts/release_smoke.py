@@ -284,7 +284,6 @@ COMMON_FILES = [
     "SECURITY.md",
     "CONTRIBUTING.md",
     "CHANGELOG.md",
-    "사용법.txt",
     "docs/ARCHITECTURE.md",
     "data/config.example.json",
     "data/explain.json",
@@ -301,7 +300,7 @@ COMMON_FILES = [
 ]
 
 WINDOWS_FILES = COMMON_FILES + [
-    "검사하기.bat",
+    "scan.bat",
     "scripts/menu.ps1",
     "scripts/scanner.ps1",
     "scripts/report.ps1",
@@ -329,8 +328,8 @@ SWIFT_FILES = sorted(
 )
 
 MACOS_BASE_FILES = COMMON_FILES + [
-    "검사하기.command",
-    "Mac앱실행.command",
+    "scan.command",
+    "run-mac-app.command",
     "scripts/scanner.sh",
     "scripts/cleanup.sh",
     "scripts/storage_watch.sh",
@@ -1070,8 +1069,8 @@ def main() -> int:
             mac_name,
             macos_files,
             executable_entries={
-                "검사하기.command",
-                "Mac앱실행.command",
+                "scan.command",
+                "run-mac-app.command",
                 "scripts/scanner.sh",
                 "scripts/cleanup.sh",
                 "scripts/storage_watch.sh",

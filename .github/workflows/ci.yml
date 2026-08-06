@@ -128,7 +128,7 @@ jobs:
           while IFS= read -r -d '' script; do
             /bin/bash -n "$script"
           done < <(
-            printf '%s\0' ./Mac앱실행.command ./검사하기.command
+            printf '%s\0' ./run-mac-app.command ./scan.command
             /usr/bin/find ./scripts -type f -name '*.sh' -print0
           )
           scripts/package_macos_release.sh --check
