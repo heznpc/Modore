@@ -1,9 +1,9 @@
 # Modore
 
-> A local workstation incident investigator for the moment you wonder: **is my PC doing something behind my back — and what did my AI tools leave behind?**
-> It turns process, network, autorun, security, storage, developer-runtime, and AI-agent session signals into plain-language evidence before you stop or delete anything. On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, it also answers the questions no other tool asks: which sessions touched which projects, which transcripts silently expire in a few days, which agent worktrees hold the only copy of unpushed work, and which paths survive nowhere except in a session record.
+> **A local audit of what your AI agents left behind.** On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, Modore answers the questions no other tool asks: which sessions touched which projects, which transcripts silently expire in a few days, which agent worktrees hold the only copy of unpushed work, and which paths survive nowhere except in a session record — deterministically, metadata-only, with no LLM anywhere in the judgment path.
+> The same evidence-first approach also covers the PC that feels busy for no reason: process, network, autorun, security, and storage signals turned into plain-language evidence before you stop or delete anything.
 
-[🌐 **Website**](https://heznpc.github.io/modore/) · [📦 Releases (when published)](https://github.com/heznpc/modore/releases) · [🇰🇷 한국어 가이드](./사용법.txt) · [Architecture](./docs/ARCHITECTURE.md)
+[🌐 **Website**](https://heznpc.github.io/modore/) · [📦 Releases (when published)](https://github.com/heznpc/modore/releases) · [Architecture](./docs/ARCHITECTURE.md)
 
 *Part of the Heznpc portfolio — Trust tier (Supporting).*
 
@@ -13,11 +13,7 @@
 
 ## The two questions it answers
 
-### 1. Is my PC doing something behind my back?
-
-A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange network connection, disk space vanishing overnight. Generic scanners detect but do not explain — and on a Korean banking/government PC they cry wolf over IPinside, nProtect, MagicLine and the rest of the mandated plugin set until users either panic-uninstall critical software or learn to ignore every warning. Modore is the second opinion: it joins process, network, autorun, security, and storage signals, checks miner-like runtime patterns, recognizes the Korean plugin set with a locale-aware whitelist, and explains every finding in plain Korean, English, or Japanese with a 🟢🟡🔴 verdict. Nothing is ever deleted automatically.
-
-### 2. What did my AI tools leave behind? (Mac)
+### 1. What did my AI tools leave behind? (Mac)
 
 On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, the machine fills with traces no other tool audits: session stores that silently expire on rolling windows, agent git worktrees holding the only copy of unpushed work, orphaned sessions pointing at deleted projects, gigabytes of rebuildable model and editor caches, and paths whose only surviving record is a session transcript. **scree**, Modore's session-and-residue audit, judges all of it — deterministically, metadata-only, with no LLM anywhere in the judgment path:
 
@@ -32,14 +28,19 @@ python3 scripts/scree.py preserve <session-file>  # masked single-session export
 - **Orphans & lineage** — sessions pointing at vanished workspaces (`orphan_basis: path_missing`), and every remembered work path classified alive+git / alive+plain / vanished, with macOS case-variant ghosts merged.
 - **Contract** — leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by `stat()` without being opened; pinned by tests. `preserve` is the single deliberate exception: one caller-named file, mask-by-default (`--raw` opts out), no bulk export.
 
+### 2. Why is my PC this busy?
+
+A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange network connection, disk space vanishing overnight. Generic scanners detect but do not explain — and on a Korean banking/government PC they cry wolf over IPinside, nProtect, MagicLine and the rest of the mandated plugin set until users either panic-uninstall critical software or learn to ignore every warning. Modore is the second opinion: it joins process, network, autorun, security, and storage signals, checks miner-like runtime patterns, recognizes the Korean plugin set with a locale-aware whitelist, and explains every finding in plain Korean, English, or Japanese with a 🟢🟡🔴 verdict. Nothing is ever deleted automatically.
+
 ---
 
 ## What ships today
 
-- **Two OS editions under one brand**: Modore for Windows and Modore for Mac share the same promise — explain local PC state in plain language without deleting anything automatically.
-- **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
+- **Two OS editions under one brand**: Modore for Windows and Modore for Mac share the same promise — explain local machine state in plain language without deleting anything automatically.
+- **Mac Edition — AI-agent session audit**: `scree` (above) is the flagship Mac capability — cross-tool join, retention forecast, orphan/sole-copy/lineage judgment, metadata-only.
 - **Mac Edition scanner**: Bash + JXA collectors for macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and developer-runtime incidents. Every collector reports `ok`, `permission_denied`, `unavailable`, `timed_out`, or `failed`; a missing required collector can never become a safe verdict.
 - **Mac Edition app**: the native SwiftUI app presents one incident judgment followed by evidence, likely impact, and approval-gated recovery; bounded local history keeps the judgment without storing raw commands or URLs. Browser automation is grouped into roots with PID, parent, elapsed time, channel, profile type, and a privacy-preserving controller label.
+- **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
 - **Storage decoded, AI residue included**: rebuildable build residue inside dev projects (Flutter, node_modules, Cargo, SwiftPM, Pods, Gradle) with the official regeneration command instead of a delete button, plus a mapped AI-tool residue layer — Claude and Codex stores path by path, and Ollama model blobs, Kiro, VS Code, and Gemini CLI caches split into reclaimable versus protected.
 - **Local recurrence watch**: an optional hourly LaunchAgent keeps a bounded owner-only free-space timeline. It notifies when free space falls below 20GB or drops by at least 8GB between checks; it never deletes anything.
 - **Suspicion-to-evidence workflow**: CPU/GPU load, idle CPU samples, miner process names, miner-pool ports, network endpoints, autoruns, signatures, and optional VirusTotal hash lookups are shown together so a user can decide what deserves a closer look before removing anything.
@@ -48,7 +49,7 @@ python3 scripts/scree.py preserve <session-file>  # masked single-session export
 - **VirusTotal lookup (opt-in)**: SHA-256 hash query only. 48h local cache, 16s rate-limit, respects the public API quota (4 req/min, 500/day).
 - **Single-file HTML report**: opens in the user's browser and works offline. The shipped OS-native reports include user-clicked Google/VirusTotal investigation links; opening one shares the selected search term, IP address, or hash with that site. The Python development report also includes collapsible novice-friendly explanations. On Mac, HTML is an export/share artifact; the SwiftUI utility interface is the primary experience.
 - **Local-only by default**: the Mac SwiftUI app and script mode run local scanners only. There is no AI/LLM integration, no OpenAI/Claude/Codex API call, no token spend, no account login, and no report upload. The optional automatic VirusTotal API lookup is the only network request initiated by a Mac scan and sends file SHA-256 hashes only. Windows can separately download Microsoft Sysinternals tools only after the configured consent step.
-- **i18n**: Korean, English, Japanese landing page strings (`docs/i18n/`) and Python development report strings (`data/report_i18n/`). The release runtime reports are OS-native and Korean-first.
+- **i18n**: English, Korean, Japanese landing-page strings (`docs/i18n/`) and Python development-report strings (`data/report_i18n/`). English is the source language; the Korean whitelist/explanation depth is the specialized layer, not the default voice.
 - **Rule engine + tests**: declarative JSON rules in `rules/` (autoruns, defender, installs, network, process) evaluated by OS-native runtime engines. Pytest covers report/rule/cleanup/release contracts; Swift tests cover stable selection, protected data, storage accounting, cleanup protocol parsing, and standalone runtime staging.
 - **Read-the-source distribution**: source release ZIPs contain readable PowerShell/Bash/JXA and Swift code, no bundled DLLs, and no telemetry. A separately produced Developer ID/notarized DMG may contain the compiled Mac app, but its scanner/rules remain bundled as readable resources and the source ZIP remains the audit surface.
 
@@ -56,7 +57,7 @@ python3 scripts/scree.py preserve <session-file>  # masked single-session export
 
 - **Mac Edition Swift app** — deepen project-manifest parsing for SDK/runtime version requirements and expand attributable app-residue mappings without weakening the local approval boundary.
 - **Windows Edition maintenance** — Windows remains under the same Modore brand, but new Windows-only storage features wait for real-device validation.
-- **Additional locales** beyond ko/en/ja — community PRs welcome; the i18n loader already supports arbitrary codes.
+- **Additional locales** beyond en/ko/ja — community PRs welcome; the i18n loader already supports arbitrary codes.
 
 ## Editions
 
@@ -64,8 +65,8 @@ Modore is the brand. The OS editions are separate products under that brand, not
 
 | Edition | Artifact | Focus | Validation rule |
 |---|---|---|---|
+| Mac Edition | `modore-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | The scree AI-agent session/residue audit, plus macOS security context and decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
 | Windows Edition | `modore-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
-| Mac Edition | `modore-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | macOS security context, decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions, and the scree AI-agent session/residue audit | Mac-only features ship after local macOS validation |
 
 Shared rules, whitelist data, i18n strings, and report vocabulary can be reused where they genuinely match. OS-specific collectors stay separate.
 
@@ -82,7 +83,7 @@ Shared rules, whitelist data, i18n strings, and report vocabulary can be reused 
 
 The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A standalone build validates the app's sealed code-signature resources, captures every interpreter input between signature checks, and executes those bytes through anonymous file descriptors. Owner-controlled Application Support is used only for the non-executable runtime mirror, migration state, local configuration, and a separate `results/` directory; app updates do not replace scan results or reports. It never executes the replaceable Application Support mirror and never depends on the developer's checkout path. User settings stay at `~/Library/Application Support/Modore/config.json`; the tracked `data/config.example.json` contains no key.
 
-**Locale as a first-class concern.** Generic scanners are built for global users; their false-positive rate on Korean banking PCs is the user-facing problem this project exists to solve. The whitelist is the differentiated layer, not the scanner.
+**Deterministic, metadata-only judgment is the product.** Every verdict — the traffic-light scan result and the scree session/residue judgment alike — comes from declarative rules and read-only metadata, never from a generative model. The same input always produces the same output, the full judgment path is readable source, and adversarial data (a process name, a session file) cannot talk a probabilistic judge into a false verdict.
 
 **Cleanup is local and approval-gated.** Modore remains the pause before deletion, but the Mac Edition can execute audited recipes for rebuildable caches, Claude VM bundles, Xcode DerivedData, stale Chrome clones, and the known INNORIX user module. Installed apps are re-resolved by bundle ID and moved with exactly attributable containers/caches/preferences to a per-run Trash folder; Xcode and app bundles containing developer SDK/toolchain payloads are blocked. Individual Shutdown Simulator devices can be removed by a normalized UUID revalidated through `simctl`; Booted devices and locally preserved UUIDs are checked again immediately before deletion. Preview produces a short-lived approval manifest binding canonical paths, tree size, process state, and filesystem identity; execution remeasures before and after the same-volume staged move. Normal app termination waits for an approved destructive transaction to reach its receipt boundary instead of abandoning a child process. SDKs, Simulator runtimes, Codex session JSONL, Claude local-agent workspaces, and Codex databases have no cleanup recipe.
 
@@ -102,7 +103,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
   3. **This tool** to understand *what's actually running* and whether your banking plugins are normal.
 - **Not a cryptominer remover.** It detects patterns and alerts you; removal is left to the user's AV.
 - **Not real-time protection.** It's an on-demand scan that produces an HTML report.
-- **Not a Korean-only tool — but Korean is the priority.** i18n exists, but the whitelist depth and explanation quality are Korean-first by design.
+- **Not a Korean-only tool.** English is the source language and the AI-agent session audit is locale-agnostic; the banking/government plugin whitelist is a Korean-specialized data layer, not the whole product.
 
 ## Redacted
 
@@ -113,22 +114,31 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 
 ## Installation
 
+### macOS
+1. No public DMG is currently published. Clone the source, then right-click `run-mac-app.command` → **Open**. It builds and opens `build/macos/Modore.app`.
+2. When a release includes a notarized Universal 2 DMG, verify its SHA-256 metadata, open it, and drag **Modore** to Applications. No Swift toolchain is required for that artifact.
+3. For script-only mode, right-click `scan.command` → **Open**.
+4. Follow the menu or the SwiftUI app controls. Cleanup always requires an item preview and a second explicit approval.
+
 ### Windows
 1. While the repository is in source-preview status, clone it or use GitHub's source archive.
 2. Once a verified release exists, prefer its `modore-v*-win.zip` and compare the published SHA-256 metadata.
-3. Extract anywhere (USB, Desktop, Downloads — no installer needed), then double-click `검사하기.bat`.
-
-### macOS
-1. No public DMG is currently published. Clone the source, then right-click `Mac앱실행.command` → **Open**. It builds and opens `build/macos/Modore.app`.
-2. When a release includes a notarized Universal 2 DMG, verify its SHA-256 metadata, open it, and drag **Modore** to Applications. No Swift toolchain is required for that artifact.
-3. For script-only mode, right-click `검사하기.command` → **Open**.
-4. Follow the menu or the SwiftUI app controls. Cleanup always requires an item preview and a second explicit approval.
+3. Extract anywhere (USB, Desktop, Downloads — no installer needed), then double-click `scan.bat`.
 
 ### Requirements
-- **Windows**: PowerShell 5.1+ (built into Windows 10/11).
 - **macOS script mode**: Bash + `osascript` (built into macOS).
 - **macOS SwiftUI source mode**: macOS 13 or later plus Swift tools 5.9 or later from the system-selected, root-owned Xcode under `/Applications` or Command Line Tools under `/Library/Developer/CommandLineTools`. The explicitly nonpublishable local/CI packaging check may also use an ephemeral current-user-owned Xcode when it is not group/world writable; public distribution never receives that exception. A notarized DMG does not require the toolchain.
+- **Windows**: PowerShell 5.1+ (built into Windows 10/11).
 - **Development / tests only**: Python 3.11+ for pytest, release-smoke packaging, and local docs preview.
+
+### Troubleshooting
+
+- **The precise Windows scan needs 5 quiet minutes.** It includes an idle-CPU observation window; close video/game workloads and let the machine sit idle so it can catch "using CPU while doing nothing" processes.
+- **"This script cannot be run on this system" (Windows).** Open PowerShell as the current user and run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+- **A console window flashes and closes immediately (`scan.bat`).** Right-click → "Run as administrator".
+- **macOS "developer cannot be verified" warning.** Right-click the file → **Open** (only needed once).
+- **Fully portable.** Copy the whole `modore/` folder to a USB drive and run it from any Windows or Mac machine — no installer.
+- **Not an antivirus replacement.** Pair Windows Defender / macOS Gatekeeper (built in) with Malwarebytes Free for a second opinion when something looks wrong.
 
 ## Enabling VirusTotal lookup (optional, off by default)
 
@@ -149,7 +159,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
    ```
    `VT_API_KEY` supplies the secret without writing it into the project, but network lookup still requires `virustotal.enabled` to be `true` in the local user config. The macOS/Linux `export` and current-session PowerShell forms are process-session values and are not written by Modore. The persistent Windows form is stored in the current user's registry hive on disk; use it only on a trusted single-user account and remove it when no longer needed.
 
-   **Option B — ignored user config:** the SwiftUI Mac app, including builds opened through `Mac앱실행.command`, uses `~/Library/Application Support/Modore/config.json`. Script-only source/archive mode may copy `data/config.example.json` to the ignored `data/config.json`. Windows can also use `%LOCALAPPDATA%\Modore\config.json`.
+   **Option B — ignored user config:** the SwiftUI Mac app, including builds opened through `run-mac-app.command`, uses `~/Library/Application Support/Modore/config.json`. Script-only source/archive mode may copy `data/config.example.json` to the ignored `data/config.json`. Windows can also use `%LOCALAPPDATA%\Modore\config.json`.
    ```json
    "virustotal": {
      "enabled": true,
@@ -175,16 +185,20 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 
 ```
 modore/
-├── 검사하기.bat              Windows launcher (double-click)
-├── 검사하기.command          macOS launcher (double-click)
-├── Mac앱실행.command         macOS SwiftUI app builder/launcher
-├── 사용법.txt                Korean user guide
+├── scan.bat                  Windows launcher (double-click)
+├── scan.command              macOS launcher (double-click)
+├── run-mac-app.command       macOS SwiftUI app builder/launcher
 ├── README.md                 This file
+├── docs/
+│   ├── index.html            GitHub Pages landing (multilingual)
+│   ├── style.css
+│   ├── script.js
+│   └── i18n/{en,ko,ja}.json
 ├── data/
 │   ├── whitelist.json        Korean programs + miner blacklist DB
 │   ├── explain.json          Plain-language explanations per check
 │   ├── config.example.json   tracked safe defaults; copy to ignored config.json locally
-│   └── report_i18n/          ko / en / ja Python development report strings
+│   └── report_i18n/          en / ko / ja Python development report strings
 ├── rules/                    Declarative rule JSON
 │   ├── autoruns.json
 │   ├── defender.json
@@ -192,6 +206,7 @@ modore/
 │   ├── network.json
 │   └── process.json
 ├── scripts/
+│   ├── scree.py              AI-agent session & residue audit (metadata-only)
 │   ├── menu.ps1              Windows interactive menu
 │   ├── scanner.ps1           Windows scanner
 │   ├── monitor.ps1           Windows 5-min idle monitor
@@ -202,7 +217,6 @@ modore/
 │   ├── sigcheck-helper.ps1   Sysinternals sigcheck wrapper
 │   ├── autorunsc-helper.ps1  Sysinternals autorunsc wrapper
 │   ├── scanner.sh            macOS scanner
-│   ├── scree.py              AI-agent session & residue audit (metadata-only)
 │   ├── cleanup.sh            allowlisted macOS preview/execute harness
 │   ├── storage_watch.sh      free-space monitor + bounded drop-time path snapshot
 │   ├── schedule.sh           local LaunchAgent toggle harness
@@ -215,17 +229,12 @@ modore/
 │   └── modules/macos/        macOS scanner sub-modules
 ├── macos/
 │   └── Modore/     SwiftUI app, feature views, models, and Swift tests
-├── tests/                    pytest service and safety contracts
-└── docs/                     GitHub Pages landing (multilingual)
-    ├── index.html
-    ├── style.css
-    ├── script.js
-    └── i18n/{ko,en,ja}.json
+└── tests/                    pytest service and safety contracts
 ```
 
 ## Landing page
 
-The `docs/` folder is the project landing page, designed for GitHub Pages. It supports Korean · English · Japanese with a language switcher. To add another language, drop a new `docs/i18n/<code>.json` file and add the code to the language list in `script.js`.
+The `docs/` folder is the project landing page, designed for GitHub Pages. It supports English · Korean · Japanese with a language switcher. To add another language, drop a new `docs/i18n/<code>.json` file and add the code to the language list in `script.js`.
 
 To serve locally:
 ```bash
@@ -296,6 +305,8 @@ Distribution mode only runs from a clean `v<version>` tag at `HEAD` verified by 
 
 | Tool | Platform | Target | Strength | vs. This project |
 |---|---|---|---|---|
+| SpecStory | Win/Mac | AI coding users | Saves and searches AI coding sessions | scree does not archive content; it judges retention risk, orphans, and sole-copy work, metadata-only |
+| Agent Sessions | Mac | Claude Code / Codex users | Browses local session logs | scree adds the cross-tool join, expiry forecast, and worktree/checkout/lineage verdicts |
 | Malwarebytes Free | Win/Mac | General users | Real detection | This = context. Use both. |
 | Windows Defender | Win | Everyone | Real-time protection | Complementary |
 | Sysinternals Autoruns | Win | Experts | Exhaustive autoruns | We wrap it and explain in plain language |
@@ -304,10 +315,8 @@ Distribution mode only runs from a clean `v<version>` tag at `HEAD` verified by 
 | AppCleaner | Mac | Mac users | Removes an app and related files | This adds system/developer context and bundle-ID-verified Trash moves; AppCleaner may still discover app-name-based residue that cannot be attributed safely |
 | Malware Zero (malzero.xyz) | Win | Korean users | PUP removal | Older UX, no per-finding explanations |
 | HijackThis / FRST | Win | Tech-savvy | Log analysis | Not novice-friendly |
-| SpecStory | Win/Mac | AI coding users | Saves and searches AI coding sessions | scree does not archive content; it judges retention risk, orphans, and sole-copy work, metadata-only |
-| Agent Sessions | Mac | Claude Code / Codex users | Browses local session logs | scree adds the cross-tool join, expiry forecast, and worktree/checkout/lineage verdicts |
 
-**The gap this fills**: suspicion-to-evidence triage for "is my PC secretly doing something?", with plain-Korean explanations, locale-aware banking software context, miner/runtime signals, storage context, and privacy-safe VT lookup — plus, on a Mac, a deterministic metadata-only answer to "what did my AI agents leave behind?".
+**The gap this fills**: on a Mac, a deterministic, metadata-only answer to "what did my AI agents leave behind?" — plus suspicion-to-evidence triage for "why is my PC this busy?", with plain-language explanations, locale-aware banking-software context, miner/runtime signals, storage context, and privacy-safe VT lookup.
 
 ## Privacy
 
@@ -323,7 +332,7 @@ Distribution mode only runs from a clean `v<version>` tag at `HEAD` verified by 
 Whitelist contributions are especially welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the full guide. Short version — if you recognize a legitimate local app missing from `data/whitelist.json`, open a PR with:
 - Process name (lowercased, without extension)
 - Vendor
-- Short Korean/Japanese/English description
+- Short English/Korean/Japanese description
 - Category (system / browser / korean_common / banking_security / dev_tools / hardware / cloud)
 
 ## Security

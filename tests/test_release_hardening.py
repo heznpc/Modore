@@ -1189,7 +1189,7 @@ def test_dmg_raw_bytes_require_mounted_tree_audit(tmp_path):
 
 
 def test_source_finder_launcher_uses_protected_clean_environment(project_root):
-    source = (project_root / "검사하기.command").read_text(encoding="utf-8")
+    source = (project_root / "scan.command").read_text(encoding="utf-8")
 
     assert source.startswith("#!/bin/bash -p")
     assert 'export PATH="/usr/bin:/bin:/usr/sbin:/sbin"' in source

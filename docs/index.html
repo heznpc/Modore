@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,23 +12,24 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<a class="skip-link" href="#main" data-i18n="nav.skip">본문으로 건너뛰기</a>
+<a class="skip-link" href="#main" data-i18n="nav.skip">Skip to main content</a>
 
 <header class="topbar">
   <div class="topbar-inner">
     <a href="#" class="brand">
-      <span class="brand-mark">pch</span>
+      <span class="brand-mark">M</span>
       <span class="brand-name" data-i18n="brand.name">Modore</span>
     </a>
     <nav class="nav">
-      <a href="#problem" data-i18n="nav.problem">문제</a>
-      <a href="#how" data-i18n="nav.how">동작 방식</a>
-      <a href="#privacy" data-i18n="nav.privacy">프라이버시</a>
-      <a href="#download" data-i18n="nav.download">소스</a>
+      <a href="#scree" data-i18n="nav.sessions">AI Sessions</a>
+      <a href="#problem" data-i18n="nav.problem">Why Busy?</a>
+      <a href="#how" data-i18n="nav.how">How</a>
+      <a href="#privacy" data-i18n="nav.privacy">Privacy</a>
+      <a href="#download" data-i18n="nav.download">Source</a>
       <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="github-link">GitHub</a>
       <div class="lang-switcher" id="langSwitcher">
-        <button class="lang-btn active" data-lang="ko" aria-label="한국어" aria-pressed="true">KO</button>
-        <button class="lang-btn" data-lang="en" aria-label="English" aria-pressed="false">EN</button>
+        <button class="lang-btn active" data-lang="en" aria-label="English" aria-pressed="true">EN</button>
+        <button class="lang-btn" data-lang="ko" aria-label="한국어" aria-pressed="false">KO</button>
         <button class="lang-btn" data-lang="ja" aria-label="日本語" aria-pressed="false">JA</button>
       </div>
     </nav>
@@ -44,61 +45,61 @@
     <div>
       <div class="hero-tag">
         <span class="pulse"></span>
-        <span data-i18n="hero.tag">v0.3 · Windows Edition / Mac Edition</span>
+        <span data-i18n="hero.tag">v0.3 · Mac Edition / Windows Edition</span>
       </div>
-      <h1 data-i18n="hero.title">내 PC가 <em>몰래 일하는지</em> 설명해주는 로컬 진단 도구.</h1>
+      <h1 data-i18n="hero.title">A local audit of <em>what your AI agents left behind</em>.</h1>
       <p class="hero-subtitle" data-i18n="hero.subtitle">
-        팬이 돌고 CPU/GPU가 튀고 모르는 프로세스가 보일 때, Modore은 채굴기 신호·자동실행·네트워크·한국 보안 플러그인 맥락을 모아 삭제 전 판단 근거를 보여줍니다.
+        On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, Modore answers the questions no other tool asks: which sessions touched which projects, which transcripts quietly expire in days, and which worktrees hold the only copy of unpushed work — deterministically, with no LLM in the judgment path. The same evidence-first approach also covers the PC that feels busy for no reason.
       </p>
       <div class="hero-actions">
-        <a href="#download" class="btn btn-primary" data-i18n="hero.cta_primary">소스에서 실행 <span class="arrow">→</span></a>
-        <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="btn btn-ghost" data-i18n="hero.cta_secondary">소스 읽어보기</a>
+        <a href="#download" class="btn btn-primary" data-i18n="hero.cta_primary">Run from source <span class="arrow">→</span></a>
+        <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="btn btn-ghost" data-i18n="hero.cta_secondary">Read the source</a>
       </div>
       <div class="hero-meta">
-        <span><span data-i18n="hero.meta.free">무료</span></span>
+        <span><span data-i18n="hero.meta.free">Free</span></span>
         <span class="dot">·</span>
-        <span><span data-i18n="hero.meta.oss">MIT 오픈소스</span></span>
+        <span><span data-i18n="hero.meta.oss">MIT open source</span></span>
         <span class="dot">·</span>
-        <span><span data-i18n="hero.meta.no_install">설치 없음</span></span>
+        <span><span data-i18n="hero.meta.no_install">No install</span></span>
         <span class="dot">·</span>
         <span data-i18n="hero.meta.loc">Readable source</span>
       </div>
     </div>
 
-    <!-- 실제 리포트 UI 미리보기 (mockup) -->
-    <div class="report-preview" role="img" data-i18n-attr="aria-label:preview.accessible_summary" aria-label="검사 결과 예시: 확인 필요 3건, 위험 0건, 정상 93건">
+    <!-- Traffic-light scan report mockup -->
+    <div class="report-preview" role="img" data-i18n-attr="aria-label:preview.accessible_summary" aria-label="Example scan result: 3 items to review, 0 threats, 93 safe">
       <div class="preview-titlebar" aria-hidden="true">
         <div class="preview-dots"><span></span><span></span><span></span></div>
-        <div class="preview-url">file:///modore/검사결과.html</div>
+        <div class="preview-url">file:///modore/scan-result.html</div>
       </div>
       <div class="preview-body" aria-hidden="true">
         <div class="preview-verdict">
           <div class="icon">🟡</div>
           <div class="text">
             <div class="label" data-i18n="preview.verdict_label">WARNING</div>
-            <div class="msg" data-i18n="preview.verdict_msg">확인 권장 3건 · 위험 0건</div>
+            <div class="msg" data-i18n="preview.verdict_msg">3 items to review · 0 threats</div>
           </div>
         </div>
         <div class="preview-cards">
-          <div class="preview-card red"><div class="count">0</div><div class="label" data-i18n="preview.danger">위험</div></div>
-          <div class="preview-card yellow"><div class="count">3</div><div class="label" data-i18n="preview.check">확인</div></div>
-          <div class="preview-card green"><div class="count">93</div><div class="label" data-i18n="preview.safe">정상</div></div>
+          <div class="preview-card red"><div class="count">0</div><div class="label" data-i18n="preview.danger">Danger</div></div>
+          <div class="preview-card yellow"><div class="count">3</div><div class="label" data-i18n="preview.check">Check</div></div>
+          <div class="preview-card green"><div class="count">93</div><div class="label" data-i18n="preview.safe">Safe</div></div>
         </div>
         <div class="preview-table">
           <div class="preview-row">
             <span class="pbadge safe" data-i18n="preview.rows.safe">SAFE</span>
             <span class="name">I3GProc.exe</span>
-            <span class="meta" data-i18n="preview.rows.banking">IPinside · 뱅킹</span>
+            <span class="meta" data-i18n="preview.rows.banking">IPinside · Banking</span>
           </div>
           <div class="preview-row">
             <span class="pbadge safe" data-i18n="preview.rows.safe">SAFE</span>
             <span class="name">KakaoTalk.exe</span>
-            <span class="meta" data-i18n="preview.rows.signed">Kakao · 서명됨</span>
+            <span class="meta" data-i18n="preview.rows.signed">Kakao · Signed</span>
           </div>
           <div class="preview-row">
             <span class="pbadge check" data-i18n="preview.rows.check">CHECK</span>
             <span class="name">MPSch.exe</span>
-            <span class="meta" data-i18n="preview.rows.appdata">AppData · 미서명</span>
+            <span class="meta" data-i18n="preview.rows.appdata">AppData · Unsigned</span>
           </div>
           <div class="preview-row">
             <span class="pbadge safe" data-i18n="preview.rows.safe">SAFE</span>
@@ -112,11 +113,68 @@
 </section>
 
 <!-- ======================================================
+     SCREE - AI-agent session & residue audit (Mac Edition)
+     ====================================================== -->
+<section id="scree" class="section">
+  <div class="container">
+    <div class="section-kicker" data-i18n="scree.kicker">AI SESSIONS · MAC EDITION</div>
+    <h2 data-i18n="scree.heading">A deterministic map of what agents left behind.</h2>
+    <p class="lead" data-i18n="scree.lead">
+      scree joins Claude Code, Codex, Gemini CLI, and VS Code-fork session stores by workspace and repository — metadata-only, no LLM anywhere in the judgment path. Every verdict is preview-grade evidence with an explicit revalidation duty.
+    </p>
+
+    <div class="privacy-block">
+      <div class="privacy-points">
+        <div class="privacy-point">
+          <h3 data-i18n="scree.cards.join.title">Cross-tool join</h3>
+          <p data-i18n="scree.cards.join.desc">Which tools touched which workspace/repository, when — across Claude Code, Codex, Gemini CLI, and VS Code-fork stores.</p>
+        </div>
+        <div class="privacy-point">
+          <h3 data-i18n="scree.cards.retention.title">Retention forecast</h3>
+          <p data-i18n="scree.cards.retention.desc">Per-store rolling windows estimated from file ages, with D-day flags for sessions about to expire inside still-active projects.</p>
+        </div>
+        <div class="privacy-point">
+          <h3 data-i18n="scree.cards.sole_copy.title">Sole-copy judgment</h3>
+          <p data-i18n="scree.cards.sole_copy.desc">Agent worktrees and primary checkouts stranded off main: protected (dirty or unpushed) versus rebuildable, from read-only git evidence.</p>
+        </div>
+        <div class="privacy-point">
+          <h3 data-i18n="scree.cards.lineage.title">Orphans &amp; lineage</h3>
+          <p data-i18n="scree.cards.lineage.desc">Sessions pointing at vanished workspaces, and every remembered work path classified alive+git / alive+plain / vanished.</p>
+        </div>
+        <div class="privacy-point">
+          <h3 data-i18n="scree.contract.title">No-content-leak contract</h3>
+          <p data-i18n="scree.contract.desc">Leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by stat() without being opened — pinned by tests.</p>
+        </div>
+      </div>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="filename" data-i18n="scree.terminal.title">scree — session &amp; residue audit</span>
+          <span class="link">scripts/scree.py · <a href="https://github.com/heznpc/modore/blob/main/scripts/scree.py" target="_blank" rel="noopener">GitHub</a></span>
+        </div>
+<pre><span class="v" data-i18n="scree.terminal.path">$ python3 scripts/scree.py</span>
+<span class="c">Modore scree — a map of what agents left behind (metadata-only · deterministic join)</span>
+stores: claude-code 148 · codex 2807 · gemini-cli 103 · vscode-fork 30
+12 groups — cross-tool 5 · orphan 3 · unresolved sessions 0
+work paths 422: alive+git 118 · alive+plain 189 · vanished 115
+
+  expiring soon (within D-7) 4 — alive workspaces 3 · orphaned 1
+    D-0 ~/IdeaProjects/starter-series (claude-code, 222MB)
+
+worktree anchor judgment (git registry · push state, read-only)
+  total 34 — protected (sole-copy) 14 · rebuildable 19 · stray checkouts 11
+</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================
      TICKER: 인식하는 한국 SW 이름
      ====================================================== -->
 <section class="ticker-section">
   <div class="container">
-    <div class="ticker-label" data-i18n="ticker.label">화이트리스트에 포함된 프로그램 · RECOGNIZED SOFTWARE</div>
+    <div class="ticker-label" data-i18n="ticker.label">Recognized software</div>
     <div class="ticker">
       <div class="ticker-track" id="tickerTrack">
         <span class="ok">IPinside</span>
@@ -149,35 +207,35 @@
 <section id="problem" class="section">
   <div class="container">
     <div class="section-kicker" data-i18n="problem.kicker">PROBLEM</div>
-    <h2 data-i18n="problem.heading">"내 PC가 몰래 채굴 중인가?" 싶을 때, <em>무엇을 먼저 확인해야 하나?</em></h2>
+    <h2 data-i18n="problem.heading">Why is my PC this <em>busy</em>?</h2>
     <p class="lead" data-i18n="problem.lead">
-      느려진 PC, 멈추지 않는 팬, 높은 CPU/GPU, 모르는 자동실행 항목은 불안을 만듭니다. 한국 PC에는 뱅킹·공공기관·쇼핑몰 보안 플러그인도 많아 정상 항목과 진짜 확인 대상을 구분하기 어렵습니다. Modore은 바로 삭제하기 전에 근거를 모읍니다.
+      A slow PC, spinning fans, high CPU/GPU, and unknown startup entries create real anxiety. A Korean PC also carries banking, government, and e-commerce security plugins that often look suspicious. Modore gathers evidence before you ignore everything or delete the wrong thing.
     </p>
 
     <div class="compare">
       <div class="compare-col bad">
-        <h3><span class="icon">⚠</span><span data-i18n="problem.generic.label">범용 스캐너</span></h3>
-        <p class="quote" data-i18n="problem.generic.quote">"의심스러운 항목 30건이 발견되었습니다."</p>
+        <h3><span class="icon">⚠</span><span data-i18n="problem.generic.label">Generic scanner</span></h3>
+        <p class="quote" data-i18n="problem.generic.quote">"30 suspicious items detected."</p>
         <ul class="compare-list">
-          <li><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.reasons.unsigned">미서명 네트워크 훅</span></li>
-          <li><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.reasons.port">포트 리스닝</span></li>
-          <li><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.reasons.kext">커널 드라이버</span></li>
-          <li><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.reasons.bho">브라우저 훅</span></li>
-          <li><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.reasons.persist">상시 실행</span></li>
-          <li><span class="tool-name">+ 25 more...</span><span class="reason"></span></li>
+          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.reasons.unsigned">Unsigned net hook</span></li>
+          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.reasons.port">Port listener</span></li>
+          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.reasons.kext">Kernel driver</span></li>
+          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.reasons.bho">Browser hook</span></li>
+          <li><span class="tag" data-i18n="problem.tag.suspect">SUSPECT</span><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.reasons.persist">Always-on</span></li>
+          <li><span class="tag"></span><span class="tool-name">+ 25 more...</span><span class="reason"></span></li>
         </ul>
       </div>
 
       <div class="compare-col good">
         <h3><span class="icon">🩺</span><span data-i18n="problem.pch.label">Modore</span></h3>
-        <p class="quote" data-i18n="problem.pch.quote">"29건은 정상 뱅킹 SW. 1건은 확인 필요."</p>
+        <p class="quote" data-i18n="problem.pch.quote">"29 are banking software. 1 needs review."</p>
         <ul class="compare-list">
-          <li class="safe"><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.pch.reasons.ipinside">IPinside 정상</span></li>
-          <li class="safe"><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.pch.reasons.inisafe">INISAFE 정상</span></li>
-          <li class="safe"><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.pch.reasons.dream">드림시큐리티</span></li>
-          <li class="safe"><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.pch.reasons.wizvera">전자서명 정상</span></li>
-          <li class="safe"><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.pch.reasons.bank">공인 뱅킹 보안</span></li>
-          <li class="check"><span class="tool-name">MPSch.exe</span><span class="reason" data-i18n="problem.pch.reasons.unknown">모름 → VT 조회</span></li>
+          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">I3GProc.exe</span><span class="reason" data-i18n="problem.pch.reasons.ipinside">IPinside, normal</span></li>
+          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">nosstarter.exe</span><span class="reason" data-i18n="problem.pch.reasons.inisafe">INISAFE, normal</span></li>
+          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">MagicLine4NP.exe</span><span class="reason" data-i18n="problem.pch.reasons.dream">DreamSecurity</span></li>
+          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">WIZVERA.exe</span><span class="reason" data-i18n="problem.pch.reasons.wizvera">E-signature tool</span></li>
+          <li class="safe"><span class="tag" data-i18n="problem.tag.normal">NORMAL</span><span class="tool-name">INISAFEWeb.exe</span><span class="reason" data-i18n="problem.pch.reasons.bank">Banking security</span></li>
+          <li class="check"><span class="tag" data-i18n="problem.tag.check">CHECK</span><span class="tool-name">MPSch.exe</span><span class="reason" data-i18n="problem.pch.reasons.unknown">Unknown → VT check</span></li>
         </ul>
       </div>
     </div>
@@ -190,31 +248,31 @@
 <section id="how" class="section">
   <div class="container">
     <div class="section-kicker" data-i18n="how.kicker">HOW IT WORKS</div>
-    <h2 data-i18n="how.heading">8가지 진단 &rarr; 1개의 HTML 리포트.</h2>
+    <h2 data-i18n="how.heading">8 diagnostics &rarr; 1 HTML report.</h2>
     <p class="lead" data-i18n="how.lead">
-      설치형 추적기 없음. OS별 스크립트가 시스템을 수집하면, Windows는 HTML 리포트로, Mac은 시스템 컴포넌트 기반 SwiftUI 유틸리티와 HTML 내보내기로 조립합니다.
+      No tracking installer. OS-specific scripts collect system state, then Windows assembles an HTML report while Mac uses a system-component SwiftUI utility plus HTML export.
     </p>
 
     <div class="pipeline">
       <div class="pipe-node">
         <div class="label">01 · COLLECT</div>
-        <h3 data-i18n="how.p1.title">시스템 수집</h3>
-        <p data-i18n="how.p1.desc">프로세스·네트워크·포트·자동실행·보안상태. Sysinternals + launchd + VirusTotal 해시 조회.</p>
+        <h3 data-i18n="how.p1.title">Collect</h3>
+        <p data-i18n="how.p1.desc">Processes, network, ports, autoruns, security posture. Sysinternals + launchd + VirusTotal hash lookup.</p>
         <code>scanner.ps1 · scanner.sh</code>
       </div>
       <div class="pipe-arrow">→</div>
       <div class="pipe-node">
         <div class="label">02 · NORMALIZE</div>
-        <h3 data-i18n="how.p2.title">JSON 정규화</h3>
-        <p data-i18n="how.p2.desc">한국 SW 화이트리스트 대조 후 신호등 판정. OS 무관 공통 스키마.</p>
+        <h3 data-i18n="how.p2.title">Normalize</h3>
+        <p data-i18n="how.p2.desc">Match against Korean software whitelist, assign traffic-light verdict. OS-agnostic schema.</p>
         <code>scan_result.json</code>
       </div>
       <div class="pipe-arrow">→</div>
       <div class="pipe-node">
         <div class="label">03 · RENDER</div>
-        <h3 data-i18n="how.p3.title">HTML 생성</h3>
-        <p data-i18n="how.p3.desc">브라우저가 여는 단일 HTML. 실행 파일 없음, 서명 없음, 추적 없음.</p>
-        <code>검사결과.html</code>
+        <h3 data-i18n="how.p3.title">Render</h3>
+        <p data-i18n="how.p3.desc">Windows gets a single HTML report. Mac gets a native SwiftUI utility plus HTML export. No tracking installer or report upload.</p>
+        <code>scan-result.html</code>
       </div>
     </div>
   </div>
@@ -226,28 +284,28 @@
 <section id="privacy" class="section">
   <div class="container">
     <div class="section-kicker" data-i18n="privacy.kicker">PRIVACY · AUDITABLE</div>
-    <h2 data-i18n="privacy.heading">"개인정보 안전합니다"라는 <em>말 대신, 코드로 증명</em>.</h2>
+    <h2 data-i18n="privacy.heading">Don't take "we're safe" on faith — <em>read the code</em>.</h2>
     <p class="lead" data-i18n="privacy.lead">
-      모든 네트워크 호출은 소스 코드에 있습니다. VirusTotal 조회는 <strong>SHA-256 해시만</strong> 전송하고, 파일 본문은 컴퓨터를 떠나지 않습니다. 선택적 Sysinternals 다운로드도 별도 helper에 격리되어 있습니다.
+      Every network call is in the source. VirusTotal lookups send <strong>only the SHA-256 hash</strong>; file contents never leave your machine. Here's the actual call site.
     </p>
 
     <div class="privacy-block">
       <div class="privacy-points">
         <div class="privacy-point">
-          <h3 data-i18n="privacy.points.hash.title">해시만 전송, 파일 업로드 안 함</h3>
-          <p data-i18n="privacy.points.hash.desc"><code>Get-FileHash</code>로 로컬에서 SHA-256 계산 후 GET 요청. 알려지지 않은 해시면 "unknown" 반환, 자동 업로드 없음.</p>
+          <h3 data-i18n="privacy.points.hash.title">Hash only, no file upload</h3>
+          <p data-i18n="privacy.points.hash.desc"><code>Get-FileHash</code> computes SHA-256 locally. The GET request carries just the hash. If the hash is unknown, we return "unknown" — we never upload the file.</p>
         </div>
         <div class="privacy-point">
-          <h3 data-i18n="privacy.points.telemetry.title">텔레메트리 0건</h3>
-          <p data-i18n="privacy.points.telemetry.desc">사용 통계·에러 리포트 어떤 것도 수집하지 않습니다. 진단 런타임의 외부 호출은 옵트인 VirusTotal 조회와 선택적 Sysinternals 다운로드뿐입니다.</p>
+          <h3 data-i18n="privacy.points.telemetry.title">Zero telemetry</h3>
+          <p data-i18n="privacy.points.telemetry.desc">No usage stats, no error reports, nothing sent to us. Diagnostic runtime outbound calls are limited to opt-in VirusTotal lookups and optional Sysinternals downloads.</p>
         </div>
         <div class="privacy-point">
-          <h3 data-i18n="privacy.points.local.title">로컬 캐시만</h3>
-          <p data-i18n="privacy.points.local.desc">VT 응답은 %LOCALAPPDATA% (Windows) 또는 ~/Library/Caches (macOS)에 48시간 저장. 클라우드 계정 없음.</p>
+          <h3 data-i18n="privacy.points.local.title">Local cache only</h3>
+          <p data-i18n="privacy.points.local.desc">VT responses cache in %LOCALAPPDATA% (Windows) or ~/Library/Caches (macOS) for 48h. No cloud account, no sync.</p>
         </div>
         <div class="privacy-point">
-          <h3 data-i18n="privacy.points.audit.title">읽을 수 있는 소스</h3>
-          <p data-i18n="privacy.points.audit.desc">읽을 수 있는 PowerShell · Bash · JXA 소스. 릴리스 zip에는 사전 컴파일된 진단 바이너리를 넣지 않습니다. <code>grep -R "Invoke-RestMethod\|Invoke-WebRequest\|curl\|virustotal.com/api" scripts/</code>로 외부 호출 확인 가능.</p>
+          <h3 data-i18n="privacy.points.audit.title">Source you can read</h3>
+          <p data-i18n="privacy.points.audit.desc">Readable PowerShell · Bash · JXA source. Release zips do not bundle prebuilt diagnostic binaries. <code>grep -R "Invoke-RestMethod\|Invoke-WebRequest\|curl\|virustotal.com/api" scripts/</code> finds outbound calls.</p>
         </div>
       </div>
 
@@ -256,10 +314,10 @@
           <span class="filename">scripts/vt-lookup.ps1</span>
           <span class="link">L142-L160 · <a href="https://github.com/heznpc/modore/blob/main/scripts/vt-lookup.ps1" target="_blank" rel="noopener">GitHub</a></span>
         </div>
-<pre><span class="c"># SHA-256 해시 계산 - 로컬에서만 수행</span>
+<pre><span class="c"># Compute SHA-256 hash - local only</span>
 <span class="v">$hash</span> = (<span class="f">Get-FileHash</span> -Path <span class="v">$FilePath</span> -Algorithm <span class="s">SHA256</span>).Hash.ToLower()
 
-<span class="c"># VirusTotal API v3 조회 - 해시만 전송, 파일 업로드 없음</span>
+<span class="c"># VirusTotal API v3 lookup - hash only, no file upload</span>
 <span class="v">$url</span>     = <span class="s">"https://www.virustotal.com/api/v3/files/</span><span class="v">$hash</span><span class="s">"</span>
 <span class="v">$headers</span> = @{
     <span class="s">'x-apikey'</span> = <span class="v">$apiKey</span>
@@ -271,7 +329,7 @@
     <span class="k">return</span> <span class="v">$resp</span>.data.attributes.last_analysis_stats
 } <span class="k">catch</span> {
     <span class="k">if</span> (<span class="v">$_</span>.Exception.Response.StatusCode -eq <span class="s">404</span>) {
-        <span class="k">return</span> <span class="s">'unknown'</span>   <span class="c"># 알려지지 않은 해시 - 업로드 안 함</span>
+        <span class="k">return</span> <span class="s">'unknown'</span>   <span class="c"># unknown hash - no upload</span>
     }
 }
 </pre>
@@ -286,42 +344,39 @@
 <section id="download" class="section">
   <div class="container">
     <div class="section-kicker" data-i18n="download.kicker">SOURCE PREVIEW</div>
-    <h2 data-i18n="download.heading">소스를 검토하고 빌드하세요.</h2>
+    <h2 data-i18n="download.heading">Review and build the source.</h2>
     <p class="lead" data-i18n="download.lead">
-      현재 공개 설치 산출물은 없습니다. 소스를 직접 실행하거나 검증 메타데이터가 있는 릴리스를 기다려 주세요.
+      No public installer is available yet. Run the reviewed source, or wait for a release with signing, notarization, Gatekeeper, and SHA-256 metadata.
     </p>
 
     <div class="download-grid">
       <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="dl-card">
-        <span class="os-mark">WIN</span>
-        <h3 data-i18n="download.windows.title">Windows Edition</h3>
-        <p data-i18n="download.windows.desc">Windows 10 / 11 · PowerShell 5.1. 소스 확인 후 <code>검사하기.bat</code> 실행.</p>
-        <span class="dl-link" data-i18n="download.windows.btn">Windows 소스 보기 →</span>
-      </a>
-      <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="dl-card">
         <span class="os-mark">MAC</span>
         <h3 data-i18n="download.macos.title">Mac Edition</h3>
-        <p data-i18n="download.macos.desc">macOS 13+ SwiftUI 앱은 <code>Mac앱실행.command</code>, 스크립트 모드는 <code>검사하기.command</code> 우클릭 → 열기. System Data/Developer 저장공간 막대 해석은 Mac Edition 기능입니다.</p>
-        <span class="dl-link" data-i18n="download.macos.btn">Mac 소스 보기 →</span>
+        <p data-i18n="download.macos.desc">macOS 13+ SwiftUI app via <code>run-mac-app.command</code>; script mode via <code>scan.command</code> → Open. The AI-agent session audit (scree) and System Data/Developer storage decoding are Mac Edition features.</p>
+        <span class="dl-link" data-i18n="download.macos.btn">View Mac source →</span>
+      </a>
+      <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" class="dl-card">
+        <span class="os-mark">WIN</span>
+        <h3 data-i18n="download.windows.title">Windows Edition</h3>
+        <p data-i18n="download.windows.desc">Windows 10 / 11 · PowerShell 5.1. Review the source, then run <code>scan.bat</code>.</p>
+        <span class="dl-link" data-i18n="download.windows.btn">View Windows source →</span>
       </a>
     </div>
 
     <p class="github-side" data-i18n="download.github_side">
-      클론이나 포크: <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener">github.com/heznpc/modore</a>. 읽을 수 있는 소스로 직접 확인.
+      Clone or fork: <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener">github.com/heznpc/modore</a>. Inspect the readable source yourself.
     </p>
   </div>
 </section>
 
 <!-- ======================================================
-     FINAL CTA
+     CLOSING NOTE
      ====================================================== -->
-<section class="final-cta">
+<section class="closing-note">
   <div class="container">
-    <h2 data-i18n="final.heading">의심되는 지금, <em>6분이면 답이 나옵니다.</em></h2>
-    <p data-i18n="final.lead">가입 없음. 이메일 없음. 결과는 내 브라우저에서만 열립니다.</p>
-    <div class="hero-actions" style="justify-content:center;">
-      <a href="#download" class="btn btn-primary" data-i18n="final.cta">소스 보기 <span class="arrow">→</span></a>
-    </div>
+    <p data-i18n="closing.lead">No sign-up, no email, no upload — verify it yourself.</p>
+    <a href="https://github.com/heznpc/modore" target="_blank" rel="noopener" data-i18n="closing.cta">Read the source →</a>
   </div>
 </section>
 
@@ -335,8 +390,10 @@
       &nbsp;·&nbsp;
       <span data-i18n="footer.version">v0.3.0</span>
     </div>
-    <div class="credits" data-i18n="footer.credits">
-      Microsoft Sysinternals · Objective-See · Malware Zero 커뮤니티에 감사.
+    <div class="credits">
+      <span data-i18n="footer.author">Built and maintained by <a href="https://github.com/heznpc" target="_blank" rel="noopener">heznpc</a>.</span>
+      &nbsp;·&nbsp;
+      <span data-i18n="footer.credits">Thanks to Microsoft Sysinternals · Objective-See · the Malware Zero community.</span>
     </div>
   </div>
 </footer>

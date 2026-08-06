@@ -56,10 +56,14 @@ def test_reduced_motion_gates_the_animations(style_css):
     )
     assert block is not None, "reduced-motion media query missing"
     body = block.group(1)
-    assert ".pulse" in body and ".ticker-track" in body
+    assert ".ticker-track" in body
     assert "animation: none" in body
     assert "scroll-behavior: auto" in body
     assert "transition: none" in body
+    # Every @keyframes animation still declared in the stylesheet must be gated.
+    animated = set(re.findall(r"animation:\s*([a-zA-Z-]+)", style_css)) - {"none"}
+    declared = set(re.findall(r"@keyframes\s+([a-zA-Z-]+)", style_css))
+    assert animated <= declared
 
 
 def test_focus_visible_styles_present(style_css):

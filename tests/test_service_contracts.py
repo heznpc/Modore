@@ -104,7 +104,7 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     assert "scripts/schedule.sh" in module.MACOS_FILES
     assert "scripts/build_macos_swift_app.sh" in module.MACOS_FILES
     assert "scripts/package_macos_release.sh" in module.MACOS_FILES
-    assert "Mac앱실행.command" in module.MACOS_FILES
+    assert "run-mac-app.command" in module.MACOS_FILES
     assert "macos/Modore/Package.swift" in module.MACOS_FILES
     swift_root = project_root / "macos" / "Modore"
     swift_files = {
@@ -116,13 +116,13 @@ def test_release_artifacts_exclude_runtime_python(project_root):
 
 
 def test_macos_launcher_is_executable(project_root):
-    mode = (project_root / "검사하기.command").stat().st_mode
+    mode = (project_root / "scan.command").stat().st_mode
     assert mode & 0o111
 
 
 def test_macos_swift_launcher_is_executable(project_root):
     for rel in (
-        "Mac앱실행.command",
+        "run-mac-app.command",
         "scripts/build_macos_swift_app.sh",
         "scripts/package_macos_release.sh",
     ):
