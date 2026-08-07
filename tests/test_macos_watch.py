@@ -472,6 +472,7 @@ def _run_watch_with_stubbed_notifiers(project_root, env, tmp_path, *, open_exit=
     return result, "open" in calls, "osascript" in calls
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
 def test_storage_watch_posts_via_the_app_bundle_when_open_succeeds(project_root, tmp_path):
     state_dir = tmp_path / "state"
     bundle = _fake_app_bundle(tmp_path)
@@ -496,6 +497,7 @@ def test_storage_watch_posts_via_the_app_bundle_when_open_succeeds(project_root,
     assert not osascript_attempted, "a successful open attempt must not also fall back"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
 def test_storage_watch_falls_back_to_osascript_when_open_fails(project_root, tmp_path):
     """A correctly identified bundle whose launch genuinely fails (moved, code
     changed, anything) — the whole point of the fallback is to survive this,
@@ -523,6 +525,7 @@ def test_storage_watch_falls_back_to_osascript_when_open_fails(project_root, tmp
     assert osascript_attempted, "a failed open attempt must still fall back to osascript"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
 @pytest.mark.parametrize(
     "make_bundle",
     [
@@ -558,6 +561,7 @@ def test_storage_watch_never_reaches_open_for_a_structurally_invalid_bundle(
     assert osascript_attempted, "rejecting the bundle must still fall back to osascript"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
 def test_storage_watch_never_reaches_open_for_a_symlinked_app_bundle_path(project_root, tmp_path):
     state_dir = tmp_path / "state"
     real_bundle = _fake_app_bundle(tmp_path / "real")
@@ -584,6 +588,7 @@ def test_storage_watch_never_reaches_open_for_a_symlinked_app_bundle_path(projec
     assert osascript_attempted, "rejecting the bundle must still fall back to osascript"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
 def test_storage_watch_never_reaches_open_when_no_app_bundle_is_configured(project_root, tmp_path):
     """The default, unset case — every install predating this feature, and
     every test above this line in the file. Must fall straight to osascript,
@@ -610,6 +615,7 @@ def test_storage_watch_never_reaches_open_when_no_app_bundle_is_configured(proje
     assert osascript_attempted, "an unconfigured bundle path must still fall back to osascript"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="launchd plist tools are macOS-only")
 def test_schedule_install_threads_the_app_bundle_path_into_the_plist(project_root, tmp_path):
     """The env var the app passes at install time must survive into the
     LaunchAgent definition unchanged, or the scheduled run can never find it."""
@@ -652,6 +658,7 @@ def test_schedule_install_threads_the_app_bundle_path_into_the_plist(project_roo
     )
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="launchd plist tools are macOS-only")
 def test_schedule_rejects_an_app_bundle_path_without_the_app_suffix(project_root, tmp_path):
     home = tmp_path / "home"
     launch_agents = home / "Library" / "LaunchAgents"
