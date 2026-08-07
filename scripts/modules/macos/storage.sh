@@ -374,6 +374,10 @@ _pch_collect_known_storage_paths() {
     add_du_path "cache" "Gradle cache" "$HOME/.gradle/caches" "gradle_cache"
     add_du_path "cache" "CocoaPods cache" "$HOME/Library/Caches/CocoaPods" "cocoapods_cache"
     add_du_path "cache" "Dart/Flutter pub cache" "$HOME/.pub-cache" "pub_cache"
+    add_du_path "cache" "uv cache" "$HOME/.cache/uv" "uv_cache"
+    add_du_path "cache" "Swift Package Manager cache" "$HOME/Library/Caches/org.swift.swiftpm" "swiftpm_cache"
+    add_du_path "cache" "Homebrew download cache" "$HOME/Library/Caches/Homebrew" "homebrew_cache"
+    add_du_path "cache" "pip wheel cache" "$HOME/Library/Caches/pip" "pip_cache"
 
     # AI 개발/에이전트 작업공간. 세션 기록과 재생성 가능한 런타임을 구분해서 보여준다.
     add_du_path "ai_vm_cache" "Claude Cowork VM bundles" "$HOME/Library/Application Support/Claude/vm_bundles" "claude_vm_bundles"
