@@ -15,6 +15,7 @@ enum CleanupRecipeCatalog {
         "codex_runtime_cache",
         "codex_temp_cache",
         "claude_vm_bundles",
+        "ollama_models",
         "xcode_derived_data",
         "chrome_code_sign_clones",
         "innorix_ex",
