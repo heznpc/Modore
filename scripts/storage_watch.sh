@@ -9,8 +9,35 @@ umask 077
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset BASH_ENV ENV CDPATH GLOBIGNORE
 
-# shellcheck source=scripts/modules/support_dir.sh
-source "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/support_dir.sh"
+# 이 스크립트는 LaunchAgent에서 파일이 아니라 stdin 파이프로 실행된다
+# (scripts/schedule.sh의 WATCH_WRAPPER). 그 경로에서는 BASH_SOURCE가 비어 있어
+# 형제 모듈을 source할 수 없고, set -u 아래에서는 참조 자체가 즉시 종료시킨다.
+# 게다가 래퍼가 해시로 고정하는 대상은 이 파일 하나뿐이라, 검증되지 않은
+# 모듈을 읽어 오는 것은 무결성 검사를 우회하는 통로가 된다. 그래서 이 값은
+# 여기에 직접 둔다. modules/support_dir.sh와 어긋나지 않도록 테스트가 고정한다.
+SUPPORT_DIR_NAME="Modore"
+LEGACY_SUPPORT_DIR_NAME="PC Health Check"
+
+# modules/support_dir.sh와 동작이 같아야 한다. 감시가 새 이름의 디렉터리를 먼저
+# 만들어 버리면 마이그레이션 조건(새 이름이 아직 없을 것)이 깨져 옛 기록이
+# 고아가 되므로, 상태 경로를 정하기 전에 여기서도 한 번 옮긴다.
+migrate_support_directory_if_needed() {
+    local support_root="$1"
+    local legacy="$support_root/$LEGACY_SUPPORT_DIR_NAME"
+    local current="$support_root/$SUPPORT_DIR_NAME"
+    local owner
+
+    [[ -n "$support_root" && "$support_root" == /* ]] || return 0
+    [[ -d "$support_root" && ! -L "$support_root" ]] || return 0
+    [[ -d "$legacy" && ! -L "$legacy" ]] || return 0
+    [[ ! -e "$current" && ! -L "$current" ]] || return 0
+
+    owner="$(/usr/bin/stat -f '%u' "$legacy" 2>/dev/null)" || return 0
+    [[ "$owner" == "$(/usr/bin/id -u)" ]] || return 0
+
+    /bin/mv "$legacy" "$current" 2>/dev/null || return 1
+    return 0
+}
 
 path_owner_uid() {
     if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then

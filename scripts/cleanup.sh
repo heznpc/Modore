@@ -643,6 +643,22 @@ apply_recipe_guidance() {
             DESCRIPTION="Dart/Flutter가 받아 둔 패키지 캐시입니다. 앱 소스는 대상이 아닙니다."
             AVOID_WHEN="오프라인에서 Flutter 빌드를 해야 한다면 두세요."
             ;;
+        uv_cache)
+            DESCRIPTION="uv(파이썬 패키지 관리자)가 받아 둔 다운로드 캐시입니다. 프로젝트 소스와 가상환경은 대상이 아닙니다."
+            AVOID_WHEN="오프라인에서 곧 uv/파이썬 의존성 설치를 해야 한다면 두세요."
+            ;;
+        swiftpm_cache)
+            DESCRIPTION="Swift Package Manager가 받아 둔 의존성 캐시입니다. 프로젝트 소스와 각 프로젝트의 .build는 대상이 아닙니다."
+            AVOID_WHEN="오프라인에서 곧 Swift 빌드를 해야 한다면 두세요."
+            ;;
+        homebrew_cache)
+            DESCRIPTION="Homebrew가 내려받아 둔 설치 파일 캐시입니다. 설치된 프로그램 자체는 대상이 아니며, brew cleanup이 비우는 것과 같은 캐시입니다."
+            AVOID_WHEN="네트워크가 느리거나 오프라인에서 곧 brew 설치·업그레이드를 해야 한다면 두세요."
+            ;;
+        pip_cache)
+            DESCRIPTION="pip(파이썬 패키지 관리자)가 받아 둔 휠 캐시입니다. 설치된 패키지와 가상환경은 대상이 아닙니다."
+            AVOID_WHEN="오프라인에서 곧 pip 설치를 해야 한다면 두세요."
+            ;;
         codex_runtime_cache)
             DESCRIPTION="Codex가 내려받아 실행에 쓰는 런타임 설치본입니다. 대화 기록과 세션 파일은 대상이 아닙니다."
             AVOID_WHEN="Codex 작업이 진행 중이라면 끝난 뒤에 하세요."
@@ -774,6 +790,38 @@ define_recipe() {
             WARNING="패키지는 다음 pub get 때 다시 다운로드됩니다."
             add_target_if_present "$HOME_ROOT/.pub-cache"
             ;;
+        uv_cache)
+            LABEL="uv cache"
+            # 실행 이름이 uv인 것과, 캐시 경로를 인자로 쥔 프로세스를 함께 본다.
+            PROCESS_PATTERN='^(\S*/)?uv( |$)|/\.cache/uv/'
+            PROCESS_NOTE="uv/파이썬 의존성 설치를 먼저 종료하세요."
+            WARNING="패키지는 다음 uv 설치 때 다시 다운로드됩니다."
+            add_target_if_present "$HOME_ROOT/.cache/uv"
+            ;;
+        swiftpm_cache)
+            LABEL="Swift Package Manager cache"
+            # SourceKitService와 swift-build가 이 캐시를 읽는다. 실행 이름과
+            # 캐시 경로 토큰을 함께 본다.
+            PROCESS_PATTERN='^(\S*/)?swift(-build|-package)?( |$)|SourceKitService|/Caches/org\.swift\.swiftpm/'
+            PROCESS_NOTE="Swift 빌드와 Xcode/SourceKit 작업을 먼저 종료하세요."
+            WARNING="의존성은 다음 Swift 빌드 때 다시 다운로드됩니다."
+            add_target_if_present "$HOME_ROOT/Library/Caches/org.swift.swiftpm"
+            ;;
+        homebrew_cache)
+            LABEL="Homebrew download cache"
+            PROCESS_PATTERN='^(\S*/)?brew( |$)|/Caches/Homebrew/'
+            PROCESS_NOTE="brew 설치·업그레이드를 먼저 종료하세요."
+            WARNING="설치 파일은 다음 brew 설치·업그레이드 때 다시 다운로드됩니다."
+            add_target_if_present "$HOME_ROOT/Library/Caches/Homebrew"
+            ;;
+        pip_cache)
+            LABEL="pip wheel cache"
+            # pip은 python -m pip으로도 실행되므로 캐시 경로 토큰으로 보완한다.
+            PROCESS_PATTERN='^(\S*/)?pip[0-9.]*( |$)|(^|/)python[0-9.]* -m pip|/Caches/pip/'
+            PROCESS_NOTE="pip 설치를 먼저 종료하세요."
+            WARNING="휠은 다음 pip 설치 때 다시 다운로드됩니다."
+            add_target_if_present "$HOME_ROOT/Library/Caches/pip"
+            ;;
         codex_runtime_cache)
             LABEL="Codex runtime cache"
             # `/codex`는 이름이 codex로 시작하는 저장소 안의 모든 프로세스를
@@ -869,6 +917,10 @@ allowed_target() {
         gradle_cache) [[ "$target" == "$HOME_ROOT/.gradle/caches" ]] ;;
         cocoapods_cache) [[ "$target" == "$HOME_ROOT/Library/Caches/CocoaPods" ]] ;;
         pub_cache) [[ "$target" == "$HOME_ROOT/.pub-cache" ]] ;;
+        uv_cache) [[ "$target" == "$HOME_ROOT/.cache/uv" ]] ;;
+        swiftpm_cache) [[ "$target" == "$HOME_ROOT/Library/Caches/org.swift.swiftpm" ]] ;;
+        homebrew_cache) [[ "$target" == "$HOME_ROOT/Library/Caches/Homebrew" ]] ;;
+        pip_cache) [[ "$target" == "$HOME_ROOT/Library/Caches/pip" ]] ;;
         codex_runtime_cache) [[ "$target" == "$HOME_ROOT/.cache/codex-runtimes" ]] ;;
         codex_temp_cache) [[ "$target" == "$HOME_ROOT/.codex/.tmp" ]] ;;
         claude_vm_bundles) [[ "$target" == "$HOME_ROOT/Library/Application Support/Claude/vm_bundles" ]] ;;

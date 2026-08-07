@@ -65,6 +65,8 @@ struct StatusPage: View {
                         )
                     }
 
+                    StatusWatchGapSection(storage: storage)
+
                     if !storage.accessIssues.isEmpty {
                         StorageAccessIssuesSection(
                             issues: storage.accessIssues,
@@ -323,6 +325,48 @@ private struct StatusNavigationRow: View {
             .padding(.vertical, 5)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// 앱을 닫은 동안 여유 공간을 감시하는 주체가 없다는 사실은, 공간이 실제로 바닥나기
+/// 전까지 어디에도 드러나지 않았다. 설정 창에만 있던 스위치를 관측 근거 옆으로 올린다.
+private struct StatusWatchGapSection: View {
+    @EnvironmentObject private var model: ScanModel
+    let storage: StorageSnapshot?
+
+    var body: some View {
+        if !model.storageWatchEnabled {
+            Section {
+                if model.storageWatchInFlight {
+                    ProgressView("감시 설정 적용 중")
+                        .controlSize(.small)
+                } else {
+                    StatusActionRow(
+                        symbol: "bell.slash",
+                        title: title,
+                        detail: "매시간 여유 공간만 확인해, 20GB 미만이거나 한 시간에 8GB 이상 줄면 알립니다. 삭제는 실행하지 않습니다.",
+                        value: storage.map { String(format: "%.1fGB 남음", $0.freeGB) } ?? "",
+                        actionTitle: "감시 켜기",
+                        action: { model.setStorageWatchEnabled(true) }
+                    )
+                    .disabled(model.isBusy)
+                }
+            } header: {
+                NativeSectionHeader(
+                    title: "앱을 닫은 동안",
+                    subtitle: "이 앱은 열려 있을 때만 검사합니다. 닫힌 동안의 변화는 감시를 켜야 확인합니다.",
+                    value: "감시 꺼짐"
+                )
+            }
+        }
+    }
+
+    /// 이미 여유가 위험 구간이면, 감시 부재는 예방이 아니라 지금 당장의 사각지대다.
+    private var title: String {
+        guard let storage, storage.risk == "danger" || storage.risk == "warning" else {
+            return "지금은 여유 공간을 감시하는 기능이 꺼져 있습니다"
+        }
+        return "여유가 이미 줄어든 상태인데 감시가 꺼져 있습니다"
     }
 }
 
