@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+@preconcurrency import UserNotifications
 
 extension ScanModel {
     func showNormalReport() {
@@ -277,6 +278,16 @@ extension ScanModel {
         let command = enabled ? "--install" : "--uninstall"
         Task {
             defer { storageWatchInFlight = false }
+            // Ask now, in this clear foreground moment the owner just triggered —
+            // never from the scheduled launch itself, which runs invisibly and
+            // would turn a routine hourly tick into a surprise permission dialog.
+            // The scheduled launch only posts if this already resolved to
+            // .authorized by the time it runs; a denial here just means it keeps
+            // falling back to the existing osascript notification, same as today.
+            if enabled {
+                _ = try? await UNUserNotificationCenter.current()
+                    .requestAuthorization(options: [.alert])
+            }
             let execution = await Task.detached(priority: .userInitiated) {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
             }.value
@@ -307,6 +318,7 @@ extension ScanModel {
                 environment: [
                     "PCH_STORAGE_WATCH_SCRIPT": execution.storageWatchScriptURL.path,
                     "PCH_STORAGE_WATCH_SHA256": watcherHash,
+                    "PCH_STORAGE_WATCH_APP_BUNDLE": Bundle.main.bundleURL.path,
                 ]
             )
             let values = StorageWatchService.protocolValues(result.output)

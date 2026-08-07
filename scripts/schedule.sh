@@ -17,6 +17,10 @@ LABEL="me.heznpc.modore.storage-watch"
 LEGACY_LABEL="me.heznpc.pchealthcheck.storage-watch"
 ROOT_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /bin/pwd -P)"
 WATCH_SCRIPT="${PCH_STORAGE_WATCH_SCRIPT:-$ROOT_DIR/scripts/storage_watch.sh}"
+# Optional: the running app's own bundle path, so the scheduled watch can launch
+# it to post a notification under its own identity instead of an Apple binary's.
+# Empty is a fully supported value (osascript-only, today's behavior).
+APP_BUNDLE_PATH="${PCH_STORAGE_WATCH_APP_BUNDLE:-}"
 HOME_ROOT=""
 OWNER_APPROVED="false"
 SAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
@@ -154,6 +158,7 @@ loaded_definition_is_current() {
         "PATH=$SAFE_PATH" \
         "LANG=$SAFE_LOCALE" \
         "LC_ALL=$SAFE_LOCALE" \
+        "PCH_STORAGE_WATCH_APP_BUNDLE=$APP_BUNDLE_PATH" \
         /bin/bash \
         -p \
         -c \
@@ -203,6 +208,19 @@ install_agent() {
             exit 1
             ;;
     esac
+    case "$APP_BUNDLE_PATH" in
+        ""|*.app) ;;
+        *)
+            /usr/bin/printf 'ERROR: app bundle path must be empty or end in .app.\n' >&2
+            exit 1
+            ;;
+    esac
+    case "$APP_BUNDLE_PATH" in
+        /Volumes/*|*/AppTranslocation/*)
+            /usr/bin/printf 'ERROR: move the app to a stable local folder before enabling storage watch.\n' >&2
+            exit 1
+            ;;
+    esac
     ensure_directory "$HOME_ROOT/Library" || exit 1
     ensure_directory "$LAUNCH_AGENTS_DIR" || exit 1
     ensure_directory "$HOME_ROOT/Library/Application Support" || exit 1
@@ -227,6 +245,7 @@ install_agent() {
         "PATH=$SAFE_PATH" \
         "LANG=$SAFE_LOCALE" \
         "LC_ALL=$SAFE_LOCALE" \
+        "PCH_STORAGE_WATCH_APP_BUNDLE=$APP_BUNDLE_PATH" \
         /bin/bash \
         -p \
         -c \
