@@ -1258,3 +1258,58 @@ def test_scanners_resolve_ignored_or_user_config_before_template(project_root):
     assert user_config in mac
     assert mac.index(user_config) < mac.index("${PROJECT_DIR}/data/config.json")
     assert "LOCALAPPDATA" in windows
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="runs the macOS scanner entry point")
+def test_release_extracted_scanner_does_not_abort_on_a_missing_module(project_root, tmp_path):
+    """Ground truth, not pattern-matching: copy exactly the files MACOS_FILES ships
+    into a clean directory — what a user gets from the source ZIP — and start
+    scripts/scanner.sh for real from there.
+
+    A first attempt at this test parsed `source "$SCRIPT_DIR/..."` statements with
+    a regex and asserted the target was in the allowlist. That caught
+    modules/support_dir.sh but missed modules/macos/idle_cpu.sh, which scanner.sh
+    reaches through a variable built from MODULES_DIR two lines away from the
+    `source` statement — a pattern the regex never matched, even though it fails
+    exactly the same way. Any script that constructs its own source path is a way
+    to defeat a syntactic check, so this asserts the actual failure mode instead:
+    every `source`d module runs in the first few lines, before scanner.sh reads
+    any real system state, so a short-lived process is enough to observe whether
+    it survived past that point without waiting for a full scan to finish."""
+    module = load_release_smoke(project_root)
+    extracted = tmp_path / "extracted"
+    for rel in module.MACOS_FILES:
+        src = project_root / rel
+        if not src.is_file():
+            continue
+        dst = extracted / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+        dst.chmod(src.stat().st_mode)
+
+    proc = subprocess.Popen(
+        ["/bin/bash", "scripts/scanner.sh", "--quick"],
+        cwd=extracted,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _, stderr = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        _, stderr = proc.communicate()
+
+    for signature in ("No such file or directory", "command not found", "unbound variable"):
+        assert signature not in stderr, (
+            f"scanner.sh hit a missing-module failure from the extracted release: {stderr}"
+        )
+
+
+def test_release_ships_scree_the_readme_leads_with(project_root):
+    """README.md's opening paragraph and first 'What ships today' bullet are
+    scree — the AI-agent session/residue audit. A source release that omits
+    scripts/scree.py means the feature the README sells first cannot be run by
+    anyone who follows the documented install path (clone + run)."""
+    module = load_release_smoke(project_root)
+    assert "scripts/scree.py" in module.MACOS_FILES
