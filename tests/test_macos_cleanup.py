@@ -1419,3 +1419,94 @@ def test_name_derived_residue_is_review_only(project_root, tmp_path):
     assert str(guessed) in payload["reviewResidue"]
     assert str(guessed) not in payload["targets"]
     assert guessed.is_dir()
+
+
+# --- New reclaimable-cache recipes (uv / SwiftPM / Homebrew / pip) --------------
+# These are the "cache umbrella" additions: pure download/build caches that the
+# owning tool regenerates on its own. Each must be wired through three sources that
+# can drift apart silently — the scanner (storage.sh cleanup_id), the executor
+# (cleanup.sh recipe case), and the app catalog (Swift fixedRecipes).
+
+NEW_CACHE_RECIPES = {
+    "uv_cache": ".cache/uv",
+    "swiftpm_cache": "Library/Caches/org.swift.swiftpm",
+    "homebrew_cache": "Library/Caches/Homebrew",
+    "pip_cache": "Library/Caches/pip",
+}
+
+
+@pytest.mark.parametrize("recipe,rel", sorted(NEW_CACHE_RECIPES.items()))
+def test_new_cache_recipe_previews_and_executes_with_approval(
+    project_root, tmp_path, recipe, rel
+):
+    home = tmp_path / "home"
+    cache_file = home / rel / "sub" / "entry.bin"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_bytes(b"x" * 8192)
+
+    preview = run_cleanup(project_root, home, "--preview", recipe)
+    payload = parse_protocol(preview.stdout)
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "ready"
+    assert payload["recipeId"] == recipe
+    assert int(str(payload["estimatedKB"])) > 0
+    assert cache_file.exists(), "preview must not delete"
+
+    executed = run_cleanup(
+        project_root,
+        home,
+        "--execute",
+        recipe,
+        "--owner-approved",
+        "--approval-token",
+        approval_token(payload),
+    )
+    result = parse_protocol(executed.stdout)
+    assert executed.returncode == 0, executed.stderr
+    assert result["status"] == "complete"
+    assert not (home / rel).exists()
+
+
+def _scanner_cache_cleanup_ids(project_root: Path) -> set[str]:
+    text = (project_root / "scripts" / "modules" / "macos" / "storage.sh").read_text(
+        encoding="utf-8"
+    )
+    ids = set()
+    for match in re.finditer(r'add_du_path\s+"cache"\s+"[^"]*"\s+"[^"]*"\s+"([a-z_]+)"', text):
+        ids.add(match.group(1))
+    return ids
+
+
+def _swift_fixed_recipes(project_root: Path) -> set[str]:
+    text = (
+        project_root / "macos" / "Modore" / "Sources" / "Modore" / "Models" / "StorageModels.swift"
+    ).read_text(encoding="utf-8")
+    block = text.split("fixedRecipes: Set<String> = [", 1)[1].split("]", 1)[0]
+    return set(re.findall(r'"([a-z_]+)"', block))
+
+
+def _cleanup_recipe_ids(project_root: Path) -> set[str]:
+    """Recipe ids the executor validates — the third case arm that pins each id to
+    its exact target path (`recipe) [[ "$target" == ... ]] ;;`)."""
+    text = (project_root / "scripts" / "cleanup.sh").read_text(encoding="utf-8")
+    return set(re.findall(r'^\s{8}([a-z_]+)\)\s*\[\[\s*"\$target"', text, re.MULTILINE))
+
+
+def test_new_cache_recipes_are_wired_through_all_three_sources(project_root):
+    scanner = _scanner_cache_cleanup_ids(project_root)
+    swift = _swift_fixed_recipes(project_root)
+    executor = _cleanup_recipe_ids(project_root)
+    for recipe in NEW_CACHE_RECIPES:
+        assert recipe in scanner, f"{recipe} missing from storage.sh add_du_path"
+        assert recipe in swift, f"{recipe} missing from Swift fixedRecipes"
+        assert recipe in executor, f"{recipe} missing from cleanup.sh recipe case"
+
+
+def test_every_scanned_cache_cleanup_id_has_an_executor_recipe(project_root):
+    """A cache row that advertises a cleanup_id the executor does not know would
+    render an enabled cleanup button that fails on click. Pin the scanner's cache
+    cleanup_ids to the executor's recipe set so the two cannot drift apart."""
+    scanner = _scanner_cache_cleanup_ids(project_root)
+    executor = _cleanup_recipe_ids(project_root)
+    orphaned = scanner - executor
+    assert not orphaned, f"scanner emits cleanup_ids with no executor recipe: {orphaned}"
