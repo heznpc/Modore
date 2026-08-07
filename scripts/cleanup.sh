@@ -671,6 +671,10 @@ apply_recipe_guidance() {
             DESCRIPTION="Claude의 로컬 에이전트가 쓰는 가상 머신 이미지입니다. 대화 내용과 세션 작업공간은 대상이 아닙니다."
             AVOID_WHEN="Cowork 세션이 진행 중이라면 저장하고 종료한 뒤에 하세요."
             ;;
+        ollama_models)
+            DESCRIPTION="Ollama가 내려받은 로컬 모델 가중치입니다. ollama pull로 다시 받을 수 있지만, 모델 크기에 따라 수 GB~수십 GB를 다시 내려받아야 합니다. SSH 키 등 자격증명은 이 폴더가 아닌 별도 경로에 있어 대상이 아닙니다."
+            AVOID_WHEN="네트워크가 느리거나, 곧 다시 같은 모델을 쓸 계획이라면 재다운로드 비용을 먼저 따져보세요."
+            ;;
         xcode_derived_data)
             DESCRIPTION="Xcode가 빌드 중간 산출물과 코드 인덱스를 넣어 두는 폴더입니다. 소스와 Archive는 대상이 아닙니다."
             AVOID_WHEN="지금 빌드나 인덱싱이 돌고 있다면 끝난 뒤에 하세요."
@@ -849,6 +853,15 @@ define_recipe() {
             WARNING="로컬 에이전트 VM 이미지는 다시 생성될 수 있습니다. 세션 작업공간은 보존합니다."
             add_target_if_present "$HOME_ROOT/Library/Application Support/Claude/vm_bundles"
             ;;
+        ollama_models)
+            LABEL="Ollama model blobs"
+            # ollama serve(백그라운드 데몬)와 CLI 둘 다 모델을 읽는 동안 잡는다.
+            # 대상은 models/뿐이라 같은 폴더의 SSH 키(id_ed25519*)는 건드리지 않는다.
+            PROCESS_PATTERN='(^|/)ollama( |$)|Ollama\.app/Contents/MacOS/Ollama'
+            PROCESS_NOTE="Ollama(서버/CLI)를 먼저 종료하세요."
+            WARNING="모델은 ollama pull로 다시 받을 수 있지만, 모델마다 수 GB~수십 GB를 다시 내려받습니다."
+            add_target_if_present "$HOME_ROOT/.ollama/models"
+            ;;
         xcode_derived_data)
             LABEL="Xcode DerivedData"
             # Xcode.app 번들 안에는 DerivedData와 무관한 실행 파일도 들어 있다.
@@ -924,6 +937,7 @@ allowed_target() {
         codex_runtime_cache) [[ "$target" == "$HOME_ROOT/.cache/codex-runtimes" ]] ;;
         codex_temp_cache) [[ "$target" == "$HOME_ROOT/.codex/.tmp" ]] ;;
         claude_vm_bundles) [[ "$target" == "$HOME_ROOT/Library/Application Support/Claude/vm_bundles" ]] ;;
+        ollama_models) [[ "$target" == "$HOME_ROOT/.ollama/models" ]] ;;
         xcode_derived_data) [[ "$target" == "$HOME_ROOT/Library/Developer/Xcode/DerivedData" ]] ;;
         chrome_code_sign_clones)
             [[ "$target" == "$VAR_FOLDERS_ROOT/"*"/X/com.google.Chrome.code_sign_clone" \

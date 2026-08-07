@@ -427,7 +427,7 @@ _pch_collect_known_storage_paths() {
     add_du_path "protected_history" "Claude pending uploads" "$HOME/Library/Application Support/Claude/pending-uploads"
 
     # Ollama: model blobs are reclaimable via `ollama pull`; the SSH keypair never is.
-    add_du_path "ai_cache" "Ollama model blobs" "$HOME/.ollama/models"
+    add_du_path "ai_cache" "Ollama model blobs" "$HOME/.ollama/models" "ollama_models"
     add_du_path "protected_history" "Ollama SSH private key" "$HOME/.ollama/id_ed25519"
     add_du_path "protected_history" "Ollama SSH public key" "$HOME/.ollama/id_ed25519.pub"
 

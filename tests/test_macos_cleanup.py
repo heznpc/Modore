@@ -1432,6 +1432,7 @@ NEW_CACHE_RECIPES = {
     "swiftpm_cache": "Library/Caches/org.swift.swiftpm",
     "homebrew_cache": "Library/Caches/Homebrew",
     "pip_cache": "Library/Caches/pip",
+    "ollama_models": ".ollama/models",
 }
 
 
@@ -1467,12 +1468,49 @@ def test_new_cache_recipe_previews_and_executes_with_approval(
     assert not (home / rel).exists()
 
 
+def test_ollama_models_recipe_never_touches_the_ssh_keypair(project_root, tmp_path):
+    """~/.ollama holds both the model blobs (reclaimable) and an SSH keypair
+    (never reclaimable) as siblings. The recipe targets .ollama/models only —
+    pin that the keypair survives a real execute, not just that the target
+    string looks right."""
+    home = tmp_path / "home"
+    models = home / ".ollama" / "models" / "blob"
+    models.mkdir(parents=True)
+    (models / "sha256-abc").write_bytes(b"x" * 8192)
+    private_key = home / ".ollama" / "id_ed25519"
+    public_key = home / ".ollama" / "id_ed25519.pub"
+    private_key.write_text("fixture-private-key", encoding="utf-8")
+    public_key.write_text("fixture-public-key", encoding="utf-8")
+
+    preview = run_cleanup(project_root, home, "--preview", "ollama_models")
+    payload = parse_protocol(preview.stdout)
+    assert preview.returncode == 0, preview.stderr
+
+    executed = run_cleanup(
+        project_root,
+        home,
+        "--execute",
+        "ollama_models",
+        "--owner-approved",
+        "--approval-token",
+        approval_token(payload),
+    )
+    result = parse_protocol(executed.stdout)
+    assert executed.returncode == 0, executed.stderr
+    assert result["status"] == "complete"
+    assert not (home / ".ollama" / "models").exists()
+    assert private_key.read_text(encoding="utf-8") == "fixture-private-key"
+    assert public_key.read_text(encoding="utf-8") == "fixture-public-key"
+
+
 def _scanner_cache_cleanup_ids(project_root: Path) -> set[str]:
     text = (project_root / "scripts" / "modules" / "macos" / "storage.sh").read_text(
         encoding="utf-8"
     )
     ids = set()
-    for match in re.finditer(r'add_du_path\s+"cache"\s+"[^"]*"\s+"[^"]*"\s+"([a-z_]+)"', text):
+    for match in re.finditer(
+        r'add_du_path\s+"(?:cache|ai_cache)"\s+"[^"]*"\s+"[^"]*"\s+"([a-z_]+)"', text
+    ):
         ids.add(match.group(1))
     return ids
 
