@@ -375,6 +375,7 @@ def test_schedule_requires_approval_and_stays_inside_test_home(project_root, tmp
             "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
             "LANG=en_US.UTF-8",
             "LC_ALL=en_US.UTF-8",
+            "PCH_STORAGE_WATCH_APP_BUNDLE=",
             "/bin/bash",
             "-p",
             "-c",
@@ -411,3 +412,275 @@ def test_schedule_requires_approval_and_stays_inside_test_home(project_root, tmp
     assert removed.returncode == 0, removed.stderr
     assert parse_protocol(removed.stdout)["enabled"] == "false"
     assert not plist.exists()
+
+
+# --- App-identity notification (PCH_STORAGE_WATCH_APP_BUNDLE) --------------------
+# osascript's "display notification" can only ever post as com.apple.ScriptEditor2
+# (an Apple-binary entitlement), so the watch now tries launching the app itself
+# under PCH_STORAGE_WATCH_APP_BUNDLE first and only falls back to osascript if
+# that path is unavailable or structurally wrong. These tests pin the safety
+# property that actually matters here: no value of that variable — valid,
+# malformed, or absent — can ever make the watch itself fail or change its
+# reported status. They cannot observe whether a banner appeared on screen
+# (that needs a live session), so they do not claim to.
+
+def _fake_app_bundle(root, *, identifier="me.heznpc.modore", suffix=".app"):
+    bundle = root / f"Fake{suffix}"
+    (bundle / "Contents").mkdir(parents=True)
+    plist_path = bundle / "Contents" / "Info.plist"
+    plist_path.write_bytes(plistlib.dumps({"CFBundleIdentifier": identifier}))
+    return bundle
+
+
+def _stub_binary(tmp_path, name, *, exit_code=0):
+    """Replaces the real /usr/bin/open or /usr/bin/osascript for a test via
+    PCH_TEST_OPEN_BIN / PCH_TEST_OSASCRIPT_BIN (storage_watch.sh only honors
+    these under PCH_TEST_MODE=1; production always uses the real absolute
+    paths, unchanged). `display notification` and `open -a` are real OS calls
+    with a real, on-screen effect — running the actual binaries from an
+    automated test would post a genuine notification to whatever Mac the
+    suite happens to run on, which is a real incident on a developer's own
+    daily-use machine, not a harmless side effect. The stub only records that
+    it was called and exits with a controllable status."""
+    log = tmp_path / "notify-calls.log"
+    stub = tmp_path / f"{name}-stub"
+    stub.write_text(
+        f'#!/bin/bash\nprintf "%s\\n" "{name}" >> "{log}"\nexit {exit_code}\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return stub, log
+
+
+def _run_watch_with_stubbed_notifiers(project_root, env, tmp_path, *, open_exit=0, osascript_exit=0):
+    """Runs storage_watch.sh with both notification binaries stubbed out, and
+    reports which one(s) were actually invoked — the only way to tell
+    "rejected the bundle, correctly fell back" from "silently did neither"
+    (e.g. a validation guard fixed as `return 0` instead of `return 1`, which
+    would produce an equally quiet exit 0 with no notification attempted at
+    all) without ever touching the real Notification Center."""
+    open_stub, log = _stub_binary(tmp_path, "open", exit_code=open_exit)
+    osascript_stub, _ = _stub_binary(tmp_path, "osascript", exit_code=osascript_exit)
+    env = {
+        **env,
+        "PCH_TEST_OPEN_BIN": str(open_stub),
+        "PCH_TEST_OSASCRIPT_BIN": str(osascript_stub),
+    }
+    script = project_root / "scripts" / "storage_watch.sh"
+    result = subprocess.run([str(script)], capture_output=True, text=True, encoding="utf-8", env=env)
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return result, "open" in calls, "osascript" in calls
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+def test_storage_watch_posts_via_the_app_bundle_when_open_succeeds(project_root, tmp_path):
+    state_dir = tmp_path / "state"
+    bundle = _fake_app_bundle(tmp_path)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(19 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "1",
+            "PCH_STORAGE_WATCH_APP_BUNDLE": str(bundle),
+        }
+    )
+
+    result, open_attempted, osascript_attempted = _run_watch_with_stubbed_notifiers(
+        project_root, env, tmp_path, open_exit=0
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert parse_protocol(result.stdout)["status"] == "warning"
+    assert open_attempted, "a correctly identified .app must reach the open call"
+    assert not osascript_attempted, "a successful open attempt must not also fall back"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+def test_storage_watch_falls_back_to_osascript_when_open_fails(project_root, tmp_path):
+    """A correctly identified bundle whose launch genuinely fails (moved, code
+    changed, anything) — the whole point of the fallback is to survive this,
+    not only a structurally invalid path."""
+    state_dir = tmp_path / "state"
+    bundle = _fake_app_bundle(tmp_path)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(19 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "1",
+            "PCH_STORAGE_WATCH_APP_BUNDLE": str(bundle),
+        }
+    )
+
+    result, open_attempted, osascript_attempted = _run_watch_with_stubbed_notifiers(
+        project_root, env, tmp_path, open_exit=1
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert parse_protocol(result.stdout)["status"] == "warning"
+    assert open_attempted, "a correctly identified .app must reach the open call"
+    assert osascript_attempted, "a failed open attempt must still fall back to osascript"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+@pytest.mark.parametrize(
+    "make_bundle",
+    [
+        pytest.param(lambda root: _fake_app_bundle(root, identifier="com.example.other"), id="wrong-identifier"),
+        pytest.param(lambda root: _fake_app_bundle(root, suffix=""), id="missing-app-suffix"),
+        pytest.param(lambda root: root / "does-not-exist.app", id="missing-directory"),
+        pytest.param(lambda root: str(root), id="not-an-app-path-at-all"),
+    ],
+)
+def test_storage_watch_never_reaches_open_for_a_structurally_invalid_bundle(
+    project_root, tmp_path, make_bundle
+):
+    state_dir = tmp_path / "state"
+    bundle = make_bundle(tmp_path)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(19 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "1",
+            "PCH_STORAGE_WATCH_APP_BUNDLE": str(bundle),
+        }
+    )
+
+    result, open_attempted, osascript_attempted = _run_watch_with_stubbed_notifiers(
+        project_root, env, tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert parse_protocol(result.stdout)["status"] == "warning"
+    assert not open_attempted, "an invalid bundle must be rejected before the open call"
+    assert osascript_attempted, "rejecting the bundle must still fall back to osascript"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+def test_storage_watch_never_reaches_open_for_a_symlinked_app_bundle_path(project_root, tmp_path):
+    state_dir = tmp_path / "state"
+    real_bundle = _fake_app_bundle(tmp_path / "real")
+    linked = tmp_path / "Linked.app"
+    linked.symlink_to(real_bundle)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(19 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "1",
+            "PCH_STORAGE_WATCH_APP_BUNDLE": str(linked),
+        }
+    )
+
+    result, open_attempted, osascript_attempted = _run_watch_with_stubbed_notifiers(
+        project_root, env, tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert parse_protocol(result.stdout)["status"] == "warning"
+    assert not open_attempted, "a symlinked bundle path must be rejected before the open call"
+    assert osascript_attempted, "rejecting the bundle must still fall back to osascript"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+def test_storage_watch_never_reaches_open_when_no_app_bundle_is_configured(project_root, tmp_path):
+    """The default, unset case — every install predating this feature, and
+    every test above this line in the file. Must fall straight to osascript,
+    exactly as before this notification path existed."""
+    state_dir = tmp_path / "state"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(19 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "1",
+        }
+    )
+    env.pop("PCH_STORAGE_WATCH_APP_BUNDLE", None)
+
+    result, open_attempted, osascript_attempted = _run_watch_with_stubbed_notifiers(
+        project_root, env, tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert parse_protocol(result.stdout)["status"] == "warning"
+    assert not open_attempted, "no configured bundle path must never reach the open call"
+    assert osascript_attempted, "an unconfigured bundle path must still fall back to osascript"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="launchd plist tools are macOS-only")
+def test_schedule_install_threads_the_app_bundle_path_into_the_plist(project_root, tmp_path):
+    """The env var the app passes at install time must survive into the
+    LaunchAgent definition unchanged, or the scheduled run can never find it."""
+    home = tmp_path / "home"
+    launch_agents = home / "Library" / "LaunchAgents"
+    state_dir = home / "Library" / "Application Support" / "Modore"
+    app_bundle = tmp_path / "Modore.app"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_HOME_OVERRIDE": str(home),
+            "PCH_LAUNCH_AGENTS_DIR": str(launch_agents),
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_STORAGE_WATCH_APP_BUNDLE": str(app_bundle),
+        }
+    )
+    script = project_root / "scripts" / "schedule.sh"
+
+    installed = subprocess.run(
+        [str(script), "--install", "--owner-approved"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    plist = launch_agents / "me.heznpc.modore.storage-watch.plist"
+    definition = plistlib.loads(plist.read_bytes())
+    assert f"PCH_STORAGE_WATCH_APP_BUNDLE={app_bundle}" in definition["ProgramArguments"]
+
+    status = subprocess.run(
+        [str(script), "--status"], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert status.returncode == 0, status.stderr
+    assert parse_protocol(status.stdout)["loadedDefinitionCurrent"] == "true", (
+        "loaded_definition_is_current's expected_arguments must match install_agent's "
+        "argument list byte-for-byte, including the new env entry"
+    )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="launchd plist tools are macOS-only")
+def test_schedule_rejects_an_app_bundle_path_without_the_app_suffix(project_root, tmp_path):
+    home = tmp_path / "home"
+    launch_agents = home / "Library" / "LaunchAgents"
+    state_dir = home / "Library" / "Application Support" / "Modore"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_HOME_OVERRIDE": str(home),
+            "PCH_LAUNCH_AGENTS_DIR": str(launch_agents),
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_STORAGE_WATCH_APP_BUNDLE": "/Applications/NotAnApp",
+        }
+    )
+    script = project_root / "scripts" / "schedule.sh"
+
+    result = subprocess.run(
+        [str(script), "--install", "--owner-approved"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+    )
+    assert result.returncode != 0
+    assert not (launch_agents / "me.heznpc.modore.storage-watch.plist").exists()

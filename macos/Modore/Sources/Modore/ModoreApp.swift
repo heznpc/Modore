@@ -33,6 +33,9 @@ struct ModoreApp: App {
     @StateObject private var model = ScanModel()
 
     init() {
+        if let message = BackgroundNotifier.pendingMessage(in: CommandLine.arguments) {
+            BackgroundNotifier.postAndExit(message: message)
+        }
         switch ProcessInfo.processInfo.environment["PCH_FORCE_APPEARANCE"]?.lowercased() {
         case "light":
             NSApplication.shared.appearance = NSAppearance(named: .aqua)

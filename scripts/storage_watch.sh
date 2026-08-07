@@ -85,6 +85,7 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
     FREE_THRESHOLD_GB="${PCH_WATCH_FREE_GB:-20}"
     DROP_THRESHOLD_GB="${PCH_WATCH_DROP_GB:-8}"
     NOTIFY="${PCH_WATCH_NOTIFY:-1}"
+    APP_BUNDLE_PATH="${PCH_STORAGE_WATCH_APP_BUNDLE:-}"
     SNAPSHOT_TEST_ROOT="${PCH_WATCH_SNAPSHOT_ROOT:-}"
     SNAPSHOT_TOTAL_SECONDS="${PCH_WATCH_SNAPSHOT_TOTAL_SECONDS:-8}"
     SNAPSHOT_ITEM_SECONDS="${PCH_WATCH_SNAPSHOT_ITEM_SECONDS:-2}"
@@ -112,6 +113,7 @@ else
     FREE_THRESHOLD_GB=20
     DROP_THRESHOLD_GB=8
     NOTIFY=1
+    APP_BUNDLE_PATH="${PCH_STORAGE_WATCH_APP_BUNDLE:-}"
     SNAPSHOT_TEST_ROOT=""
     SNAPSHOT_TOTAL_SECONDS=8
     SNAPSHOT_ITEM_SECONDS=2
@@ -333,14 +335,55 @@ capture_drop_snapshot() {
 if [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
     capture_drop_snapshot || true
 fi
+# osascript's "display notification" can only ever post as com.apple.ScriptEditor2
+# (an Apple-binary entitlement Modore cannot acquire), so the one alert this
+# product sends lives under an unrelated app's name in System Settings and can be
+# silenced by muting that unrelated tool. Launching the real app briefly lets it
+# post under its own identity via UNUserNotificationCenter instead. This only
+# works if the app was told its own bundle path at install time (APP_BUNDLE_PATH)
+# and that path still structurally looks like the same signed app — otherwise
+# fall through to the always-available osascript path so a stale or missing
+# path never makes the watch quieter than it was before this existed.
+# Test-only indirection so pytest can verify which branch fires without
+# actually posting to the real, live Notification Center on whatever Mac the
+# suite happens to run on — display notification/open are real OS calls with
+# a real on-screen effect regardless of PCH_TEST_MODE, and that effect landing
+# on a developer's own daily-use Mac during an ordinary test run is a real
+# incident, not a harmless test artifact. Both still default to the real
+# absolute paths; only PCH_TEST_MODE=1 can move them, so production behavior
+# and its absolute-path hardening are unchanged.
+OPEN_BIN="/usr/bin/open"
+OSASCRIPT_BIN="/usr/bin/osascript"
+if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+    OPEN_BIN="${PCH_TEST_OPEN_BIN:-$OPEN_BIN}"
+    OSASCRIPT_BIN="${PCH_TEST_OSASCRIPT_BIN:-$OSASCRIPT_BIN}"
+fi
+
+notify_via_app_bundle() {
+    local bundle="$APP_BUNDLE_PATH" identifier
+    [[ -n "$bundle" && "$bundle" == /* && "$bundle" == *.app ]] || return 1
+    [[ -d "$bundle" && ! -L "$bundle" ]] || return 1
+    path_has_unexpected_symlink "$bundle" && return 1
+    [[ -x /usr/bin/plutil && -x "$OPEN_BIN" ]] || return 1
+    identifier="$(/usr/bin/plutil -extract CFBundleIdentifier raw \
+        "$bundle/Contents/Info.plist" 2>/dev/null)" || return 1
+    [[ "$identifier" == "me.heznpc.modore" ]] || return 1
+    "$OPEN_BIN" -g -j -a "$bundle" --args --post-storage-notice "$MESSAGE" \
+        >/dev/null 2>&1
+}
+
 if [[ "$STATUS" == "warning" && "$NOTIFY" == "1" ]]; then
     if [[ "$PREVIOUS_STATUS" != "warning" || $((NOW_EPOCH - LAST_NOTIFY)) -ge 21600 ]]; then
-        if [[ "$(/usr/bin/uname -s)" == "Darwin" && -x /usr/bin/osascript ]]; then
-            /usr/bin/osascript \
-                -e 'on run argv' \
-                -e 'display notification (item 1 of argv) with title "Modore"' \
-                -e 'end run' \
-                "$MESSAGE" >/dev/null 2>&1 || true
+        if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+            notify_via_app_bundle || {
+                if [[ -x "$OSASCRIPT_BIN" ]]; then
+                    "$OSASCRIPT_BIN" \
+                        -e 'on run argv' \
+                        -e 'display notification (item 1 of argv) with title "Modore"' \
+                        -e 'end run' \
+                        "$MESSAGE" >/dev/null 2>&1 || true
+                fi
+            }
         fi
         LAST_NOTIFY="$NOW_EPOCH"
     fi
