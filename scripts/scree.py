@@ -434,17 +434,80 @@ def build_lineage(records: list[dict]) -> dict:
                         "case_ghosts": ghosts}}
 
 
-def build_retention(records: list[dict], now_ts: float) -> dict:
-    """Per-store retention judgment from session-file age distribution alone.
+def read_claude_cleanup_period_days(home: Path) -> Optional[int]:
+    """The one authoritative retention signal scree ever reads: Claude Code's
+    own `cleanupPeriodDays` setting. Read-only, config-only — never message
+    content, so this stays inside the metadata-only contract.
 
-    A store whose oldest surviving session sits in the rolling band is judged
+    A guess from file ages cannot tell "old sessions are about to be deleted"
+    apart from "old sessions exist and nothing deletes them" — both look
+    identical on disk. A user who deliberately set retention days ago and then
+    sees scree call live sessions "D-day" has caught scree contradicting a
+    fact it could have just read. `settings.local.json` overrides
+    `settings.json` here because that is Claude Code's own precedence order.
+    Any failure (missing file, bad JSON, missing/non-numeric key) falls back
+    to the observed-age heuristic silently — this is a preference, not a
+    requirement.
+    """
+    claude_dir = home / ".claude"
+    for name in ("settings.local.json", "settings.json"):
+        path = claude_dir / name
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        value = data.get("cleanupPeriodDays")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if value <= 0:
+            continue
+        return int(value)
+    return None
+
+
+# A configured window this long is retention in practice, not a number to
+# compare session ages against — flagging "expires in 36,466 days" would be a
+# technically-true but useless and alarming thing to print.
+EFFECTIVELY_INDEFINITE_DAYS = 3650
+
+
+def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = None) -> dict:
+    """Per-store retention judgment.
+
+    Prefers a real, read configuration value over a guess wherever scree knows
+    where to look (today: Claude Code's own `cleanupPeriodDays`). Every other
+    store is still judged from session-file age distribution alone: a store
+    whose oldest surviving session sits in the rolling band is judged
     "rolling" and its observed oldest age becomes the estimated window; sessions
     within EXPIRY_SOON_DAYS of that window are flagged, split by whether their
     workspace still exists (a living story about to lose its transcript versus
     an orphan whose loss likely goes unnoticed).
     """
+    configured_days: dict[str, int] = {}
+    if home is not None:
+        claude_configured = read_claude_cleanup_period_days(home)
+        if claude_configured is not None:
+            configured_days["Claude"] = claude_configured
     stores: list[dict] = []
     expiring: list[dict] = []
+
+    def flag_expiring(tool: str, sessions: list[dict], ages: list[float], window: float) -> None:
+        for session, age in zip(sessions, ages):
+            days_left = round(window - age)
+            if days_left <= EXPIRY_SOON_DAYS:
+                workspace = session["workspace"]
+                expiring.append({
+                    "tool": tool,
+                    "workspace": workspace,
+                    "source": session.get("source"),
+                    "days_left": days_left,
+                    "size_bytes": session["size_bytes"],
+                    "story_alive": bool(workspace) and Path(workspace).exists(),
+                })
+
     by_tool: dict[str, list[dict]] = {}
     for item in records:
         if item["kind"] == "session":
@@ -456,23 +519,19 @@ def build_retention(records: list[dict], now_ts: float) -> dict:
         newest = min(ages)
         entry = {"store": tool, "sessions": len(sessions),
                  "oldest_days": round(oldest), "stalled": newest > STALLED_STORE_DAYS}
-        if len(sessions) < RETENTION_MIN_SESSIONS:
+        configured = configured_days.get(tool)
+        if configured is not None:
+            # A real setting always outranks a guess, even a low-confidence one.
+            entry["mode"] = "configured"
+            entry["configured_days"] = configured
+            if configured < EFFECTIVELY_INDEFINITE_DAYS:
+                flag_expiring(tool, sessions, ages, configured)
+        elif len(sessions) < RETENTION_MIN_SESSIONS:
             entry["mode"] = "insufficient"
         elif ROLLING_WINDOW_DAYS[0] <= oldest <= ROLLING_WINDOW_DAYS[1]:
             entry["mode"] = "rolling"
             entry["window_days"] = round(oldest)
-            for session, age in zip(sessions, ages):
-                days_left = round(oldest - age)
-                if days_left <= EXPIRY_SOON_DAYS:
-                    workspace = session["workspace"]
-                    expiring.append({
-                        "tool": tool,
-                        "workspace": workspace,
-                        "source": session.get("source"),
-                        "days_left": days_left,
-                        "size_bytes": session["size_bytes"],
-                        "story_alive": bool(workspace) and Path(workspace).exists(),
-                    })
+            flag_expiring(tool, sessions, ages, oldest)
         else:
             entry["mode"] = "long"
         stores.append(entry)
@@ -544,7 +603,7 @@ def build_scree(home: Path) -> dict:
         "groups": finished,
         "unresolved_sessions": unresolved_count,
         "lineage": build_lineage(records),
-        "retention": build_retention(records, time.time()),
+        "retention": build_retention(records, time.time(), home),
         "worktrees": collect_worktrees(home),
     }
 
@@ -601,11 +660,16 @@ def render_report(scree: dict, limit: int) -> str:
     if retention.get("stores"):
         lines.append("")
         lines.append("retention forecast (estimated from observed file ages)")
-        mode_label = {"rolling": "rolling", "long": "long retention", "insufficient": "insufficient data"}
+        mode_label = {"rolling": "rolling", "long": "long retention", "insufficient": "insufficient data",
+                      "configured": "configured"}
         for store in retention["stores"]:
             bits = [mode_label.get(store["mode"], store["mode"])]
             if store["mode"] == "rolling":
                 bits[0] = f"rolling ~{store['window_days']}d"
+            elif store["mode"] == "configured":
+                days = store["configured_days"]
+                bits[0] = ("configured: kept indefinitely" if days >= EFFECTIVELY_INDEFINITE_DAYS
+                            else f"configured ~{days}d")
             bits.append(f"oldest {store['oldest_days']}d")
             if store["stalled"]:
                 bits.append("recording may have stalled")

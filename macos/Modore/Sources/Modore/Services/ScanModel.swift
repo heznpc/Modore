@@ -28,6 +28,9 @@ final class ScanModel: ObservableObject {
     @Published var storageWatchDetail = "상태 확인 중"
     @Published var storageWatchInFlight = false
     @Published private(set) var resultLoading = true
+    @Published var screeReport: ScreeReport?
+    @Published var screeLoading = false
+    @Published var screeError: String?
 
     let logStore = ScanLogStore()
     let projectRoot: URL
