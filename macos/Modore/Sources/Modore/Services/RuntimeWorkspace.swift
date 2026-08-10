@@ -61,6 +61,10 @@ struct RuntimeExecutionContext: Equatable, Sendable {
         runtimeRoot.appendingPathComponent("scripts/storage_watch.sh")
     }
 
+    var screeScriptURL: URL {
+        runtimeRoot.appendingPathComponent("scripts/scree.py")
+    }
+
     var scanResultURL: URL {
         outputRoot.appendingPathComponent("scan_result.json")
     }
