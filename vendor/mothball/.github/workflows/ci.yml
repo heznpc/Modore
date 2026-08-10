@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Cancel only on PR pushes (rebase / force-push iterations). Back-to-back
+  # `main` pushes from auto-merge land within seconds of each other and
+  # share `github.ref = refs/heads/main`; an unconditional cancel-in-progress
+  # would silently kill the earlier merge's post-merge CI, leaving main
+  # without a green check for that commit.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Default to least-privilege at the workflow level. Individual jobs may
+# escalate one scope at a time if they need it. This build/test only
+# reads code, so contents:read is enough.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & test (macOS)
+    # macos-latest only. Previous matrix added macos-13 to exercise the
+    # floor of the README's "macOS 13+" support window, but GitHub-hosted
+    # macos-13 runner capacity has effectively dried up in 2026-05
+    # (3.5h+ queue with no scheduling) so it blocks every PR. The macOS
+    # 13 promise is now exercised manually before each tagged release
+    # rather than per-commit on CI.
+    runs-on: macos-latest
+    steps:
+      # v6 / v5 are the Node 24 generation; v4 emits a deprecation
+      # warning as of 2026-05 and will hard-fail after the 2026-09 cutoff.
+      - uses: actions/checkout@v6
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcrun --show-sdk-path
+          /usr/bin/git --version
+          /usr/bin/tar --version | head -1
+
+      - name: Cache .build
+        uses: actions/cache@v5
+        with:
+          path: .build
+          # Cache invalidation triggers:
+          #   - ImageOS    : runner image (and its bundled Swift toolchain) rotates
+          #   - Package.swift / Package.resolved : declared or resolved deps change
+          #   - this workflow file : tool versions or build flags change
+          # Package.resolved is hashed even though it currently does not exist
+          # (zero external SPM deps) — hashFiles returns the empty string in
+          # that case, and the moment a dependency is added the file appears
+          # and starts contributing to the key without a workflow edit.
+          key: ${{ env.ImageOS }}-spm-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            ${{ env.ImageOS }}-spm-
+
+      - name: Build
+        run: swift build --build-tests
+
+      - name: Test
+        run: swift test --skip-build
