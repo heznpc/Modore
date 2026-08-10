@@ -735,7 +735,11 @@ define_recipe() {
     case "$recipe" in
         npm_cache)
             LABEL="npm cache"
-            PROCESS_PATTERN='^(\S*/)?(npm|npx)( |$)|/\.npm/_cacache'
+            # npm/npx는 거의 항상 shebang 스크립트라, 커널이 인터프리터를 앞에
+            # 세워 실행한다 — 실행 이름 앵커만으로는 놓친다. mise 셈에서는
+            # 잠깐 `bash .../bin/npm`으로 보이다가 `node .../npm-cli.js`로
+            # 넘어간다. 둘 다 이 머신에서 직접 캡처해 확인했다.
+            PROCESS_PATTERN='(^|/)(npm|npx)( |$)|/\.npm/_cacache|(^|/)npm-cli\.js( |$)|(^|/)npx-cli\.js( |$)'
             PROCESS_NOTE="npm/npx 작업을 먼저 종료하세요."
             WARNING="패키지는 다음 설치 때 다시 다운로드됩니다."
             add_target_if_present "$HOME_ROOT/.npm"
@@ -779,7 +783,9 @@ define_recipe() {
             ;;
         cocoapods_cache)
             LABEL="CocoaPods cache"
-            PROCESS_PATTERN='^(\S*/)?pod( |$)|/Caches/CocoaPods/'
+            # pod도 shebang 스크립트를 거쳐 ruby로 넘어가므로, 실행줄 맨
+            # 앞이 아니라 경로 중간에 온다 — 앵커를 pnpm과 같은 방식으로 푼다.
+            PROCESS_PATTERN='(^|/)pod( |$)|/Caches/CocoaPods/'
             PROCESS_NOTE="pod install/update 작업을 먼저 종료하세요."
             WARNING="Pod 아카이브는 다음 설치 때 다시 다운로드됩니다."
             add_target_if_present "$HOME_ROOT/Library/Caches/CocoaPods"
@@ -813,7 +819,9 @@ define_recipe() {
             ;;
         homebrew_cache)
             LABEL="Homebrew download cache"
-            PROCESS_PATTERN='^(\S*/)?brew( |$)|/Caches/Homebrew/'
+            # brew는 자기 자신을 `bash .../Homebrew/brew.sh`로 재실행한다
+            # (brew.sh:350의 exec). 두 단계 다 이 머신에서 직접 확인했다.
+            PROCESS_PATTERN='(^|/)brew( |$)|(^|/)brew\.sh( |$)|/Caches/Homebrew/'
             PROCESS_NOTE="brew 설치·업그레이드를 먼저 종료하세요."
             WARNING="설치 파일은 다음 brew 설치·업그레이드 때 다시 다운로드됩니다."
             add_target_if_present "$HOME_ROOT/Library/Caches/Homebrew"
@@ -821,7 +829,7 @@ define_recipe() {
         pip_cache)
             LABEL="pip wheel cache"
             # pip은 python -m pip으로도 실행되므로 캐시 경로 토큰으로 보완한다.
-            PROCESS_PATTERN='^(\S*/)?pip[0-9.]*( |$)|(^|/)python[0-9.]* -m pip|/Caches/pip/'
+            PROCESS_PATTERN='(^|/)pip[0-9.]*( |$)|(^|/)python[0-9.]* -m pip|/Caches/pip/'
             PROCESS_NOTE="pip 설치를 먼저 종료하세요."
             WARNING="휠은 다음 pip 설치 때 다시 다운로드됩니다."
             add_target_if_present "$HOME_ROOT/Library/Caches/pip"
