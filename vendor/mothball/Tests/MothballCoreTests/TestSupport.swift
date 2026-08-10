@@ -43,7 +43,7 @@ final class TempGitRepo {
     /// Identity is set locally to avoid depending on the host's git config.
     func initialize() async throws {
         try await git(["init", "-q", "-b", "main"])
-        try await git(["config", "user.email", "test@mothball.local"])
+        try await git(["config", "user.email", "test@example.invalid"])
         try await git(["config", "user.name", "Mothball Test"])
         try await git(["config", "commit.gpgsign", "false"])
     }
@@ -57,7 +57,7 @@ final class TempGitRepo {
     /// pushed. Doesn't actually talk to a server — we just prime local
     /// refs so `@{u}` resolves and `rev-list --count @{u}..HEAD` returns 0.
     func fakePushedOrigin(branch: String = "main") async throws {
-        try await git(["remote", "add", "origin", "git@example.invalid:fake/repo.git"])
+        try await git(["remote", "add", "origin", "https://example.invalid/fake/repo.git"])
         // Create a local "remote-tracking" ref pointing at HEAD so
         // upstream resolves. This is what git fetch would have created.
         let head = try await git(["rev-parse", "HEAD"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -10,9 +10,15 @@ let package = Package(
     products: [
         .executable(name: "Modore", targets: ["Modore"])
     ],
+    dependencies: [
+        .package(path: "../../vendor/mothball")
+    ],
     targets: [
         .executableTarget(
             name: "Modore",
+            dependencies: [
+                .product(name: "MothballCore", package: "mothball")
+            ],
             path: "Sources/Modore"
         ),
         .testTarget(

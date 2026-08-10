@@ -80,7 +80,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
 
         XCTAssertEqual(manifest.schemaVersion, ArchiveManifest.currentSchemaVersion)
         XCTAssertEqual(manifest.originalPath, info.path.path)
-        XCTAssertEqual(manifest.git.origin, "git@example.invalid:fake/repo.git")
+        XCTAssertEqual(manifest.git.origin, "https://example.invalid/fake/repo.git")
         XCTAssertEqual(manifest.git.branch, "main")
         XCTAssertEqual(manifest.git.aheadOfOrigin, 0)
         XCTAssertFalse(manifest.git.wasDirty)

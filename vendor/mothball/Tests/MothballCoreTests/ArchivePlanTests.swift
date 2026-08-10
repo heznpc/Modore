@@ -55,7 +55,7 @@ final class ArchivePlanTests: XCTestCase {
                 lastCommitDate: date,
                 isDirty: false,
                 aheadOfOrigin: 0,
-                originURL: "git@github.com:me/\(repoName).git",
+                originURL: "https://github.com/me/\(repoName).git",
                 currentBranch: "main",
                 headSHA: "abc"
             )

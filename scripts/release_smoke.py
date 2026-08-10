@@ -317,11 +317,28 @@ WINDOWS_FILES = COMMON_FILES + [
     "scripts/modules/installs.ps1",
 ]
 
+# macos/Modore/Package.swift declares a local path dependency on vendor/mothball
+# (product MothballCore). SwiftPM resolves that manifest structurally: every
+# target it declares — including MothballApp and MothballCoreTests, which
+# Modore's own product never imports — must have its source directory present,
+# or `swift build` fails at manifest resolution before compiling a single file
+# (verified directly: deleting just Sources/MothballApp from an otherwise
+# complete checkout breaks the build with "Source files for target MothballApp
+# should be located under 'Sources/MothballApp'"). A partial vendor tree is not
+# a smaller working release; it is a release that cannot build at all. So its
+# .swift files are enumerated alongside Modore's own, through the same two
+# code paths (working-tree glob here, commit-tree walk in
+# swift_files_from_commit below) rather than a third parallel list — a
+# separate MOTHBALL_FILES constant here once existed and was invisible to
+# main()'s actual file selection, which builds its own local list and never
+# read it (caught by the ground-truth build test below, not by inspection).
 SWIFT_FILES = sorted(
     path.relative_to(PROJECT_ROOT).as_posix()
     for base in (
         PROJECT_ROOT / "macos/Modore/Sources",
         PROJECT_ROOT / "macos/Modore/Tests",
+        PROJECT_ROOT / "vendor/mothball/Sources",
+        PROJECT_ROOT / "vendor/mothball/Tests",
     )
     for path in base.rglob("*.swift")
     if ".build" not in path.parts
@@ -350,6 +367,8 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/modules/macos/storage.sh",
     "scripts/modules/macos/idle_cpu.sh",
     "macos/Modore/Package.swift",
+    "vendor/mothball/Package.swift",
+    "vendor/mothball/LICENSE",
     "assets/macos/AppIcon.svg",
 ]
 MACOS_FILES = MACOS_BASE_FILES + SWIFT_FILES
@@ -941,6 +960,8 @@ def swift_files_from_commit(commit: str) -> list[str]:
     prefixes = (
         "macos/Modore/Sources/",
         "macos/Modore/Tests/",
+        "vendor/mothball/Sources/",
+        "vendor/mothball/Tests/",
     )
     return sorted(
         raw.decode("utf-8", errors="strict")
