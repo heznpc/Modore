@@ -24,7 +24,7 @@ final class SafetyClassifierTests: XCTestCase {
                 lastCommitDate: hasCommits ? activity : nil,
                 isDirty: isDirty,
                 aheadOfOrigin: hasUpstream ? ahead : nil,
-                originURL: hasRemote ? "git@github.com:me/r.git" : nil,
+                originURL: hasRemote ? "https://github.com/me/r.git" : nil,
                 currentBranch: "main",
                 headSHA: hasCommits ? "abc123" : nil
             )
