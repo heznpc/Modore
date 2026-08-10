@@ -365,6 +365,7 @@ RUNTIME_FILES=(
     "scripts/cleanup.sh"
     "scripts/storage_watch.sh"
     "scripts/schedule.sh"
+    "scripts/scree.py"
     "scripts/report.jxa.js"
     "scripts/scanner_helper.jxa.js"
     "scripts/idle_cpu.sh"
