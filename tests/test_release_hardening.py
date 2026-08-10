@@ -1313,3 +1313,42 @@ def test_release_ships_scree_the_readme_leads_with(project_root):
     anyone who follows the documented install path (clone + run)."""
     module = load_release_smoke(project_root)
     assert "scripts/scree.py" in module.MACOS_FILES
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="swift build is macOS-only")
+def test_release_extracted_swift_package_actually_builds(project_root, tmp_path):
+    """Ground truth for the Package.swift -> vendor/mothball local dependency:
+    copy exactly what MACOS_FILES ships into a clean directory and run a real
+    `swift build` from there, the same way a source-release user would.
+
+    Verified directly while wiring this dependency: SwiftPM resolves the
+    mothball manifest structurally, so every target it declares — including
+    MothballApp and MothballCoreTests, which Modore's own product never
+    imports — must have its source directory present, or the build fails at
+    manifest resolution before compiling anything (deleting only
+    Sources/MothballApp from an otherwise complete checkout reproduces this).
+    A file-list assertion can't catch that class of failure; only an actual
+    build can."""
+    module = load_release_smoke(project_root)
+    extracted = tmp_path / "extracted"
+    for rel in module.MACOS_FILES:
+        src = project_root / rel
+        if not src.is_file():
+            continue
+        dst = extracted / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+        dst.chmod(src.stat().st_mode)
+
+    result = subprocess.run(
+        ["swift", "build", "--package-path", "macos/Modore"],
+        cwd=extracted,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 0, (
+        f"swift build failed from the extracted release:\nSTDOUT:\n{result.stdout}\n"
+        f"STDERR:\n{result.stderr}"
+    )
