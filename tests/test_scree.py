@@ -160,6 +160,77 @@ def test_retention_insufficient_on_small_stores(scree_home):
     assert retention["expiring"] == []
 
 
+def test_retention_prefers_configured_indefinite_over_guessed_window(retention_home):
+    """The bug this guards: a user who set cleanupPeriodDays to effectively
+    indefinite a few days ago must never see scree call a 30-day-old, still
+    growing session store 'D-day' — that is scree contradicting a fact it
+    could have just read instead of guessing."""
+    home, _, _ = retention_home
+    _write(home / ".claude" / "settings.json", json.dumps({"cleanupPeriodDays": 36500}))
+    retention = scree.build_scree(home)["retention"]
+    claude = next(s for s in retention["stores"] if s["store"] == "Claude")
+    assert claude["mode"] == "configured"
+    assert claude["configured_days"] == 36500
+    assert "window_days" not in claude
+    assert retention["expiring"] == []
+
+
+def test_retention_uses_configured_window_when_short(retention_home):
+    """A real, short configured window is MORE accurate than the observed-age
+    guess, not just a way to suppress false positives — every session is
+    judged against the real 3-day boundary instead of the guessed 30-day one,
+    including the four that are already well past it (negative days_left is
+    correct here: they are overdue against the real window, not "about to
+    expire" — a stronger signal than the guess would ever have produced)."""
+    home, _, _ = retention_home
+    _write(home / ".claude" / "settings.json", json.dumps({"cleanupPeriodDays": 3}))
+    retention = scree.build_scree(home)["retention"]
+    claude = next(s for s in retention["stores"] if s["store"] == "Claude")
+    assert claude["mode"] == "configured"
+    assert claude["configured_days"] == 3
+    expiring = retention["expiring"]
+    assert {round(e["days_left"]) for e in expiring} == {1, -21, -22, -27}
+
+
+def test_retention_local_settings_override_shared_settings(retention_home):
+    """settings.local.json overrides settings.json — Claude Code's own
+    precedence order, and the only order a local override is worth reading in."""
+    home, _, _ = retention_home
+    _write(home / ".claude" / "settings.json", json.dumps({"cleanupPeriodDays": 3}))
+    _write(home / ".claude" / "settings.local.json", json.dumps({"cleanupPeriodDays": 36500}))
+    retention = scree.build_scree(home)["retention"]
+    claude = next(s for s in retention["stores"] if s["store"] == "Claude")
+    assert claude["configured_days"] == 36500
+
+
+@pytest.mark.parametrize("payload", [
+    "not json at all",
+    json.dumps([1, 2, 3]),
+    json.dumps({"cleanupPeriodDays": "forever"}),
+    json.dumps({"cleanupPeriodDays": -5}),
+    json.dumps({"cleanupPeriodDays": True}),
+    json.dumps({}),
+])
+def test_retention_falls_back_to_heuristic_on_unusable_config(retention_home, payload):
+    """Any config shape scree cannot trust falls open to the pre-existing
+    observed-age heuristic rather than crashing or silently going quiet."""
+    home, _, _ = retention_home
+    _write(home / ".claude" / "settings.json", payload)
+    retention = scree.build_scree(home)["retention"]
+    claude = next(s for s in retention["stores"] if s["store"] == "Claude")
+    assert claude["mode"] == "rolling"
+    assert claude["window_days"] == 30
+
+
+def test_retention_missing_config_falls_back_to_heuristic(retention_home):
+    """No settings.json at all (the case every pre-existing test already
+    exercises) must keep behaving exactly as before this change."""
+    home, _, _ = retention_home
+    retention = scree.build_scree(home)["retention"]
+    claude = next(s for s in retention["stores"] if s["store"] == "Claude")
+    assert claude["mode"] == "rolling"
+
+
 @pytest.fixture
 def worktree_home(tmp_path):
     """앵커 판정용: 실제 git 레포 + 에이전트 워크트리."""
