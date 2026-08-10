@@ -67,7 +67,7 @@ final class GitInspectorIntegrationTests: XCTestCase {
 
         let meta = try await inspector.inspect(repoAt: repo.url)
 
-        XCTAssertEqual(meta.originURL, "git@example.invalid:fake/repo.git")
+        XCTAssertEqual(meta.originURL, "https://example.invalid/fake/repo.git")
         XCTAssertEqual(meta.aheadOfOrigin, 0)
         XCTAssertTrue(meta.isFullyPushed)
     }
