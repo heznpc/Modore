@@ -480,6 +480,69 @@ def test_excluding_sizing_tools_never_hides_a_real_blocker(project_root, tmp_pat
     ) == "blocked"
 
 
+def cache_recipe_status(
+    project_root, tmp_path, name: str, recipe: str, target_relpath: str, processes: str
+) -> str:
+    home = tmp_path / name
+    target = home / target_relpath
+    target.mkdir(parents=True)
+    (target / "entry").write_bytes(b"fixture")
+    preview = run_cleanup(project_root, home, "--preview", recipe, processes=processes)
+    assert preview.returncode == 0, preview.stderr
+    assert target.is_dir(), "a preview must never delete anything"
+    return str(parse_protocol(preview.stdout)["status"])
+
+
+def test_npm_still_blocks_when_launched_through_its_shebang_wrapper(project_root, tmp_path):
+    # npm/npx are shebang scripts, so the kernel puts the interpreter first in
+    # `ps` and an anchored pattern never sees "npm" at position zero. Both
+    # lines below were captured directly from this machine's real npm: the
+    # mise shim shows as bash mid-flight, then execs into node + npm-cli.js.
+    assert cache_recipe_status(
+        project_root, tmp_path, "shim-bash", "npm_cache", ".npm",
+        "/usr/bin/env bash /Users/x/.local/share/mise/installs/node/22/bin/npm --version\n",
+    ) == "blocked"
+    assert cache_recipe_status(
+        project_root, tmp_path, "node-final", "npm_cache", ".npm",
+        "/Users/x/.local/share/mise/installs/node/bin/node "
+        "/Users/x/.local/share/mise/installs/node/lib/node_modules/npm/bin/npm-cli.js install\n",
+    ) == "blocked"
+
+
+def test_cocoapods_still_blocks_when_launched_through_its_shebang_wrapper(project_root, tmp_path):
+    # The installed `pod` execs into a ruby script, so ps's leading token is
+    # ruby, not pod. Captured directly from this machine's real CocoaPods.
+    assert cache_recipe_status(
+        project_root, tmp_path, "ruby-final", "cocoapods_cache", "Library/Caches/CocoaPods",
+        "/opt/homebrew/opt/ruby/bin/ruby "
+        "/opt/homebrew/Cellar/cocoapods/1.16.2_2/libexec/bin/pod install\n",
+    ) == "blocked"
+
+
+def test_pip_still_blocks_when_launched_through_its_polyglot_wrapper(project_root, tmp_path):
+    # pip3 is a sh/python polyglot that execs into python3.13; ps shows the
+    # interpreter first, never a leading "pip3". Captured from this machine.
+    assert cache_recipe_status(
+        project_root, tmp_path, "python-final", "pip_cache", "Library/Caches/pip",
+        "/Users/x/.local/share/mise/installs/python/3.13/bin/python3.13 "
+        "/Users/x/.local/share/mise/installs/python/3.13/bin/pip3 install requests\n",
+    ) == "blocked"
+
+
+def test_homebrew_still_blocks_across_its_two_stage_self_exec(project_root, tmp_path):
+    # brew re-execs itself as `bash .../Homebrew/brew.sh` (brew.sh's own last
+    # line). Neither stage's leading token is a bare "brew" an anchored
+    # pattern would catch. Both stages captured from this machine's real brew.
+    assert cache_recipe_status(
+        project_root, tmp_path, "setup-stage", "homebrew_cache", "Library/Caches/Homebrew",
+        "/bin/bash -pu /opt/homebrew/bin/brew install wget\n",
+    ) == "blocked"
+    assert cache_recipe_status(
+        project_root, tmp_path, "brew-sh-stage", "homebrew_cache", "Library/Caches/Homebrew",
+        "/bin/bash -p /opt/homebrew/Library/Homebrew/brew.sh install wget\n",
+    ) == "blocked"
+
+
 def test_headless_converters_do_not_block_chrome_clone_cleanup(project_root, tmp_path):
     home = tmp_path / "home"
     var_folders = home / "VarFoldersRoot" / "aa" / "bb" / "X"
