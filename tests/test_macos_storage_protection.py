@@ -433,8 +433,11 @@ def test_jxa_fixture_preserves_collection_and_browser_automation_contract(
 
     output = tmp_path / "scan.json"
     raw = tmp_path / "raw.json"
-    rules = tmp_path / "rules"
-    rules.mkdir()
+    # Real rules/whitelist, not an empty stand-in: this test exercises the
+    # storage/browser-automation TSV passthrough contract, not rule loading.
+    # An empty rules dir and a never-written whitelist.json now (correctly)
+    # surface as 6 additional required-and-failed collection issues of their
+    # own, which would swamp the two this test actually asserts on.
     keep = tmp_path / "simulator-keep.txt"
     keep.write_text("", encoding="utf-8")
     env = os.environ.copy()
@@ -443,9 +446,9 @@ def test_jxa_fixture_preserves_collection_and_browser_automation_contract(
             "TMP_DIR": str(facts),
             "PCH_OUTPUT": str(output),
             "PCH_RAW_PATH": str(raw),
-            "PCH_RULES_DIR": str(rules),
+            "PCH_RULES_DIR": str(project_root / "rules"),
             "PCH_CONFIG_PATH": str(tmp_path / "config.json"),
-            "PCH_WHITELIST_PATH": str(tmp_path / "whitelist.json"),
+            "PCH_WHITELIST_PATH": str(project_root / "data" / "whitelist.json"),
             "PCH_SIMULATOR_KEEP_PATH": str(keep),
             "PCH_NO_VT": "true",
         }

@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,90 @@ def test_every_ps1_script_carries_a_utf8_bom(project_root):
         if p.read_bytes()[:3] != b"\xef\xbb\xbf"
     ]
     assert not missing_bom, f"missing UTF-8 BOM (breaks Windows PowerShell 5.1 parsing of non-ASCII literals): {missing_bom}"
+
+
+def _jxa_regrade(project_root, raw_path, out_path, rules_dir, whitelist_path):
+    result = subprocess.run(
+        ["/usr/bin/osascript", "-l", "JavaScript", str(project_root / "scripts" / "scanner_helper.jxa.js")],
+        capture_output=True, text=True, encoding="utf-8", cwd=str(project_root),
+        env={
+            "PATH": "/usr/bin:/bin",
+            "PCH_RULE_ENGINE_ONLY": "1",
+            "PCH_RAW_PATH": str(raw_path),
+            "PCH_OUTPUT": str(out_path),
+            "PCH_RULES_DIR": str(rules_dir),
+            "PCH_WHITELIST_PATH": str(whitelist_path),
+        },
+    )
+    assert result.returncode == 0, f"JXA engine-only failed: {result.stderr or result.stdout}"
+    return json.loads(out_path.read_text(encoding="utf-8"))
+
+
+_MACOS_RAW_FIXTURE = {
+    "schemaVersion": "1.0", "scannedAt": "2026-08-11 12:00:00", "computerName": "TEST",
+    "userName": "tester", "osVersion": "macOS Test", "platform": "macos", "scannerVersion": "0.3",
+    "findings": [],
+    "sections": {
+        "cpu": [], "network": [], "autoruns": [], "recentInstalls": [],
+        "defender": {"gatekeeper": "assessments enabled", "sip": "enabled"},
+    },
+}
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="JXA runtime requires macOS osascript")
+def test_jxa_corrupted_rule_file_reports_incomplete_not_safe(project_root, tmp_path):
+    """readJson's silent []/{} fallback used to make a corrupted rules/*.json
+    or whitelist.json classify as if that category had simply found nothing
+    -- indistinguishable from a genuinely clean scan. A required source
+    failing to load must gate overall the same way a failed bash collector
+    already does, and a real finding elsewhere must still outrank it."""
+    raw_path = tmp_path / "raw.json"
+    raw_path.write_text(json.dumps(_MACOS_RAW_FIXTURE), encoding="utf-8")
+
+    # Corrupted defender.json specifically -> incomplete, not vacuously safe.
+    broken_rules = tmp_path / "rules_broken"
+    broken_rules.mkdir()
+    for f in (project_root / "rules").glob("*.json"):
+        shutil.copy(f, broken_rules / f.name)
+    (broken_rules / "defender.json").write_text("{ not valid json", encoding="utf-8")
+    out_path = tmp_path / "out_broken.json"
+    scan = _jxa_regrade(project_root, raw_path, out_path, broken_rules, project_root / "data" / "whitelist.json")
+    assert scan["summary"]["overall"] == "incomplete"
+    assert scan["summary"]["collectionComplete"] is False
+    issues = scan["collection"]["issues"]
+    assert any(i["id"] == "rule_defender" and i["status"] == "failed" for i in issues)
+
+    # Corrupted whitelist.json -> same gating, different source id.
+    broken_whitelist = tmp_path / "whitelist_broken.json"
+    broken_whitelist.write_text("not json", encoding="utf-8")
+    out_wl_path = tmp_path / "out_wl_broken.json"
+    wl_scan = _jxa_regrade(project_root, raw_path, out_wl_path, project_root / "rules", broken_whitelist)
+    assert wl_scan["summary"]["overall"] == "incomplete"
+    assert any(i["id"] == "whitelist" and i["status"] == "failed" for i in wl_scan["collection"]["issues"])
+
+    # A genuine danger elsewhere must still fire and outrank incomplete --
+    # this layer must never mask a real finding behind a load failure.
+    danger_raw = dict(_MACOS_RAW_FIXTURE)
+    danger_raw["sections"] = dict(_MACOS_RAW_FIXTURE["sections"])
+    danger_raw["sections"]["defender"] = {"gatekeeper": "assessments disabled", "sip": "enabled"}
+    danger_raw_path = tmp_path / "raw_danger.json"
+    danger_raw_path.write_text(json.dumps(danger_raw), encoding="utf-8")
+    broken_rules_2 = tmp_path / "rules_broken_2"
+    broken_rules_2.mkdir()
+    for f in (project_root / "rules").glob("*.json"):
+        shutil.copy(f, broken_rules_2 / f.name)
+    (broken_rules_2 / "installs.json").write_text("not json at all", encoding="utf-8")
+    out_danger_path = tmp_path / "out_danger.json"
+    danger_scan = _jxa_regrade(project_root, danger_raw_path, out_danger_path, broken_rules_2, project_root / "data" / "whitelist.json")
+    assert danger_scan["summary"]["overall"] == "danger"
+    assert danger_scan["summary"]["dangerCount"] > 0
+    assert any(i["id"] == "rule_installs" for i in danger_scan["collection"]["issues"])
+
+    # Regression check: an all-clean run is unaffected.
+    good_out_path = tmp_path / "out_good.json"
+    good_scan = _jxa_regrade(project_root, raw_path, good_out_path, project_root / "rules", project_root / "data" / "whitelist.json")
+    assert good_scan["summary"]["overall"] == "safe"
+    assert good_scan["summary"]["collectionComplete"] is True
 
 
 def test_report_rejects_raw_facts_without_summary(project_root, tmp_path):
