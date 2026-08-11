@@ -472,7 +472,7 @@ Write-Output 'VT_CACHE_ROUND_TRIP_OK'
     assert "VT_CACHE_ROUND_TRIP_OK" in stdout
 
 
-def _write_raw_facts(path, collection, defender_facts=None):
+def _write_raw_facts(path, collection, defender_facts=None, cpu_facts=None):
     raw = {
         "schemaVersion": "1.0",
         "scannedAt": "2026-08-11 12:00:00",
@@ -483,7 +483,7 @@ def _write_raw_facts(path, collection, defender_facts=None):
         "scannerVersion": "0.3",
         "findings": [],
         "sections": {
-            "cpu": [],
+            "cpu": cpu_facts if cpu_facts is not None else [],
             "network": [],
             "listeningPorts": [],
             "autoruns": [],
@@ -566,6 +566,14 @@ def test_powershell_collection_status_gates_overall_on_required_failures(project
     _write_raw_facts(
         danger_raw_path, _OK_COLLECTION,
         defender_facts={"realtimeEnabled": False, "antivirusEnabled": False, "signatureDaysOld": 40},
+        # A single-condition, unambiguous process rule (rules/process.json's
+        # miner_xmrig, "name.iregex": "^xmrig.*$") as a cross-check: this
+        # facts array goes through the *array* iteration branch in
+        # rule_engine.ps1, structurally different from defender's single-
+        # object branch. If this ALSO fails to match on PS5.1, the bug is in
+        # rule loading/matching generally, not something specific to how the
+        # defender section is handled.
+        cpu_facts=[{"name": "xmrig", "pid_": 1234, "cpu": 10, "memoryMB": 100, "path": "C:\\x\\xmrig.exe"}],
     )
     danger_scan = _run_rule_engine(powershell, project_root, danger_raw_path, danger_out_path)
     if danger_scan["summary"]["overall"] != "danger":
@@ -577,6 +585,7 @@ def test_powershell_collection_status_gates_overall_on_required_failures(project
         # blind round trip.
         print("DIAG summary:", json.dumps(danger_scan["summary"], ensure_ascii=False))
         print("DIAG defender section:", json.dumps(danger_scan["sections"].get("defender"), ensure_ascii=False))
+        print("DIAG cpu section:", json.dumps(danger_scan["sections"].get("cpu"), ensure_ascii=False))
         print("DIAG findings:", json.dumps(danger_scan["findings"], ensure_ascii=False))
         print("DIAG collection:", json.dumps(danger_scan["collection"], ensure_ascii=False))
     assert danger_scan["summary"]["overall"] == "danger"
