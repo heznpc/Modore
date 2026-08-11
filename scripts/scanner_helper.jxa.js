@@ -230,6 +230,20 @@ function mergeRisk(cur, next) {
   return riskPriority[next] > riskPriority[cur] ? next : cur;
 }
 
+// 규칙/whitelist JSON이 손상되거나 사라지면 readJson처럼 조용히 []/{}로
+// 대체하지 않는다 -- 그 카테고리의 판정 능력이 전부 사라진 것이므로, 나머지
+// 필수 수집기와 같은 collection.issues 신호로 명시해 overall이 danger/warning
+// 없이도 safe로 굴러떨어지지 않게 한다. readText는 파일이 없으면 빈 문자열을
+// 주므로(예외 없이) "누락"과 "손상"이 자연히 같은 JSON.parse 실패 경로로 합류한다.
+function loadJsonTracked(id, label, path, fallback, maximumBytes, issues) {
+  try {
+    return JSON.parse(readText(path, maximumBytes));
+  } catch (e) {
+    issues.push({ id, label, status: "failed", required: true, detail: String((e && e.message) || e) });
+    return fallback;
+  }
+}
+
 function whitelistIndex(whitelist) {
   const idx = {};
   for (const cat of ["system","browser","korean_common","banking_security","dev_tools","hardware","cloud"]) {
@@ -240,13 +254,13 @@ function whitelistIndex(whitelist) {
   }
   return idx;
 }
-function loadRules(dir) {
+function loadRules(dir, issues) {
   return {
-    process: readJson(env("PCH_PINNED_RULE_PROCESS", dir + "/process.json"), [], 4 * 1024 * 1024),
-    network: readJson(env("PCH_PINNED_RULE_NETWORK", dir + "/network.json"), [], 4 * 1024 * 1024),
-    autoruns: readJson(env("PCH_PINNED_RULE_AUTORUNS", dir + "/autoruns.json"), [], 4 * 1024 * 1024),
-    defender: readJson(env("PCH_PINNED_RULE_DEFENDER", dir + "/defender.json"), [], 4 * 1024 * 1024),
-    installs: readJson(env("PCH_PINNED_RULE_INSTALLS", dir + "/installs.json"), [], 4 * 1024 * 1024)
+    process: loadJsonTracked("rule_process", "프로세스 규칙", env("PCH_PINNED_RULE_PROCESS", dir + "/process.json"), [], 4 * 1024 * 1024, issues),
+    network: loadJsonTracked("rule_network", "네트워크 규칙", env("PCH_PINNED_RULE_NETWORK", dir + "/network.json"), [], 4 * 1024 * 1024, issues),
+    autoruns: loadJsonTracked("rule_autoruns", "자동실행 규칙", env("PCH_PINNED_RULE_AUTORUNS", dir + "/autoruns.json"), [], 4 * 1024 * 1024, issues),
+    defender: loadJsonTracked("rule_defender", "보안 기준선 규칙", env("PCH_PINNED_RULE_DEFENDER", dir + "/defender.json"), [], 4 * 1024 * 1024, issues),
+    installs: loadJsonTracked("rule_installs", "설치 이력 규칙", env("PCH_PINNED_RULE_INSTALLS", dir + "/installs.json"), [], 4 * 1024 * 1024, issues)
   };
 }
 function ruleMatches(rule, fact) {
@@ -298,7 +312,8 @@ function classify(fact, category, rules, wl) {
   const note = notes.length ? notes.join(" / ") : "처음 보는 프로그램 - 확인 필요";
   return { risk, note, findings };
 }
-function applyRules(raw, rules, wl) {
+function applyRules(raw, rules, wl, loadIssues) {
+  loadIssues = loadIssues || [];
   const result = Object.assign({}, raw, { findings: raw.findings || [], sections: {} });
   const map = { cpu: "process", backgroundCpu: "process", network: "network", listeningPorts: "process", autoruns: "autoruns", recentInstalls: "installs" };
   // 한 프로세스가 여러 섹션에 등장할 수 있다. cpu와 backgroundCpu가 그렇다.
@@ -332,7 +347,26 @@ function applyRules(raw, rules, wl) {
   }
   const danger = result.findings.filter(f => f.level === "danger").length;
   const warning = result.findings.filter(f => f.level === "warning").length;
-  const collectionComplete = !result.collection || result.collection.complete !== false;
+  // 규칙/whitelist 로드 실패는 collection_status.tsv(bash 수집기)와 출처가
+  // 다르지만 결과에 미치는 영향은 같다 -- 판정 능력이 빠진 것이므로 같은
+  // completeness 신호로 합류시킨다. 둘 중 하나라도 불완전하면 전체가 불완전.
+  const baseCollection = result.collection || {
+    sources: [], issues: [], complete: true,
+    completedCount: 0, sourceCount: 0, completedRequiredCount: 0, requiredCount: 0
+  };
+  const mergedSources = (baseCollection.sources || []).concat(loadIssues);
+  const mergedRequired = mergedSources.filter(s => s.required);
+  const collectionComplete = mergedRequired.filter(s => s.status !== "ok").length === 0;
+  result.collection = Object.assign({}, baseCollection, {
+    status: collectionComplete ? "complete" : "incomplete",
+    complete: collectionComplete,
+    sources: mergedSources,
+    issues: (baseCollection.issues || []).concat(loadIssues),
+    completedCount: mergedSources.filter(s => s.status === "ok").length,
+    sourceCount: mergedSources.length,
+    completedRequiredCount: mergedRequired.filter(s => s.status === "ok").length,
+    requiredCount: mergedRequired.length
+  });
   const overall = danger ? "danger" : (warning ? "warning" : (collectionComplete ? "safe" : "incomplete"));
   const message = danger ? `긴급 확인 필요: ${danger} 건의 위험 신호가 발견되었습니다.` :
     warning ? `확인 권장: ${warning} 건의 항목을 살펴보세요.` :
@@ -659,7 +693,10 @@ ObjC.import("stdlib");
 if (env("PCH_RULE_ENGINE_ONLY", "") === "1") {
   const rawIn = readJson(RAW_PATH, null, 16 * 1024 * 1024);
   if (!rawIn) { console.log("PCH_RAW_PATH를 읽지 못했습니다."); $.exit(2); }
-  const out = applyRules(rawIn, loadRules(RULES_DIR), whitelistIndex(readJson(WHITELIST_PATH, {}, 8 * 1024 * 1024)));
+  const loadIssues = [];
+  const rules = loadRules(RULES_DIR, loadIssues);
+  const wl = whitelistIndex(loadJsonTracked("whitelist", "whitelist", WHITELIST_PATH, {}, 8 * 1024 * 1024, loadIssues));
+  const out = applyRules(rawIn, rules, wl, loadIssues);
   writeRequiredText(OUTPUT, JSON.stringify(out, null, 2));
   $.exit(0);
 }
@@ -882,7 +919,10 @@ raw.sections.sysinternals = { sigcheckEnabled: false, autorunscEnabled: false, n
 
 vt.save();
 writeRequiredText(RAW_PATH, JSON.stringify(raw, null, 2));
-const result = applyRules(raw, loadRules(RULES_DIR), whitelistIndex(readJson(WHITELIST_PATH, {}, 8 * 1024 * 1024)));
+const loadIssues = [];
+const rules = loadRules(RULES_DIR, loadIssues);
+const wl = whitelistIndex(loadJsonTracked("whitelist", "whitelist", WHITELIST_PATH, {}, 8 * 1024 * 1024, loadIssues));
+const result = applyRules(raw, rules, wl, loadIssues);
 writeRequiredText(OUTPUT, JSON.stringify(result, null, 2));
 console.log(`  - 위험: ${result.summary.dangerCount} 건`);
 console.log(`  - 확인: ${result.summary.warningCount} 건`);
