@@ -181,7 +181,13 @@ $whitelistObj = Read-JsonFile $Whitelist
 $wlIndex = Build-WhitelistIndex $whitelistObj
 $rulesByCategory = @{}
 foreach ($cat in $CategoryFiles.Keys) {
-    $rulesByCategory[$cat] = @(Read-JsonFile (Join-Path $Rules $CategoryFiles[$cat]))
+    $rulePath = Join-Path $Rules $CategoryFiles[$cat]
+    $loaded = Read-JsonFile $rulePath
+    $rulesByCategory[$cat] = @(if ($null -ne $loaded) { $loaded })
+    if ($env:PCH_RULE_ENGINE_DEBUG) {
+        $loadedType = if ($null -eq $loaded) { '<null>' } else { $loaded.GetType().Name }
+        Write-Host "DBG $cat path=$rulePath exists=$(Test-Path $rulePath) loadedType=$loadedType count=$($rulesByCategory[$cat].Count)"
+    }
 }
 
 $result = [ordered]@{}
