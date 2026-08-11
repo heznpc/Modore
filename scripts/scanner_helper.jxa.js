@@ -780,13 +780,39 @@ raw.sections.listeningPorts = tmp("listen.txt").split(/\r?\n/).map(line => {
   return { port: Number(m[1]), name: parts[0], process: parts[0], pid_: Number(parts[1]), path: "" };
 }).filter(Boolean).filter((p, i, arr) => arr.findIndex(x => x.port === p.port) === i).sort((a,b) => a.port - b.port);
 
+// codesign -dv writes its verdict to stderr, and exits non-zero for a
+// genuinely unsigned binary -- doShellScript() would throw and the stderr
+// text (which is what actually says "code object is not signed") would be
+// lost inside the exception. Force exit 0 and merge stderr in, then recover
+// the real exit code from a trailing marker: this was silently hardcoded to
+// verified:false/signer:"" (a lie, not an absence of data) since the
+// Python->JXA port dropped codesign verification entirely.
+function codesignVerify(path) {
+  if (!path || !pathExists(path)) return { verified: false, signer: "" };
+  // -dv alone (what the pre-port Python reference used) never prints
+  // Authority= lines on this macOS version -- confirmed directly, not
+  // assumed -- so signer would have been blank even before the JXA port
+  // dropped verification entirely. -dvv is required to actually get it.
+  const output = run("/usr/bin/codesign -dvv " + escapeShell(path) + " 2>&1; /bin/echo \"___EXIT:$?\"");
+  const exitMatch = output.match(/___EXIT:(\d+)\s*$/);
+  const exitCode = exitMatch ? Number(exitMatch[1]) : 1;
+  const body = exitMatch ? output.slice(0, exitMatch.index) : output;
+  const verified = exitCode === 0 && !body.includes("Signature=adhoc") && !body.includes("not signed");
+  // doShellScript returns CR (\r) line endings, not LF -- confirmed directly
+  // against real output, not assumed. A [^\n]+ regex here would run past the
+  // Authority line onto everything after it, since \r isn't excluded.
+  const authorityMatch = body.match(/Authority=([^\r\n]+)/);
+  const signer = authorityMatch ? authorityMatch[1].trim() : "";
+  return { verified, signer };
+}
 const startup = [], autoruns = [];
 tmp("plists.txt").trim().split(/\r?\n/).filter(Boolean).forEach(path => {
   const label = basename(path).replace(/\.plist$/, "");
   const program = run("/usr/libexec/PlistBuddy -c 'Print :Program' " + escapeShell(path) + " 2>/dev/null || /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' " + escapeShell(path) + " 2>/dev/null");
   if (!program) return;
   startup.push({ location: path.replace(/\/[^/]+$/, ""), name: label, command: program, launchString: program });
-  autoruns.push({ category: path.includes("Daemons") ? "System LaunchDaemon" : "LaunchAgent", entry: label, image: program, signer: "", verified: false, launchString: program, sha256: "", vt: null });
+  const sig = codesignVerify(program);
+  autoruns.push({ category: path.includes("Daemons") ? "System LaunchDaemon" : "LaunchAgent", entry: label, image: program, signer: sig.signer, verified: sig.verified, launchString: program, sha256: "", vt: null });
 });
 raw.sections.startup = startup;
 raw.sections.autoruns = autoruns;
