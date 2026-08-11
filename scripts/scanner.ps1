@@ -60,10 +60,13 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 }
 
 # ---------- 헬퍼 로드 ----------
+. "$PSScriptRoot\collection-status.ps1"
 . "$PSScriptRoot\_sysinternals-verify.ps1"
 . "$PSScriptRoot\vt-lookup.ps1"
 . "$PSScriptRoot\sigcheck-helper.ps1"
 . "$PSScriptRoot\autorunsc-helper.ps1"
+
+Reset-CollectionStatus
 
 # ---------- 섹션 모듈 로드 ----------
 . "$PSScriptRoot\modules\cpu.ps1"
@@ -177,6 +180,8 @@ $raw.sections.sysinternals = [ordered]@{
     sigcheckEnabled = [bool]$useSigcheck
     autorunscEnabled = [bool]$useAutorunsc
 }
+
+$raw.collection = @($script:CollectionStatus)
 
 # ============================================================
 # raw 저장 + 규칙 엔진 실행

@@ -11,18 +11,29 @@ function Get-StartupFacts {
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
     )
     $result = @()
+    $failures = [System.Collections.Generic.List[string]]::new()
     foreach ($key in $runKeys) {
         if (Test-Path $key) {
-            $items = Get-ItemProperty -Path $key
-            $items.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object {
-                $result += [ordered]@{
-                    location = $key
-                    name = $_.Name
-                    command = [string]$_.Value
-                    launchString = [string]$_.Value
+            try {
+                $items = Get-ItemProperty -Path $key -ErrorAction Stop
+                $items.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object {
+                    $result += [ordered]@{
+                        location = $key
+                        name = $_.Name
+                        command = [string]$_.Value
+                        launchString = [string]$_.Value
+                    }
                 }
+            } catch {
+                $failures.Add("${key}: $($_.Exception.Message)")
             }
         }
+    }
+    if ($failures.Count -gt 0) {
+        Add-CollectionStatus -SourceId 'startup_registry' -Label '자동 실행 레지스트리' `
+            -Status 'failed' -Required $true -Detail ($failures -join '; ')
+    } else {
+        Add-CollectionStatus -SourceId 'startup_registry' -Label '자동 실행 레지스트리' -Status 'ok' -Required $true
     }
     return $result.ToArray()
 }
@@ -70,8 +81,15 @@ function Get-AutorunscFacts {
 }
 
 function Get-ScheduledTaskFacts {
-    $tasks = Get-ScheduledTask |
-        Where-Object { $_.TaskPath -notmatch '^\\Microsoft\\' -and $_.State -ne 'Disabled' }
+    try {
+        $tasks = Get-ScheduledTask -ErrorAction Stop |
+            Where-Object { $_.TaskPath -notmatch '^\\Microsoft\\' -and $_.State -ne 'Disabled' }
+        Add-CollectionStatus -SourceId 'scheduled_tasks' -Label '예약 작업' -Status 'ok' -Required $true
+    } catch {
+        Add-CollectionStatus -SourceId 'scheduled_tasks' -Label '예약 작업' `
+            -Status 'failed' -Required $true -Detail $_.Exception.Message
+        $tasks = @()
+    }
 
     $result = foreach ($t in $tasks) {
         $exe = ($t.Actions | Select-Object -First 1).Execute

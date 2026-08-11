@@ -15,10 +15,17 @@ function Get-NetworkFacts {
 
     if (-not $ProcessMap) { $ProcessMap = Get-ProcessMap }
 
-    $connections = Get-NetTCPConnection -State Established |
-        Where-Object {
-            $_.RemoteAddress -notmatch '^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|::1|fe80|0\.0\.0\.0)'
-        }
+    try {
+        $connections = Get-NetTCPConnection -State Established -ErrorAction Stop |
+            Where-Object {
+                $_.RemoteAddress -notmatch '^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|::1|fe80|0\.0\.0\.0)'
+            }
+        Add-CollectionStatus -SourceId 'network_established' -Label '외부 네트워크 연결' -Status 'ok' -Required $true
+    } catch {
+        Add-CollectionStatus -SourceId 'network_established' -Label '외부 네트워크 연결' `
+            -Status 'failed' -Required $true -Detail $_.Exception.Message
+        $connections = @()
+    }
 
     $seen = @{}
     $result = foreach ($c in $connections) {
@@ -43,8 +50,15 @@ function Get-ListeningPortFacts {
     param([hashtable]$ProcessMap)
     if (-not $ProcessMap) { $ProcessMap = Get-ProcessMap }
 
-    $listening = Get-NetTCPConnection -State Listen |
-        Where-Object { $_.LocalAddress -eq '0.0.0.0' -or $_.LocalAddress -eq '::' }
+    try {
+        $listening = Get-NetTCPConnection -State Listen -ErrorAction Stop |
+            Where-Object { $_.LocalAddress -eq '0.0.0.0' -or $_.LocalAddress -eq '::' }
+        Add-CollectionStatus -SourceId 'network_listening' -Label '열린 포트' -Status 'ok' -Required $true
+    } catch {
+        Add-CollectionStatus -SourceId 'network_listening' -Label '열린 포트' `
+            -Status 'failed' -Required $true -Detail $_.Exception.Message
+        $listening = @()
+    }
 
     $result = foreach ($l in $listening) {
         $proc = $ProcessMap[$l.OwningProcess]
