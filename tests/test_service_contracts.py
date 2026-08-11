@@ -3,6 +3,7 @@
 import importlib
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -496,7 +497,10 @@ def _write_raw_facts(path, collection, defender_facts=None, cpu_facts=None):
     path.write_text(json.dumps(raw), encoding="utf-8")
 
 
-def _run_rule_engine(powershell, project_root, raw_path, out_path):
+def _run_rule_engine(powershell, project_root, raw_path, out_path, debug=False):
+    env = dict(os.environ)
+    if debug:
+        env["PCH_RULE_ENGINE_DEBUG"] = "1"
     result = subprocess.run(
         [
             powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -508,9 +512,12 @@ def _run_rule_engine(powershell, project_root, raw_path, out_path):
         ],
         capture_output=True,
         timeout=30,
+        env=env,
     )
     stdout = result.stdout.decode("utf-8", errors="replace")
     stderr = result.stderr.decode("utf-8", errors="replace")
+    if debug:
+        print("RULE_ENGINE_DEBUG stdout:\n" + stdout)
     assert result.returncode == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
     return json.loads(out_path.read_text(encoding="utf-8-sig"))
 
@@ -575,7 +582,7 @@ def test_powershell_collection_status_gates_overall_on_required_failures(project
         # defender section is handled.
         cpu_facts=[{"name": "xmrig", "pid_": 1234, "cpu": 10, "memoryMB": 100, "path": "C:\\x\\xmrig.exe"}],
     )
-    danger_scan = _run_rule_engine(powershell, project_root, danger_raw_path, danger_out_path)
+    danger_scan = _run_rule_engine(powershell, project_root, danger_raw_path, danger_out_path, debug=True)
     if danger_scan["summary"]["overall"] != "danger":
         # Diagnostic for a platform-specific mismatch (this exact branch is
         # what surfaced the failure on real Windows PowerShell 5.1 CI while
