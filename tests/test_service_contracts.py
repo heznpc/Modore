@@ -174,6 +174,83 @@ def test_macos_autorun_signature_verification_actually_runs(project_root, tmp_pa
     assert unsigned["signer"] == ""
 
 
+@pytest.mark.skipif(platform.system() != "Darwin", reason="launchctl/kmutil/systemextensionsctl require macOS")
+def test_macos_launchd_login_items_and_kexts_reach_the_scan_output(project_root, tmp_path):
+    """launchctl.txt/loginitems.txt/kexts.txt/sysexts.txt were collected with
+    their own collection-status tracking (record_collection_status already
+    marks them "ok") but the collected data itself was discarded before
+    classification -- a malicious Login Item or launchd job was invisible
+    end to end despite the dashboard implying that vector was covered.
+    Fixture content is captured verbatim from this machine's real
+    `launchctl list` output (ephemeral per-app XPC noise like
+    "application.com.foo.Bar.12345.12346" included deliberately, since
+    filtering that out correctly is exactly what this test guards)."""
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    (facts / "launchctl.txt").write_text(
+        "PID\tStatus\tLabel\n"
+        "-\t0\tcom.apple.SafariHistoryServiceAgent\n"
+        "-\t0\tus.zoom.updater\n"
+        "12345\t0\tapplication.com.caldis.Mos.26820450.26820456\n"
+        "-\t0\tcom.heznpc.narcissus-multirun-watchdog\n",
+        encoding="utf-8",
+    )
+    (facts / "loginitems.txt").write_text("SaneSideButtons, Mos\n", encoding="utf-8")
+    (facts / "kexts.txt").write_text(
+        "    3  226 0                  0          0          com.apple.kpi.bsd (27.0.0) EC2DBF2E-ACDC-31C7-98F7-ECDFC6127685 <>\n"
+        "   50    1 0                  0          0          com.example.thirdpartykext (1.0.0) 11111111-2222-3333-4444-555555555555 <>\n",
+        encoding="utf-8",
+    )
+    (facts / "sysexts.txt").write_text("0 extension(s)\n", encoding="utf-8")
+    (facts / "plists.txt").write_text("", encoding="utf-8")
+    for name in ("ps.txt", "net.txt", "listen.txt", "security.txt", "load.txt",
+                 "storage_simulators.tsv", "collection_status.tsv"):
+        (facts / name).write_text("", encoding="utf-8")
+
+    output = tmp_path / "scan.json"
+    raw = tmp_path / "raw.json"
+    env = os.environ.copy()
+    env.update({
+        "TMP_DIR": str(facts),
+        "PCH_OUTPUT": str(output),
+        "PCH_RAW_PATH": str(raw),
+        "PCH_RULES_DIR": str(project_root / "rules"),
+        "PCH_CONFIG_PATH": str(tmp_path / "config.json"),
+        "PCH_WHITELIST_PATH": str(project_root / "data" / "whitelist.json"),
+        "PCH_SIMULATOR_KEEP_PATH": str(tmp_path / "simulator-keep.txt"),
+        "PCH_NO_VT": "true",
+    })
+    result = subprocess.run(
+        ["/usr/bin/osascript", "-l", "JavaScript", str(project_root / "scripts" / "scanner_helper.jxa.js")],
+        capture_output=True, text=True, encoding="utf-8", env=env, timeout=30,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    scan = json.loads(output.read_text(encoding="utf-8"))
+
+    by_category = {}
+    for row in scan["sections"]["autoruns"]:
+        by_category.setdefault(row["category"], []).append(row["entry"])
+
+    launchd = by_category.get("Launchd Job", [])
+    assert "us.zoom.updater" in launchd
+    assert "com.heznpc.narcissus-multirun-watchdog" in launchd
+    assert "com.apple.SafariHistoryServiceAgent" not in launchd, "Apple-prefixed labels are baseline noise, not signal"
+    assert not any(l.startswith("application.") for l in launchd), \
+        "ephemeral per-app XPC registrations are not persistence and must not read as third-party autorun"
+
+    assert by_category.get("Login Item") == ["SaneSideButtons", "Mos"]
+    assert by_category.get("Kernel Extension") == ["com.example.thirdpartykext"], \
+        "the apple kpi.bsd kext must be filtered as noise; the third-party one must surface"
+    assert "System Extension" not in by_category, "0 extension(s) must not fabricate an entry"
+
+    # None of these are silently pre-judged: they reach real classification
+    # (unknown, not whitelisted) rather than a hardcoded/omitted risk field.
+    for row in scan["sections"]["autoruns"]:
+        if row["category"] in ("Launchd Job", "Login Item", "Kernel Extension"):
+            assert row["risk"] == "unknown"
+            assert row["note"] == "처음 보는 프로그램 - 확인 필요"
+
+
 def test_report_rejects_raw_facts_without_summary(project_root, tmp_path):
     raw = {
         "schemaVersion": "1.0",

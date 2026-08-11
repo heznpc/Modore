@@ -814,6 +814,53 @@ tmp("plists.txt").trim().split(/\r?\n/).filter(Boolean).forEach(path => {
   const sig = codesignVerify(program);
   autoruns.push({ category: path.includes("Daemons") ? "System LaunchDaemon" : "LaunchAgent", entry: label, image: program, signer: sig.signer, verified: sig.verified, launchString: program, sha256: "", vt: null });
 });
+
+// launchd_jobs/login_items/kexts/system_extensions were collected (bash
+// already records their own collection status) but never fed to the rule
+// engine or whitelist -- the dashboard implied they'd been judged when they
+// were invisible. None of these commands expose a filesystem path, so
+// verified/signer stay honestly false/"" (no fact to assert) rather than
+// inventing one; they still go through the same classify()/whitelist
+// pipeline as every other autorun so a recognized name (Dropbox, VS Code,
+// browsers, ...) reads as safe instead of a blanket "first time seeing
+// this" on every ordinary dev machine.
+function isNoiseLaunchdLabel(label) {
+  if (!label) return true;
+  if (/^com\.apple\./i.test(label)) return true;
+  // Per-app-launch XPC service registrations (e.g.
+  // "application.com.caldis.Mos.26820450.26820456") are not persistence --
+  // they exist only while that app happens to be running right now.
+  // Confirmed directly against this machine's real launchctl list output;
+  // an unfiltered pass surfaced these as false "third-party autorun" noise.
+  if (/^application\./i.test(label)) return true;
+  if (/\.\d{5,}\.\d{5,}$/.test(label)) return true;
+  return false;
+}
+tmp("launchctl.txt").trim().split(/\r?\n/).slice(1).forEach(line => {
+  const label = line.split("\t")[2];
+  if (isNoiseLaunchdLabel(label)) return;
+  autoruns.push({ category: "Launchd Job", entry: label, image: "", signer: "", verified: false, launchString: label, sha256: "", vt: null });
+});
+tmp("loginitems.txt").split(",").map(s => s.trim()).filter(Boolean).forEach(name => {
+  autoruns.push({ category: "Login Item", entry: name, image: "", signer: "", verified: false, launchString: name, sha256: "", vt: null });
+});
+tmp("kexts.txt").trim().split(/\r?\n/).forEach(line => {
+  // kmutil showloaded --list-only: "idx refs addr size wired name (version) uuid <deps>"
+  const m = line.trim().match(/^\d+\s+\d+\s+\S+\s+\S+\s+\S+\s+(\S+)\s+\(/);
+  const label = m ? m[1] : null;
+  if (isNoiseLaunchdLabel(label)) return;
+  autoruns.push({ category: "Kernel Extension", entry: label, image: "", signer: "", verified: false, launchString: label, sha256: "", vt: null });
+});
+// systemextensionsctl's real column format for a populated list couldn't be
+// verified against live output on this machine (0 loaded); this only reads
+// the header count and treats any other non-separator line as one entry
+// verbatim rather than guessing at a column split it can't confirm.
+tmp("sysexts.txt").trim().split(/\r?\n/).forEach(line => {
+  const trimmed = line.trim();
+  if (!trimmed || /^\d+\s+extension/i.test(trimmed) || /^-+/.test(trimmed)) return;
+  autoruns.push({ category: "System Extension", entry: trimmed, image: "", signer: "", verified: false, launchString: trimmed, sha256: "", vt: null });
+});
+
 raw.sections.startup = startup;
 raw.sections.autoruns = autoruns;
 raw.sections.scheduledTasks = [];
