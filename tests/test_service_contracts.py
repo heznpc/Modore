@@ -568,6 +568,17 @@ def test_powershell_collection_status_gates_overall_on_required_failures(project
         defender_facts={"realtimeEnabled": False, "antivirusEnabled": False, "signatureDaysOld": 40},
     )
     danger_scan = _run_rule_engine(powershell, project_root, danger_raw_path, danger_out_path)
+    if danger_scan["summary"]["overall"] != "danger":
+        # Diagnostic for a platform-specific mismatch (this exact branch is
+        # what surfaced the failure on real Windows PowerShell 5.1 CI while
+        # passing locally on pwsh 7) -- dump the state pytest's default
+        # assertion introspection wouldn't show, so the *next* CI log (if
+        # this still fails) carries enough to root-cause it without another
+        # blind round trip.
+        print("DIAG summary:", json.dumps(danger_scan["summary"], ensure_ascii=False))
+        print("DIAG defender section:", json.dumps(danger_scan["sections"].get("defender"), ensure_ascii=False))
+        print("DIAG findings:", json.dumps(danger_scan["findings"], ensure_ascii=False))
+        print("DIAG collection:", json.dumps(danger_scan["collection"], ensure_ascii=False))
     assert danger_scan["summary"]["overall"] == "danger"
     assert danger_scan["summary"]["dangerCount"] > 0
 
