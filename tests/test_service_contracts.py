@@ -115,6 +115,65 @@ def test_jxa_corrupted_rule_file_reports_incomplete_not_safe(project_root, tmp_p
     assert good_scan["summary"]["collectionComplete"] is True
 
 
+@pytest.mark.skipif(platform.system() != "Darwin", reason="codesign requires macOS")
+def test_macos_autorun_signature_verification_actually_runs(project_root, tmp_path):
+    """scanner_helper.jxa.js hardcoded verified:false/signer:"" for every
+    autorun entry -- a Python->JXA port regression, not a disclosed
+    limitation -- since real codesign verification was never re-implemented.
+    Exercises the actual, full (non-regrade) collection path against a real
+    system LaunchDaemon plist and a genuinely unsigned test binary."""
+    daemon_plist = Path("/System/Library/LaunchDaemons/com.apple.ContainerMigrationService.plist")
+    if not daemon_plist.exists():
+        pytest.skip("expected system LaunchDaemon plist not present on this machine")
+
+    unsigned_bin = tmp_path / "unsigned_test_bin"
+    shutil.copy("/bin/echo", unsigned_bin)
+    subprocess.run(["/usr/bin/codesign", "--remove-signature", str(unsigned_bin)], check=True, capture_output=True)
+    unsigned_plist = tmp_path / "com.pch.test.unsigned.plist"
+    unsigned_plist.write_text(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+        "<plist version=\"1.0\"><dict><key>Label</key><string>com.pch.test.unsigned</string>"
+        f"<key>Program</key><string>{unsigned_bin}</string></dict></plist>\n",
+        encoding="utf-8",
+    )
+
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    (facts / "plists.txt").write_text(f"{daemon_plist}\n{unsigned_plist}\n", encoding="utf-8")
+    for name in ("ps.txt", "net.txt", "listen.txt", "security.txt", "load.txt",
+                 "storage_simulators.tsv", "collection_status.tsv"):
+        (facts / name).write_text("", encoding="utf-8")
+
+    output = tmp_path / "scan.json"
+    raw = tmp_path / "raw.json"
+    env = os.environ.copy()
+    env.update({
+        "TMP_DIR": str(facts),
+        "PCH_OUTPUT": str(output),
+        "PCH_RAW_PATH": str(raw),
+        "PCH_RULES_DIR": str(project_root / "rules"),
+        "PCH_CONFIG_PATH": str(tmp_path / "config.json"),
+        "PCH_WHITELIST_PATH": str(project_root / "data" / "whitelist.json"),
+        "PCH_SIMULATOR_KEEP_PATH": str(tmp_path / "simulator-keep.txt"),
+        "PCH_NO_VT": "true",
+    })
+    result = subprocess.run(
+        ["/usr/bin/osascript", "-l", "JavaScript", str(project_root / "scripts" / "scanner_helper.jxa.js")],
+        capture_output=True, text=True, encoding="utf-8", env=env, timeout=30,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    scan = json.loads(output.read_text(encoding="utf-8"))
+
+    by_entry = {row["entry"]: row for row in scan["sections"]["autoruns"]}
+    signed = by_entry["com.apple.ContainerMigrationService"]
+    assert signed["verified"] is True
+    assert "Apple" in signed["signer"] or "Software Signing" in signed["signer"]
+    unsigned = by_entry["com.pch.test.unsigned"]
+    assert unsigned["verified"] is False
+    assert unsigned["signer"] == ""
+
+
 def test_report_rejects_raw_facts_without_summary(project_root, tmp_path):
     raw = {
         "schemaVersion": "1.0",
