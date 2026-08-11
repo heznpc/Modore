@@ -11,6 +11,24 @@ from pathlib import Path
 import pytest
 
 
+def test_every_ps1_script_carries_a_utf8_bom(project_root):
+    """Windows PowerShell 5.1 (the runtime this ships to end users, not pwsh
+    7+) reads a BOM-less .ps1 file using the system code page, not UTF-8 --
+    every Korean string literal comes out as mojibake and the parser fails
+    outright. Every existing scripts/*.ps1 file already carries a BOM; a new
+    file created without one parses fine locally on pwsh 7 (which defaults to
+    UTF-8 either way) and fails only on the real windows-latest CI runner,
+    which is exactly what happened here. This is the guard that would have
+    caught it before a push instead of after."""
+    ps1_files = sorted(project_root.glob("scripts/*.ps1")) + sorted(project_root.glob("scripts/modules/*.ps1"))
+    assert len(ps1_files) > 5, "sanity check: the glob found suspiciously few .ps1 files"
+    missing_bom = [
+        str(p.relative_to(project_root)) for p in ps1_files
+        if p.read_bytes()[:3] != b"\xef\xbb\xbf"
+    ]
+    assert not missing_bom, f"missing UTF-8 BOM (breaks Windows PowerShell 5.1 parsing of non-ASCII literals): {missing_bom}"
+
+
 def test_report_rejects_raw_facts_without_summary(project_root, tmp_path):
     raw = {
         "schemaVersion": "1.0",

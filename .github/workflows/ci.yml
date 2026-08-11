@@ -100,7 +100,7 @@ jobs:
         shell: powershell
         run: |
           python -I -B -m pytest tests/test_service_contracts.py -q `
-            -k "powershell_vt_cache_round_trip or powershell_vt_env_key_does_not_auto_enable or powershell_collection_status or powershell_report_html_generation"
+            -k "powershell_vt_cache_round_trip or powershell_vt_env_key_does_not_auto_enable or powershell_collection_status or powershell_report_html_generation or every_ps1_script_carries_a_utf8_bom"
 
   macos-swift:
     runs-on: macos-latest
