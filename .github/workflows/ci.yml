@@ -96,11 +96,11 @@ jobs:
           }
           if ($errors.Count -gt 0) { exit 1 }
 
-      - name: Windows PowerShell 5.1 VirusTotal cache round-trip
+      - name: Windows PowerShell 5.1 service contracts (VT cache, collection status, report generation)
         shell: powershell
         run: |
           python -I -B -m pytest tests/test_service_contracts.py -q `
-            -k "powershell_vt_cache_round_trip or powershell_vt_env_key_does_not_auto_enable"
+            -k "powershell_vt_cache_round_trip or powershell_vt_env_key_does_not_auto_enable or powershell_collection_status or powershell_report_html_generation or every_ps1_script_carries_a_utf8_bom"
 
   macos-swift:
     runs-on: macos-latest

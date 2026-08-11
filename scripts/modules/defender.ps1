@@ -3,8 +3,20 @@
 # ============================================================
 
 function Get-DefenderFacts {
-    $def = Get-MpComputerStatus -ErrorAction SilentlyContinue
-    if (-not $def) { return [ordered]@{} }
+    try {
+        $def = Get-MpComputerStatus -ErrorAction Stop
+    } catch {
+        Add-CollectionStatus -SourceId 'defender' -Label 'Windows Defender 상태' `
+            -Status 'unavailable' -Required $true -Detail $_.Exception.Message
+        return [ordered]@{}
+    }
+    if (-not $def) {
+        Add-CollectionStatus -SourceId 'defender' -Label 'Windows Defender 상태' `
+            -Status 'unavailable' -Required $true `
+            -Detail 'Get-MpComputerStatus가 데이터를 반환하지 않았습니다.'
+        return [ordered]@{}
+    }
+    Add-CollectionStatus -SourceId 'defender' -Label 'Windows Defender 상태' -Status 'ok' -Required $true
 
     $daysSinceDef = if ($def.AntivirusSignatureLastUpdated) {
         [math]::Round(((Get-Date) - $def.AntivirusSignatureLastUpdated).TotalDays, 0)

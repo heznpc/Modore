@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\collection-status.ps1"
 $RiskPriority = @{ danger = 4; warning = 3; unknown = 2; safe = 1; info = 0 }
 $CategoryFiles = @{
     process = 'process.json'
@@ -180,7 +181,13 @@ $whitelistObj = Read-JsonFile $Whitelist
 $wlIndex = Build-WhitelistIndex $whitelistObj
 $rulesByCategory = @{}
 foreach ($cat in $CategoryFiles.Keys) {
-    $rulesByCategory[$cat] = @(Read-JsonFile (Join-Path $Rules $CategoryFiles[$cat]))
+    $rulePath = Join-Path $Rules $CategoryFiles[$cat]
+    $loaded = Read-JsonFile $rulePath
+    $rulesByCategory[$cat] = @(if ($null -ne $loaded) { $loaded })
+    if ($env:PCH_RULE_ENGINE_DEBUG) {
+        $loadedType = if ($null -eq $loaded) { '<null>' } else { $loaded.GetType().Name }
+        Write-Host "DBG $cat path=$rulePath exists=$(Test-Path $rulePath) loadedType=$loadedType count=$($rulesByCategory[$cat].Count)"
+    }
 }
 
 $result = [ordered]@{}
@@ -229,12 +236,34 @@ $result.sections = $outSections
 $result.findings = $result.findings.ToArray()
 $danger = @($result.findings | Where-Object { $_.level -eq 'danger' }).Count
 $warning = @($result.findings | Where-Object { $_.level -eq 'warning' }).Count
-$overall = if ($danger -gt 0) { 'danger' } elseif ($warning -gt 0) { 'warning' } else { 'safe' }
-$msg = if ($danger -gt 0) { "긴급 확인 필요: $danger 건의 위험 신호가 발견되었습니다." } elseif ($warning -gt 0) { "확인 권장: $warning 건의 항목을 살펴보세요." } else { '특별한 이상 징후가 발견되지 않았습니다.' }
+
+# 수집 완전성은 findings 개수와 별개다 — required 수집기가 하나라도 실패하면
+# danger/warning이 0건이어도 safe라고 말하지 않는다. "안 봤다"와 "봤는데
+# 괜찮다"를 절대 같은 결과로 만들지 않는 게 이 계층의 유일한 목적이다.
+$collectionSummary = Get-CollectionCompleteness $rawObj.collection
+$result.collection = $collectionSummary
+
+$overall = if ($danger -gt 0) { 'danger' }
+    elseif ($warning -gt 0) { 'warning' }
+    elseif (-not $collectionSummary.complete) { 'incomplete' }
+    else { 'safe' }
+
+$msg = if ($danger -gt 0) {
+    "긴급 확인 필요: $danger 건의 위험 신호가 발견되었습니다."
+} elseif ($warning -gt 0) {
+    "확인 권장: $warning 건의 항목을 살펴보세요."
+} elseif (-not $collectionSummary.complete) {
+    $failedRequired = @($collectionSummary.issues | Where-Object { $_.required })
+    $names = ($failedRequired | ForEach-Object { $_.label }) -join ', '
+    "일부 필수 검사를 완료하지 못했습니다 ($names). 이 결과를 안전하다는 뜻으로 해석하지 마세요."
+} else {
+    '특별한 이상 징후가 발견되지 않았습니다.'
+}
 $result.summary = [ordered]@{
     overall = $overall
     dangerCount = $danger
     warningCount = $warning
+    collectionComplete = $collectionSummary.complete
     message = $msg
 }
 
