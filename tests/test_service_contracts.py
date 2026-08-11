@@ -454,6 +454,153 @@ Write-Output 'VT_CACHE_ROUND_TRIP_OK'
     assert "VT_CACHE_ROUND_TRIP_OK" in stdout
 
 
+def _write_raw_facts(path, collection, defender_facts=None):
+    raw = {
+        "schemaVersion": "1.0",
+        "scannedAt": "2026-08-11 12:00:00",
+        "computerName": "TEST-PC",
+        "userName": "tester",
+        "osVersion": "Windows Test",
+        "platform": "windows",
+        "scannerVersion": "0.3",
+        "findings": [],
+        "sections": {
+            "cpu": [],
+            "network": [],
+            "listeningPorts": [],
+            "autoruns": [],
+            "scheduledTasks": [],
+            "recentInstalls": [],
+            "defender": defender_facts if defender_facts is not None else {},
+        },
+        "collection": collection,
+    }
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def _run_rule_engine(powershell, project_root, raw_path, out_path):
+    result = subprocess.run(
+        [
+            powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", str(project_root / "scripts" / "rule_engine.ps1"),
+            "-Raw", str(raw_path),
+            "-Rules", str(project_root / "rules"),
+            "-Whitelist", str(project_root / "data" / "whitelist.json"),
+            "-Output", str(out_path),
+        ],
+        capture_output=True,
+        timeout=30,
+    )
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    assert result.returncode == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    return json.loads(out_path.read_text(encoding="utf-8-sig"))
+
+
+_OK_COLLECTION = [
+    {"id": "defender", "label": "Windows Defender 상태", "status": "ok", "required": True, "detail": ""},
+    {"id": "network_established", "label": "외부 네트워크 연결", "status": "ok", "required": True, "detail": ""},
+    {"id": "network_listening", "label": "열린 포트", "status": "ok", "required": True, "detail": ""},
+    {"id": "startup_registry", "label": "자동 실행 레지스트리", "status": "ok", "required": True, "detail": ""},
+    {"id": "scheduled_tasks", "label": "예약 작업", "status": "ok", "required": True, "detail": ""},
+]
+
+
+def test_powershell_collection_status_gates_overall_on_required_failures(project_root, tmp_path):
+    """A required collector failing (e.g. Get-MpComputerStatus erroring) must
+    never be indistinguishable from 'nothing to report' -- overall must drop
+    to 'incomplete', not 'safe', even with zero findings."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    failed_collection = [dict(item) for item in _OK_COLLECTION]
+    failed_collection[0] = {
+        "id": "defender", "label": "Windows Defender 상태",
+        "status": "unavailable", "required": True, "detail": "Get-MpComputerStatus 실패",
+    }
+    raw_path = tmp_path / "raw_incomplete.json"
+    out_path = tmp_path / "scan_incomplete.json"
+    _write_raw_facts(raw_path, failed_collection)
+    scan = _run_rule_engine(powershell, project_root, raw_path, out_path)
+
+    assert scan["summary"]["overall"] == "incomplete"
+    assert scan["summary"]["collectionComplete"] is False
+    assert scan["summary"]["dangerCount"] == 0
+    assert scan["collection"]["complete"] is False
+    assert "Windows Defender" in scan["summary"]["message"]
+
+    # All-ok regression check: unrelated to the failure path, must stay 'safe'.
+    ok_raw_path = tmp_path / "raw_ok.json"
+    ok_out_path = tmp_path / "scan_ok.json"
+    _write_raw_facts(
+        ok_raw_path, _OK_COLLECTION,
+        defender_facts={"realtimeEnabled": True, "antivirusEnabled": True, "signatureDaysOld": 1},
+    )
+    ok_scan = _run_rule_engine(powershell, project_root, ok_raw_path, ok_out_path)
+    assert ok_scan["summary"]["overall"] == "safe"
+    assert ok_scan["summary"]["collectionComplete"] is True
+
+    # A real danger (collection succeeded, Defender genuinely reports off)
+    # must still fire -- this layer must never mask an actual finding.
+    danger_raw_path = tmp_path / "raw_danger.json"
+    danger_out_path = tmp_path / "scan_danger.json"
+    _write_raw_facts(
+        danger_raw_path, _OK_COLLECTION,
+        defender_facts={"realtimeEnabled": False, "antivirusEnabled": False, "signatureDaysOld": 40},
+    )
+    danger_scan = _run_rule_engine(powershell, project_root, danger_raw_path, danger_out_path)
+    assert danger_scan["summary"]["overall"] == "danger"
+    assert danger_scan["summary"]["dangerCount"] > 0
+
+    # Missing collection field entirely (older raw_facts, or a regression that
+    # stops writing it) must fail closed, not vacuously report complete.
+    no_collection_raw = tmp_path / "raw_no_collection.json"
+    no_collection_out = tmp_path / "scan_no_collection.json"
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    del raw["collection"]
+    no_collection_raw.write_text(json.dumps(raw), encoding="utf-8")
+    no_collection_scan = _run_rule_engine(powershell, project_root, no_collection_raw, no_collection_out)
+    assert no_collection_scan["summary"]["overall"] == "incomplete"
+    assert no_collection_scan["collection"]["sources"][0]["id"] == "collector_protocol"
+
+
+def test_powershell_report_html_generation_actually_runs(project_root, tmp_path):
+    """report.ps1's HtmlEncode/UrlEncode helpers must not collide with a
+    built-in PowerShell alias (h -> Get-History ships by default) -- a
+    same-named function silently loses to the alias at every bare call site,
+    so report generation crashed on line 1 of real usage while a bare
+    syntax-only check (what CI ran) stayed green forever."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    raw_path = tmp_path / "raw.json"
+    scan_path = tmp_path / "scan.json"
+    report_path = tmp_path / "report.html"
+    _write_raw_facts(raw_path, _OK_COLLECTION)
+    _run_rule_engine(powershell, project_root, raw_path, scan_path)
+
+    result = subprocess.run(
+        [
+            powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", str(project_root / "scripts" / "report.ps1"),
+            "-Scan", str(scan_path),
+            "-Output", str(report_path),
+        ],
+        capture_output=True,
+        timeout=30,
+    )
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    assert result.returncode == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+
+    html = report_path.read_text(encoding="utf-8")
+    assert len(html) > 500, "report.ps1 produced suspiciously little output"
+    assert "<html" in html and "</html>" in html
+    assert "TEST-PC" in html  # HtmlEncode actually ran, not a silent no-op
+
+
 def test_virustotal_automatic_lookups_send_file_hashes_only(project_root):
     sources = [
         project_root / "scripts/scanner_helper.py",
