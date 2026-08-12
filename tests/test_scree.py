@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -86,6 +87,72 @@ def test_orphan_workspace_is_flagged(scree_home):
     assert group["orphan"] is True
     assert group["orphan_basis"] == "path_missing"  # 판정 근거를 데이터로 명시
     assert group["cross_tool"] is False
+
+
+def test_cross_tool_group_joins_by_repo_despite_case_variant_workspace(scree_home):
+    """Real Gemini registries have been observed recording the identical
+    working directory under a different casing than Claude/Codex used for
+    the same session (case-insensitive filesystem, e.g. macOS default).
+    Before the casefold fix, build_scree's join keys were exact-string, so
+    Gemini's differently-cased record silently started its own solo group
+    instead of joining the repo-keyed group the other tools shared."""
+    home, ws1, _ = scree_home
+    variant = str(ws1).replace("proj-a", "PROJ-a")
+    assert variant != str(ws1)
+    _write(home / ".gemini" / "projects.json",
+           json.dumps({"projects": {str(ws1): {}, variant: {}}}))
+
+    result = scree.build_scree(home)
+    matches = [g for g in result["groups"] if g["key"] == "github.com/heznpc/proj-a"]
+    assert len(matches) == 1
+    group = matches[0]
+    assert set(group["workspaces"]) == {str(ws1), variant}
+    assert group["tools"]["Gemini"] == 2
+    assert group["cross_tool"] is True
+
+
+def test_workspace_only_group_joins_case_variants_without_a_repo_url(tmp_path):
+    """No tool in this scenario ever recorded a repo_url (e.g. no git
+    remote), so build_scree falls back to its own 'ws:<workspace>' key --
+    a separate code path from build_lineage's already-casefolded grouping,
+    easy to assume was fixed the same way when it never was."""
+    home = tmp_path / "home"
+    ws = tmp_path / "work" / "proj-nogit"
+    ws.mkdir(parents=True)
+    variant = str(ws).replace("proj-nogit", "PROJ-nogit")
+    _write(home / ".claude" / "projects" / str(ws).replace("/", "-") / "a.jsonl", _jsonl(
+        {"type": "user", "cwd": str(ws)},
+    ))
+    _write(home / ".gemini" / "projects.json",
+           json.dumps({"projects": {variant: {}}}))
+
+    result = scree.build_scree(home)
+    ws_groups = [g for g in result["groups"] if g["grouped_by"] == "workspace"]
+    assert len(ws_groups) == 1
+    group = ws_groups[0]
+    assert set(group["workspaces"]) == {str(ws), variant}
+    assert group["cross_tool"] is True
+    assert set(group["tools"]) == {"Claude", "Gemini"}
+
+
+def test_vscode_fork_case_duplicate_workspaces_merge_into_one_group(tmp_path):
+    """Real VS Code workspaceStorage on this machine independently recorded
+    the same project directory twice under different casing (once opened as
+    'recipick', once as 'Recipick') -- not a cross-tool scenario, proving
+    the casefold gap bites even within a single tool's own records."""
+    home = tmp_path / "home"
+    ws = tmp_path / "work" / "recipick"
+    ws.mkdir(parents=True)
+    variant = str(ws).replace("recipick", "Recipick")
+    for index, folder in enumerate((str(ws), variant)):
+        _write(home / "Library" / "Application Support" / "Code" / "User"
+               / "workspaceStorage" / f"h{index}" / "workspace.json",
+               json.dumps({"folder": Path(folder).as_uri()}))
+
+    result = scree.build_scree(home)
+    ws_groups = [g for g in result["groups"] if g["grouped_by"] == "workspace"]
+    assert len(ws_groups) == 1
+    assert ws_groups[0]["tools"]["VS Code"] == 2
 
 
 def test_scree_never_carries_session_content(scree_home):
