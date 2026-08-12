@@ -214,7 +214,16 @@ def test_storage_watch_wrapper_rejects_changed_script(project_root, tmp_path):
     target.write_text("#!/bin/bash -p\nexit 99\n", encoding="utf-8")
 
     result = subprocess.run(
-        ["/usr/bin/env", "-i", "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "/bin/bash", "-p", "-c", wrapper, "--", expected_hash, str(target)],
+        [
+            "/usr/bin/env", "-i",
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+            # The wrapper's heartbeat write reads $HOME under `set -u`, same as
+            # every real invocation (schedule.sh's generated plist always
+            # supplies HOME explicitly) -- match that here instead of testing
+            # an env shape that can't occur in production.
+            f"HOME={tmp_path}",
+            "/bin/bash", "-p", "-c", wrapper, "--", expected_hash, str(target),
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -255,6 +264,192 @@ def test_storage_watch_runs_through_the_wrapper_the_launch_agent_uses(project_ro
     assert result.returncode == 0, f"stderr={result.stderr!r}"
     assert "unbound variable" not in result.stderr
     assert parse_protocol(result.stdout)["status"] == "normal"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+def test_storage_watch_wrapper_heartbeat_records_success(project_root, tmp_path):
+    """A stuck/crashing watch and a disabled one both leave storage-samples.tsv
+    without a fresh row -- the heartbeat is the only thing that tells them
+    apart. A clean run must land all three fields, owner-only."""
+    schedule = (project_root / "scripts" / "schedule.sh").read_text(encoding="utf-8")
+    wrapper = schedule.split("WATCH_WRAPPER='", 1)[1].split("'\n", 1)[0]
+    script = project_root / "scripts" / "storage_watch.sh"
+    expected_hash = hashlib.sha256(script.read_bytes()).hexdigest()
+    state_dir = tmp_path / "state"
+    support_dir = tmp_path / "Library" / "Application Support" / "Modore"
+    support_dir.mkdir(parents=True)
+    heartbeat = support_dir / "storage-watch-heartbeat.tsv"
+
+    result = subprocess.run(
+        [
+            "/usr/bin/env", "-i",
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+            f"HOME={tmp_path}",
+            "PCH_TEST_MODE=1",
+            f"PCH_STATE_DIR={state_dir}",
+            "PCH_TEST_FREE_KB=" + str(50 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY=0",
+            "/bin/bash", "-p", "-c", wrapper, "--", expected_hash, str(script),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    assert heartbeat.is_file()
+    assert stat.S_IMODE(heartbeat.stat().st_mode) == 0o600
+    values = parse_protocol(heartbeat.read_text(encoding="utf-8"))
+    assert values["lastAttemptAt"]
+    assert values["lastExitCode"] == "0"
+    assert values["lastFinishedAt"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+def test_storage_watch_wrapper_heartbeat_records_attempt_on_hash_mismatch(project_root, tmp_path):
+    """The heartbeat write happens before the hash check, on purpose: a
+    tampered/corrupted pinned script must still count as "an attempt was
+    made" so a stuck watch doesn't read identically to one that's never
+    fired. Only lastAttemptAt should land -- the body never ran."""
+    schedule = (project_root / "scripts" / "schedule.sh").read_text(encoding="utf-8")
+    wrapper = schedule.split("WATCH_WRAPPER='", 1)[1].split("'\n", 1)[0]
+    script = project_root / "scripts" / "storage_watch.sh"
+    wrong_hash = hashlib.sha256(b"not the real script").hexdigest()
+    support_dir = tmp_path / "Library" / "Application Support" / "Modore"
+    support_dir.mkdir(parents=True)
+    heartbeat = support_dir / "storage-watch-heartbeat.tsv"
+
+    result = subprocess.run(
+        [
+            "/usr/bin/env", "-i",
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+            f"HOME={tmp_path}",
+            "/bin/bash", "-p", "-c", wrapper, "--", wrong_hash, str(script),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 78
+    assert heartbeat.is_file()
+    values = parse_protocol(heartbeat.read_text(encoding="utf-8"))
+    assert values["lastAttemptAt"]
+    assert "lastExitCode" not in values
+    assert "lastFinishedAt" not in values
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+def test_storage_watch_wrapper_heartbeat_records_body_exit_code(project_root, tmp_path):
+    """The wrapper must surface the pinned body's real exit code to launchd
+    (for launchd-level diagnostics) and record that same code in the
+    heartbeat (for the app-level health signal) -- prove both from one run
+    of a body that fails for a reason unrelated to hash pinning."""
+    schedule = (project_root / "scripts" / "schedule.sh").read_text(encoding="utf-8")
+    wrapper = schedule.split("WATCH_WRAPPER='", 1)[1].split("'\n", 1)[0]
+    script = tmp_path / "crashing-body.sh"
+    script.write_text("exit 42\n", encoding="utf-8")
+    expected_hash = hashlib.sha256(script.read_bytes()).hexdigest()
+    support_dir = tmp_path / "Library" / "Application Support" / "Modore"
+    support_dir.mkdir(parents=True)
+    heartbeat = support_dir / "storage-watch-heartbeat.tsv"
+
+    result = subprocess.run(
+        [
+            "/usr/bin/env", "-i",
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+            f"HOME={tmp_path}",
+            "/bin/bash", "-p", "-c", wrapper, "--", expected_hash, str(script),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 42
+    values = parse_protocol(heartbeat.read_text(encoding="utf-8"))
+    assert values["lastExitCode"] == "42"
+    assert values["lastAttemptAt"]
+    assert values["lastFinishedAt"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+def test_storage_watch_wrapper_heartbeat_never_follows_a_symlinked_target(project_root, tmp_path):
+    """The write is mktemp-into-the-same-directory + atomic mv, mirroring
+    storage_watch.sh's own STATE_FILE discipline, specifically so a symlink
+    planted at the heartbeat path can never be followed and clobbered -- mv
+    replaces the link itself rather than writing through it. Prove the
+    stronger property directly: an attacker-controlled path the symlink
+    points at must come out byte-for-byte untouched, and the link must
+    survive (the wrapper skips the write entirely rather than replacing it),
+    with no stray temp files left behind either way."""
+    schedule = (project_root / "scripts" / "schedule.sh").read_text(encoding="utf-8")
+    wrapper = schedule.split("WATCH_WRAPPER='", 1)[1].split("'\n", 1)[0]
+    script = project_root / "scripts" / "storage_watch.sh"
+    expected_hash = hashlib.sha256(script.read_bytes()).hexdigest()
+    state_dir = tmp_path / "state"
+    support_dir = tmp_path / "Library" / "Application Support" / "Modore"
+    support_dir.mkdir(parents=True)
+    heartbeat = support_dir / "storage-watch-heartbeat.tsv"
+    sentinel = tmp_path / "sentinel-do-not-touch"
+    sentinel.write_text("PRECIOUS DATA\n", encoding="utf-8")
+    heartbeat.symlink_to(sentinel)
+
+    result = subprocess.run(
+        [
+            "/usr/bin/env", "-i",
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+            f"HOME={tmp_path}",
+            "PCH_TEST_MODE=1",
+            f"PCH_STATE_DIR={state_dir}",
+            "PCH_TEST_FREE_KB=" + str(50 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY=0",
+            "/bin/bash", "-p", "-c", wrapper, "--", expected_hash, str(script),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    assert sentinel.read_text(encoding="utf-8") == "PRECIOUS DATA\n"
+    assert heartbeat.is_symlink()
+    assert sorted(p.name for p in support_dir.iterdir()) == ["storage-watch-heartbeat.tsv"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
+def test_storage_watch_wrapper_heartbeat_silently_skips_when_support_dir_absent(project_root, tmp_path):
+    """Library/Application Support/Modore is created by the app itself on
+    first real launch, never by this wrapper. Until it exists, heartbeat
+    writes must be silent no-ops that neither create the directory nor break
+    the underlying watch run -- matching storage_watch.sh's own documented
+    fail-silently-on-any-write-obstacle contract."""
+    schedule = (project_root / "scripts" / "schedule.sh").read_text(encoding="utf-8")
+    wrapper = schedule.split("WATCH_WRAPPER='", 1)[1].split("'\n", 1)[0]
+    script = project_root / "scripts" / "storage_watch.sh"
+    expected_hash = hashlib.sha256(script.read_bytes()).hexdigest()
+    state_dir = tmp_path / "state"
+    # Deliberately do NOT create tmp_path/Library/Application Support/Modore.
+
+    result = subprocess.run(
+        [
+            "/usr/bin/env", "-i",
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+            f"HOME={tmp_path}",
+            "PCH_TEST_MODE=1",
+            f"PCH_STATE_DIR={state_dir}",
+            "PCH_TEST_FREE_KB=" + str(50 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY=0",
+            "/bin/bash", "-p", "-c", wrapper, "--", expected_hash, str(script),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    assert parse_protocol(result.stdout)["status"] == "normal"
+    assert not (tmp_path / "Library" / "Application Support" / "Modore").exists()
 
 
 def test_storage_watch_state_directory_name_matches_the_shared_module(project_root):
@@ -358,14 +553,12 @@ def test_schedule_requires_approval_and_stays_inside_test_home(project_root, tmp
     canonical_home = str(home.resolve())
     watcher = project_root / "scripts" / "storage_watch.sh"
     watcher_hash = hashlib.sha256(watcher.read_bytes()).hexdigest()
-    wrapper = (
-        'set -u; script="$2"; expected="$1"; [[ -f "$script" && ! -L "$script" ]] || exit 78; '
-        'size=$(/usr/bin/stat -f "%z" "$script") || exit 78; [[ "$size" -le 1048576 ]] || exit 78; '
-        'payload=$(/usr/bin/base64 < "$script") || exit 78; '
-        'digest=$(/usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /usr/bin/shasum -a 256) || exit 78; '
-        'actual="${digest%% *}"; [[ "$actual" == "$expected" ]] || exit 78; '
-        '/usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /bin/bash -p'
-    )
+    # Extracted from the shipping source rather than hand-duplicated here: a
+    # hardcoded copy of this hash-pinned wrapper is exactly what went stale
+    # (silently, until CI's exact-equality assertion caught it) when the
+    # heartbeat write was added to WATCH_WRAPPER in schedule.sh.
+    schedule_source = (project_root / "scripts" / "schedule.sh").read_text(encoding="utf-8")
+    wrapper = schedule_source.split("WATCH_WRAPPER='", 1)[1].split("'\n", 1)[0]
     assert definition == {
         "Label": "me.heznpc.modore.storage-watch",
         "ProgramArguments": [
