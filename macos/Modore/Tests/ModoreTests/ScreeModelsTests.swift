@@ -116,4 +116,37 @@ final class ScreeModelsTests: XCTestCase {
         XCTAssertNotEqual(item.reasonText, "clean")
         XCTAssertTrue(item.reasonText.contains("재검사") || item.reasonText.contains("실패"))
     }
+
+    // scree.py's build_lineage already casefold-deduplicates and reports
+    // has_git per distinct path -- this is the field MothballPage filters
+    // on to pick archive-scan candidates, so it must decode correctly.
+    func testLineagePathDecodesExistenceAndGitPresence() throws {
+        let report = try XCTUnwrap(ScreeReport(json: [
+            "lineage": ["paths": [
+                ["path": "/Users/test/repo-a", "exists": true, "has_git": true],
+                ["path": "/Users/test/plain-folder", "exists": true, "has_git": false],
+            ]],
+        ]))
+
+        XCTAssertEqual(report.lineagePaths.count, 2)
+        let repo = try XCTUnwrap(report.lineagePaths.first { $0.path == "/Users/test/repo-a" })
+        XCTAssertTrue(repo.exists)
+        XCTAssertTrue(repo.hasGit)
+        XCTAssertEqual(repo.caseVariants, [])
+
+        let plain = try XCTUnwrap(report.lineagePaths.first { $0.path == "/Users/test/plain-folder" })
+        XCTAssertFalse(plain.hasGit)
+    }
+
+    func testLineagePathDecodesCaseVariantsWhenPresent() throws {
+        let report = try XCTUnwrap(ScreeReport(json: [
+            "lineage": ["paths": [
+                ["path": "/Users/test/Paper/ploidy", "exists": true, "has_git": true,
+                 "case_variants": ["/Users/test/Paper/ploidy", "/Users/test/paper/ploidy"]],
+            ]],
+        ]))
+
+        let item = try XCTUnwrap(report.lineagePaths.first)
+        XCTAssertEqual(item.caseVariants, ["/Users/test/Paper/ploidy", "/Users/test/paper/ploidy"])
+    }
 }
