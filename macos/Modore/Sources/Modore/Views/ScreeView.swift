@@ -153,7 +153,7 @@ private struct ScreeWorktreeSection: View {
                         .foregroundStyle(Color.secondary)
                         .frame(width: 20)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(item.pathLastComponent)
+                        Text(item.displayLabel)
                             .font(.body.weight(.medium))
                         Text("\(item.branch) · \(item.reasonText)")
                             .font(.caption)
