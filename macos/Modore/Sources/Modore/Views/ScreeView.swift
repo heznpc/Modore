@@ -149,7 +149,7 @@ private struct ScreeWorktreeSection: View {
             }
             ForEach(items) { item in
                 HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: item.verdict == "protected" ? "lock.fill" : "arrow.triangle.2.circlepath")
+                    Image(systemName: item.verdictSymbolName)
                         .foregroundStyle(Color.secondary)
                         .frame(width: 20)
                     VStack(alignment: .leading, spacing: 2) {
@@ -160,7 +160,7 @@ private struct ScreeWorktreeSection: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text(item.verdict == "protected" ? "보호 대상" : "재구축 가능")
+                    Text(item.verdictLabel)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Color.secondary)
                 }
