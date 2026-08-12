@@ -114,7 +114,7 @@ def test_powershell_menu_scanner_gate_survives_a_stale_exit_code(project_root, t
     against the same fixture, then checks two more shapes directly."""
     stale = '{"stale":"before"}'
     bail_early_after_native_call = (
-        '/bin/echo -n "" | Out-Null\n'  # cross-platform stand-in for a native call inside scanner.ps1
+        'hostname | Out-Null\n'  # a real native executable on macOS/Linux/Windows alike, stands in for a native call inside scanner.ps1
         'return\n'
     )
 
@@ -160,6 +160,7 @@ def test_powershell_menu_scanner_gate_survives_a_stale_exit_code(project_root, t
     assert "RESULT=False" in noop_result.stdout, f"no output ever written must fail:\n{noop_result.stdout}"
 
 
+@pytest.mark.skipif(platform.system() != "Darwin", reason="JXA runtime requires macOS osascript")
 def test_jxa_corrupted_rule_file_reports_incomplete_not_safe(project_root, tmp_path):
     """readJson's silent []/{} fallback used to make a corrupted rules/*.json
     or whitelist.json classify as if that category had simply found nothing
