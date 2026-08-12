@@ -306,6 +306,7 @@ WINDOWS_FILES = COMMON_FILES + [
     "scripts/report.ps1",
     "scripts/rule_engine.ps1",
     "scripts/monitor.ps1",
+    "scripts/monitor_merge.ps1",
     "scripts/collection-status.ps1",
     "scripts/vt-lookup.ps1",
     "scripts/_sysinternals-verify.ps1",
