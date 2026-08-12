@@ -174,6 +174,11 @@ $raw.sections.virustotal = [ordered]@{
     enabled = [bool]$useVt
     callsThisScan = if ($useVt) { $script:VtCallsThisScan } else { 0 }
     cacheHours = if ($useVt) { $script:VtConfig.virustotal.cacheHours } else { 0 }
+    # A file skipped here only ran out of quota mid-scan -- it isn't judged
+    # unsafe, it's simply unverified by VT this run. Surfaced separately from
+    # dangerCount/warningCount so the report can say so honestly instead of
+    # looking identical to a scan where every eligible file got checked.
+    skippedForBudget = if ($useVt) { $script:VtSkippedForBudget } else { 0 }
 }
 if ($useVt) {
     Save-VtCache
