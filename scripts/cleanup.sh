@@ -2072,6 +2072,19 @@ run_execute() {
                     || BLOCKED_REASON="Simulator 데이터 크기가 승인 이후 바뀌어 삭제를 중단했습니다."
             elif ! /usr/bin/xcrun simctl delete "$SIMULATOR_UUID"; then
                 FAILED=1
+            elif [[ -e "${TARGETS[0]}" || -L "${TARGETS[0]}" ]]; then
+                # simctl delete exiting 0 only means CoreSimulator's daemon
+                # accepted the request, not that the on-disk device directory
+                # is actually gone -- unlike the staged-move path (whose
+                # remove_tree_same_device is a direct find -delete, its own
+                # exit code IS the postcondition), simctl is an opaque,
+                # daemon-mediated tool. Confirmed synchronous on a healthy
+                # system (directory gone the instant delete returns, no
+                # retry/poll needed here) -- so if it's still present, the
+                # deletion genuinely didn't complete and must not be reported
+                # as success.
+                FAILED=1
+                BLOCKED_REASON="Simulator 삭제 명령은 성공했지만 기기 데이터가 실제로 지워지지 않았습니다."
             fi
         fi
     else
