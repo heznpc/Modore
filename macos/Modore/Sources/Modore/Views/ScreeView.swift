@@ -45,7 +45,11 @@ struct ScreePage: View {
 
             if let report = model.screeReport {
                 ScreeStoresSection(stores: report.stores)
-                ScreeExpiringSection(expiring: report.expiring)
+                ScreeExpiringSection(
+                    expiring: report.expiring,
+                    preserveInFlightSource: model.screePreserveInFlightSource,
+                    onPreserve: { model.preserveScreeSession($0) }
+                )
                 ScreeWorktreeSection(items: report.worktreeItems, protectedCount: report.protectedWorktreeCount)
                 ScreeLineageSection(summary: report.lineageSummary, unresolvedSessions: report.unresolvedSessions)
             }
@@ -104,6 +108,8 @@ private struct ScreeStoresSection: View {
 
 private struct ScreeExpiringSection: View {
     let expiring: [ScreeExpiringSession]
+    let preserveInFlightSource: String?
+    let onPreserve: (ScreeExpiringSession) -> Void
 
     var body: some View {
         Section {
@@ -125,12 +131,26 @@ private struct ScreeExpiringSection: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    if preserveInFlightSource == session.source {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Button {
+                            onPreserve(session)
+                        } label: {
+                            Image(systemName: "square.and.arrow.down")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(preserveInFlightSource != nil)
+                        .help("이 세션을 마스킹된 Markdown으로 보존")
+                        .accessibilityLabel("세션 보존")
+                    }
                 }
             }
         } header: {
             NativeSectionHeader(
                 title: "곧 만료되는 세션",
-                subtitle: "롤링 보존 기한을 파일 나이로 추정한 예보입니다. 실제 삭제 시점은 각 도구가 결정합니다.",
+                subtitle: "롤링 보존 기한을 파일 나이로 추정한 예보입니다. 실제 삭제 시점은 각 도구가 결정합니다. 아이콘을 눌러 마스킹된 Markdown으로 미리 보존할 수 있습니다.",
                 value: expiring.isEmpty ? "" : "\(expiring.count)건"
             )
         }

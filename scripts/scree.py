@@ -860,7 +860,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"preserve: {exc}", file=sys.stderr)
             return 1
         if args.out:
-            args.out.write_text(text, encoding="utf-8")
+            try:
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                args.out.write_text(text, encoding="utf-8")
+            except OSError as exc:
+                print(f"preserve: {exc}", file=sys.stderr)
+                return 1
             print(f"wrote {args.out}")
         else:
             print(text)
