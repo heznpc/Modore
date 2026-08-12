@@ -293,6 +293,21 @@ def _find_worktree_containers(root: Path, max_depth: int = 5) -> list[Path]:
     return found
 
 
+def _worktree_verdict(dirty: Optional[bool], unpushed: Optional[int]) -> str:
+    """protected fires on any positive evidence even with one signal unknown
+    (a confirmed risk doesn't need the other check to also succeed).
+    rebuildable requires BOTH confirmed clean/pushed -- not protected is not
+    the same as confirmed safe. Previously "not protected" fell straight
+    through to rebuildable, so a git command failing partway through (e.g.
+    status succeeds, rev-list against remotes fails) produced rebuildable
+    instead of unreadable."""
+    if dirty or (unpushed or 0) > 0:
+        return "protected"
+    if dirty is None or unpushed is None:
+        return "unreadable"
+    return "rebuildable"
+
+
 def collect_worktrees(home: Path) -> dict:
     """Anchor judgment for agent-created git worktrees, via read-only git queries.
 
@@ -323,12 +338,7 @@ def collect_worktrees(home: Path) -> dict:
             unpushed = None
             if unpushed_raw and unpushed_raw.strip().isdigit():
                 unpushed = int(unpushed_raw.strip())
-            if dirty is None and unpushed is None:
-                verdict = "unreadable"
-            elif dirty or (unpushed or 0) > 0:
-                verdict = "protected"
-            else:
-                verdict = "rebuildable"
+            verdict = _worktree_verdict(dirty, unpushed)
             last_commit = None
             if commit_raw and commit_raw.strip().isdigit():
                 last_commit = time.strftime("%Y-%m-%d",
@@ -367,12 +377,7 @@ def collect_worktrees(home: Path) -> dict:
             unpushed = None
             if unpushed_raw and unpushed_raw.strip().isdigit():
                 unpushed = int(unpushed_raw.strip())
-            if dirty is None and unpushed is None:
-                verdict = "unreadable"
-            elif dirty or (unpushed or 0) > 0:
-                verdict = "protected"
-            else:
-                verdict = "rebuildable"
+            verdict = _worktree_verdict(dirty, unpushed)
             last_commit = None
             if commit_raw and commit_raw.strip().isdigit():
                 last_commit = time.strftime("%Y-%m-%d",

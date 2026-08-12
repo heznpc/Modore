@@ -136,12 +136,38 @@ struct ScreeWorktreeItem: Identifiable {
         strayCheckout ? "메인 체크아웃 · \(pathLastComponent)" : pathLastComponent
     }
 
+    /// scree.py sends dirty/unpushed_commits as null when the git call for
+    /// that specific signal failed -- JsonRead.bool/int already collapse
+    /// that null to false/0 on decode, so by the time reasonText would
+    /// normally build its "dirty"/"unpushed N"/"clean" phrase from those
+    /// two fields, the failure is indistinguishable from a real, confirmed
+    /// clean/pushed state. verdict is already the authoritative unreadable
+    /// signal (see _worktree_verdict in scripts/scree.py); defer to it here
+    /// instead of re-deriving a second, less honest description from
+    /// already-collapsed booleans.
     var reasonText: String {
+        guard verdict != "unreadable" else { return "git 확인 실패 · 재검사 필요" }
         var parts: [String] = []
         if dirty { parts.append("dirty") }
         if unpushedCommits > 0 { parts.append("unpushed \(unpushedCommits)") }
         if parts.isEmpty { parts.append("clean") }
         return parts.joined(separator: " · ")
+    }
+
+    var verdictLabel: String {
+        switch verdict {
+        case "protected": return "보호 대상"
+        case "rebuildable": return "재구축 가능"
+        default: return "확인 불가"
+        }
+    }
+
+    var verdictSymbolName: String {
+        switch verdict {
+        case "protected": return "lock.fill"
+        case "rebuildable": return "arrow.triangle.2.circlepath"
+        default: return "questionmark.circle"
+        }
     }
 }
 
