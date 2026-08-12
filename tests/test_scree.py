@@ -297,6 +297,62 @@ def test_primary_checkout_stranded_on_feature_branch_is_judged(worktree_home):
     assert stray["path"] == str(repo)
 
 
+@pytest.mark.parametrize(
+    "dirty,unpushed,expected",
+    [
+        # Both confirmed clean/pushed: the only combination actually safe.
+        (False, 0, "rebuildable"),
+        # Positive evidence on either side alone is already enough to protect,
+        # even with the other signal unknown -- one confirmed risk doesn't
+        # need the other check to also have succeeded.
+        (True, None, "protected"),
+        (None, 5, "protected"),
+        (True, 0, "protected"),
+        (False, 3, "protected"),
+        # Not protected must not be conflated with confirmed safe: if either
+        # signal is unknown and neither shows positive evidence, this is the
+        # bug scree actually shipped with -- a git command failing partway
+        # through (e.g. status succeeds confirming clean, rev-list against
+        # remotes fails) used to fall straight through to "rebuildable".
+        (False, None, "unreadable"),
+        (None, 0, "unreadable"),
+        (None, None, "unreadable"),
+    ],
+)
+def test_worktree_verdict_never_calls_partial_information_rebuildable(dirty, unpushed, expected):
+    assert scree._worktree_verdict(dirty, unpushed) == expected
+
+
+def test_worktree_partial_git_failure_is_unreadable_not_rebuildable(worktree_home, monkeypatch):
+    """End-to-end proof, not just the isolated helper: collect_worktrees
+    itself must produce unreadable when one of its git calls fails, even
+    though the repo would otherwise look clean and rebuildable. Pushes the
+    fixture's worktree so a real, unpatched run would call it rebuildable,
+    then monkeypatches scree._git to fail only the rev-list call -- status
+    and log still run for real -- and confirms the verdict flips."""
+    home, repo, git = worktree_home
+    bare = repo.parent / "origin.git"
+    git("init", "-q", "--bare", str(bare), cwd=repo.parent)
+    git("remote", "add", "origin", str(bare))
+    git("push", "-q", "origin", "--all")
+
+    unpatched = scree._git
+
+    def selectively_failing_git(args, cwd):
+        if args and args[0] == "rev-list":
+            return None
+        return unpatched(args, cwd)
+
+    monkeypatch.setattr(scree, "_git", selectively_failing_git)
+    items = scree.collect_worktrees(home)["items"]
+    wt1 = next(i for i in items if i["path"].endswith("wt1"))
+
+    assert wt1["dirty"] is False  # status still ran for real and confirmed clean
+    assert wt1["unpushed_commits"] is None  # rev-list was the one forced to fail
+    assert wt1["verdict"] == "unreadable"
+    assert "requires_revalidation" not in wt1  # that flag is rebuildable-only
+
+
 def test_worktree_anchor_breaks_are_reported(worktree_home):
     home, repo, git = worktree_home
     (repo / ".claude" / "worktrees" / "ghost").mkdir()
