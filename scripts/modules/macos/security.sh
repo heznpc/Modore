@@ -9,8 +9,12 @@ fi
 collect_security() {
     local gatekeeper sip xprotect_version="" baseline_status="ok"
     local baseline_detail="Gatekeeper와 시스템 무결성 보호 상태를 확인했습니다."
-    gatekeeper="$(/usr/sbin/spctl --status 2>&1 | /usr/bin/tr -d '\n' || true)"
-    sip="$(/usr/bin/csrutil status 2>&1 | /usr/bin/head -1 | /usr/bin/awk -F': ' '{print $2}' | /usr/bin/tr -d '.\n' || true)"
+    # stderr must not merge into stdout here: an error message would still
+    # count as a non-empty result and slip past the -z check below, reporting
+    # "ok" with the error text standing in for the real Gatekeeper/SIP state
+    # instead of correctly reporting a failed collection.
+    gatekeeper="$(/usr/sbin/spctl --status 2>/dev/null | /usr/bin/tr -d '\n' || true)"
+    sip="$(/usr/bin/csrutil status 2>/dev/null | /usr/bin/head -1 | /usr/bin/awk -F': ' '{print $2}' | /usr/bin/tr -d '.\n' || true)"
     if [[ -z "$gatekeeper" || -z "$sip" ]]; then
         baseline_status="failed"
         baseline_detail="Gatekeeper 또는 시스템 무결성 보호 상태를 읽지 못했습니다."
