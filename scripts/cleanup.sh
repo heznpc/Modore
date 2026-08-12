@@ -1692,6 +1692,13 @@ rollback_trash_transaction() {
         destination="${MOVED_DESTINATIONS[$index]}"
         if ! rollback_single_move "$source" "$destination"; then
             rollback_failed=1
+            # A failed rollback leaves this one item stranded at its staged
+            # trash path instead of its original location -- the same
+            # "content survives somewhere, but not where it should" state
+            # every other partial-failure path in this file already reports
+            # via stagedRemainder. Without this, the receipt would say
+            # "partial" and give the caller nothing to act on.
+            record_staged_remainder "$destination"
         fi
         index=$((index - 1))
     done
@@ -1722,6 +1729,8 @@ move_app_transaction() {
             if rollback_trash_transaction; then
                 EXECUTION_FAILURE_STATUS="blocked"
                 BLOCKED_REASON="앱 상태가 승인 이후 바뀌어 모든 이동을 되돌렸습니다. 다시 미리보기하세요."
+            else
+                BLOCKED_REASON="앱 상태가 바뀌어 이동을 되돌리려 했지만 일부를 되돌리지 못했습니다. 남은 항목을 직접 확인하세요."
             fi
             return 1
         fi
@@ -1729,6 +1738,8 @@ move_app_transaction() {
             if rollback_trash_transaction; then
                 EXECUTION_FAILURE_STATUS="blocked"
                 BLOCKED_REASON="앱과 관련 데이터 이동을 시작하기 전에 안전하게 되돌렸습니다. 권한을 확인한 뒤 다시 미리보기하세요."
+            else
+                BLOCKED_REASON="이동을 되돌리려 했지만 일부를 되돌리지 못했습니다. 남은 항목을 직접 확인하세요."
             fi
             return 1
         fi
@@ -1737,6 +1748,8 @@ move_app_transaction() {
             if rollback_trash_transaction; then
                 EXECUTION_FAILURE_STATUS="blocked"
                 BLOCKED_REASON="앱 대상 크기가 승인 이후 바뀌어 모든 이동을 되돌렸습니다. 다시 미리보기하세요."
+            else
+                BLOCKED_REASON="앱 대상 크기가 바뀌어 이동을 되돌리려 했지만 일부를 되돌리지 못했습니다. 남은 항목을 직접 확인하세요."
             fi
             return 1
         fi
@@ -1744,6 +1757,8 @@ move_app_transaction() {
             if rollback_trash_transaction; then
                 EXECUTION_FAILURE_STATUS="blocked"
                 BLOCKED_REASON="앱을 휴지통으로 옮기지 못해 관련 데이터도 그대로 보존했습니다."
+            else
+                BLOCKED_REASON="앱을 휴지통으로 옮기지 못했고, 이미 옮긴 관련 데이터를 되돌리는 것도 일부 실패했습니다. 남은 항목을 직접 확인하세요."
             fi
             return 1
         fi
@@ -1756,6 +1771,8 @@ move_app_transaction() {
             if rollback_trash_transaction; then
                 EXECUTION_FAILURE_STATUS="blocked"
                 BLOCKED_REASON="승인한 앱 대상과 이동된 항목이 달라 모든 이동을 되돌렸습니다."
+            else
+                BLOCKED_REASON="승인한 앱 대상과 이동된 항목이 달라 되돌리려 했지만 일부를 되돌리지 못했습니다. 남은 항목을 직접 확인하세요."
             fi
             return 1
         fi
@@ -1870,17 +1887,21 @@ write_receipt() {
         /usr/bin/printf 'physicalDeltaKB\t%s\n' "$physical_delta_kb"
         /usr/bin/printf 'actionMode\t%s\n' "$REMOVE_MODE"
         /usr/bin/printf 'trashRun\t%s\n' "$TRASH_RUN"
+        # A path containing a literal tab (unusual, but not forbidden by the
+        # filesystem) would otherwise inject an extra TSV column into this
+        # exact row -- stripping it here matches the label field just above,
+        # which already gets this same treatment for the same reason.
         for target in "${TARGETS[@]}"; do
-            /usr/bin/printf 'target\t%s\n' "$target"
+            /usr/bin/printf 'target\t%s\n' "$(/usr/bin/printf '%s' "$target" | /usr/bin/tr -d '\t\r\n')"
         done
         if [[ "$MOVED_TARGETS_COUNT" -gt 0 ]]; then
             for moved in "${MOVED_TARGETS[@]}"; do
-                /usr/bin/printf 'moved\t%s\n' "$moved"
+                /usr/bin/printf 'moved\t%s\n' "$(/usr/bin/printf '%s' "$moved" | /usr/bin/tr -d '\t\r\n')"
             done
         fi
         if [[ "${#STAGED_REMAINDERS[@]}" -gt 0 ]]; then
             for staged in "${STAGED_REMAINDERS[@]}"; do
-                /usr/bin/printf 'stagedRemainder\t%s\n' "$staged"
+                /usr/bin/printf 'stagedRemainder\t%s\n' "$(/usr/bin/printf '%s' "$staged" | /usr/bin/tr -d '\t\r\n')"
             done
         fi
     } >&8 || { exec 8>&-; return 1; }

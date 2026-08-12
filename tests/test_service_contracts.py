@@ -597,6 +597,180 @@ def test_macos_collection_failures_cannot_be_reported_as_safe(project_root):
     assert "필수 검사 일부를 완료하지 못해 안전 여부를 판단할 수 없습니다." in helper
 
 
+@pytest.mark.skipif(platform.system() != "Darwin", reason="uses real macOS top/sysctl/bc")
+def test_macos_system_load_reports_failure_when_vm_stat_output_is_unparseable(project_root, tmp_path):
+    """collect_system_load used to substitute a literal "0" for MEM_PCT when
+    vm_stat's output didn't match the expected awk patterns (a future macOS
+    vm_stat format change, for instance) -- a fake measurement, since a real
+    running system is never actually at 0% memory used. The very next line
+    checks -z "$MEM_PCT" to decide whether to report the collector as
+    failed, but "0" is never empty, so that check could never catch this
+    specific failure mode: it silently reported status=ok with a bogus
+    number instead of status=failed. CPU_USED's own check has no such
+    fallback and already worked correctly -- this is specifically about the
+    MEM_PCT path.
+
+    top/sysctl/bc stay real (unlike cleanup.sh, this file calls its tools by
+    bare name rather than an absolute path, so PATH interception is safe
+    here); only vm_stat is swapped for a fake that omits the lines the awk
+    patterns match on, extracting the real collect_system_load function by
+    line range rather than a hand-duplicated copy."""
+    source_lines = (project_root / "scripts" / "modules" / "macos" / "cpu.sh").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(source_lines) if line.startswith("collect_system_load() {"))
+    end = next(i for i, line in enumerate(source_lines[start:], start) if line == "}") + 1
+    collect_system_load_src = "\n".join(source_lines[start:end])
+    assert collect_system_load_src.endswith("}"), "extraction boundary moved; update this test"
+
+    def run_with_fake_vm_stat(vm_stat_output, label):
+        scenario_dir = tmp_path / label
+        fake_bin = scenario_dir / "bin"
+        fake_bin.mkdir(parents=True)
+        fake_vm_stat = fake_bin / "vm_stat"
+        # A single-quoted heredoc, not printf '%s' with an embedded string --
+        # this content needs real newlines (vm_stat's output is line-based
+        # and the awk patterns match per line), and a double-quoted argument
+        # would need its own newlines escaped as literal "\n" text, which
+        # printf's %s never interprets back into an actual line break.
+        fake_vm_stat.write_text(
+            f"#!/bin/bash\ncat <<'PCH_TEST_VMSTAT_EOF'\n{vm_stat_output}\nPCH_TEST_VMSTAT_EOF\n",
+            encoding="utf-8",
+        )
+        fake_vm_stat.chmod(0o700)
+        tmp_dir = scenario_dir / "tmp"
+        tmp_dir.mkdir()
+
+        harness = scenario_dir / "harness.sh"
+        harness.write_text(
+            f"""#!/bin/bash
+set -u
+TMP_DIR="{tmp_dir}"
+record_collection_status() {{
+    printf 'status\\t%s\\n' "$3" > "{scenario_dir}/captured-status.txt"
+    printf 'detail\\t%s\\n' "$5" >> "{scenario_dir}/captured-status.txt"
+}}
+
+{collect_system_load_src}
+
+collect_system_load
+""",
+            encoding="utf-8",
+        )
+        harness.chmod(0o700)
+        env = dict(os.environ)
+        env["PATH"] = f"{fake_bin}:{env['PATH']}"
+        result = subprocess.run(["/bin/bash", str(harness)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=15)
+        assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        captured = (scenario_dir / "captured-status.txt").read_text(encoding="utf-8")
+        load = (tmp_dir / "load.txt").read_text(encoding="utf-8")
+        return captured, load
+
+    # Real vm_stat output shape: parsing must succeed and report ok.
+    real_shaped = (
+        "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+        "Pages free:                                     5122.\n"
+        "Pages active:                                 154318.\n"
+        "Pages wired down:                             266462.\n"
+    )
+    ok_captured, ok_load = run_with_fake_vm_stat(real_shaped, "well-formed")
+    assert "status\tok" in ok_captured, ok_captured
+    assert "MEM_PCT=" in ok_load and "MEM_PCT=\n" not in ok_load, f"expected a real computed value, got:\n{ok_load}"
+
+    # A vm_stat whose output no longer matches the expected lines at all
+    # (simulating a format change) must be reported as a failed collector,
+    # not silently as ok with a fake 0%.
+    unparseable = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nsomething unexpected\n"
+    failed_captured, failed_load = run_with_fake_vm_stat(unparseable, "unparseable")
+    assert "status\tfailed" in failed_captured, failed_captured
+    assert "MEM_PCT=\n" in failed_load, f"expected MEM_PCT left empty (not a fake 0), got:\n{failed_load}"
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="drives real macOS security tooling")
+def test_macos_security_baseline_does_not_mistake_stderr_for_a_real_status(project_root, tmp_path):
+    """gatekeeper/sip used to be captured with `2>&1`, merging spctl/csrutil's
+    stderr into the same variable as their real stdout status. An error
+    message is still non-empty text, so it would slip past the `-z` check
+    that's supposed to catch a failed read -- reporting baseline_status=ok
+    with the error text standing in for the real Gatekeeper/SIP state,
+    instead of correctly failing the collector. Unlike vm_stat's "0" fallback
+    (a wrong number), this is a wrong *security verdict source*: exactly the
+    kind of thing this whole reliability pass exists to catch.
+
+    spctl/csrutil are called by hardcoded absolute path (/usr/sbin/spctl,
+    /usr/bin/csrutil) in the real script -- unlike a bare command name, that
+    can't be shadowed via $PATH. The real function source is extracted
+    verbatim and only those two absolute paths are substituted for
+    test-controlled fake executables; every other line (the actual thing
+    under test: whether stderr leaks into the data variable, whether -z
+    correctly fires) runs unmodified."""
+    real_spctl = "/usr/sbin/spctl"
+    real_csrutil = "/usr/bin/csrutil"
+    source_lines = (project_root / "scripts" / "modules" / "macos" / "security.sh").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(source_lines) if line.startswith("collect_security() {"))
+    end = next(i for i, line in enumerate(source_lines[start:], start) if line == "}") + 1
+    collect_security_src = "\n".join(source_lines[start:end])
+    assert collect_security_src.endswith("}"), "extraction boundary moved; update this test"
+    assert real_spctl in collect_security_src and real_csrutil in collect_security_src, (
+        "extraction no longer references the expected absolute paths; update this test"
+    )
+
+    def run_scenario(spctl_body, csrutil_body, label):
+        scenario_dir = tmp_path / label
+        fake_bin = scenario_dir / "bin"
+        fake_bin.mkdir(parents=True)
+        fake_spctl = fake_bin / "spctl"
+        fake_spctl.write_text(f"#!/bin/bash\n{spctl_body}\n", encoding="utf-8")
+        fake_spctl.chmod(0o700)
+        fake_csrutil = fake_bin / "csrutil"
+        fake_csrutil.write_text(f"#!/bin/bash\n{csrutil_body}\n", encoding="utf-8")
+        fake_csrutil.chmod(0o700)
+        tmp_dir = scenario_dir / "tmp"
+        tmp_dir.mkdir()
+
+        scenario_src = collect_security_src.replace(real_spctl, str(fake_spctl)).replace(real_csrutil, str(fake_csrutil))
+        harness = scenario_dir / "harness.sh"
+        harness.write_text(
+            f"""#!/bin/bash
+set -u
+TMP_DIR="{tmp_dir}"
+record_collection_status() {{
+    printf '%s\\t%s\\t%s\\n' "$1" "$3" "$5" >> "{scenario_dir}/captured-status.txt"
+}}
+
+{scenario_src}
+
+collect_security
+""",
+            encoding="utf-8",
+        )
+        harness.chmod(0o700)
+        result = subprocess.run(["/bin/bash", str(harness)], capture_output=True, text=True, encoding="utf-8", timeout=15)
+        assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        captured = (scenario_dir / "captured-status.txt").read_text(encoding="utf-8")
+        security_txt = (tmp_dir / "security.txt").read_text(encoding="utf-8")
+        return captured, security_txt
+
+    # Happy path: both tools succeed cleanly on stdout, nothing on stderr.
+    ok_captured, ok_security = run_scenario(
+        "echo 'assessments enabled'",
+        "echo 'System Integrity Protection status: enabled.'",
+        "healthy",
+    )
+    assert "security_baseline\tok" in ok_captured, ok_captured
+    assert "GATEKEEPER=assessments enabled" in ok_security
+
+    # spctl fails and writes only to stderr, stdout is empty -- must be
+    # reported as a failed collector, not "ok" with the stderr text baked
+    # into GATEKEEPER as if it were the real assessment state.
+    failed_captured, failed_security = run_scenario(
+        "printf 'spctl: unexpected internal error\\n' >&2; exit 1",
+        "echo 'System Integrity Protection status: enabled.'",
+        "spctl-stderr-only",
+    )
+    assert "security_baseline\tfailed" in failed_captured, failed_captured
+    assert "GATEKEEPER=\n" in failed_security, f"stderr text must not appear in GATEKEEPER, got:\n{failed_security}"
+    assert "unexpected internal error" not in failed_security
+
+
 def test_macos_default_scan_never_prompts_for_sfltool_admin_access(project_root):
     autoruns = (
         project_root / "scripts/modules/macos/autoruns.sh"

@@ -54,9 +54,15 @@ collect_system_load() {
         PAGES_USED=$((PAGES_ACTIVE + PAGES_WIRED))
         TOTAL_PAGES=$((MEM_TOTAL_BYTES / PAGE_SIZE))
         MEM_PCT=$(echo "scale=1; $PAGES_USED * 100 / $TOTAL_PAGES" | bc)
-    else
-        MEM_PCT="0"
     fi
+    # A "0" here would be a fake measurement, not a real one -- an actually
+    # running macOS system never has 0% memory used, so leaving MEM_PCT
+    # empty on a vm_stat parse failure (rather than substituting "0") is
+    # what lets the check below tell "we couldn't measure this" apart from
+    # "we measured it and it's zero". The downstream JXA reader already
+    # treats an empty value as 0 for display (Number(load.MEM_PCT || 0)),
+    # so this only changes whether the failure is reported, not what number
+    # ends up on screen.
     if [[ -z "$CPU_USED" || -z "$MEM_TOTAL_GB" || -z "$MEM_PCT" ]]; then
         status="failed"
         detail="CPU 또는 메모리 부하를 완전히 읽지 못했습니다."

@@ -1116,6 +1116,167 @@ def test_app_uninstall_rolls_back_when_any_move_fails(
     assert residue.is_dir()
 
 
+def test_rollback_trash_transaction_reports_items_it_could_not_restore(project_root, tmp_path):
+    """If rollback_single_move itself fails partway through undoing a
+    transaction (e.g. something now occupies the original path), the item
+    stays at its staged trash destination -- exactly the "content survives
+    somewhere, but not where it should" state every other partial-failure
+    path in cleanup.sh already reports via STAGED_REMAINDERS/stagedRemainder.
+    Before this fix, a failed rollback was invisible: the receipt would say
+    "partial" but STAGED_REMAINDERS stayed empty, giving the caller nothing
+    to act on -- worse information than a *successful* rollback, which gets
+    a specific human-readable reason.
+
+    Extracts the real rollback_single_move/record_staged_remainder/
+    rollback_trash_transaction functions by line range (not a hand-
+    duplicated copy) and drives them directly with two moved items: one
+    that rolls back cleanly, one that can't because its original path was
+    reoccupied in the meantime."""
+    source_lines = (project_root / "scripts" / "cleanup.sh").read_text(encoding="utf-8").splitlines()
+
+    def extract(start_marker, end_marker):
+        start = next(i for i, line in enumerate(source_lines) if line.startswith(start_marker))
+        end = next(i for i, line in enumerate(source_lines[start:], start) if line == end_marker) + 1
+        return "\n".join(source_lines[start:end])
+
+    rollback_single_move_src = extract("rollback_single_move() {", "}")
+    record_staged_remainder_src = extract("record_staged_remainder() {", "}")
+    rollback_trash_transaction_src = extract("rollback_trash_transaction() {", "}")
+    for src in (rollback_single_move_src, record_staged_remainder_src, rollback_trash_transaction_src):
+        assert src.endswith("}"), "extraction boundary moved; update this test"
+
+    home = tmp_path / "home"
+    home.mkdir()
+    # Item 1: rolls back cleanly -- original path is empty, staged copy exists.
+    source1 = home / "clean-rollback-original"
+    destination1 = home / "clean-rollback-staged"
+    destination1.write_text("clean payload", encoding="utf-8")
+    # Item 2: cannot roll back -- something reoccupied the original path
+    # after the move but before the rollback attempt.
+    source2 = home / "blocked-rollback-original"
+    source2.write_text("something else appeared here", encoding="utf-8")
+    destination2 = home / "blocked-rollback-staged"
+    destination2.write_text("stranded payload", encoding="utf-8")
+
+    journal_path = tmp_path / "journal.tsv"
+    harness_path = tmp_path / "rollback-harness.sh"
+    harness_path.write_text(
+        f"""#!/bin/bash
+set -u
+{rollback_single_move_src}
+
+{record_staged_remainder_src}
+
+{rollback_trash_transaction_src}
+
+MOVED_SOURCES=("{source1}" "{source2}")
+MOVED_DESTINATIONS=("{destination1}" "{destination2}")
+MOVED_TARGETS=("x -> {destination1}" "x -> {destination2}")
+MOVED_TARGETS_COUNT=2
+STAGED_REMAINDERS=()
+
+exec 9> "{journal_path}"
+rollback_trash_transaction
+ec=$?
+exec 9>&-
+
+echo "EXIT=$ec"
+echo "REMAINDER_COUNT=${{#STAGED_REMAINDERS[@]}}"
+for r in "${{STAGED_REMAINDERS[@]:-}}"; do
+    echo "REMAINDER=$r"
+done
+""",
+        encoding="utf-8",
+    )
+    harness_path.chmod(0o700)
+
+    result = subprocess.run(["/bin/bash", str(harness_path)], capture_output=True, text=True, encoding="utf-8", timeout=10)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "EXIT=1" in result.stdout, "a partially-failed rollback must report failure, not silent success"
+    assert "REMAINDER_COUNT=1" in result.stdout, f"expected exactly one stranded item, got:\n{result.stdout}"
+    assert f"REMAINDER={destination2}" in result.stdout, "the item that could not be restored must be the one recorded"
+    assert f"REMAINDER={destination1}" not in result.stdout, "the item that rolled back cleanly must not be reported as stranded"
+
+    # The clean item actually rolled back: content is back at its original path.
+    assert source1.read_text(encoding="utf-8") == "clean payload"
+    assert not destination1.exists()
+    # The blocked item's pre-existing content at the original path is untouched
+    # (never clobbered), and its staged copy is still there -- recoverable via
+    # the stagedRemainder path the receipt will carry.
+    assert source2.read_text(encoding="utf-8") == "something else appeared here"
+    assert destination2.read_text(encoding="utf-8") == "stranded payload"
+
+    journal = journal_path.read_text(encoding="utf-8")
+    assert "status\trollback-failed" in journal
+
+
+def test_write_receipt_strips_embedded_tabs_from_target_paths(project_root, tmp_path):
+    """A path containing a literal tab character (unusual, but the
+    filesystem doesn't forbid it) used to go straight into the TSV row
+    unsanitized for target/moved/stagedRemainder -- unlike the label field a
+    few lines above it, which already strips tabs/CR/LF for exactly this
+    reason. An embedded tab silently injects an extra column into that row,
+    corrupting the field alignment for anyone parsing the receipt back.
+
+    Extracts the real prepare_private_directory/write_receipt functions by
+    line range and drives write_receipt directly with a target path that
+    contains an embedded tab, checking the emitted line has exactly the two
+    tab-separated fields (key, sanitized value) a TSV row must have."""
+    source_lines = (project_root / "scripts" / "cleanup.sh").read_text(encoding="utf-8").splitlines()
+
+    def extract(start_marker):
+        start = next(i for i, line in enumerate(source_lines) if line.startswith(start_marker))
+        end = next(i for i, line in enumerate(source_lines[start:], start) if line == "}") + 1
+        return "\n".join(source_lines[start:end])
+
+    prepare_private_directory_src = extract("prepare_private_directory() {")
+    write_receipt_src = extract("write_receipt() {")
+    for src in (prepare_private_directory_src, write_receipt_src):
+        assert src.endswith("}"), "extraction boundary moved; update this test"
+
+    home = tmp_path / "home"
+    home.mkdir()
+    receipt_dir = home / "receipts"
+    tabby_target = "/tmp/weird\tdirectory/with-a-tab"
+
+    harness_path = tmp_path / "receipt-harness.sh"
+    harness_path.write_text(
+        f"""#!/bin/bash
+set -u
+PROTOCOL_VERSION="1"
+RECEIPT_DIR="{receipt_dir}"
+RECIPE_ID="npm_cache"
+LABEL="npm 캐시"
+REMOVE_MODE="trash"
+TRASH_RUN="{tmp_path}/trash-run"
+TARGETS=("{tabby_target}")
+MOVED_TARGETS_COUNT=0
+MOVED_TARGETS=()
+STAGED_REMAINDERS=()
+
+{prepare_private_directory_src}
+
+{write_receipt_src}
+
+write_receipt "complete" 100 100 100
+echo "RECEIPT_PATH=$RECEIPT_PATH"
+""",
+        encoding="utf-8",
+    )
+    harness_path.chmod(0o700)
+
+    result = subprocess.run(["/bin/bash", str(harness_path)], capture_output=True, text=True, encoding="utf-8", timeout=10)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    receipt_path_line = next(line for line in result.stdout.splitlines() if line.startswith("RECEIPT_PATH="))
+    receipt_path = Path(receipt_path_line.split("=", 1)[1])
+    receipt_text = receipt_path.read_text(encoding="utf-8")
+
+    target_line = next(line for line in receipt_text.splitlines() if line.startswith("target\t"))
+    fields = target_line.split("\t")
+    assert len(fields) == 2, f"embedded tab injected an extra TSV column: {fields!r}"
+    assert fields[1] == "/tmp/weirddirectory/with-a-tab"
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS plist tools are required")
 def test_app_uninstall_only_attributes_structurally_matching_launch_agent(
     project_root, tmp_path
