@@ -60,6 +60,114 @@ _MACOS_RAW_FIXTURE = {
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="JXA runtime requires macOS osascript")
+def _menu_functions_source(project_root) -> str:
+    """menu.ps1's function definitions, without its interactive main loop
+    (an infinite Read-Host while-loop that would hang any automated run)."""
+    text = (project_root / "scripts" / "menu.ps1").read_text(encoding="utf-8-sig")
+    marker = "# ---------- 메인 루프 ----------"
+    assert marker in text, "menu.ps1's main-loop marker moved; update this test's extraction point"
+    return text.split(marker)[0]
+
+
+def _run_invoke_scanner_scenario(project_root, tmp_path, scanner_body: str, pre_existing_result: str | None):
+    """Lays out a scenarioRoot/scripts/{menu functions, scanner.ps1} tree
+    mirroring the real scripts/ layout (Invoke-Scanner's $root is
+    Split-Path -Parent $PSScriptRoot, exactly like the real menu.ps1 --
+    a flat layout silently points $root at the wrong directory)."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir(parents=True)
+    if pre_existing_result is not None:
+        (tmp_path / "scan_result.json").write_text(pre_existing_result, encoding="utf-8")
+    # utf-8-sig, not utf-8: Windows PowerShell 5.1 reads a BOM-less .ps1 in
+    # the system code page, so the Korean text extracted from menu.ps1 turns
+    # to mojibake mid-string-literal and the whole harness fails to PARSE on
+    # the real windows-latest runner while passing locally on pwsh 7 (which
+    # defaults to UTF-8 either way). Exactly the 1a lesson, reproduced in
+    # this test's own generated fixtures -- the repo-wide BOM guard only
+    # covers scripts/*.ps1, not files a test writes at runtime.
+    (scripts_dir / "scanner.ps1").write_text(scanner_body, encoding="utf-8-sig")
+    harness = (
+        'function chcp { param([Parameter(ValueFromRemainingArguments=$true)]$rest) }  # non-Windows test stub\n'
+        + _menu_functions_source(project_root)
+        # Invoke-Scanner's own $() capture would otherwise interleave the
+        # fake scanner's Write-Output noise into the same line as the
+        # boolean result; capture it as a real variable instead.
+        + '\n$outputPath = Join-Path $root "scan_result.json"\n'
+        '$scannerResult = Invoke-Scanner\n'
+        'Write-Output "RESULT=$scannerResult"\n'
+        'if (Test-Path $outputPath) { Write-Output "CONTENT=$(Get-Content $outputPath -Raw)" }\n'
+    )
+    (scripts_dir / "harness.ps1").write_text(harness, encoding="utf-8-sig")
+
+    result = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(scripts_dir / "harness.ps1")],
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    return result
+
+
+def test_powershell_menu_scanner_gate_survives_a_stale_exit_code(project_root, tmp_path):
+    """$LASTEXITCODE only reflects native executable calls, not a called
+    .ps1's own success -- a scanner.ps1 that bails out early right after any
+    native call (which sets $LASTEXITCODE=0) leaves that stale 0 in place,
+    and the old `if ($LASTEXITCODE -ne 0)` gate read it as success, reopening
+    a stale scan_result.json as if it were the result of the run that just
+    "succeeded". Proves both the old pattern's bug and the new gate's fix
+    against the same fixture, then checks two more shapes directly."""
+    stale = '{"stale":"before"}'
+    bail_early_after_native_call = (
+        'hostname | Out-Null\n'  # a real native executable on macOS/Linux/Windows alike, stands in for a native call inside scanner.ps1
+        'return\n'
+    )
+
+    old_pattern = _run_invoke_scanner_scenario(project_root, tmp_path / "old", bail_early_after_native_call, stale)
+    # Reproduce the exact old (pre-fix) gate inline to prove it's wrong on this fixture,
+    # not just assert the new one is right in isolation.
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    old_check = tmp_path / "old_check.ps1"
+    old_check.write_text(
+        f'& "{tmp_path / "old" / "scripts" / "scanner.ps1"}"\n'
+        'Write-Output "OLD_WOULD_PROCEED=$($LASTEXITCODE -eq 0)"\n',
+        encoding="utf-8-sig",
+    )
+    old_result = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(old_check)],
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    assert "OLD_WOULD_PROCEED=True" in old_result.stdout, (
+        "sanity check that this fixture reproduces the original bug shape failed: "
+        f"{old_result.stdout}\n{old_result.stderr}"
+    )
+
+    result = _run_invoke_scanner_scenario(project_root, tmp_path / "new", bail_early_after_native_call, stale)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "RESULT=False" in result.stdout, f"stale exit code must not read as success:\n{result.stdout}"
+    assert f"CONTENT={stale}" in result.stdout, "the stale result must not be silently treated as fresh"
+
+    # Regression check: a scanner that genuinely writes a fresh result still passes.
+    fresh_body = (
+        '$global:LASTEXITCODE = 0\n'
+        '\'{"scannedAt":"fresh"}\' | Out-File -FilePath (Join-Path $PSScriptRoot "..\\scan_result.json") -Encoding utf8 -Force\n'
+    )
+    fresh_result = _run_invoke_scanner_scenario(project_root, tmp_path / "fresh", fresh_body, stale)
+    assert "RESULT=True" in fresh_result.stdout, f"a genuine fresh write must pass:\n{fresh_result.stdout}"
+
+    # No prior result at all, scanner does nothing -- must not fabricate success.
+    # Write-Host, not Write-Output: matches the real scanner.ps1/menu.ps1
+    # convention (progress text goes to the host, never the output stream)
+    # -- Write-Output here would interleave into Invoke-Scanner's own
+    # captured return value, same as the real function would face if a
+    # future edit got this wrong.
+    noop_result = _run_invoke_scanner_scenario(project_root, tmp_path / "noop", 'Write-Host "did nothing"\n', None)
+    assert "RESULT=False" in noop_result.stdout, f"no output ever written must fail:\n{noop_result.stdout}"
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="JXA runtime requires macOS osascript")
 def test_jxa_corrupted_rule_file_reports_incomplete_not_safe(project_root, tmp_path):
     """readJson's silent []/{} fallback used to make a corrupted rules/*.json
     or whitelist.json classify as if that category had simply found nothing

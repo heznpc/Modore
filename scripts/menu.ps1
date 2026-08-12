@@ -8,6 +8,30 @@ $root = Split-Path -Parent $PSScriptRoot
 chcp 65001 | Out-Null
 $Host.UI.RawUI.WindowTitle = "Modore"
 
+# $LASTEXITCODE only reflects native executable calls, not a called .ps1's
+# own success/failure -- and scanner.ps1 sets its own $ErrorActionPreference
+# to SilentlyContinue, under which an *uncaught* `throw` is silently
+# swallowed rather than terminating (confirmed directly: a throw under that
+# preference lets execution continue to the next line with $? still true).
+# Neither $LASTEXITCODE nor $? can be trusted alone here. The one signal
+# that can't lie is whether scan_result.json was actually written fresh by
+# *this* run -- so that's what gates whether a report gets generated from it.
+function Invoke-Scanner {
+    $outputPath = Join-Path $root 'scan_result.json'
+    $before = if (Test-Path $outputPath) { (Get-Item $outputPath).LastWriteTimeUtc } else { $null }
+
+    & "$PSScriptRoot\scanner.ps1"
+    $scannerOk = $?
+
+    if (-not (Test-Path $outputPath)) {
+        return $false
+    }
+    $after = (Get-Item $outputPath).LastWriteTimeUtc
+    $isFresh = ($null -eq $before) -or ($after -gt $before)
+
+    return $scannerOk -and $isFresh
+}
+
 function Invoke-Report {
     & "$PSScriptRoot\report.ps1"
     $reportOk = $?
@@ -57,8 +81,7 @@ function Run-QuickScan {
     Write-Host "  [빠른 검사] 시작합니다..." -ForegroundColor Green
     Write-Host ""
 
-    & "$PSScriptRoot\scanner.ps1"
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Invoke-Scanner)) {
         Write-Host ""
         Write-Host "  ❌ 검사 결과를 완성하지 못했습니다. 위 오류를 먼저 해결하세요." -ForegroundColor Red
         Wait-MenuReturn
@@ -92,8 +115,7 @@ function Run-FullScan {
 
     Write-Host ""
     Write-Host "  [1/3] 기본 검사 실행..." -ForegroundColor Cyan
-    & "$PSScriptRoot\scanner.ps1"
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Invoke-Scanner)) {
         Write-Host ""
         Write-Host "  ❌ 기본 검사 결과를 완성하지 못했습니다. 정밀 검사를 중단합니다." -ForegroundColor Red
         Wait-MenuReturn
