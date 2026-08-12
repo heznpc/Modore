@@ -121,7 +121,10 @@ function vtLookup(config, disabled) {
   const cachePath = cacheDir + "/vt-cache.json";
   ensureDir(cacheDir);
   let cache = readJson(cachePath, {}, 4 * 1024 * 1024);
-  let calls = 0, lastCall = 0;
+  let calls = 0, lastCall = 0, skippedForBudget = 0;
+  function save() {
+    if (enabled) writeText(cachePath, JSON.stringify(cache, null, 2));
+  }
   function cached(key) {
     const entry = cache[key];
     if (!entry) return null;
@@ -134,9 +137,19 @@ function vtLookup(config, disabled) {
   }
   function setCache(key, result) {
     cache[key] = { cachedAt: new Date().toISOString(), result };
+    // Persist immediately, not just once at the very end of the whole scan
+    // -- each call is already rate-limited to one per 16s, so this costs
+    // nothing measurable against that, but it means a scan interrupted
+    // mid-way (closed window, sleep, crash) keeps every hash it already
+    // paid quota for instead of losing all of it.
+    save();
   }
   function request(path) {
-    if (!enabled || calls >= maxCalls) return null;
+    if (!enabled) return null;
+    if (calls >= maxCalls) {
+      skippedForBudget += 1;
+      return { error: "quota" };
+    }
     const since = (Date.now() - lastCall) / 1000;
     if (lastCall && since < 16) run("/bin/sleep " + String(Math.ceil(16 - since)));
     lastCall = Date.now();
@@ -163,6 +176,7 @@ function vtLookup(config, disabled) {
   return {
     get enabled() { return enabled; },
     get calls() { return calls; },
+    get skippedForBudget() { return skippedForBudget; },
     cacheHours,
     file(path) {
       if (!enabled || !path || shouldSkipVt(path)) return null;
@@ -184,9 +198,7 @@ function vtLookup(config, disabled) {
       setCache(key, result);
       return result;
     },
-    save() {
-      if (enabled) writeText(cachePath, JSON.stringify(cache, null, 2));
-    }
+    save
   };
 }
 
@@ -987,7 +999,7 @@ if (storageVolume.risk === "danger" || storageVolume.risk === "warning") {
     });
   }
 }
-raw.sections.virustotal = { enabled: vt.enabled, callsThisScan: vt.calls, cacheHours: vt.enabled ? vt.cacheHours : 0 };
+raw.sections.virustotal = { enabled: vt.enabled, callsThisScan: vt.calls, cacheHours: vt.enabled ? vt.cacheHours : 0, skippedForBudget: vt.skippedForBudget };
 raw.sections.sysinternals = { sigcheckEnabled: false, autorunscEnabled: false, note: "macOS는 codesign + launchctl 사용" };
 
 vt.save();
