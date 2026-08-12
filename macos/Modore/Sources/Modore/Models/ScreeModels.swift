@@ -7,6 +7,7 @@ struct ScreeReport {
     let stores: [ScreeStoreStatus]
     let unresolvedSessions: Int
     let lineageSummary: ScreeLineageSummary
+    let lineagePaths: [ScreeLineagePath]
     let retentionStores: [ScreeRetentionStore]
     let expiring: [ScreeExpiringSession]
     let worktreeItems: [ScreeWorktreeItem]
@@ -19,6 +20,7 @@ struct ScreeReport {
 
         let lineage = json["lineage"] as? [String: Any] ?? [:]
         lineageSummary = ScreeLineageSummary(json: lineage["summary"] as? [String: Any] ?? [:])
+        lineagePaths = ((lineage["paths"] as? [[String: Any]]) ?? []).map(ScreeLineagePath.init)
 
         let retention = json["retention"] as? [String: Any] ?? [:]
         retentionStores = ((retention["stores"] as? [[String: Any]]) ?? []).map(ScreeRetentionStore.init)
@@ -184,5 +186,25 @@ struct ScreeLineageSummary {
         alivePlain = JsonRead.int(json, "alive_plain")
         vanished = JsonRead.int(json, "vanished")
         caseGhosts = JsonRead.int(json, "case_ghosts")
+    }
+}
+
+/// One distinct work path scree's session records remember, casefold-
+/// deduplicated by build_lineage on the Python side -- `path` is already a
+/// single representative spelling, `caseVariants` (when non-empty) lists
+/// every differently-cased form actually recorded. Metadata only: no
+/// session content is involved in computing this.
+struct ScreeLineagePath: Identifiable {
+    var id: String { path }
+    let path: String
+    let exists: Bool
+    let hasGit: Bool
+    let caseVariants: [String]
+
+    init(json: [String: Any]) {
+        path = JsonRead.string(json, "path")
+        exists = JsonRead.bool(json, "exists") ?? false
+        hasGit = JsonRead.bool(json, "has_git") ?? false
+        caseVariants = (json["case_variants"] as? [String]) ?? []
     }
 }
