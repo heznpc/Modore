@@ -65,6 +65,37 @@
     }
   },
   {
+    "id": "background_cpu_warning",
+    "description": "관측 구간 동안 상당한 CPU를 지속 사용 - 확인 권장",
+    "when": { "cpuPercent.gte": 30 },
+    "then": {
+      "risk": "warning",
+      "note": "관측 구간(유휴 상태) 동안 평균 {cpuPercent}%의 CPU를 계속 사용했습니다.",
+      "finding": {
+        "category": "check_background_cpu",
+        "title": "관측 구간 지속 CPU 사용: {name}",
+        "detail": "{note} 경로: {path}"
+      }
+    }
+  },
+  {
+    "id": "background_cpu_temp_folder",
+    "description": "임시/사용자 폴더에서 관측 구간 내내 CPU 사용 - 채굴기 의심 패턴",
+    "when": {
+      "path.iregex": "(AppData\\\\Local\\\\Temp|\\\\Windows\\\\Temp\\\\|/tmp/|/var/tmp/)",
+      "cpuPercent.gte": 20
+    },
+    "then": {
+      "risk": "danger",
+      "note": "임시 폴더에서 실행 중인 프로그램이 유휴 상태에서도 계속 CPU를 사용했습니다. 채굴기일 가능성이 높습니다.",
+      "finding": {
+        "category": "check_background_cpu",
+        "title": "임시 폴더 지속 CPU 사용 의심: {name}",
+        "detail": "{note} 경로: {path}, 평균 {cpuPercent}%"
+      }
+    }
+  },
+  {
     "id": "temp_high_cpu",
     "description": "임시 폴더 고CPU 실행 - 채굴기 흔적",
     "when": {

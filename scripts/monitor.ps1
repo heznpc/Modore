@@ -9,23 +9,17 @@ param(
     [int]$Minutes = 5,
     [int]$SampleIntervalSec = 10,
     [string]$OutputPath = "$PSScriptRoot\..\monitor_result.json",
+    # menu.ps1의 정밀 검사 흐름에서 전달된다. 비어 있으면 단독 실행으로 간주해
+    # monitor_merge.ps1이 기본 검사 결과에 병합하지 않는다.
+    [string]$RunId = "",
+    [string]$RawFactsPath = "$PSScriptRoot\..\raw_facts.json",
+    [string]$ScanResultPath = "$PSScriptRoot\..\scan_result.json",
+    [string]$RulesDir = "$PSScriptRoot\..\rules",
     [string]$WhitelistPath = "$PSScriptRoot\..\data\whitelist.json"
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
-
-$whitelist = Get-Content $WhitelistPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$knownGood = @{}
-foreach ($category in 'system','browser','korean_common','banking_security','dev_tools','hardware','cloud') {
-    $whitelist.$category.PSObject.Properties |
-        Where-Object { $_.Name -notmatch '^_' } |
-        ForEach-Object { $knownGood[$_.Name.ToLower()] = $_.Value }
-}
-$miners = @{}
-$whitelist.miner_blacklist.PSObject.Properties |
-    Where-Object { $_.Name -notmatch '^_' } |
-    ForEach-Object { $miners[$_.Name.ToLower()] = $_.Value.desc }
 
 $totalSamples = [math]::Floor(($Minutes * 60) / $SampleIntervalSec)
 $cpuCount = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
@@ -107,26 +101,12 @@ for ($i = 1; $i -le $totalSamples; $i++) {
 }
 
 # ---------- 집계 ----------
+# risk/note는 여기서 판정하지 않는다 -- rule_engine.ps1(rules/process.json의
+# background_cpu_* 규칙)이 유일한 판정처다. monitor_merge.ps1로 넘어간다.
 $aggregate = [System.Collections.Generic.List[object]]::new()
 foreach ($k in $processStats.Keys) {
     $s = $processStats[$k]
     $avgPercent = [math]::Round(($s.totalDelta / ($totalSamples * $SampleIntervalSec) / $cpuCount) * 100, 1)
-
-    $risk = 'safe'
-    $note = ''
-    if ($miners.ContainsKey($k)) {
-        $risk = 'danger'
-        $note = "알려진 채굴기: $($miners[$k])"
-    } elseif ($knownGood.ContainsKey($k)) {
-        $risk = 'safe'
-        $note = $knownGood[$k].desc
-    } elseif ($avgPercent -gt 20 -and $s.path -match 'AppData|Temp') {
-        $risk = 'danger'
-        $note = '사용자 폴더에서 지속적으로 CPU를 많이 사용 - 채굴기 의심'
-    } elseif ($avgPercent -gt 30) {
-        $risk = 'warning'
-        $note = "평균 ${avgPercent}% CPU 사용 - 확인 필요"
-    }
 
     $aggregate.Add([ordered]@{
         name = $s.name
@@ -134,8 +114,6 @@ foreach ($k in $processStats.Keys) {
         maxPercent = $s.maxPercent
         totalCpuSec = [math]::Round($s.totalDelta, 1)
         path = $s.path
-        risk = $risk
-        note = $note
     })
 }
 
@@ -143,6 +121,7 @@ $aggregate = @($aggregate | Sort-Object averagePercent -Descending)
 
 # ---------- 저장 ----------
 $result = [ordered]@{
+    runId = $RunId
     monitoredAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     durationMinutes = $Minutes
     sampleIntervalSec = $SampleIntervalSec
@@ -150,23 +129,14 @@ $result = [ordered]@{
     averageOverallCpu = [math]::Round(($samples | Measure-Object -Property overallCpu -Average).Average, 1)
     samples = $samples.ToArray()
     aggregate = $aggregate
-    suspects = @($aggregate | Where-Object { $_.risk -in 'danger','warning' } | Select-Object -First 10)
 }
 
 $json = $result | ConvertTo-Json -Depth 10
 [System.IO.File]::WriteAllText($OutputPath, $json, (New-Object System.Text.UTF8Encoding($true)))
 
 Write-Host ""
-Write-Host "===============================================" -ForegroundColor Cyan
-Write-Host "  모니터링 완료!" -ForegroundColor Cyan
-Write-Host "===============================================" -ForegroundColor Cyan
-Write-Host ""
 Write-Host "평균 전체 CPU 사용률: $($result.averageOverallCpu)%" -ForegroundColor $(if ($result.averageOverallCpu -gt 50) {'Red'} elseif ($result.averageOverallCpu -gt 20) {'Yellow'} else {'Green'})
-Write-Host ""
-Write-Host "CPU 사용 상위 프로세스 (평균):" -ForegroundColor Cyan
-$aggregate | Select-Object -First 10 | ForEach-Object {
-    $color = switch ($_.risk) { 'danger' {'Red'} 'warning' {'Yellow'} default {'Gray'} }
-    Write-Host ("  {0,-25} 평균 {1,5}% / 최대 {2,5}% {3}" -f $_.name, $_.averagePercent, $_.maxPercent, $_.note) -ForegroundColor $color
-}
-Write-Host ""
-Write-Host "결과 저장: $OutputPath" -ForegroundColor Gray
+
+& "$PSScriptRoot\monitor_merge.ps1" -RunId $RunId -MonitorResultPath $OutputPath `
+    -RawFactsPath $RawFactsPath -ScanResultPath $ScanResultPath `
+    -RulesDir $RulesDir -WhitelistPath $WhitelistPath

@@ -203,10 +203,45 @@ $result.findings = $findings
 $outSections = [ordered]@{}
 $sectionToCategory = @{
     cpu = 'process'
+    backgroundCpu = 'process'
     network = 'network'
     listeningPorts = 'process'
     autoruns = 'autoruns'
     recentInstalls = 'installs'
+}
+
+# 한 프로세스가 cpu(시점 스냅샷)와 backgroundCpu(정밀검사의 관측 구간 집계)
+# 양쪽에 등장할 수 있다. 이름 패턴 규칙(채굴기 등)은 두 섹션에서 각각 독립적으로
+# 발동해 같은 프로세스를 findings에 두 번 세므로, finding을 중복 제거한다
+# (scanner_helper.jxa.js의 applyRules와 동일한 계약). 다만 식별자는 pid_가 아니라
+# path를 우선한다: backgroundCpu는 5분 구간을 이름 단위로 집계해 pid_를 아예
+# 갖지 않는데(여러 PID가 왔다 갔다 할 수 있어 특정 PID 하나가 대표성이 없다),
+# cpu 섹션은 시점 스냅샷이라 매번 pid_가 있다 -- pid_로만 매칭하면 같은 실행
+# 파일이 두 섹션에서 겹쳐도 절대 같은 키가 되지 않아 중복 제거가 무력화된다.
+# path는 두 섹션 모두에서 Get-Process.Path를 그대로 옮긴 값이라 안정적으로 겹친다.
+$seenFindingKeys = New-Object System.Collections.Generic.HashSet[string]
+function Get-FindingDedupeKey($Finding, $Fact) {
+    $identity = ''
+    if ($null -ne $Fact) {
+        $pathField = Get-Field $Fact 'path'
+        if (-not [string]::IsNullOrWhiteSpace([string]$pathField)) {
+            $identity = 'path:' + [string]$pathField
+        } else {
+            $pidField = Get-Field $Fact 'pid_'
+            if ($null -ne $pidField) {
+                $identity = 'pid:' + [string]$pidField
+            } else {
+                $nameField = Get-Field $Fact 'name'
+                if (-not [string]::IsNullOrWhiteSpace([string]$nameField)) {
+                    $identity = 'name:' + [string]$nameField
+                }
+            }
+        }
+    }
+    return ([string]$Finding.level) + [char]0 + ([string]$Finding.category) + [char]0 + ([string]$Finding.title) + [char]0 + $identity
+}
+foreach ($existing in $result.findings) {
+    [void]$seenFindingKeys.Add((Get-FindingDedupeKey $existing $null))
 }
 
 foreach ($sectionProp in $rawObj.sections.PSObject.Properties) {
@@ -219,13 +254,21 @@ foreach ($sectionProp in $rawObj.sections.PSObject.Properties) {
             $cls = Classify-Fact $fact $category $rulesByCategory $wlIndex
             $fact | Add-Member -NotePropertyName risk -NotePropertyValue $cls.risk -Force
             $fact | Add-Member -NotePropertyName note -NotePropertyValue $cls.note -Force
-            foreach ($finding in $cls.findings) { $result.findings.Add($finding) }
+            foreach ($finding in $cls.findings) {
+                if ($seenFindingKeys.Add((Get-FindingDedupeKey $finding $fact))) {
+                    $result.findings.Add($finding)
+                }
+            }
             $cleaned.Add($fact)
         }
         $outSections[$name] = $cleaned.ToArray()
     } elseif ($name -in @('defender','macosSecurity')) {
         $cls = Classify-Fact $facts 'defender' $rulesByCategory $wlIndex
-        foreach ($finding in $cls.findings) { $result.findings.Add($finding) }
+        foreach ($finding in $cls.findings) {
+            if ($seenFindingKeys.Add((Get-FindingDedupeKey $finding $facts))) {
+                $result.findings.Add($finding)
+            }
+        }
         $outSections[$name] = $facts
     } else {
         $outSections[$name] = $facts
