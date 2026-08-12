@@ -32,6 +32,7 @@ final class ScanModel: ObservableObject {
     @Published var screeReport: ScreeReport?
     @Published var screeLoading = false
     @Published var screeError: String?
+    @Published var screePreserveInFlightSource: String?
 
     let logStore = ScanLogStore()
     let projectRoot: URL

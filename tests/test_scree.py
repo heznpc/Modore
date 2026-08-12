@@ -560,6 +560,23 @@ def test_cli_preserve_writes_masked_file(tmp_path, capsys):
     assert "<email-redacted>" in out.read_text(encoding="utf-8")
 
 
+def test_cli_preserve_creates_missing_output_directory(tmp_path, capsys):
+    """--out into a not-yet-existing directory (e.g. a first-time export
+    location, such as the app's own preserve output folder) must not crash
+    with an uncaught FileNotFoundError -- same clean failure/success
+    contract preserve already has on the read side."""
+    home = tmp_path / "home"
+    session = home / "s.jsonl"
+    _write(session, _jsonl(
+        {"type": "user", "message": {"role": "user", "content": "hi"}},
+    ))
+    out = tmp_path / "nested" / "does" / "not" / "exist" / "out.md"
+    rc = scree.main(["preserve", str(session), "--home", str(home), "--out", str(out)])
+    assert rc == 0
+    assert out.is_file()
+    assert "hi" in out.read_text(encoding="utf-8")
+
+
 def test_cli_report_default_unchanged_without_subcommand(tmp_path, capsys):
     home = tmp_path / "home"
     home.mkdir()
