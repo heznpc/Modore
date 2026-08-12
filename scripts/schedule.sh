@@ -25,8 +25,23 @@ HOME_ROOT=""
 OWNER_APPROVED="false"
 SAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 SAFE_LOCALE="en_US.UTF-8"
+# A stuck or crashing watch and a disabled one look identical from the
+# outside: no fresh storage-samples.tsv row either way. This wrapper is the
+# only thing that runs unconditionally on every scheduled fire regardless of
+# what storage_watch.sh does next, so it -- not the body -- is where "did
+# launchd even try" gets recorded. lastAttemptAt is written before the
+# integrity checks (an attempt is real the moment the wrapper starts, even
+# if the pinned script fails its own hash check) and again with
+# lastExitCode/lastFinishedAt after the body returns, preserving the
+# wrapper's own exit code as its final exit regardless. hb_write() mirrors
+# storage_watch.sh's own STATE_FILE discipline: mktemp a sibling file, chmod
+# it, then atomically mv it over the real path, so a symlink swapped in
+# between the -L check and the write can never be followed and clobbered --
+# it can only cause the write to land on a throwaway temp name instead.
+# Failure to write the heartbeat must never fail the actual watch run, so
+# every check degrades to a silent no-op rather than an exit.
 # shellcheck disable=SC2016 # The loaded LaunchAgent shell expands these later.
-WATCH_WRAPPER='set -u; script="$2"; expected="$1"; [[ -f "$script" && ! -L "$script" ]] || exit 78; size=$(/usr/bin/stat -f "%z" "$script") || exit 78; [[ "$size" -le 1048576 ]] || exit 78; payload=$(/usr/bin/base64 < "$script") || exit 78; digest=$(/usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /usr/bin/shasum -a 256) || exit 78; actual="${digest%% *}"; [[ "$actual" == "$expected" ]] || exit 78; /usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /bin/bash -p'
+WATCH_WRAPPER='set -u; script="$2"; expected="$1"; hb="$HOME/Library/Application Support/Modore/storage-watch-heartbeat.tsv"; hbdir="$(/usr/bin/dirname "$hb")"; hb_write() { [[ -d "$hbdir" && ! -L "$hbdir" && ! -L "$hb" ]] || return 0; local tmp="$(/usr/bin/mktemp "$hbdir/.storage-watch-heartbeat.XXXXXX" 2>/dev/null)"; [[ -n "$tmp" ]] || return 0; /usr/bin/printf "%s" "$1" > "$tmp" 2>/dev/null || { /bin/rm -f "$tmp" 2>/dev/null; return 0; }; /bin/chmod 600 "$tmp" 2>/dev/null; /bin/mv -f "$tmp" "$hb" 2>/dev/null || /bin/rm -f "$tmp" 2>/dev/null; }; attempt_at="$(/bin/date -u "+%Y-%m-%dT%H:%M:%SZ")"; hb_write "$(/usr/bin/printf "lastAttemptAt\t%s\n" "$attempt_at")"; [[ -f "$script" && ! -L "$script" ]] || exit 78; size=$(/usr/bin/stat -f "%z" "$script") || exit 78; [[ "$size" -le 1048576 ]] || exit 78; payload=$(/usr/bin/base64 < "$script") || exit 78; digest=$(/usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /usr/bin/shasum -a 256) || exit 78; actual="${digest%% *}"; [[ "$actual" == "$expected" ]] || exit 78; /usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /bin/bash -p; ec=$?; hb_write "$(/usr/bin/printf "lastAttemptAt\t%s\nlastExitCode\t%s\nlastFinishedAt\t%s\n" "$attempt_at" "$ec" "$(/bin/date -u "+%Y-%m-%dT%H:%M:%SZ")")"; exit "$ec"'
 WATCH_HASH="${PCH_STORAGE_WATCH_SHA256:-}"
 if [[ -z "$WATCH_HASH" ]]; then
     WATCH_HASH="$(/usr/bin/shasum -a 256 "$WATCH_SCRIPT" 2>/dev/null \

@@ -8,21 +8,49 @@ enum StorageWatchRuntimeState: Equatable, Sendable {
     case stale
 }
 
+// A stuck or crashing watch and a disabled one look identical from
+// StorageWatchRuntimeState alone: both simply have no fresh
+// storage-samples.tsv row. This is the independent signal that actually
+// distinguishes them, derived from the heartbeat the WATCH_WRAPPER writes
+// on every scheduled fire (see schedule.sh) against the freshest confirmed
+// success already available from storage-samples.tsv.
+enum StorageWatchHealthState: Equatable, Sendable {
+    /// No heartbeat file, or it has no lastAttemptAt: the watch has never
+    /// actually fired, regardless of what runtimeState says about the
+    /// installed plist.
+    case neverAttempted
+    /// The most recent attempt is not (yet) followed by a success newer
+    /// than it -- either the run just failed/crashed, or it's still in
+    /// flight. Both read the same to the user: "something's wrong right now."
+    case attemptedThenFailed
+    /// The freshest success is within one missed hourly run's grace.
+    case recentSuccess
+    /// There has been a success at some point, but not recently enough to
+    /// trust that the watch is still running -- distinct from
+    /// attemptedThenFailed because there's no evidence of a *recent*
+    /// attempt either; this is more "gone quiet" than "actively failing."
+    case staleSuccess
+}
+
 struct StorageWatchStatus: Sendable {
     let enabled: Bool
     let detail: String
     let freeSpaceSamples: [FreeSpaceSample]?
+    let healthState: StorageWatchHealthState
 }
 
 enum StorageWatchService {
     static func status(projectRoot: URL) async -> StorageWatchStatus {
+        let samples = await loadFreeSpaceSamples()
+        let health = healthState(freshestSuccessAt: samples.last?.checkedAt)
         guard let execution = await Task.detached(priority: .utility, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
         }).value else {
             return StorageWatchStatus(
                 enabled: false,
                 detail: "서명된 감시 런타임을 확인할 수 없음",
-                freeSpaceSamples: await loadFreeSpaceSamples()
+                freeSpaceSamples: samples,
+                healthState: health
             )
         }
         guard let invocation = execution.pinnedInvocation(
@@ -32,7 +60,8 @@ enum StorageWatchService {
             return StorageWatchStatus(
                 enabled: false,
                 detail: "봉인한 감시 설정 프로그램을 확인할 수 없음",
-                freeSpaceSamples: nil
+                freeSpaceSamples: samples,
+                healthState: health
             )
         }
         guard let watcherHash = execution.sealedSHA256(
@@ -41,7 +70,8 @@ enum StorageWatchService {
             return StorageWatchStatus(
                 enabled: false,
                 detail: "봉인한 저장공간 감시 프로그램을 확인할 수 없음",
-                freeSpaceSamples: nil
+                freeSpaceSamples: samples,
+                healthState: health
             )
         }
         let result = await LocalProcessRunner.capture(
@@ -67,16 +97,67 @@ enum StorageWatchService {
         let detail: String
         if runtimeState == .stale {
             detail = "안전하지 않은 이전 감시 plist가 남았습니다. 감시를 껐다 다시 켜 제거하세요."
+        } else if enabled {
+            switch health {
+            case .neverAttempted:
+                detail = "매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림 · 아직 실행 전"
+            case .attemptedThenFailed:
+                detail = "매시간 확인 · 최근 실행이 완료되지 않았습니다"
+            case .recentSuccess:
+                detail = "매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림"
+            case .staleSuccess:
+                detail = "매시간 확인 · 최근 실행 기록이 오래됐습니다"
+            }
         } else {
-            detail = enabled
-                ? "매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림"
-                : "꺼짐 · 자동 삭제 없음"
+            detail = "꺼짐 · 자동 삭제 없음"
         }
         return StorageWatchStatus(
             enabled: enabled,
             detail: detail,
-            freeSpaceSamples: await loadFreeSpaceSamples()
+            freeSpaceSamples: samples,
+            healthState: health
         )
+    }
+
+    static var heartbeatURL: URL {
+        StorageHistoryStore.stateDirectory.appendingPathComponent("storage-watch-heartbeat.tsv")
+    }
+
+    /// One missed hourly run (StartInterval 3600 in schedule.sh) plus buffer
+    /// for the sleep/wake catch-up delay launchd itself introduces.
+    static let heartbeatStalenessInterval: TimeInterval = 135 * 60
+
+    static func healthState(
+        heartbeatURL: URL = heartbeatURL,
+        freshestSuccessAt: Date?,
+        now: Date = Date()
+    ) -> StorageWatchHealthState {
+        guard let parentIdentity = FilesystemIdentity.directory(
+            at: heartbeatURL.deletingLastPathComponent()
+        ),
+              let data = try? SecureLocalFileIO.boundedRead(
+                from: heartbeatURL,
+                maximumBytes: 4_096,
+                requireCurrentOwner: true,
+                expectedParentIdentity: parentIdentity
+              ),
+              let text = String(data: data, encoding: .utf8) else {
+            return .neverAttempted
+        }
+        let values = Self.protocolValues(text)
+        guard let attemptString = values["lastAttemptAt"],
+              let attemptAt = try? Date.ISO8601FormatStyle().parse(attemptString) else {
+            return .neverAttempted
+        }
+        guard let freshestSuccessAt else {
+            return .attemptedThenFailed
+        }
+        if attemptAt > freshestSuccessAt {
+            return .attemptedThenFailed
+        }
+        return now.timeIntervalSince(freshestSuccessAt) <= heartbeatStalenessInterval
+            ? .recentSuccess
+            : .staleSuccess
     }
 
     static func protocolValues(_ text: String) -> [String: String] {
@@ -162,7 +243,7 @@ enum StorageWatchService {
         return .current
     }
 
-    static let storageWatchWrapper = #"set -u; script="$2"; expected="$1"; [[ -f "$script" && ! -L "$script" ]] || exit 78; size=$(/usr/bin/stat -f "%z" "$script") || exit 78; [[ "$size" -le 1048576 ]] || exit 78; payload=$(/usr/bin/base64 < "$script") || exit 78; digest=$(/usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /usr/bin/shasum -a 256) || exit 78; actual="${digest%% *}"; [[ "$actual" == "$expected" ]] || exit 78; /usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /bin/bash -p"#
+    static let storageWatchWrapper = #"set -u; script="$2"; expected="$1"; hb="$HOME/Library/Application Support/Modore/storage-watch-heartbeat.tsv"; hbdir="$(/usr/bin/dirname "$hb")"; hb_write() { [[ -d "$hbdir" && ! -L "$hbdir" && ! -L "$hb" ]] || return 0; local tmp="$(/usr/bin/mktemp "$hbdir/.storage-watch-heartbeat.XXXXXX" 2>/dev/null)"; [[ -n "$tmp" ]] || return 0; /usr/bin/printf "%s" "$1" > "$tmp" 2>/dev/null || { /bin/rm -f "$tmp" 2>/dev/null; return 0; }; /bin/chmod 600 "$tmp" 2>/dev/null; /bin/mv -f "$tmp" "$hb" 2>/dev/null || /bin/rm -f "$tmp" 2>/dev/null; }; attempt_at="$(/bin/date -u "+%Y-%m-%dT%H:%M:%SZ")"; hb_write "$(/usr/bin/printf "lastAttemptAt\t%s\n" "$attempt_at")"; [[ -f "$script" && ! -L "$script" ]] || exit 78; size=$(/usr/bin/stat -f "%z" "$script") || exit 78; [[ "$size" -le 1048576 ]] || exit 78; payload=$(/usr/bin/base64 < "$script") || exit 78; digest=$(/usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /usr/bin/shasum -a 256) || exit 78; actual="${digest%% *}"; [[ "$actual" == "$expected" ]] || exit 78; /usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /bin/bash -p; ec=$?; hb_write "$(/usr/bin/printf "lastAttemptAt\t%s\nlastExitCode\t%s\nlastFinishedAt\t%s\n" "$attempt_at" "$ec" "$(/bin/date -u "+%Y-%m-%dT%H:%M:%SZ")")"; exit "$ec""#
 
     private static func loadFreeSpaceSamples() async -> [FreeSpaceSample] {
         await Task.detached(priority: .utility) {

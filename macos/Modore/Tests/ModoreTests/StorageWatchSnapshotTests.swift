@@ -41,6 +41,135 @@ final class StorageWatchSnapshotTests: XCTestCase {
         XCTAssertTrue(snapshots.contains { $0.label == "row-\(rows.count - 1)" })
     }
 
+    // MARK: - StorageWatchService.healthState
+
+    func testHealthStateWithNoHeartbeatFileIsNeverAttempted() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+
+        let state = StorageWatchService.healthState(
+            heartbeatURL: heartbeatURL,
+            freshestSuccessAt: nil
+        )
+        XCTAssertEqual(state, .neverAttempted)
+    }
+
+    func testHealthStateWithHeartbeatMissingLastAttemptAtIsNeverAttempted() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        try writePrivate("someOtherField\tvalue\n", to: heartbeatURL)
+
+        let state = StorageWatchService.healthState(
+            heartbeatURL: heartbeatURL,
+            freshestSuccessAt: nil
+        )
+        XCTAssertEqual(state, .neverAttempted)
+    }
+
+    func testHealthStateWithAttemptButNoSuccessEverIsAttemptedThenFailed() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        try writePrivate("lastAttemptAt\t2026-08-12T01:00:00Z\n", to: heartbeatURL)
+
+        let state = StorageWatchService.healthState(
+            heartbeatURL: heartbeatURL,
+            freshestSuccessAt: nil,
+            now: Date(timeIntervalSince1970: 1_786_100_000)
+        )
+        XCTAssertEqual(state, .attemptedThenFailed)
+    }
+
+    func testHealthStateWithAttemptNewerThanSuccessIsAttemptedThenFailed() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        // A fresh attempt fired but never (yet) produced a newer success --
+        // either it's still running or it just crashed. Either way this must
+        // not be reported as healthy just because an older success exists.
+        try writePrivate(
+            """
+            lastAttemptAt\t2026-08-12T02:00:00Z
+            lastExitCode\t1
+            lastFinishedAt\t2026-08-12T02:00:05Z
+            """,
+            to: heartbeatURL
+        )
+        let freshestSuccessAt = ISO8601DateFormatter().date(from: "2026-08-12T01:00:00Z")!
+
+        let state = StorageWatchService.healthState(
+            heartbeatURL: heartbeatURL,
+            freshestSuccessAt: freshestSuccessAt,
+            now: ISO8601DateFormatter().date(from: "2026-08-12T02:00:10Z")!
+        )
+        XCTAssertEqual(state, .attemptedThenFailed)
+    }
+
+    func testHealthStateWithRecentSuccessAfterAttemptIsRecentSuccess() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        try writePrivate(
+            """
+            lastAttemptAt\t2026-08-12T02:00:00Z
+            lastExitCode\t0
+            lastFinishedAt\t2026-08-12T02:00:05Z
+            """,
+            to: heartbeatURL
+        )
+        let freshestSuccessAt = ISO8601DateFormatter().date(from: "2026-08-12T02:00:05Z")!
+
+        // 30 minutes after the success: well inside the 135-minute grace window.
+        let state = StorageWatchService.healthState(
+            heartbeatURL: heartbeatURL,
+            freshestSuccessAt: freshestSuccessAt,
+            now: freshestSuccessAt.addingTimeInterval(30 * 60)
+        )
+        XCTAssertEqual(state, .recentSuccess)
+    }
+
+    func testHealthStateWithSuccessExactlyAtStalenessBoundaryIsRecentSuccess() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        try writePrivate("lastAttemptAt\t2026-08-12T02:00:00Z\n", to: heartbeatURL)
+        let freshestSuccessAt = ISO8601DateFormatter().date(from: "2026-08-12T02:00:00Z")!
+
+        let state = StorageWatchService.healthState(
+            heartbeatURL: heartbeatURL,
+            freshestSuccessAt: freshestSuccessAt,
+            now: freshestSuccessAt.addingTimeInterval(StorageWatchService.heartbeatStalenessInterval)
+        )
+        XCTAssertEqual(state, .recentSuccess)
+    }
+
+    func testHealthStateWithOldSuccessAndNoNewerAttemptIsStaleSuccess() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        // The last attempt on record is the same run that produced the
+        // success -- nothing has fired since, and it's long past the grace
+        // window. This is "gone quiet," not "actively failing."
+        try writePrivate(
+            """
+            lastAttemptAt\t2026-08-01T02:00:00Z
+            lastExitCode\t0
+            lastFinishedAt\t2026-08-01T02:00:05Z
+            """,
+            to: heartbeatURL
+        )
+        let freshestSuccessAt = ISO8601DateFormatter().date(from: "2026-08-01T02:00:05Z")!
+
+        let state = StorageWatchService.healthState(
+            heartbeatURL: heartbeatURL,
+            freshestSuccessAt: freshestSuccessAt,
+            now: freshestSuccessAt.addingTimeInterval(StorageWatchService.heartbeatStalenessInterval + 1)
+        )
+        XCTAssertEqual(state, .staleSuccess)
+    }
+
     private func makePrivateDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-watch-tests-\(UUID().uuidString)", isDirectory: true)
