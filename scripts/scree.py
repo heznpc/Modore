@@ -552,10 +552,15 @@ def build_scree(home: Path) -> dict:
     records = codex_records + claude_records + fork_records + gemini_records
     stores = [codex_status, claude_status, gemini_status] + fork_statuses
 
+    # Keyed by casefold, same as build_lineage: a case-insensitive filesystem
+    # (macOS default) lets Codex/Claude/Gemini/VS Code each record the same
+    # real directory under a different casing (confirmed on real project
+    # data, not hypothetical), so an exact-string key would silently split
+    # one workspace into unrelated groups depending on which tool logged it.
     workspace_to_repo: dict[str, str] = {}
     for item in records:
         if item["workspace"] and item["repo_url"]:
-            workspace_to_repo.setdefault(item["workspace"], item["repo_url"])
+            workspace_to_repo.setdefault(item["workspace"].casefold(), item["repo_url"])
 
     groups: dict[str, dict] = {}
     unresolved_count = 0
@@ -564,8 +569,8 @@ def build_scree(home: Path) -> dict:
         if not workspace:
             unresolved_count += 1
             continue
-        repo = workspace_to_repo.get(workspace)
-        key = repo if repo else f"ws:{workspace}"
+        repo = workspace_to_repo.get(workspace.casefold())
+        key = repo if repo else f"ws:{workspace.casefold()}"
         group = groups.setdefault(key, {
             "key": key,
             "grouped_by": "repo" if repo else "workspace",
@@ -587,6 +592,11 @@ def build_scree(home: Path) -> dict:
     for group in groups.values():
         workspaces = sorted(group.pop("workspaces"))
         existing = [w for w in workspaces if Path(w).exists()]
+        if group["grouped_by"] != "repo":
+            # The join key above is casefolded for matching; the key exposed
+            # to consumers must stay a real, displayable casing instead of
+            # the lowercased join string.
+            group["key"] = f"ws:{workspaces[0]}"
         entry = {
             **group,
             "workspaces": workspaces,
