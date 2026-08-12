@@ -137,6 +137,7 @@ $html = @"
 <h2>주요 발견 사항</h2>$findingHtml
 $collectionHtml
 <h2>CPU 사용 상위 프로세스</h2>$(Render-ListTable $sections.cpu @('risk','name','pid_','cpu','memoryMB','note','path'))
+<h2>5분 유휴 관측 결과 (정밀 검사)</h2>$(Render-ListTable $sections.backgroundCpu @('risk','name','cpuPercent','maxPercent','totalCpuSec','note','path'))
 <h2>외부 네트워크 연결</h2>$(Render-ListTable $sections.network @('risk','process','remoteAddress','remotePort','note','path'))
 <h2>열린 포트</h2>$(Render-ListTable $sections.listeningPorts @('risk','port','process','note','path'))
 <h2>자동 실행 종합 분석</h2>$(Render-ListTable $sections.autoruns @('risk','category','entry','verified','note','image'))
