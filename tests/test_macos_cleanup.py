@@ -1364,6 +1364,58 @@ def test_simulator_delete_rechecks_state_and_keep_file_at_final_boundary(
     assert not delete_log.exists()
 
 
+def test_simulator_delete_postcondition_check_detects_leftover_data(project_root, tmp_path):
+    """`xcrun simctl delete` exiting 0 only means CoreSimulator's daemon
+    accepted the request -- unlike the staged-move path used for every other
+    recipe (whose remove_tree_same_device is a direct `find -delete`, so its
+    own exit code IS the postcondition), simctl is an opaque, daemon-mediated
+    tool. Confirmed directly against a real device: deletion is synchronous
+    on a healthy system (the device directory is gone the instant `simctl
+    delete` returns) and a hard failure (e.g. an immutable directory) makes
+    simctl itself exit non-zero -- both already handled before this check.
+    This check exists for the gap between those two: simctl reporting
+    success while the directory nonetheless survives. That specific failure
+    mode could not be reproduced through real simctl even with an immutable
+    file nested inside the device directory (simctl's removal proved more
+    robust than a plain `rm -rf`), so this proves the actual shipped
+    condition -- extracted from cleanup.sh, not a hand-duplicated copy that
+    could silently drift from it -- under direct bash execution against both
+    a present and an absent path, rather than through a full non-sandboxed
+    end-to-end run (which would require abandoning this suite's own
+    production-home isolation guard, see test_production_home_must_match_current_account)."""
+    source = (project_root / "scripts" / "cleanup.sh").read_text(encoding="utf-8")
+    marker = 'elif [[ -e "${TARGETS[0]}" || -L "${TARGETS[0]}" ]]; then'
+    assert marker in source, "the postcondition check's exact shape moved; update this test's extraction"
+    condition = marker.removeprefix("elif ").removesuffix(" then")
+
+    harness = tmp_path / "check.sh"
+    harness.write_text(
+        f'#!/bin/bash\nTARGETS=("$1")\nif {condition}\nthen echo LEFTOVER; else echo GONE; fi\n',
+        encoding="utf-8",
+    )
+    harness.chmod(0o700)
+
+    present = tmp_path / "still-here.bin"
+    present.write_bytes(b"leftover device data")
+    result_present = subprocess.run(
+        ["/bin/bash", str(harness), str(present)], capture_output=True, text=True, encoding="utf-8"
+    )
+    assert result_present.stdout.strip() == "LEFTOVER"
+
+    absent = tmp_path / "already-deleted.bin"
+    result_absent = subprocess.run(
+        ["/bin/bash", str(harness), str(absent)], capture_output=True, text=True, encoding="utf-8"
+    )
+    assert result_absent.stdout.strip() == "GONE"
+
+    symlink = tmp_path / "dangling-symlink"
+    symlink.symlink_to(tmp_path / "nonexistent-target")
+    result_symlink = subprocess.run(
+        ["/bin/bash", str(harness), str(symlink)], capture_output=True, text=True, encoding="utf-8"
+    )
+    assert result_symlink.stdout.strip() == "LEFTOVER", "a dangling symlink left at the target path is still leftover state, not success"
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS bundle tools are required")
 def test_app_uninstall_collects_bundle_keyed_residue_created_after_install(
     project_root, tmp_path
