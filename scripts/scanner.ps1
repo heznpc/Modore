@@ -105,8 +105,12 @@ $osInfo = Get-CimInstance Win32_OperatingSystem
 $processMap = Get-ProcessMap
 
 # ---------- raw facts 루트 ----------
+# runId는 이 실행 하나를 가리키는 식별자다. 정밀 검사에서 monitor.ps1이 5분 뒤
+# 관측 결과를 이 실행의 raw_facts.json에 병합할 때, 그 사이 다른 검사가 실행되며
+# raw_facts.json이 다른 실행의 것으로 바뀌지 않았는지 확인하는 유일한 방법이다.
 $raw = [ordered]@{
     schemaVersion = "1.0"
+    runId = [guid]::NewGuid().ToString()
     scannedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     computerName = $env:COMPUTERNAME
     userName = $env:USERNAME

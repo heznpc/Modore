@@ -462,6 +462,23 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     }
     assert swift_files.issubset(set(module.MACOS_FILES))
 
+    # WINDOWS_FILES is a hand-maintained list, not a glob (unlike the Swift
+    # check above) -- a new scripts/*.ps1 file works fine in every local and
+    # CI test (which run it straight from the checkout) while being silently
+    # absent from what actually ships in the Windows release zip, only
+    # failing for a real end user the first time something tries to invoke
+    # it. Catch that class of gap here instead.
+    ps1_files = {
+        path.relative_to(project_root).as_posix()
+        for path in (project_root / "scripts").glob("*.ps1")
+    } | {
+        path.relative_to(project_root).as_posix()
+        for path in (project_root / "scripts" / "modules").glob("*.ps1")
+    }
+    assert ps1_files.issubset(set(module.WINDOWS_FILES)), (
+        f"missing from WINDOWS_FILES: {ps1_files - set(module.WINDOWS_FILES)}"
+    )
+
 
 def test_macos_launcher_is_executable(project_root):
     mode = (project_root / "scan.command").stat().st_mode
@@ -802,7 +819,7 @@ Write-Output 'VT_CACHE_ROUND_TRIP_OK'
     assert "VT_CACHE_ROUND_TRIP_OK" in stdout
 
 
-def _write_raw_facts(path, collection, defender_facts=None, cpu_facts=None):
+def _write_raw_facts(path, collection, defender_facts=None, cpu_facts=None, run_id=None, background_cpu_facts=None):
     raw = {
         "schemaVersion": "1.0",
         "scannedAt": "2026-08-11 12:00:00",
@@ -814,6 +831,7 @@ def _write_raw_facts(path, collection, defender_facts=None, cpu_facts=None):
         "findings": [],
         "sections": {
             "cpu": cpu_facts if cpu_facts is not None else [],
+            "backgroundCpu": background_cpu_facts if background_cpu_facts is not None else [],
             "network": [],
             "listeningPorts": [],
             "autoruns": [],
@@ -823,6 +841,8 @@ def _write_raw_facts(path, collection, defender_facts=None, cpu_facts=None):
         },
         "collection": collection,
     }
+    if run_id is not None:
+        raw["runId"] = run_id
     path.write_text(json.dumps(raw), encoding="utf-8")
 
 
@@ -939,6 +959,228 @@ def test_powershell_collection_status_gates_overall_on_required_failures(project
     assert no_collection_scan["collection"]["sources"][0]["id"] == "collector_protocol"
 
 
+def test_powershell_scanner_generates_a_run_id(project_root):
+    """runId is what lets monitor_merge.ps1 verify, 5 minutes later, that it's
+    augmenting the exact scan that's still on disk rather than a stale or
+    unrelated one. scanner.ps1 must mint a fresh one on every run. Running
+    the real scanner.ps1 end-to-end (real Get-Process/Defender/network calls)
+    isn't practical in CI -- this is the same weight of check as the other
+    source-presence assertions in this file for pieces too expensive to run."""
+    source = (project_root / "scripts" / "scanner.ps1").read_text(encoding="utf-8-sig")
+    assert "runId = [guid]::NewGuid().ToString()" in source
+
+
+def test_powershell_rule_engine_dedupes_the_same_executable_across_cpu_and_background_cpu(project_root, tmp_path):
+    """A process can legitimately appear in both cpu (point-in-time snapshot)
+    and backgroundCpu (the precision scan's 5-minute observation, aggregated
+    by name and so structurally without a pid_). A name-pattern rule (miner
+    detection) fires independently in each section and would double-count
+    the same real process as two danger findings without dedup. The
+    discriminator has to be path, not pid_: backgroundCpu facts never carry
+    one, so a pid_-keyed dedup (the literal JXA/macOS approach) silently
+    fails to collapse them here -- this is what proves it actually collapses."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    raw_path = tmp_path / "raw.json"
+    out_path = tmp_path / "scan.json"
+    _write_raw_facts(
+        raw_path, _OK_COLLECTION, run_id="run-abc",
+        cpu_facts=[{"name": "xmrig", "pid_": 1234, "cpu": 10, "memoryMB": 100, "path": "C:\\x\\xmrig.exe"}],
+        background_cpu_facts=[
+            {"name": "xmrig", "path": "C:\\x\\xmrig.exe", "cpuPercent": 95, "maxPercent": 99, "totalCpuSec": 280},
+            {"name": "chrome", "path": "C:\\Program Files\\Chrome\\chrome.exe", "cpuPercent": 35, "maxPercent": 40, "totalCpuSec": 90},
+        ],
+    )
+    scan = _run_rule_engine(powershell, project_root, raw_path, out_path)
+
+    assert scan["runId"] == "run-abc"
+    miner_findings = [f for f in scan["findings"] if f["category"] == "check_cpu" and "xmrig" in f["title"]]
+    assert len(miner_findings) == 1, f"expected one deduped miner finding, got {miner_findings}"
+    background_findings = [f for f in scan["findings"] if f["category"] == "check_background_cpu"]
+    assert any("chrome" in f["title"] for f in background_findings)
+
+    by_name = {f["name"]: f for f in scan["sections"]["backgroundCpu"]}
+    assert by_name["xmrig"]["risk"] == "danger"
+    assert by_name["chrome"]["risk"] == "warning"
+
+    # Regression guard: two genuinely different executables that merely
+    # share a name must NOT be collapsed by the path-based dedup key.
+    raw_path2 = tmp_path / "raw2.json"
+    out_path2 = tmp_path / "scan2.json"
+    _write_raw_facts(
+        raw_path2, _OK_COLLECTION, run_id="run-def",
+        cpu_facts=[{"name": "xmrig", "pid_": 111, "cpu": 10, "memoryMB": 100, "path": "C:\\a\\xmrig.exe"}],
+        background_cpu_facts=[{"name": "xmrig", "path": "C:\\b\\xmrig.exe", "cpuPercent": 95, "maxPercent": 99, "totalCpuSec": 280}],
+    )
+    scan2 = _run_rule_engine(powershell, project_root, raw_path2, out_path2)
+    miner_findings2 = [f for f in scan2["findings"] if f["category"] == "check_cpu" and "xmrig" in f["title"]]
+    assert len(miner_findings2) == 2, "two different executables at different paths must not be deduped"
+
+
+def _write_monitor_result(path, run_id, aggregate):
+    data = {
+        "runId": run_id,
+        "monitoredAt": "2026-08-11 12:05:00",
+        "durationMinutes": 5,
+        "sampleIntervalSec": 10,
+        "cpuCount": 8,
+        "averageOverallCpu": 10,
+        "samples": [],
+        "aggregate": aggregate,
+    }
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _run_monitor_merge(powershell, project_root, monitor_result_path, raw_facts_path, scan_result_path, run_id=""):
+    args = [
+        powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", str(project_root / "scripts" / "monitor_merge.ps1"),
+        "-MonitorResultPath", str(monitor_result_path),
+        "-RawFactsPath", str(raw_facts_path),
+        "-ScanResultPath", str(scan_result_path),
+        "-RulesDir", str(project_root / "rules"),
+        "-WhitelistPath", str(project_root / "data" / "whitelist.json"),
+    ]
+    if run_id:
+        args += ["-RunId", run_id]
+    return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", timeout=30)
+
+
+def test_powershell_monitor_merge_integrates_scan_result_when_run_id_matches(project_root, tmp_path):
+    """This is what makes the 5-minute observation actually reach
+    scan_result.json -- before this, monitor.ps1's findings never left its
+    own standalone monitor_result.json, so the precision scan's distinguishing
+    feature (catching a sustained miner) was invisible in the report the user
+    actually keeps."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    raw_path = tmp_path / "raw_facts.json"
+    scan_path = tmp_path / "scan_result.json"
+    monitor_path = tmp_path / "monitor_result.json"
+    _write_raw_facts(raw_path, _OK_COLLECTION, run_id="run-abc")
+    _write_monitor_result(monitor_path, "run-abc", [
+        {"name": "xmrig", "path": "C:\\x\\xmrig.exe", "averagePercent": 95, "maxPercent": 99, "totalCpuSec": 280},
+    ])
+
+    result = _run_monitor_merge(powershell, project_root, monitor_path, raw_path, scan_path, run_id="run-abc")
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert scan_path.is_file()
+    scan = json.loads(scan_path.read_text(encoding="utf-8-sig"))
+    assert scan["runId"] == "run-abc"
+    assert scan["summary"]["overall"] == "danger"
+    assert any("xmrig" in f["title"] for f in scan["findings"])
+    assert "기본 검사 결과에 반영됨" in result.stdout
+
+
+def test_powershell_monitor_merge_skips_integration_on_run_id_mismatch(project_root, tmp_path):
+    """A mismatched runId means raw_facts.json belongs to a different run
+    (e.g. the user re-ran a quick scan while the 5-minute observation was
+    still going) -- merging into it would silently attach the observation to
+    the wrong scan's report. Must skip, not guess, and must not touch the
+    existing raw_facts.json."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    raw_path = tmp_path / "raw_facts.json"
+    scan_path = tmp_path / "scan_result.json"
+    monitor_path = tmp_path / "monitor_result.json"
+    _write_raw_facts(raw_path, _OK_COLLECTION, run_id="run-original")
+    _write_monitor_result(monitor_path, "run-observed", [])
+
+    result = _run_monitor_merge(powershell, project_root, monitor_path, raw_path, scan_path, run_id="run-observed")
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert not scan_path.exists()
+    assert "일치하지" in result.stdout
+    assert json.loads(raw_path.read_text(encoding="utf-8"))["runId"] == "run-original"
+
+
+def test_powershell_monitor_merge_standalone_run_is_silent_and_skips_integration(project_root, tmp_path):
+    """monitor.ps1 (and by extension monitor_merge.ps1) must stay usable as a
+    standalone diagnostic tool run directly outside menu.ps1's flow -- no
+    RunId at all is the normal case for that, not an error worth a warning."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    raw_path = tmp_path / "raw_facts.json"  # deliberately never created
+    scan_path = tmp_path / "scan_result.json"
+    monitor_path = tmp_path / "monitor_result.json"
+    _write_monitor_result(monitor_path, "", [])
+
+    result = _run_monitor_merge(powershell, project_root, monitor_path, raw_path, scan_path, run_id="")
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert not scan_path.exists()
+    assert "⚠️" not in result.stdout
+
+
+def _run_invoke_monitor_scenario(project_root, tmp_path, monitor_body: str, pre_existing_result: str | None):
+    """Mirrors _run_invoke_scanner_scenario (1e) but drives Invoke-Monitor:
+    lays out scenarioRoot/scripts/{menu functions, monitor.ps1}."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir(parents=True)
+    if pre_existing_result is not None:
+        (tmp_path / "scan_result.json").write_text(pre_existing_result, encoding="utf-8")
+    (scripts_dir / "monitor.ps1").write_text(monitor_body, encoding="utf-8-sig")
+    harness = (
+        'function chcp { param([Parameter(ValueFromRemainingArguments=$true)]$rest) }  # non-Windows test stub\n'
+        + _menu_functions_source(project_root)
+        + '\n$outputPath = Join-Path $root "scan_result.json"\n'
+        '$monitorResult = Invoke-Monitor -RunId "test-run"\n'
+        'Write-Output "RESULT=$monitorResult"\n'
+        'if (Test-Path $outputPath) { Write-Output "CONTENT=$(Get-Content $outputPath -Raw)" }\n'
+    )
+    (scripts_dir / "harness.ps1").write_text(harness, encoding="utf-8-sig")
+
+    result = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(scripts_dir / "harness.ps1")],
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    return result
+
+
+def test_powershell_menu_monitor_gate_treats_a_cancelled_observation_as_non_fatal(project_root, tmp_path):
+    """Ctrl+C during the 5-minute wait is an explicitly supported cancellation
+    path (menu.ps1's own prompt says so) -- monitor.ps1 aborts before it ever
+    reaches its save step (monitor_merge.ps1), so scan_result.json is simply
+    never rewritten. Invoke-Monitor must read that as "did not complete" via
+    freshness (matching Invoke-Scanner's 1e-established pattern), not crash,
+    and the caller must treat it as a soft warning, not a hard stop -- the
+    valid quick-scan result from step 1 must survive untouched."""
+    stale = '{"stale":"before"}'
+    aborts_before_saving = 'hostname | Out-Null\nreturn\n'
+
+    result = _run_invoke_monitor_scenario(project_root, tmp_path, aborts_before_saving, stale)
+    assert result.returncode == 0, result.stderr
+    assert "RESULT=False" in result.stdout
+    assert '"stale":"before"' in result.stdout
+
+
+def test_powershell_menu_monitor_gate_recognizes_a_completed_observation(project_root, tmp_path):
+    """The positive case: monitor.ps1 (via monitor_merge.ps1) actually
+    rewrites scan_result.json with fresh content -- Invoke-Monitor must
+    recognize that as success."""
+    stale = '{"stale":"before"}'
+    rewrites_scan_result = '''Start-Sleep -Milliseconds 20
+$outputPath = Join-Path $root "scan_result.json"
+Set-Content -Path $outputPath -Value '{"fresh":"after"}' -Encoding UTF8
+'''
+
+    result = _run_invoke_monitor_scenario(project_root, tmp_path, rewrites_scan_result, stale)
+    assert result.returncode == 0, result.stderr
+    assert "RESULT=True" in result.stdout
+    assert '"fresh":"after"' in result.stdout
+
+
 def test_powershell_report_html_generation_actually_runs(project_root, tmp_path):
     """report.ps1's HtmlEncode/UrlEncode helpers must not collide with a
     built-in PowerShell alias (h -> Get-History ships by default) -- a
@@ -973,6 +1215,68 @@ def test_powershell_report_html_generation_actually_runs(project_root, tmp_path)
     assert len(html) > 500, "report.ps1 produced suspiciously little output"
     assert "<html" in html and "</html>" in html
     assert "TEST-PC" in html  # HtmlEncode actually ran, not a silent no-op
+
+
+def test_powershell_report_renders_background_cpu_observation_results(project_root, tmp_path):
+    """The precision scan's whole distinguishing value is the 5-minute
+    observation -- if backgroundCpu facts reach scan_result.json but
+    report.ps1 never renders them, the user's saved/shared report still
+    doesn't show what the deep scan actually found. Prove the full chain:
+    raw facts with a backgroundCpu section -> rule_engine.ps1 classifies it
+    -> report.ps1 puts a real row (not just an empty-state placeholder) in
+    the HTML."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    raw_path = tmp_path / "raw.json"
+    scan_path = tmp_path / "scan.json"
+    report_path = tmp_path / "report.html"
+    _write_raw_facts(
+        raw_path, _OK_COLLECTION, run_id="run-report",
+        background_cpu_facts=[
+            {"name": "xmrig", "path": "C:\\x\\xmrig.exe", "cpuPercent": 95, "maxPercent": 99, "totalCpuSec": 280},
+        ],
+    )
+    _run_rule_engine(powershell, project_root, raw_path, scan_path)
+
+    result = subprocess.run(
+        [
+            powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", str(project_root / "scripts" / "report.ps1"),
+            "-Scan", str(scan_path),
+            "-Output", str(report_path),
+        ],
+        capture_output=True, timeout=30,
+    )
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    assert result.returncode == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+
+    html = report_path.read_text(encoding="utf-8")
+    assert "5분 유휴 관측 결과" in html
+    assert "xmrig" in html
+    assert "risk-danger" in html
+    # And the no-observation-ran case must degrade to the existing empty
+    # state, not an error -- most scans (quick scan) never populate this.
+    scan_no_observation = tmp_path / "scan_no_obs.json"
+    report_no_observation = tmp_path / "report_no_obs.html"
+    raw_no_observation = tmp_path / "raw_no_obs.json"
+    _write_raw_facts(raw_no_observation, _OK_COLLECTION)
+    _run_rule_engine(powershell, project_root, raw_no_observation, scan_no_observation)
+    result2 = subprocess.run(
+        [
+            powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", str(project_root / "scripts" / "report.ps1"),
+            "-Scan", str(scan_no_observation),
+            "-Output", str(report_no_observation),
+        ],
+        capture_output=True, timeout=30,
+    )
+    assert result2.returncode == 0, result2.stderr.decode("utf-8", errors="replace")
+    html_no_observation = report_no_observation.read_text(encoding="utf-8")
+    assert "5분 유휴 관측 결과" in html_no_observation
+    assert "표시할 항목이 없습니다" in html_no_observation
 
 
 def test_virustotal_automatic_lookups_send_file_hashes_only(project_root):
