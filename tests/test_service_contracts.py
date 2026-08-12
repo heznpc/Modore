@@ -82,7 +82,14 @@ def _run_invoke_scanner_scenario(project_root, tmp_path, scanner_body: str, pre_
     scripts_dir.mkdir(parents=True)
     if pre_existing_result is not None:
         (tmp_path / "scan_result.json").write_text(pre_existing_result, encoding="utf-8")
-    (scripts_dir / "scanner.ps1").write_text(scanner_body, encoding="utf-8")
+    # utf-8-sig, not utf-8: Windows PowerShell 5.1 reads a BOM-less .ps1 in
+    # the system code page, so the Korean text extracted from menu.ps1 turns
+    # to mojibake mid-string-literal and the whole harness fails to PARSE on
+    # the real windows-latest runner while passing locally on pwsh 7 (which
+    # defaults to UTF-8 either way). Exactly the 1a lesson, reproduced in
+    # this test's own generated fixtures -- the repo-wide BOM guard only
+    # covers scripts/*.ps1, not files a test writes at runtime.
+    (scripts_dir / "scanner.ps1").write_text(scanner_body, encoding="utf-8-sig")
     harness = (
         'function chcp { param([Parameter(ValueFromRemainingArguments=$true)]$rest) }  # non-Windows test stub\n'
         + _menu_functions_source(project_root)
@@ -94,7 +101,7 @@ def _run_invoke_scanner_scenario(project_root, tmp_path, scanner_body: str, pre_
         'Write-Output "RESULT=$scannerResult"\n'
         'if (Test-Path $outputPath) { Write-Output "CONTENT=$(Get-Content $outputPath -Raw)" }\n'
     )
-    (scripts_dir / "harness.ps1").write_text(harness, encoding="utf-8")
+    (scripts_dir / "harness.ps1").write_text(harness, encoding="utf-8-sig")
 
     result = subprocess.run(
         [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -126,7 +133,7 @@ def test_powershell_menu_scanner_gate_survives_a_stale_exit_code(project_root, t
     old_check.write_text(
         f'& "{tmp_path / "old" / "scripts" / "scanner.ps1"}"\n'
         'Write-Output "OLD_WOULD_PROCEED=$($LASTEXITCODE -eq 0)"\n',
-        encoding="utf-8",
+        encoding="utf-8-sig",
     )
     old_result = subprocess.run(
         [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(old_check)],
