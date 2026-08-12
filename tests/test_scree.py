@@ -22,6 +22,17 @@ def _write(path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def _no_real_managed_settings(monkeypatch, tmp_path):
+    """MANAGED_SETTINGS_PATH is a real, hardcoded system path outside every
+    per-test `home` fixture here -- without this, tests would read whatever
+    actually exists at /Library/Application Support/ClaudeCode/managed-
+    settings.json on the machine running them (e.g. a real enterprise-managed
+    Mac), making results depend on host state instead of the fixture. Tests
+    that specifically exercise the managed tier override this themselves."""
+    monkeypatch.setattr(scree, "MANAGED_SETTINGS_PATH", tmp_path / "unused-managed-settings.json")
+
+
 @pytest.fixture
 def scree_home(tmp_path):
     """가짜 홈: 5개 도구가 같은 워크스페이스를 만졌고, Claude 세션 하나는 고아."""
@@ -268,6 +279,21 @@ def test_retention_local_settings_override_shared_settings(retention_home):
     retention = scree.build_scree(home)["retention"]
     claude = next(s for s in retention["stores"] if s["store"] == "Claude")
     assert claude["configured_days"] == 36500
+
+
+def test_retention_managed_settings_override_user_settings(retention_home, monkeypatch, tmp_path):
+    """Enterprise-managed policy can't be overridden by the user in real
+    Claude Code precedence -- even a maximal user override (settings.local.json
+    set to "keep forever") must lose to a real managed value."""
+    home, _, _ = retention_home
+    _write(home / ".claude" / "settings.local.json", json.dumps({"cleanupPeriodDays": 36500}))
+    managed_path = tmp_path / "managed-settings.json"
+    _write(managed_path, json.dumps({"cleanupPeriodDays": 5}))
+    monkeypatch.setattr(scree, "MANAGED_SETTINGS_PATH", managed_path)
+
+    retention = scree.build_scree(home)["retention"]
+    claude = next(s for s in retention["stores"] if s["store"] == "Claude")
+    assert claude["configured_days"] == 5
 
 
 @pytest.mark.parametrize("payload", [

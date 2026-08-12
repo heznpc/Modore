@@ -439,6 +439,29 @@ def build_lineage(records: list[dict]) -> dict:
                         "case_ghosts": ghosts}}
 
 
+# Enterprise MDM policy path (macOS). Modore's own collectors are already
+# macOS-only (see collect_vscode_forks's ~/Library/Application Support use),
+# so this is the one real path scree needs -- Linux/Windows equivalents exist
+# for Claude Code itself but never apply to a scree invocation.
+MANAGED_SETTINGS_PATH = Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+
+
+def _cleanup_period_days_from(path: Path) -> Optional[int]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get("cleanupPeriodDays")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0:
+        return None
+    return int(value)
+
+
 def read_claude_cleanup_period_days(home: Path) -> Optional[int]:
     """The one authoritative retention signal scree ever reads: Claude Code's
     own `cleanupPeriodDays` setting. Read-only, config-only — never message
@@ -448,28 +471,28 @@ def read_claude_cleanup_period_days(home: Path) -> Optional[int]:
     apart from "old sessions exist and nothing deletes them" — both look
     identical on disk. A user who deliberately set retention days ago and then
     sees scree call live sessions "D-day" has caught scree contradicting a
-    fact it could have just read. `settings.local.json` overrides
-    `settings.json` here because that is Claude Code's own precedence order.
-    Any failure (missing file, bad JSON, missing/non-numeric key) falls back
-    to the observed-age heuristic silently — this is a preference, not a
-    requirement.
+    fact it could have just read.
+
+    Checked in Claude Code's own precedence order: an enterprise-managed
+    policy overrides every other scope and can't be overridden by the user,
+    so it is checked first and short-circuits the rest; `settings.local.json`
+    then overrides `settings.json`, both under the user's home. (Project-level
+    `.claude/settings.json` sits between those two in Claude Code's real
+    precedence, but scree audits every workspace under `home` in one pass —
+    there is no single "current project" to read a project-level file from,
+    so that tier is intentionally not read here.) Any failure (missing file,
+    bad JSON, missing/non-numeric key) falls through to the next tier, and
+    ultimately to the observed-age heuristic, silently — this is a
+    preference, not a requirement.
     """
+    managed = _cleanup_period_days_from(MANAGED_SETTINGS_PATH)
+    if managed is not None:
+        return managed
     claude_dir = home / ".claude"
     for name in ("settings.local.json", "settings.json"):
-        path = claude_dir / name
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        value = data.get("cleanupPeriodDays")
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            continue
-        if value <= 0:
-            continue
-        return int(value)
+        value = _cleanup_period_days_from(claude_dir / name)
+        if value is not None:
+            return value
     return None
 
 
