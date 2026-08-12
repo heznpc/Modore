@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Runs the sealed `scree.py` and parses its report. Read-only: this never
@@ -8,13 +9,101 @@ enum ScreeOutcome {
     case failure(String)
 }
 
+/// `preserve` is scree's one deliberate exception to its no-content contract
+/// (see scree.py's module docstring): a single, explicitly-named session
+/// file, exported as masked Markdown. `.success` carries the file it wrote.
+enum ScreePreserveOutcome {
+    case success(URL)
+    case failure(String)
+}
+
 enum ScreeService {
     static func run(projectRoot: URL) async -> ScreeOutcome {
+        switch await invoke(projectRoot: projectRoot, arguments: ["report", "--json"], timeout: 180) {
+        case .failure(let message):
+            return .failure(message)
+        case .timedOut:
+            return .failure("scree가 3분 안에 끝나지 않았습니다. 세션·워크트리가 많으면 시간이 더 걸릴 수 있습니다.")
+        case .success(let output):
+            guard let start = output.firstIndex(of: "{") else {
+                return .failure("scree 출력에서 JSON을 찾지 못했습니다.")
+            }
+            let jsonSlice = output[start...]
+            guard let data = jsonSlice.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let report = ScreeReport(json: object) else {
+                return .failure("scree 출력을 해석하지 못했습니다.")
+            }
+            return .success(report)
+        }
+    }
+
+    /// `source` must be a session file path scree itself already reported
+    /// (e.g. an expiring session's `source`) — never arbitrary user text.
+    /// The destination lives under the app's own results directory, the
+    /// same mutable, ownership-checked location every other Modore output
+    /// already writes to; scree.py's own `--out` handling creates it.
+    static func preserve(projectRoot: URL, tool: String, source: String) async -> ScreePreserveOutcome {
         guard let execution = await Task.detached(priority: .userInitiated, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
         }).value else {
             return .failure("서명된 실행 런타임을 확인하지 못해 scree를 실행하지 않았습니다.")
         }
+        let destination = execution.outputRoot
+            .appendingPathComponent("scree-preserve")
+            .appendingPathComponent(preserveFilename(tool: tool, source: source))
+        switch await invoke(
+            execution: execution,
+            arguments: ["preserve", source, "--out", destination.path],
+            timeout: 60
+        ) {
+        case .failure(let message):
+            return .failure(message)
+        case .timedOut:
+            return .failure("보존 내보내기가 1분 안에 끝나지 않았습니다.")
+        case .success:
+            return .success(destination)
+        }
+    }
+
+    /// Pure and independently testable: a stable, readable export filename
+    /// from `tool` (one of scree's own fixed labels) and the session file's
+    /// basename. Both are sanitized defensively rather than trusted verbatim
+    /// — this becomes a filesystem path component.
+    static func preserveFilename(tool: String, source: String) -> String {
+        let stem = ((source as NSString).lastPathComponent as NSString).deletingPathExtension
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        func sanitize(_ value: String) -> String {
+            let cleaned = String(value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" })
+            return cleaned.isEmpty ? "session" : cleaned
+        }
+        return "\(sanitize(tool))-\(sanitize(stem)).md"
+    }
+
+    private enum RawOutcome {
+        case success(String)
+        case timedOut
+        case failure(String)
+    }
+
+    private static func invoke(
+        projectRoot: URL,
+        arguments: [String],
+        timeout: TimeInterval
+    ) async -> RawOutcome {
+        guard let execution = await Task.detached(priority: .userInitiated, operation: {
+            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
+        }).value else {
+            return .failure("서명된 실행 런타임을 확인하지 못해 scree를 실행하지 않았습니다.")
+        }
+        return await invoke(execution: execution, arguments: arguments, timeout: timeout)
+    }
+
+    private static func invoke(
+        execution: RuntimeExecutionContext,
+        arguments: [String],
+        timeout: TimeInterval
+    ) async -> RawOutcome {
         guard let invocation = execution.pinnedInvocation(
             relativePath: "scripts/scree.py",
             name: "scree"
@@ -47,29 +136,20 @@ enum ScreeService {
         """
         let result = await LocalProcessRunner.capture(
             executable: python3,
-            arguments: ["-c", wrapper, invocation.argument, "report", "--json"],
+            arguments: ["-c", wrapper, invocation.argument] + arguments,
             currentDirectory: execution.runtimeRoot,
             expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
             expectedSignedBundleURL: execution.signedBundleURL,
             pinnedFiles: invocation.files,
-            timeout: 180
+            timeout: timeout
         )
         guard result.endState != .timedOut else {
-            return .failure("scree가 3분 안에 끝나지 않았습니다. 세션·워크트리가 많으면 시간이 더 걸릴 수 있습니다.")
+            return .timedOut
         }
         guard result.status == 0, result.endState == .exited else {
             return .failure("scree 실행이 실패했습니다 (status \(result.status)).")
         }
-        guard let start = result.output.firstIndex(of: "{") else {
-            return .failure("scree 출력에서 JSON을 찾지 못했습니다.")
-        }
-        let jsonSlice = result.output[start...]
-        guard let data = jsonSlice.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let report = ScreeReport(json: object) else {
-            return .failure("scree 출력을 해석하지 못했습니다.")
-        }
-        return .success(report)
+        return .success(result.output)
     }
 
     /// scree.py has no bundled interpreter; this resolves the same fixed,
@@ -97,6 +177,26 @@ extension ScanModel {
                 screeReport = report
             case .failure(let message):
                 screeError = message
+            }
+        }
+    }
+
+    func preserveScreeSession(_ session: ScreeExpiringSession) {
+        guard screePreserveInFlightSource == nil else { return }
+        screePreserveInFlightSource = session.source
+        errorMessage = nil
+        let root = projectRoot
+        let tool = session.tool
+        let source = session.source
+        Task {
+            defer { screePreserveInFlightSource = nil }
+            switch await ScreeService.preserve(projectRoot: root, tool: tool, source: source) {
+            case .success(let url):
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+                appendLog("세션 보존: \(url.lastPathComponent)")
+                AccessibilityAnnouncer.announce("세션을 보존했습니다")
+            case .failure(let message):
+                errorMessage = message
             }
         }
     }
