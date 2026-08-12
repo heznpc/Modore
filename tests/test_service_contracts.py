@@ -657,6 +657,99 @@ def test_macos_jxa_vt_does_not_write_api_key_header_file(project_root):
     assert "cfg.enabled = true" not in helper
 
 
+def test_macos_jxa_vt_budget_exhaustion_is_counted_and_cache_saves_incrementally(project_root, tmp_path):
+    """Mirrors test_powershell_vt_budget_exhaustion_is_counted_and_cache_saves_incrementally
+    for the macOS/JXA implementation of the same fix. save() used to run
+    exactly once, at the very end of the whole scan, and nothing counted or
+    surfaced how many eligible files got skipped once maxCallsPerScan was
+    hit -- the same gap fixed on the Windows side, present here too since
+    both platforms shared the identical once-at-the-end save() structure.
+
+    vtLookup's own body makes no direct JXA/$.NS* calls -- every OS
+    interaction goes through named helper functions (env, homeDir, ensureDir,
+    readJson, writeText, run, runCurlWithSecretHeader, sha256, shouldSkipVt),
+    so it is plain, JXA-independent JavaScript that runs unmodified under
+    Node once those are stubbed. Extracted directly from the shipped file by
+    line range (not a hand-duplicated copy that could silently drift from
+    it), the same discipline as this file's PowerShell dot-sourcing tests
+    and the cleanup.sh condition-extraction test."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("requires node for a syntax-level harness around real JXA-independent logic")
+
+    source_lines = (project_root / "scripts" / "scanner_helper.jxa.js").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(source_lines) if line.startswith("function vtLookup(config, disabled) {"))
+    end = next(i for i, line in enumerate(source_lines) if line.startswith("function get(obj, path) {"))
+    vt_lookup_source = "\n".join(source_lines[start:end]).strip()
+    assert vt_lookup_source.startswith("function vtLookup"), "extraction boundary moved; update this test"
+    assert vt_lookup_source.endswith("}"), "extraction boundary moved; update this test"
+
+    harness_path = tmp_path / "vt-budget-harness.js"
+    harness_path.write_text(
+        r"""
+'use strict';
+let files = {};
+function env(name, fallback) { return fallback; }
+function homeDir() { return '/fake-home'; }
+function ensureDir(path) {}
+function readJson(path, fallback, maximumBytes) {
+  return Object.prototype.hasOwnProperty.call(files, path) ? JSON.parse(files[path]) : fallback;
+}
+function writeText(path, text) { files[path] = text; return true; }
+function run(cmd) { return ''; }
+function shouldSkipVt(path) { return false; }
+function sha256(path) { return 'fakehash-' + path; }
+let curlCalls = 0;
+function runCurlWithSecretHeader(url, apiKey) {
+  curlCalls += 1;
+  const body = JSON.stringify({ attributes: { last_analysis_stats: { malicious: 0, suspicious: 0, harmless: 70, undetected: 3 } } });
+  return JSON.stringify({ data: JSON.parse(body) }) + '\n200';
+}
+
+##VT_LOOKUP_SOURCE##
+
+const config = { virustotal: { apiKey: 'a'.repeat(64), enabled: true, cacheHours: 48, maxCallsPerScan: 2 } };
+const vt = vtLookup(config, false);
+const cachePath = homeDir() + '/Library/Caches/PC건강검진/vt-cache.json';
+
+const resultA = vt.file('/fake/a.bin');
+if (resultA.status !== 'ok') throw new Error('expected sample A to succeed, got ' + resultA.status);
+if (curlCalls !== 1) throw new Error('expected exactly 1 real call after sample A, got ' + curlCalls);
+
+// Prove the save happened incrementally: the fake filesystem must already
+// reflect this entry before the second call, since vt.save() is never
+// called explicitly anywhere in this harness.
+if (!files[cachePath]) throw new Error('cache file does not exist after the first real lookup');
+const afterFirst = JSON.parse(files[cachePath]);
+if (!afterFirst['file:fakehash-/fake/a.bin']) throw new Error('first lookup was not persisted incrementally');
+
+const resultB = vt.file('/fake/b.bin');
+if (resultB.status !== 'ok') throw new Error('expected sample B to succeed, got ' + resultB.status);
+const afterSecond = JSON.parse(files[cachePath]);
+if (!afterSecond['file:fakehash-/fake/a.bin'] || !afterSecond['file:fakehash-/fake/b.bin']) {
+  throw new Error('second lookup did not persist incrementally alongside the first');
+}
+
+// Third distinct file, budget already spent (maxCallsPerScan=2) -- must be
+// refused without spending a third real curl call, and must not carry a
+// malicious verdict field that could be misread as a clean result.
+const resultC = vt.file('/fake/c.bin');
+if (resultC.status !== 'quota') throw new Error('expected sample C to be budget-refused, got ' + resultC.status);
+if (Object.prototype.hasOwnProperty.call(resultC, 'malicious')) throw new Error('a budget-refused result must not carry a malicious verdict field');
+if (curlCalls !== 2) throw new Error('expected exactly 2 real curl calls spent, got ' + curlCalls);
+if (vt.calls !== 2) throw new Error('expected vt.calls === 2, got ' + vt.calls);
+if (vt.skippedForBudget !== 1) throw new Error('expected vt.skippedForBudget === 1, got ' + vt.skippedForBudget);
+
+console.log('VT_BUDGET_OK');
+""".lstrip().replace("##VT_LOOKUP_SOURCE##", vt_lookup_source),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run([node, str(harness_path)], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "VT_BUDGET_OK" in result.stdout
+
+
 def test_powershell_vt_env_key_does_not_auto_enable(project_root):
     helper = (project_root / "scripts" / "vt-lookup.ps1").read_text(encoding="utf-8-sig")
 
@@ -819,7 +912,126 @@ Write-Output 'VT_CACHE_ROUND_TRIP_OK'
     assert "VT_CACHE_ROUND_TRIP_OK" in stdout
 
 
-def _write_raw_facts(path, collection, defender_facts=None, cpu_facts=None, run_id=None, background_cpu_facts=None):
+def test_powershell_vt_budget_exhaustion_is_counted_and_cache_saves_incrementally(project_root, tmp_path):
+    """Save-VtCache used to run exactly once, at the very end of a whole scan
+    -- a scan interrupted (closed window, sleep, crash) after real, quota-
+    consuming lookups lost every one of them, forcing a full re-pay on the
+    next run. And nothing counted or surfaced how many eligible files got
+    skipped once maxCallsPerScan was hit, so a budget-exhausted scan looked
+    identical to one that checked everything.
+
+    Drives the real Invoke-VtRequest (so its actual budget-check/counter
+    logic runs), stubbing only Invoke-RestMethod -- the one cmdlet inside it
+    that would otherwise hit the real network -- the same shadowing
+    technique test_powershell_vt_cache_round_trip already established."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"virustotal": {"apiKey": "test-only-key", "enabled": True, "cacheHours": 48, "maxCallsPerScan": 2}}),
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / "cache"
+    sample_a = tmp_path / "a.bin"
+    sample_a.write_bytes(b"sample a\n")
+    sample_b = tmp_path / "b.bin"
+    sample_b.write_bytes(b"sample b\n")
+    sample_c = tmp_path / "c.bin"
+    sample_c.write_bytes(b"sample c\n")
+
+    harness_path = tmp_path / "vt-budget.ps1"
+    harness_path.write_text(
+        r"""
+param(
+    [Parameter(Mandatory = $true)][string]$VtScript,
+    [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true)][string]$CacheDir,
+    [Parameter(Mandatory = $true)][string]$SampleA,
+    [Parameter(Mandatory = $true)][string]$SampleB,
+    [Parameter(Mandatory = $true)][string]$SampleC
+)
+
+$ErrorActionPreference = 'Stop'
+. $VtScript
+
+function Invoke-RestMethod {
+    param($Uri, $Headers, $Method, $ErrorAction)
+    return [PSCustomObject]@{
+        data = [PSCustomObject]@{
+            attributes = [PSCustomObject]@{
+                last_analysis_stats = [PSCustomObject]@{ malicious = 0; suspicious = 0; harmless = 70; undetected = 3 }
+                reputation = 0
+                last_analysis_date = $null
+                signature_info = [PSCustomObject]@{ verified = $null }
+                names = @()
+            }
+        }
+    }
+}
+
+Initialize-VtLookup -ConfigPath $ConfigPath -CacheDir $CacheDir
+$cachePath = Join-Path $CacheDir 'vt-cache.json'
+
+# Two calls under budget (maxCallsPerScan=2), one over -- reset VtLastCall
+# before each so the real 16s rate-limit sleep doesn't slow this test; that
+# timing behavior isn't what's under test here.
+$script:VtLastCall = [DateTime]::MinValue
+$resultA = Get-VtFileReputation -FilePath $SampleA
+if ($resultA.status -ne 'ok') { throw "expected sample A to succeed, got $($resultA.status)" }
+
+# Prove the save happened incrementally: the file must already reflect this
+# entry before the second call, since Save-VtCache is never called explicitly
+# anywhere in this harness.
+if (-not (Test-Path $cachePath)) { throw 'cache file does not exist after the first real lookup' }
+$afterFirst = Get-Content $cachePath -Raw -Encoding UTF8 | ConvertFrom-Json
+$hashA = (Get-FileHash -Path $SampleA -Algorithm SHA256).Hash.ToLowerInvariant()
+if (-not $afterFirst.PSObject.Properties["file:$hashA"]) { throw 'first lookup was not persisted incrementally' }
+
+$script:VtLastCall = [DateTime]::MinValue
+$resultB = Get-VtFileReputation -FilePath $SampleB
+if ($resultB.status -ne 'ok') { throw "expected sample B to succeed, got $($resultB.status)" }
+
+$afterSecond = Get-Content $cachePath -Raw -Encoding UTF8 | ConvertFrom-Json
+$hashB = (Get-FileHash -Path $SampleB -Algorithm SHA256).Hash.ToLowerInvariant()
+if (-not $afterSecond.PSObject.Properties["file:$hashA"] -or -not $afterSecond.PSObject.Properties["file:$hashB"]) {
+    throw 'second lookup did not persist incrementally alongside the first'
+}
+
+# Third distinct file, budget already spent -- must be refused, not billed
+# as a third real call, and must not be misreadable as a clean verdict.
+$script:VtLastCall = [DateTime]::MinValue
+$resultC = Get-VtFileReputation -FilePath $SampleC
+if ($resultC.status -ne 'quota') { throw "expected sample C to be budget-refused, got $($resultC.status)" }
+if ($resultC.ContainsKey('malicious')) { throw 'a budget-refused result must not carry a malicious verdict field' }
+if ($script:VtCallsThisScan -ne 2) { throw "expected exactly 2 real calls spent, got $($script:VtCallsThisScan)" }
+if ($script:VtSkippedForBudget -ne 1) { throw "expected exactly 1 call counted as budget-skipped, got $($script:VtSkippedForBudget)" }
+
+Write-Output 'VT_BUDGET_OK'
+""".lstrip(),
+        encoding="utf-8-sig",
+    )
+
+    result = subprocess.run(
+        [
+            powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", str(harness_path),
+            "-VtScript", str(project_root / "scripts" / "vt-lookup.ps1"),
+            "-ConfigPath", str(config_path),
+            "-CacheDir", str(cache_dir),
+            "-SampleA", str(sample_a), "-SampleB", str(sample_b), "-SampleC", str(sample_c),
+        ],
+        capture_output=True,
+        timeout=30,
+    )
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    assert result.returncode == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    assert "VT_BUDGET_OK" in stdout
+
+
+def _write_raw_facts(path, collection, defender_facts=None, cpu_facts=None, run_id=None, background_cpu_facts=None, virustotal=None):
     raw = {
         "schemaVersion": "1.0",
         "scannedAt": "2026-08-11 12:00:00",
@@ -843,6 +1055,8 @@ def _write_raw_facts(path, collection, defender_facts=None, cpu_facts=None, run_
     }
     if run_id is not None:
         raw["runId"] = run_id
+    if virustotal is not None:
+        raw["sections"]["virustotal"] = virustotal
     path.write_text(json.dumps(raw), encoding="utf-8")
 
 
@@ -1277,6 +1491,91 @@ def test_powershell_report_renders_background_cpu_observation_results(project_ro
     html_no_observation = report_no_observation.read_text(encoding="utf-8")
     assert "5분 유휴 관측 결과" in html_no_observation
     assert "표시할 항목이 없습니다" in html_no_observation
+
+
+def test_powershell_report_renders_vt_budget_caveat_when_calls_were_skipped(project_root, tmp_path):
+    """A file VT couldn't check because the quota ran out isn't judged unsafe
+    -- it's just unverified this run. Before this, nothing in the report
+    said so: a budget-exhausted scan looked identical to one that verified
+    every eligible file, and report.ps1 didn't even render a VT section at
+    all. Prove both the caveat appears when calls were skipped, and that a
+    disabled/fully-completed VT run doesn't show a false caveat."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("requires powershell.exe or pwsh")
+
+    def render(virustotal):
+        raw_path = tmp_path / f"raw-{virustotal.get('callsThisScan', 'x')}-{virustotal.get('skippedForBudget', 'x')}.json"
+        scan_path = raw_path.with_suffix(".scan.json")
+        report_path = raw_path.with_suffix(".html")
+        _write_raw_facts(raw_path, _OK_COLLECTION, virustotal=virustotal)
+        _run_rule_engine(powershell, project_root, raw_path, scan_path)
+        result = subprocess.run(
+            [
+                powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", str(project_root / "scripts" / "report.ps1"),
+                "-Scan", str(scan_path), "-Output", str(report_path),
+            ],
+            capture_output=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+        return report_path.read_text(encoding="utf-8")
+
+    skipped_html = render({"enabled": True, "callsThisScan": 3, "cacheHours": 48, "skippedForBudget": 7})
+    assert "VirusTotal 조회" in skipped_html
+    assert "쿼터 소진" in skipped_html
+    assert "7" in skipped_html
+
+    complete_html = render({"enabled": True, "callsThisScan": 10, "cacheHours": 48, "skippedForBudget": 0})
+    assert "VirusTotal 조회" in complete_html
+    assert "쿼터 소진" not in complete_html
+
+    disabled_html = render({"enabled": False, "callsThisScan": 0, "cacheHours": 0, "skippedForBudget": 0})
+    assert "VirusTotal 조회" not in disabled_html
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="JXA runtime requires macOS osascript")
+def test_macos_jxa_report_renders_vt_budget_caveat_when_calls_were_skipped(project_root, tmp_path):
+    """macOS equivalent of test_powershell_report_renders_vt_budget_caveat_when_calls_were_skipped
+    -- report.jxa.js had no VT section at all before this, on either
+    platform."""
+
+    def render(virustotal):
+        scan_path = tmp_path / f"scan-{virustotal.get('skippedForBudget', 'x')}.json"
+        report_path = tmp_path / f"report-{virustotal.get('skippedForBudget', 'x')}.html"
+        scan = {
+            "computerName": "TEST-MAC", "userName": "tester", "osVersion": "macOS Test",
+            "scannedAt": "2026-08-11 12:00:00",
+            "summary": {"overall": "safe", "message": "특별한 이상 없음", "dangerCount": 0, "warningCount": 0},
+            "findings": [],
+            "collection": {"completedRequiredCount": 0, "requiredCount": 0, "completedCount": 0, "sourceCount": 0, "sources": []},
+            "sections": {
+                "cpu": [], "network": [], "listeningPorts": [], "autoruns": [], "recentInstalls": [],
+                "virustotal": virustotal,
+            },
+        }
+        scan_path.write_text(json.dumps(scan), encoding="utf-8")
+        env = dict(os.environ)
+        env["PCH_SCAN"] = str(scan_path)
+        env["PCH_REPORT_OUTPUT"] = str(report_path)
+        result = subprocess.run(
+            ["/usr/bin/osascript", "-l", "JavaScript", str(project_root / "scripts" / "report.jxa.js")],
+            capture_output=True, text=True, encoding="utf-8", env=env, timeout=30,
+        )
+        assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        return report_path.read_text(encoding="utf-8")
+
+    skipped_html = render({"enabled": True, "callsThisScan": 3, "cacheHours": 48, "skippedForBudget": 7})
+    assert "VirusTotal 조회" in skipped_html
+    assert "쿼터 소진" in skipped_html
+    assert "7" in skipped_html
+
+    complete_html = render({"enabled": True, "callsThisScan": 10, "cacheHours": 48, "skippedForBudget": 0})
+    assert "VirusTotal 조회" in complete_html
+    assert "쿼터 소진" not in complete_html
+
+    disabled_html = render({"enabled": False, "callsThisScan": 0, "cacheHours": 0, "skippedForBudget": 0})
+    assert "VirusTotal 조회" not in disabled_html
 
 
 def test_virustotal_automatic_lookups_send_file_hashes_only(project_root):

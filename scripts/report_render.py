@@ -608,7 +608,18 @@ def build_report(i18n: I18n, scan, monitor) -> str:
     # VT 상태 박스
     vt = (scan.get("sections") or {}).get("virustotal") or {}
     if vt.get("enabled"):
-        vt_summary = f'<div class="vt-summary">{h("vt_summary.enabled", calls=vt.get("callsThisScan", 0), hours=vt.get("cacheHours", 0))}</div>'
+        vt_skipped = int(vt.get("skippedForBudget", 0) or 0)
+        # A file skipped here only ran out of quota mid-scan -- it isn't
+        # judged unsafe, it's simply unverified this run. Say so plainly
+        # rather than looking identical to a scan that checked everything.
+        vt_budget_note = (
+            f'<div class="vt-summary-note">{h("vt_summary.budget_skipped", count=vt_skipped)}</div>'
+            if vt_skipped > 0 else ""
+        )
+        vt_summary = (
+            f'<div class="vt-summary">{h("vt_summary.enabled", calls=vt.get("callsThisScan", 0), hours=vt.get("cacheHours", 0))}</div>'
+            f'{vt_budget_note}'
+        )
     else:
         vt_summary = f'<div class="vt-summary off">{h("vt_summary.disabled")}</div>'
 

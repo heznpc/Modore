@@ -108,6 +108,26 @@ $collectionHtml = if ($null -eq $collection) {
 "@
 }
 
+$vt = $scanObj.sections.virustotal
+$vtHtml = if ($null -eq $vt -or -not $vt.enabled) {
+    ''
+} else {
+    $skipped = [int]$vt.skippedForBudget
+    # A skipped file isn't judged unsafe -- it's simply unverified by VT this
+    # run. Say so plainly rather than leaving the report looking identical to
+    # a scan where every eligible file actually got checked.
+    $skippedNote = if ($skipped -gt 0) {
+        "<div class=""share"">이번 검사에서 $skipped 건은 VT 쿼터 소진으로 확인하지 못했습니다. 위험 판정과는 무관하며, 다음 검사에서 이어서 확인됩니다.</div>"
+    } else { '' }
+    @"
+<h2>VirusTotal 조회</h2>
+<div class="panel">
+<div>이번 검사 조회 $($vt.callsThisScan)건 · 캐시 유지 $($vt.cacheHours)시간</div>
+$skippedNote
+</div>
+"@
+}
+
 $sections = $scanObj.sections
 $css = @'
 body{font-family:-apple-system,Segoe UI,Malgun Gothic,sans-serif;background:#f4f6fb;color:#1f2937;margin:0;line-height:1.6}
@@ -136,6 +156,7 @@ $html = @"
 <div class="cards"><div class="card"><div class="count">$($summary.dangerCount)</div><div>위험 항목</div></div><div class="card"><div class="count">$($summary.warningCount)</div><div>확인 필요</div></div><div class="card"><div class="count">$(@($scanObj.findings | Where-Object { $_.level -eq 'safe' }).Count)</div><div>정상 확인</div></div></div>
 <h2>주요 발견 사항</h2>$findingHtml
 $collectionHtml
+$vtHtml
 <h2>CPU 사용 상위 프로세스</h2>$(Render-ListTable $sections.cpu @('risk','name','pid_','cpu','memoryMB','note','path'))
 <h2>5분 유휴 관측 결과 (정밀 검사)</h2>$(Render-ListTable $sections.backgroundCpu @('risk','name','cpuPercent','maxPercent','totalCpuSec','note','path'))
 <h2>외부 네트워크 연결</h2>$(Render-ListTable $sections.network @('risk','process','remoteAddress','remotePort','note','path'))
