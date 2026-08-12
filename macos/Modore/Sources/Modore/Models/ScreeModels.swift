@@ -104,6 +104,14 @@ struct ScreeWorktreeItem: Identifiable {
     let lastCommit: String
     let verdict: String
     let evidence: String
+    /// scree.py's collect_worktrees() folds two different things into one
+    /// items list: real secondary git worktrees, and the primary checkout
+    /// itself when it's stranded on a non-default branch. Without this flag
+    /// a stranded primary checkout renders identically to a disposable
+    /// worktree copy -- same row shape, same verdict badge -- under a
+    /// section header that says "agent worktrees", even though it's the
+    /// user's actual repo directory, not a spare copy of it.
+    let strayCheckout: Bool
 
     init(json: [String: Any]) {
         path = JsonRead.string(json, "path")
@@ -115,10 +123,17 @@ struct ScreeWorktreeItem: Identifiable {
         lastCommit = JsonRead.string(json, "last_commit")
         verdict = JsonRead.string(json, "verdict", "unknown")
         evidence = JsonRead.string(json, "evidence")
+        strayCheckout = JsonRead.bool(json, "stray_checkout") ?? false
     }
 
     var pathLastComponent: String {
         (path as NSString).lastPathComponent
+    }
+
+    /// A stray checkout must never read like just another disposable
+    /// worktree entry -- it's the repo directory itself.
+    var displayLabel: String {
+        strayCheckout ? "메인 체크아웃 · \(pathLastComponent)" : pathLastComponent
     }
 
     var reasonText: String {
