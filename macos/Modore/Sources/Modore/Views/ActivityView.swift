@@ -30,7 +30,7 @@ private struct StorageWatchActivitySection: View {
     var body: some View {
         Section {
             HStack(spacing: 12) {
-                Image(systemName: model.storageWatchEnabled ? "checkmark.circle" : "pause.circle")
+                Image(systemName: watchSymbol)
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.secondary)
                     .frame(width: 24)
@@ -58,6 +58,19 @@ private struct StorageWatchActivitySection: View {
                 subtitle: "평소에는 여유 공간만 기록하고, 급감 시 제한된 경로 크기만 추가로 남깁니다.",
                 value: "\(model.freeSpaceSamples.count)개 표본"
             )
+        }
+    }
+
+    /// "켜짐" 표시는 설치가 정상이라는 뜻일 뿐, 실제로 최근에 실행됐다는 뜻이
+    /// 아니었다 -- 멈춰버린 감시와 꺼진 감시가 같은 체크마크로 보였다.
+    /// 색은 바꾸지 않는다(보안 위험 색상은 진짜 위험에만 예약); 모양만 구분한다.
+    private var watchSymbol: String {
+        guard model.storageWatchEnabled else { return "pause.circle" }
+        switch model.storageWatchHealthState {
+        case .neverAttempted: return "clock.badge.questionmark"
+        case .attemptedThenFailed: return "exclamationmark.circle"
+        case .recentSuccess: return "checkmark.circle"
+        case .staleSuccess: return "clock.badge.exclamationmark"
         }
     }
 }

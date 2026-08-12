@@ -26,6 +26,7 @@ final class ScanModel: ObservableObject {
     @Published private(set) var simulatorLegacyKeepEntries: Set<String> = []
     @Published var storageWatchEnabled = false
     @Published var storageWatchDetail = "상태 확인 중"
+    @Published var storageWatchHealthState: StorageWatchHealthState = .neverAttempted
     @Published var storageWatchInFlight = false
     @Published private(set) var resultLoading = true
     @Published var screeReport: ScreeReport?
@@ -281,6 +282,7 @@ final class ScanModel: ObservableObject {
         let status = await StorageWatchService.status(projectRoot: projectRoot)
         storageWatchEnabled = status.enabled
         storageWatchDetail = status.detail
+        storageWatchHealthState = status.healthState
         if let samples = status.freeSpaceSamples {
             freeSpaceSamples = samples
         }
