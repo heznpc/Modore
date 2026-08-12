@@ -104,6 +104,7 @@ function Initialize-VtLookup {
     }
 
     $script:VtCallsThisScan = 0
+    $script:VtSkippedForBudget = 0
 }
 
 function Test-VtEnabled {
@@ -139,6 +140,12 @@ function Set-CachedVt {
         cachedAt = (Get-Date).ToString('o')
         result = $Result
     }
+    # Each VT call is already rate-limited to one per 16s, so persisting on
+    # every new entry costs nothing measurable against that -- but it means
+    # a scan interrupted mid-way (closed window, sleep, crash) keeps every
+    # hash it already paid quota for, instead of the previous once-at-the-
+    # very-end save silently discarding all of it.
+    Save-VtCache
 }
 
 function Invoke-VtRequest {
@@ -146,6 +153,7 @@ function Invoke-VtRequest {
 
     if (-not (Test-VtEnabled)) { return $null }
     if ($script:VtCallsThisScan -ge $script:VtConfig.virustotal.maxCallsPerScan) {
+        $script:VtSkippedForBudget += 1
         return @{ error = 'quota'; message = '이번 검사 VT 쿼터 한도 도달' }
     }
 

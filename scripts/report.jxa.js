@@ -116,6 +116,16 @@ const collectionHtml = `<div class="panel">
   <p class="muted">필수 수집기 ${esc(collection.completedRequiredCount || 0)}/${esc(collection.requiredCount || 0)}개 완료 · 전체 ${esc(collection.completedCount || 0)}/${esc(collection.sourceCount || 0)}개 완료</p>
   ${table(collection.sources || [], ["label","status","required","detail"])}
 </div>`;
+const vt = s.virustotal || {};
+// A skipped file isn't judged unsafe -- it's simply unverified by VT this
+// run. Say so plainly rather than leaving the report looking identical to
+// a scan where every eligible file actually got checked.
+const vtSkipped = Number(vt.skippedForBudget || 0);
+const vtHtml = vt.enabled ? `<div class="panel">
+  <h2>VirusTotal 조회</h2>
+  <p class="muted">이번 검사 조회 ${esc(vt.callsThisScan || 0)}건 · 캐시 유지 ${esc(vt.cacheHours || 0)}시간</p>
+  ${vtSkipped > 0 ? `<div class="share">이번 검사에서 ${esc(vtSkipped)}건은 VT 쿼터 소진으로 확인하지 못했습니다. 위험 판정과는 무관하며, 다음 검사에서 이어서 확인됩니다.</div>` : ""}
+</div>` : "";
 const storage = s.storage || {};
 const storageVolume = storage.volume || {};
 const accessHtml = (storage.accessIssues || []).length
@@ -155,6 +165,7 @@ const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta n
 <div class="verdict ${esc(overall)}"><div class="icon">${icon}</div><div><div class="big">${esc(scan.summary.message)}</div><div>위험 ${esc(scan.summary.dangerCount)}건 · 확인 ${esc(scan.summary.warningCount)}건</div></div></div>
 <div class="panel"><h2>다음 행동</h2><ol>${actions.map(a => `<li>${esc(a)}</li>`).join("")}</ol>${shareNotice}</div>
 ${collectionHtml}
+${vtHtml}
 <div class="cards"><div class="card"><div class="count">${esc(scan.summary.dangerCount)}</div><div>위험 항목</div></div><div class="card"><div class="count">${esc(scan.summary.warningCount)}</div><div>확인 필요</div></div><div class="card"><div class="count">${(scan.findings || []).filter(f => f.level === "safe").length}</div><div>정상 확인</div></div></div>
 <h2>주요 발견 사항</h2>${findings.length ? findings.map(f => `<div class="finding ${esc(f.level)}"><b>${esc(f.title)}</b><br>${esc(f.detail)}</div>`).join("") : "<p class='muted'>주의가 필요한 항목이 발견되지 않았습니다.</p>"}
 ${storageHtml}
