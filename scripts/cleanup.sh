@@ -10,8 +10,14 @@ umask 077
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset BASH_ENV ENV CDPATH GLOBIGNORE
 
-# shellcheck source=scripts/modules/support_dir.sh
-source "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/support_dir.sh"
+# Sealed app runs pin this script to /dev/fd/N, where a sibling-relative
+# source resolves to the nonexistent /dev/fd/modules/... and bash CONTINUES
+# past the failed source -- leaving SUPPORT_DIR_NAME unset and killing the
+# script later under set -u. The app passes the module itself as a second
+# pinned descriptor via this env var (scanner.sh's existing pattern); the
+# dirname fallback keeps direct/dev-mode invocations working unchanged.
+# shellcheck disable=SC1090  # target is env-selected; see scanner.sh
+source "${PCH_PINNED_SUPPORT_DIR_MODULE:-$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/support_dir.sh}"
 
 PROTOCOL_VERSION="1"
 APPROVAL_TTL_SECONDS=900
