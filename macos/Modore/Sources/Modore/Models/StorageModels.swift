@@ -209,13 +209,20 @@ struct StorageItem: Identifiable {
         risk = json["risk"] as? String ?? "unknown"
         kind = json["kind"] as? String ?? "unknown"
         label = json["label"] as? String ?? kind
+        // A non-finite size propagates: it poisons every sum it enters, makes
+        // the goal slider's range comparison false (`1 <= NaN`), and trips
+        // ClosedRange's precondition -- a full-screen crash traceable to one
+        // field. `Double("1e999")` and a bare 1e999 in JSON both produce one,
+        // so treat it as unmeasured rather than trusting the producer.
+        let rawSize: Double
         if let number = json["sizeGB"] as? NSNumber {
-            sizeGB = number.doubleValue
+            rawSize = number.doubleValue
         } else if let string = json["sizeGB"] as? String {
-            sizeGB = Double(string) ?? 0
+            rawSize = Double(string) ?? 0
         } else {
-            sizeGB = 0
+            rawSize = 0
         }
+        sizeGB = rawSize.isFinite ? rawSize : 0
         path = json["path"] as? String ?? ""
         action = json["action"] as? String ?? "확인 필요"
         note = json["note"] as? String ?? ""

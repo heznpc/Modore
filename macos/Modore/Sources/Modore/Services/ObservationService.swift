@@ -126,7 +126,9 @@ enum ObservationService {
 
 extension ScanModel {
     func observeNow(windowSeconds: Int) {
-        guard !observationInFlight else { return }
+        // Symmetric with isBusy including observationInFlight: neither side
+        // may run underneath the other, or each measures the other's work.
+        guard !isBusy, !observationInFlight else { return }
         observationInFlight = true
         observationErrorMessage = nil
         let root = projectRoot
@@ -136,6 +138,10 @@ extension ScanModel {
             case .ready(let result):
                 observationResult = result
             case .failure(let message):
+                // Drop the previous run's rows: keeping them left the header
+                // reporting "N초 관찰됨" from an older window while the body
+                // showed this run's failure.
+                observationResult = nil
                 observationErrorMessage = message
             }
         }

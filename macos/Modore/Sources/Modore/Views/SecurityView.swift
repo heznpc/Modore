@@ -174,9 +174,11 @@ struct SecurityPage: View {
             DisclosureGroup(isExpanded: $showsDevtoolUpdates) {
                 ForEach(model.devtoolUpdateRows) { row in
                     SecurityDetailRow(
-                        symbol: "shippingbox",
+                        symbol: row.pinned ? "pin" : "shippingbox",
                         title: row.name,
-                        detail: "\(row.current) → \(row.latest)"
+                        detail: row.pinned
+                            ? "\(row.current) → \(row.latest) · 고정해 둔 패키지입니다"
+                            : "\(row.current) → \(row.latest)"
                     )
                 }
             } label: {

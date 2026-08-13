@@ -137,10 +137,28 @@ fi
 # 인자 사이의 변수 대입(POSIX)은 파일이 비어도 순서대로 적용된다.
 new_established() {
     /usr/bin/awk '
-    function command_name(value) {
-        gsub(/\\x20/, " ", value)
-        sub(/ +$/, "", value)
-        return value
+    function hex_digit(c) {
+        return index("0123456789abcdef", tolower(c)) - 1
+    }
+    # lsof escapes every byte it considers unprintable, not just the space
+    # that motivated this: a tab arrives as \\x09 and a non-ASCII name as a
+    # run of \\xNN bytes. Decoding only \\x20 left those literal in the
+    # reported name. Bytes are emitted verbatim, so a multi-byte UTF-8 name
+    # reassembles correctly; control bytes become a space because they would
+    # otherwise break the TSV this protocol is carried on.
+    function command_name(value,   out, rest, code) {
+        out = ""
+        rest = value
+        while (match(rest, /\\x[0-9A-Fa-f][0-9A-Fa-f]/)) {
+            out = out substr(rest, 1, RSTART - 1)
+            code = hex_digit(substr(rest, RSTART + 2, 1)) * 16 \
+                + hex_digit(substr(rest, RSTART + 3, 1))
+            out = out ((code < 32 || code == 127) ? " " : sprintf("%c", code))
+            rest = substr(rest, RSTART + 4)
+        }
+        out = out rest
+        sub(/ +$/, "", out)
+        return out
     }
     FNR == 1 { next }
     building == 1 {
@@ -169,10 +187,28 @@ new_established() {
 
 new_listen() {
     /usr/bin/awk '
-    function command_name(value) {
-        gsub(/\\x20/, " ", value)
-        sub(/ +$/, "", value)
-        return value
+    function hex_digit(c) {
+        return index("0123456789abcdef", tolower(c)) - 1
+    }
+    # lsof escapes every byte it considers unprintable, not just the space
+    # that motivated this: a tab arrives as \\x09 and a non-ASCII name as a
+    # run of \\xNN bytes. Decoding only \\x20 left those literal in the
+    # reported name. Bytes are emitted verbatim, so a multi-byte UTF-8 name
+    # reassembles correctly; control bytes become a space because they would
+    # otherwise break the TSV this protocol is carried on.
+    function command_name(value,   out, rest, code) {
+        out = ""
+        rest = value
+        while (match(rest, /\\x[0-9A-Fa-f][0-9A-Fa-f]/)) {
+            out = out substr(rest, 1, RSTART - 1)
+            code = hex_digit(substr(rest, RSTART + 2, 1)) * 16 \
+                + hex_digit(substr(rest, RSTART + 3, 1))
+            out = out ((code < 32 || code == 127) ? " " : sprintf("%c", code))
+            rest = substr(rest, RSTART + 4)
+        }
+        out = out rest
+        sub(/ +$/, "", out)
+        return out
     }
     FNR == 1 { next }
     building == 1 {

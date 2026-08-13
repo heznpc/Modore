@@ -75,8 +75,19 @@ applescript_escape() {
     /usr/bin/printf '%s' "$value"
 }
 
+# One name per line, not osascript's default ", " list serialization. That
+# default is ambiguous: a single item named "Backup, Inc." serializes exactly
+# like two items named "Backup" and "Inc.", so such an item could never be
+# matched (permanently unremovable), and a surviving "Foo, Bar" made a
+# genuinely successful removal of a separate "Foo" report as failed. A
+# newline delimiter cannot occur inside a name -- names carrying tab/newline
+# are rejected outright before they ever reach this.
+LOGIN_ITEM_NAMES_SCRIPT='set text item delimiters to linefeed
+tell application "System Events" to set itemNames to name of every login item
+return itemNames as text'
+
 current_login_item_names() {
-    "$OSASCRIPT_BIN" -e 'tell application "System Events" to get the name of every login item' 2>/dev/null
+    "$OSASCRIPT_BIN" -e "$LOGIN_ITEM_NAMES_SCRIPT" 2>/dev/null
 }
 
 # 0 = present, 1 = confirmed absent, 2 = could not determine.
@@ -91,14 +102,12 @@ current_login_item_names() {
 login_item_exists() {
     local target="$1" names entry
     names="$(current_login_item_names)" || return 2
-    IFS=',' read -ra parts <<< "$names"
-    # A Mac with zero login items yields an empty array, and macOS's bash 3.2
-    # treats "${parts[@]}" on an empty array as unbound under set -u.
-    [[ "${#parts[@]}" -gt 0 ]] || return 1
-    for entry in "${parts[@]}"; do
-        entry="$(/usr/bin/printf '%s' "$entry" | /usr/bin/sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    # A Mac with zero login items yields an empty string from the coercion
+    # above -- a real answer (nothing is registered), not a failed read.
+    [[ -n "$names" ]] || return 1
+    while IFS= read -r entry; do
         [[ "$entry" == "$target" ]] && return 0
-    done
+    done <<< "$names"
     return 1
 }
 

@@ -112,3 +112,48 @@ def test_never_disables_auto_update_opt_out(project_root, tmp_path):
     assert result.returncode == 0, result.stderr
     fields = status.strip("\n").split("\t")
     assert fields[2] == "ok"
+
+
+def test_pinned_brew_lines_survive_the_scan_parser(project_root):
+    """`brew outdated --verbose` appends " [pinned at X]" for a pinned
+    formula or cask. An end-anchored latest-version capture dropped those rows
+    entirely, so a pinned package's available update was invisible while the
+    collector's own line count still included it -- the "N개 업데이트" total
+    disagreed with the rows actually shown. The regex lives in the JXA
+    scanner, so it is exercised through the real JavaScriptCore engine here
+    rather than re-implemented in Python.
+    """
+    import re
+
+    source = (project_root / "scripts" / "scanner_helper.jxa.js").read_text(encoding="utf-8")
+    pattern = re.search(r"const m = line\.match\((/\^\(\\S\+\).*?)\);", source)
+    assert pattern, "could not find the devtoolUpdates line regex"
+
+    probe = f"""
+    var lines = [
+      "node (18.0.0) < 20.0.0 [pinned at 18.0.0]",
+      "firefox (139.0) != 140.0.1 [pinned at 139.0]",
+      "sqlite (3.53.2, 3.53.3) < 3.53.4",
+      "virtualbox (7.2.8,173730) != 7.2.14,174565",
+      "ada-url (3.4.4) < 4.0.0"
+    ];
+    var out = lines.map(function (line) {{
+      var m = line.match({pattern.group(1)});
+      if (!m) return "DROP";
+      return m[1] + "|" + m[3] + "|" + !!m[4];
+    }});
+    console.log(out.join("\\n"));
+    """
+    result = subprocess.run(
+        ["/usr/bin/osascript", "-l", "JavaScript", "-e", probe],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+    rows = result.stderr.strip().splitlines() or result.stdout.strip().splitlines()
+
+    assert "DROP" not in rows, rows
+    assert rows[0] == "node|20.0.0|true"
+    assert rows[1] == "firefox|140.0.1|true"
+    assert rows[2] == "sqlite|3.53.4|false"
+    assert rows[3] == "virtualbox|7.2.14,174565|false"
+    assert rows[4] == "ada-url|4.0.0|false"
