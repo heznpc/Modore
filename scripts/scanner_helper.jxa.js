@@ -776,6 +776,18 @@ raw.sections.gpu = [];
   );
 }
 
+// lsof escapes a space inside a COMMAND name as literal "\x20" ("Codex " ->
+// "Codex\x20") -- that escaping is what keeps whitespace field-splitting
+// correct, but passed through verbatim it leaks into the UI and into rule
+// matching against process names. Confirmed against real output that lsof
+// drops a partial escape rather than truncating mid-sequence, so replacing
+// the complete "\x20" form is sufficient. A trailing space left by the
+// 9-character truncation ("Codex\x20" -> "Codex ") is invisible in the UI
+// while still splitting dedup keys, so it is dropped too.
+function lsofCommandName(value) {
+  return String(value || "").replace(/\\x20/g, " ").replace(/ +$/, "");
+}
+
 const connections = [];
 tmp("net.txt").split(/\r?\n/).forEach(line => {
   if (!line.includes("->") || !line.includes("ESTABLISHED")) return;
@@ -785,7 +797,7 @@ tmp("net.txt").split(/\r?\n/).forEach(line => {
   if (!m) return;
   const ip = m[1].replace(/^\[|\]$/g, "");
   if (isLocalIp(ip)) return;
-  connections.push({ process: parts[0], pid_: Number(parts[1]), remoteAddress: ip, remotePort: Number(m[2]), path: "", vtIp: null });
+  connections.push({ process: lsofCommandName(parts[0]), pid_: Number(parts[1]), remoteAddress: ip, remotePort: Number(m[2]), path: "", vtIp: null });
 });
 raw.sections.network = connections
   .filter((c, i, arr) => arr.findIndex(x => x.process === c.process && x.remoteAddress === c.remoteAddress && x.remotePort === c.remotePort) === i);
@@ -795,7 +807,8 @@ raw.sections.listeningPorts = tmp("listen.txt").split(/\r?\n/).map(line => {
   const parts = line.trim().split(/\s+/);
   const m = line.match(/:(\d+)\s*\(LISTEN\)/);
   if (!m || parts.length < 2) return null;
-  return { port: Number(m[1]), name: parts[0], process: parts[0], pid_: Number(parts[1]), path: "" };
+  const name = lsofCommandName(parts[0]);
+  return { port: Number(m[1]), name: name, process: name, pid_: Number(parts[1]), path: "" };
 }).filter(Boolean).filter((p, i, arr) => arr.findIndex(x => x.port === p.port) === i).sort((a,b) => a.port - b.port);
 
 // Inventory only, from TCC.db's own access grants -- not live in-use

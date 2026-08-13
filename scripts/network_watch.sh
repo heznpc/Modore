@@ -113,19 +113,27 @@ emit "windowSeconds" "$WINDOW_SECONDS"
 # lsof 열: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME (ESTABLISHED 행은
 # NAME 뒤에 "(ESTABLISHED)"가 하나 더 붙어 총 10 필드). NAME(9번째 필드)이
 # established는 "LOCAL->REMOTE", listen은 "ADDR:PORT" 형태다.
+# 파일 구분에 FNR==NR을 쓰지 않는다: 첫 표본 파일이 비어 있으면(첫 lsof가
+# 실패해 `|| true`가 삼킨 경우) FNR==NR이 두 번째 파일에 참이 되어, 구간 중
+# 생긴 새 연결 전부가 "기존 연결"로 등록되고 보고가 조용히 사라진다. 파일
+# 인자 사이의 변수 대입(POSIX)은 파일이 비어도 순서대로 적용된다.
 new_established() {
     /usr/bin/awk '
-    FNR == NR {
-        if (FNR == 1) next
+    function command_name(value) {
+        gsub(/\\x20/, " ", value)
+        sub(/ +$/, "", value)
+        return value
+    }
+    FNR == 1 { next }
+    building == 1 {
         n = split($0, parts, /[ \t]+/)
         if (n < 9) next
         addr = parts[9]
         arrow = index(addr, "->")
         if (arrow == 0) next
-        seen[parts[1] "\t" substr(addr, arrow + 2)] = 1
+        seen[command_name(parts[1]) "\t" substr(addr, arrow + 2)] = 1
         next
     }
-    FNR == 1 { next }
     {
         n = split($0, parts, /[ \t]+/)
         if (n < 9) next
@@ -133,31 +141,37 @@ new_established() {
         arrow = index(addr, "->")
         if (arrow == 0) next
         remote = substr(addr, arrow + 2)
-        matchkey = parts[1] "\t" remote
+        process = command_name(parts[1])
+        matchkey = process "\t" remote
         if (matchkey in seen) next
-        printf "established\t%s\t%s\t%s\n", parts[1], parts[2], remote
+        printf "established\t%s\t%s\t%s\n", process, parts[2], remote
     }
-    ' "$1" "$2"
+    ' building=1 "$1" building=0 "$2"
 }
 
 new_listen() {
     /usr/bin/awk '
-    FNR == NR {
-        if (FNR == 1) next
-        n = split($0, parts, /[ \t]+/)
-        if (n < 9) next
-        seen[parts[1] "\t" parts[9]] = 1
-        next
+    function command_name(value) {
+        gsub(/\\x20/, " ", value)
+        sub(/ +$/, "", value)
+        return value
     }
     FNR == 1 { next }
+    building == 1 {
+        n = split($0, parts, /[ \t]+/)
+        if (n < 9) next
+        seen[command_name(parts[1]) "\t" parts[9]] = 1
+        next
+    }
     {
         n = split($0, parts, /[ \t]+/)
         if (n < 9) next
-        matchkey = parts[1] "\t" parts[9]
+        process = command_name(parts[1])
+        matchkey = process "\t" parts[9]
         if (matchkey in seen) next
-        printf "listen\t%s\t%s\t%s\n", parts[1], parts[2], parts[9]
+        printf "listen\t%s\t%s\t%s\n", process, parts[2], parts[9]
     }
-    ' "$1" "$2"
+    ' building=1 "$1" building=0 "$2"
 }
 
 NEW_ESTABLISHED_FILE="$WORKSPACE/new_established.tsv"
