@@ -9,7 +9,10 @@ whatever Homebrew state happens to exist on the machine running the suite.
 
 import os
 import subprocess
+import sys
 import textwrap
+
+import pytest
 
 
 def run_collector(project_root, tmp_path, brew_script: str):
@@ -114,6 +117,7 @@ def test_never_disables_auto_update_opt_out(project_root, tmp_path):
     assert fields[2] == "ok"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="drives the regex through the real JXA engine")
 def test_pinned_brew_lines_survive_the_scan_parser(project_root):
     """`brew outdated --verbose` appends " [pinned at X]" for a pinned
     formula or cask. An end-anchored latest-version capture dropped those rows
