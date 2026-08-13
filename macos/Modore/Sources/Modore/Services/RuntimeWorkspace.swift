@@ -273,6 +273,17 @@ enum RuntimeWorkspace {
                     mainResourceURL: mainApplicationResourceURL,
                     mainBundleURL: mainApplicationBundleURL
                 )
+                // A bundled runtime that is NOT the running app's own signed
+                // bundle skips runtimePayloadMatchesCodeSignature below. That
+                // combination is only constructible through this function's
+                // injected parameters -- production call sites use the
+                // defaults, where the two URLs coincide -- so it must carry
+                // the same explicit opt-in as the development branch. Without
+                // this, a future refactor that decouples the parameters would
+                // silently run unsigned code with no test to notice.
+                if !isSignedMainBundle, environment[developmentModeKey] != "1" {
+                    return nil
+                }
                 do {
                     try installBundledRuntime(from: bundledRuntime, to: installedRuntime)
                     try installUserConfigIfNeeded(

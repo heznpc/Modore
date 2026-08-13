@@ -201,7 +201,22 @@ cmd_execute() {
         return 1
     }
 
-    local created_epoch stored_name now age
+    # cleanup.sh cross-checks its whole manifest; the minimum equivalent here
+    # is refusing a manifest written under a different protocol version --
+    # fields this version reads could mean something else in another one.
+    local stored_version created_epoch stored_name now age
+    stored_version="$(/usr/bin/awk -F '\t' '$1 == "version" {print $2; count++} END {if (count != 1) exit 1}' "$executing")" || {
+        /bin/rm -f "$executing"
+        emit "status" "blocked"
+        emit "name" "$target"
+        return 1
+    }
+    [[ "$stored_version" == "$PROTOCOL_VERSION" ]] || {
+        /bin/rm -f "$executing"
+        emit "status" "blocked"
+        emit "name" "$target"
+        return 1
+    }
     created_epoch="$(/usr/bin/awk -F '\t' '$1 == "createdEpoch" {print $2; count++} END {if (count != 1) exit 1}' "$executing")" || {
         /bin/rm -f "$executing"
         emit "status" "blocked"

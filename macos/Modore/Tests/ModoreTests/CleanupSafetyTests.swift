@@ -122,6 +122,31 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(permissions?.intValue ?? 0, 0o600)
     }
 
+    // The bundled-runtime branch skips the code-signature payload comparison
+    // whenever the injected resourceURL is not the running app's own bundle.
+    // That combination is reachable only through parameter injection, so it
+    // must demand the same explicit opt-in as the development branch --
+    // otherwise a future refactor decoupling the parameters would silently
+    // execute unsigned code.
+    func testForeignBundledRuntimeIsRefusedWithoutDevelopmentOptIn() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-runtime-foreign-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resources = root.appendingPathComponent("resources")
+        let bundled = resources.appendingPathComponent("runtime")
+        let support = root.appendingPathComponent("support")
+        try writeRuntime(at: bundled, marker: "foreign")
+        let projectRoot = support.appendingPathComponent("Modore/results")
+
+        XCTAssertNil(RuntimeWorkspace.prepareExecution(
+            projectRoot: projectRoot,
+            environment: [:],
+            resourceURL: resources,
+            currentDirectory: root,
+            applicationSupportRoot: support
+        ))
+    }
+
     func testStandaloneExecutionUsesSignedBundleAfterStagedRuntimeChanges() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-runtime-execution-source-\(UUID().uuidString)")
@@ -509,7 +534,9 @@ final class CleanupSafetyTests: XCTestCase {
 
         XCTAssertTrue(RuntimeWorkspace.prepareForExecution(
             projectRoot: installed,
-            environment: [:],
+            // The foreign-bundle opt-in; without it the call is refused
+            // before reaching the revalidation semantics under test.
+            environment: ["PCH_DEVELOPMENT_MODE": "1"],
             resourceURL: resources,
             applicationSupportRoot: support
         ))
@@ -626,7 +653,7 @@ final class CleanupSafetyTests: XCTestCase {
 
         XCTAssertFalse(RuntimeWorkspace.prepareForExecution(
             projectRoot: installed,
-            environment: [:],
+            environment: ["PCH_DEVELOPMENT_MODE": "1"],
             resourceURL: resources,
             applicationSupportRoot: support
         ))
@@ -654,7 +681,7 @@ final class CleanupSafetyTests: XCTestCase {
 
         XCTAssertFalse(RuntimeWorkspace.prepareForExecution(
             projectRoot: installed,
-            environment: [:],
+            environment: ["PCH_DEVELOPMENT_MODE": "1"],
             resourceURL: resources,
             currentDirectory: root,
             applicationSupportRoot: support

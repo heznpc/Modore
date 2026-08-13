@@ -60,7 +60,11 @@ enum ObservationService {
             return .failure("봉인한 관찰 스크립트를 확인하지 못해 실행하지 않았습니다.")
         }
 
-        let timeout = TimeInterval(windowSeconds + 20)
+        // The slack after the window is exactly when 4 lsof + 2 ps snapshots
+        // run -- on precisely the overloaded machines this feature targets.
+        // 20 fixed seconds was tight there; a minute is still a hard cap,
+        // and the run is owner-attended either way.
+        let timeout = TimeInterval(windowSeconds + 60)
         async let cpuOutcome = run(
             argument: cpuInvocation.argument,
             files: cpuInvocation.files,
@@ -118,6 +122,11 @@ enum ObservationService {
             timeout: timeout
         )
         guard result.status == 0, result.endState == .exited else {
+            // "status 124" alone hid the one failure the owner can actually
+            // act on: the machine was too loaded to finish inside the cap.
+            if result.endState == .timedOut {
+                return .failure("관찰이 제한 시간을 넘겨 중단되었습니다. 시스템 부하가 높을 수 있으니 잠시 뒤 다시 시도하세요.")
+            }
             return .failure("관찰 스크립트 실행이 실패했습니다 (status \(result.status)).")
         }
         return .success(result.output)
