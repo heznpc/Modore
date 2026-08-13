@@ -55,7 +55,7 @@ private struct CleanupCandidateSection: View {
     }
 }
 
-private struct CleanupCandidateRow: View {
+struct CleanupCandidateRow: View {
     @EnvironmentObject private var model: ScanModel
     let item: StorageItem
 
