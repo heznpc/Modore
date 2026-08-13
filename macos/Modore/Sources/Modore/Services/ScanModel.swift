@@ -79,6 +79,7 @@ final class ScanModel: ObservableObject {
     var listeningPortRows: [ListeningPortRow] { content.listeningPortRows }
     var autorunRows: [AutorunRow] { content.autorunRows }
     var recentInstalls: [RecentInstallRow] { content.recentInstalls }
+    var privacyPermissionRows: [PrivacyPermissionRow] { content.privacyPermissionRows }
     var truncatedSecuritySections: [String] { content.truncatedSections }
     var attentionCpuRows: [CpuRow] { cpuRows.filter(\.requiresAttention) }
     var attentionBackgroundCpuRows: [BackgroundCpuRow] {

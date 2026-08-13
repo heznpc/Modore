@@ -10,6 +10,7 @@ struct SecurityPage: View {
     @State private var showsListeningPorts = false
     @State private var showsAutoruns = false
     @State private var showsRecentInstalls = false
+    @State private var showsPrivacyPermissions = false
 
     var body: some View {
         Form {
@@ -93,6 +94,18 @@ struct SecurityPage: View {
                 }
             }
 
+            if !model.privacyPermissionRows.isEmpty {
+                Section {
+                    privacyPermissionsDisclosure
+                } header: {
+                    NativeSectionHeader(
+                        title: "개인정보 권한",
+                        subtitle: "카메라·마이크 접근을 허용받은 앱 목록입니다. 지금 사용 중인지가 아니라 접근 자체가 가능한지를 보여주며, 대부분은 정상적인 권한입니다.",
+                        value: "\(model.privacyPermissionRows.count)개"
+                    )
+                }
+            }
+
             if !model.autorunRows.isEmpty || !model.recentInstalls.isEmpty {
                 Section("시스템 변경") {
                     autorunDisclosure
@@ -101,6 +114,28 @@ struct SecurityPage: View {
             }
         }
         .macSettingsFormStyle()
+    }
+
+    @ViewBuilder
+    private var privacyPermissionsDisclosure: some View {
+        if !model.privacyPermissionRows.isEmpty {
+            DisclosureGroup(isExpanded: $showsPrivacyPermissions) {
+                ForEach(model.privacyPermissionRows) { row in
+                    SecurityDetailRow(
+                        symbol: row.isCamera ? "camera" : "mic",
+                        title: row.client,
+                        detail: row.isCamera ? "카메라 접근 허용됨" : "마이크 접근 허용됨"
+                    )
+                }
+            } label: {
+                SecurityDisclosureLabel(
+                    symbol: "camera",
+                    title: "카메라·마이크 권한",
+                    detail: "전체 디스크 접근 권한이 있는 경우에만 확인됩니다.",
+                    value: "\(model.privacyPermissionRows.count)개"
+                )
+            }
+        }
     }
 
     @ViewBuilder

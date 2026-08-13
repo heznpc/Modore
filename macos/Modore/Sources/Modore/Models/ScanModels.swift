@@ -301,6 +301,23 @@ struct BackgroundCpuRow: Identifiable {
     var isDetachedFromAnApp: Bool { startedFromShell && !selfResponsible }
 }
 
+/// One TCC.db access grant for the camera or microphone -- inventory only.
+/// macOS gives no entitlement-free way to ask "is this in use right now",
+/// so this reports who *can* access the device, not who is doing so.
+struct PrivacyPermissionRow: Identifiable {
+    let id = UUID()
+    let kind: String
+    let client: String
+
+    init?(json: [String: Any]) {
+        kind = JsonRead.string(json, "kind")
+        client = JsonRead.string(json, "client")
+        guard !kind.isEmpty, !client.isEmpty else { return nil }
+    }
+
+    var isCamera: Bool { kind == "camera" }
+}
+
 struct NetworkRow: Identifiable {
     let id = UUID()
     let process: String

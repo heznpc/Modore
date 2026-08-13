@@ -479,6 +479,19 @@ def test_release_artifacts_exclude_runtime_python(project_root):
         f"missing from WINDOWS_FILES: {ps1_files - set(module.WINDOWS_FILES)}"
     )
 
+    # Same gap, same fix, macOS side: scripts/modules/macos/*.sh is also a
+    # hand-maintained list inside MACOS_BASE_FILES, not a glob. A new module
+    # sourced by scanner.sh works in every local/CI run (straight from the
+    # checkout) while silently missing from the real release zip -- caught
+    # this exact way once already for privacy.sh before this guard existed.
+    macos_module_files = {
+        path.relative_to(project_root).as_posix()
+        for path in (project_root / "scripts" / "modules" / "macos").glob("*.sh")
+    }
+    assert macos_module_files.issubset(set(module.MACOS_FILES)), (
+        f"missing from MACOS_FILES: {macos_module_files - set(module.MACOS_FILES)}"
+    )
+
 
 def test_macos_launcher_is_executable(project_root):
     mode = (project_root / "scan.command").stat().st_mode
@@ -769,6 +782,90 @@ collect_security
     assert "security_baseline\tfailed" in failed_captured, failed_captured
     assert "GATEKEEPER=\n" in failed_security, f"stderr text must not appear in GATEKEEPER, got:\n{failed_security}"
     assert "unexpected internal error" not in failed_security
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="uses real macOS sqlite3")
+def test_macos_privacy_permissions_reports_only_allowed_camera_and_microphone_grants(project_root, tmp_path):
+    """collect_privacy_permissions reads TCC.db's real access table -- this
+    builds a genuine SQLite fixture with that exact schema (not a hand-typed
+    TSV stand-in) and runs the real extracted function against it via the
+    real sqlite3 binary. Must include only auth_value=2 (allowed) rows for
+    camera/microphone specifically: a denied camera grant, an allowed grant
+    for an unrelated service (Contacts), and a denied microphone grant must
+    all be excluded -- proving the SQL filter, not just the shell plumbing
+    around it, is exercised for real."""
+    import sqlite3
+
+    source_lines = (project_root / "scripts" / "modules" / "macos" / "privacy.sh").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(source_lines) if line.startswith("collect_privacy_permissions() {"))
+    end = next(i for i, line in enumerate(source_lines[start:], start) if line == "}") + 1
+    collect_privacy_permissions_src = "\n".join(source_lines[start:end])
+    assert collect_privacy_permissions_src.endswith("}"), "extraction boundary moved; update this test"
+
+    def build_tcc_fixture(path, rows):
+        connection = sqlite3.connect(str(path))
+        connection.execute(
+            "CREATE TABLE access (service TEXT, client TEXT, client_type INTEGER, "
+            "auth_value INTEGER, auth_reason INTEGER, auth_version INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO access VALUES (?, ?, 0, ?, 0, 1)", rows
+        )
+        connection.commit()
+        connection.close()
+
+    def run_scenario(tcc_db_path, label):
+        scenario_dir = tmp_path / label
+        tmp_dir = scenario_dir / "tmp"
+        tmp_dir.mkdir(parents=True)
+        harness = scenario_dir / "harness.sh"
+        harness.write_text(
+            f"""#!/bin/bash
+set -u
+TMP_DIR="{tmp_dir}"
+PCH_TCC_DB_PATH="{tcc_db_path}"
+record_collection_status() {{
+    printf 'status\\t%s\\n' "$3" > "{scenario_dir}/captured-status.txt"
+    printf 'detail\\t%s\\n' "$5" >> "{scenario_dir}/captured-status.txt"
+}}
+
+{collect_privacy_permissions_src}
+
+collect_privacy_permissions
+""",
+            encoding="utf-8",
+        )
+        harness.chmod(0o700)
+        result = subprocess.run(
+            ["/bin/bash", str(harness)], capture_output=True, text=True, encoding="utf-8", timeout=15
+        )
+        assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        captured = (scenario_dir / "captured-status.txt").read_text(encoding="utf-8")
+        privacy_tsv = (tmp_dir / "privacy.tsv").read_text(encoding="utf-8")
+        return captured, privacy_tsv
+
+    tcc_db = tmp_path / "TCC.db"
+    build_tcc_fixture(tcc_db, [
+        ("kTCCServiceCamera", "com.apple.FaceTime", 2),
+        ("kTCCServiceMicrophone", "com.apple.FaceTime", 2),
+        ("kTCCServiceCamera", "com.example.denied-camera", 0),
+        ("kTCCServiceMicrophone", "com.example.denied-mic", 0),
+        ("kTCCServiceContacts", "com.example.unrelated-service", 2),
+    ])
+    ok_captured, ok_privacy = run_scenario(tcc_db, "allowed-and-denied-mixed")
+    assert "status\tok" in ok_captured, ok_captured
+    assert "kTCCServiceCamera\tcom.apple.FaceTime" in ok_privacy
+    assert "kTCCServiceMicrophone\tcom.apple.FaceTime" in ok_privacy
+    assert "denied-camera" not in ok_privacy
+    assert "denied-mic" not in ok_privacy
+    assert "unrelated-service" not in ok_privacy
+
+    # No TCC.db at the pinned path (the real no-Full-Disk-Access shape,
+    # where macOS makes the file appear not to exist at all) must degrade
+    # cleanly to unavailable, not fail the whole collector.
+    missing_captured, missing_privacy = run_scenario(tmp_path / "does-not-exist" / "TCC.db", "no-full-disk-access")
+    assert "status\tunavailable" in missing_captured, missing_captured
+    assert missing_privacy == ""
 
 
 def test_macos_default_scan_never_prompts_for_sfltool_admin_access(project_root):
