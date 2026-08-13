@@ -4,9 +4,9 @@
 # cleanup.sh는 파일/디렉터리 경로를 대상으로 스테이징-휴지통-매니페스트
 # 정합성 검사를 하도록 설계되어 있다. 로그인 항목은 경로가 아니라 System
 # Events가 관리하는 이름 하나뿐이라 그 기계장치가 통째로 맞지 않는다. 그래서
-# cleanup.sh의 승인 토큰 패턴(무작위 토큰 발급 -> 파일로 1회성 소비 -> TTL
-# 검증)만 재사용하고, 파일 대상 전용 로직(매니페스트 크기·inode 비교, 휴지통
-# 이동, 스테이징)은 옮기지 않았다.
+# 토큰 발급·전달·1회성 소비(무엇을 승인했는지와 무관한 부분)는
+# modules/approval_token.sh를 cleanup.sh와 함께 쓰고, 파일 대상 전용 로직
+# (매니페스트 크기·inode 비교, 휴지통 이동, 스테이징)은 옮기지 않았다.
 #
 # Preview는 읽기 전용: 이름이 현재 로그인 항목 목록에 실제로 있는지 확인한
 # 뒤에만 토큰을 발급한다. Execute는 --owner-approved와 유효한 승인 토큰을
@@ -33,6 +33,8 @@ unset BASH_ENV ENV CDPATH GLOBIGNORE
 # dirname fallback keeps direct/dev-mode invocations working unchanged.
 # shellcheck disable=SC1090  # target is env-selected; see scanner.sh
 source "${PCH_PINNED_SUPPORT_DIR_MODULE:-$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/support_dir.sh}"
+# shellcheck disable=SC1090  # target is env-selected; see scanner.sh
+source "${PCH_PINNED_APPROVAL_TOKEN_MODULE:-$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/approval_token.sh}"
 
 PROTOCOL_VERSION="1"
 APPROVAL_TTL_SECONDS=900
@@ -71,41 +73,6 @@ applescript_escape() {
     value="${value//\\/\\\\}"
     value="${value//\"/\\\"}"
     /usr/bin/printf '%s' "$value"
-}
-
-approval_token_file_size() {
-    local source="$1"
-    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
-        /usr/bin/stat -f '%z' "$source" 2>/dev/null
-    else
-        /usr/bin/stat -L -c '%s' "$source" 2>/dev/null
-    fi
-}
-
-read_approval_token_file() {
-    local source="$1"
-    local size token
-    [[ "$source" =~ ^/dev/fd/[0-9]+$ && -f "$source" ]] || return 1
-    size="$(approval_token_file_size "$source")" || return 1
-    [[ "$size" == "64" ]] || return 1
-    token="$(/bin/dd if="$source" bs=64 count=1 2>/dev/null)" || return 1
-    [[ "$token" =~ ^[0-9a-f]{64}$ ]] || return 1
-    APPROVAL_TOKEN="$token"
-    return 0
-}
-
-prepare_private_directory() {
-    local directory="$1"
-    local canonical
-    /bin/mkdir -p "$directory" || return 1
-    [[ -d "$directory" && ! -L "$directory" ]] || return 1
-    canonical="$(cd -P "$directory" 2>/dev/null && /bin/pwd -P)" || return 1
-    [[ "$canonical" == "$directory" ]] || return 1
-    /bin/chmod 700 "$directory" 2>/dev/null || return 1
-}
-
-new_approval_token() {
-    /usr/bin/openssl rand -hex 32 2>/dev/null
 }
 
 current_login_item_names() {

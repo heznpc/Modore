@@ -506,6 +506,20 @@ def test_release_artifacts_exclude_runtime_python(project_root):
         f"missing from MACOS_FILES: {macos_top_level_scripts - set(module.MACOS_FILES)}"
     )
 
+    # Third instance of the identical gap: scripts/modules/*.sh (flat, not
+    # recursive into modules/macos/ -- that's the glob two blocks up) is
+    # where support_dir.sh and approval_token.sh live, and was never
+    # globbed at all until this line -- only ever protected by the fact
+    # that both happened to be added to MACOS_BASE_FILES by hand, same as
+    # every other file this class of gap has bitten.
+    macos_shared_module_files = {
+        path.relative_to(project_root).as_posix()
+        for path in (project_root / "scripts" / "modules").glob("*.sh")
+    }
+    assert macos_shared_module_files.issubset(set(module.MACOS_FILES)), (
+        f"missing from MACOS_FILES: {macos_shared_module_files - set(module.MACOS_FILES)}"
+    )
+
 
 @pytest.mark.parametrize(
     "script,args",
@@ -518,21 +532,28 @@ def test_release_artifacts_exclude_runtime_python(project_root):
 def test_pinned_fd_execution_sources_support_dir_module(project_root, tmp_path, script, args):
     """Sealed app runs execute these scripts from /dev/fd/N (LocalProcessRunner's
     pinned-file mechanism), where the sibling-relative source of
-    modules/support_dir.sh resolves to the nonexistent /dev/fd/modules/... --
-    and bash CONTINUES past a failed source, leaving SUPPORT_DIR_NAME unset
-    and killing the script later under set -u. Every dev-mode and CI run
-    invokes the scripts by real path, so nothing else can catch this: sealed
-    cleanup/schedule/login-items were all silently dead from the day the
-    source line landed until this contract existed. The fix (and this test's
-    shape) is scanner.sh's existing pattern: the module rides its own pinned
-    descriptor, announced via PCH_PINNED_SUPPORT_DIR_MODULE."""
+    modules/support_dir.sh (and, for cleanup.sh/login_items.sh,
+    modules/approval_token.sh) resolves to the nonexistent
+    /dev/fd/modules/... -- and bash CONTINUES past a failed source, leaving
+    SUPPORT_DIR_NAME (or the approval-token functions) unset and killing the
+    script later under set -u. Every dev-mode and CI run invokes the scripts
+    by real path, so nothing else can catch this: sealed cleanup/schedule/
+    login-items were all silently dead from the day the source line landed
+    until this contract existed. The fix (and this test's shape) is
+    scanner.sh's existing pattern: each module rides its own pinned
+    descriptor, announced via its own PCH_PINNED_*_MODULE env var."""
     module_fd = os.open(str(project_root / "scripts" / "modules" / "support_dir.sh"), os.O_RDONLY)
+    token_module_fd = os.open(str(project_root / "scripts" / "modules" / "approval_token.sh"), os.O_RDONLY)
     script_fd = os.open(str(project_root / script), os.O_RDONLY)
     try:
         home = tmp_path / "home"
         home.mkdir(exist_ok=True)
         env = os.environ.copy()
         env["PCH_PINNED_SUPPORT_DIR_MODULE"] = f"/dev/fd/{module_fd}"
+        # schedule.sh doesn't source approval_token.sh at all; pinning it
+        # anyway is harmless (an unreferenced fd/env var) and keeps this
+        # loop the same shape for all three scripts.
+        env["PCH_PINNED_APPROVAL_TOKEN_MODULE"] = f"/dev/fd/{token_module_fd}"
         # PCH_TEST_MODE + PCH_HOME_OVERRIDE is cleanup.sh/schedule.sh's own
         # established test entry point (see run_cleanup in
         # test_macos_cleanup.py) -- without it, both scripts refuse to run
@@ -553,14 +574,16 @@ def test_pinned_fd_execution_sources_support_dir_module(project_root, tmp_path, 
             text=True,
             encoding="utf-8",
             env=env,
-            pass_fds=(module_fd, script_fd),
+            pass_fds=(module_fd, token_module_fd, script_fd),
         )
     finally:
         os.close(module_fd)
+        os.close(token_module_fd)
         os.close(script_fd)
 
     assert "unbound variable" not in result.stderr, result.stderr
     assert "support_dir.sh: No such file or directory" not in result.stderr, result.stderr
+    assert "approval_token.sh: No such file or directory" not in result.stderr, result.stderr
     if script.endswith("cleanup.sh"):
         assert result.returncode == 0, result.stderr
         assert "recipe\t" in result.stdout

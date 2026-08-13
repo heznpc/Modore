@@ -94,10 +94,13 @@ enum LoginItemService {
         guard let invocation = execution.pinnedInvocation(
             relativePath: "scripts/login_items.sh",
             name: "login_items"
-        ), let supportModule = execution.pinnedSupportDirectoryModule() else {
+        ), let supportModule = execution.pinnedSupportDirectoryModule(),
+           let tokenModule = execution.pinnedApprovalTokenModule() else {
             return .failure("봉인한 로그인 항목 스크립트를 확인하지 못해 실행하지 않았습니다.")
         }
-        var files = invocation.files.merging(supportModule.files) { current, _ in current }
+        var files = invocation.files
+            .merging(supportModule.files) { current, _ in current }
+            .merging(tokenModule.files) { current, _ in current }
         for (key, value) in pinnedFiles {
             files[key] = value
         }
@@ -108,7 +111,7 @@ enum LoginItemService {
             expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
             expectedSignedBundleURL: execution.signedBundleURL,
             pinnedFiles: files,
-            environment: supportModule.environment,
+            environment: supportModule.environment.merging(tokenModule.environment) { current, _ in current },
             timeout: 30
         )
         // login_items.sh's own contract: 0 for a completed action, 1 for an
