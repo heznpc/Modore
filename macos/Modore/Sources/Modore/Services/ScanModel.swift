@@ -38,6 +38,9 @@ final class ScanModel: ObservableObject {
     @Published var pendingLoginItemRemoval: PendingLoginItemRemoval?
     @Published var loginItemActionInFlight: String?
     @Published var archiveError: String?
+    @Published var observationResult: ObservationResult?
+    @Published var observationInFlight = false
+    @Published var observationErrorMessage: String?
 
     let logStore = ScanLogStore()
     let projectRoot: URL

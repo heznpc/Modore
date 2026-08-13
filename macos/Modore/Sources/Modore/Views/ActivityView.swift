@@ -6,6 +6,7 @@ struct ActivityPage: View {
     var body: some View {
         Form {
             StorageWatchActivitySection()
+            ContinuousObservationSection()
 
             if let latestEvent = model.storageWatchPathEvents.last {
                 StorageWatchPathEvidenceSection(event: latestEvent)
@@ -71,6 +72,114 @@ private struct StorageWatchActivitySection: View {
         case .attemptedThenFailed: return "exclamationmark.circle"
         case .recentSuccess: return "checkmark.circle"
         case .staleSuccess: return "clock.badge.exclamationmark"
+        }
+    }
+}
+
+private struct ContinuousObservationSection: View {
+    @EnvironmentObject private var model: ScanModel
+    @State private var windowSeconds = 60
+
+    var body: some View {
+        Section {
+            HStack {
+                Picker("관찰 시간", selection: $windowSeconds) {
+                    Text("30초").tag(30)
+                    Text("1분").tag(60)
+                    Text("2분").tag(120)
+                    Text("5분").tag(300)
+                }
+                .labelsHidden()
+                .frame(maxWidth: 140)
+                Spacer()
+                Button(model.observationInFlight ? "관찰 중…" : "지금 관찰하기") {
+                    model.observeNow(windowSeconds: windowSeconds)
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.observationInFlight)
+            }
+
+            if model.observationInFlight {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("\(windowSeconds)초 동안 CPU와 네트워크를 관찰하는 중입니다…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else if let message = model.observationErrorMessage {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if let result = model.observationResult {
+                ObservationResultRows(result: result)
+            } else {
+                Text("기본 검사는 순간 스냅샷만 봅니다. 관찰을 시작하면 지정한 시간 동안 실제 CPU 사용과 새로 나타난 네트워크 연결만 골라 보여줍니다.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            NativeSectionHeader(
+                title: "CPU·네트워크 관찰",
+                subtitle: "지정한 시간 동안 두 시점을 비교해 실제 점유와 새 연결만 보고합니다. 예약 실행이 아니라 누를 때만 동작합니다.",
+                value: model.observationResult.map { "\($0.windowSeconds)초 관찰됨" } ?? "미실행"
+            )
+        }
+    }
+}
+
+private struct ObservationResultRows: View {
+    let result: ObservationResult
+
+    var body: some View {
+        if result.processRows.isEmpty {
+            Text("관찰 구간 동안 뚜렷한 CPU 사용이 없었습니다.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(result.processRows) { row in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.name)
+                            .font(.body.weight(.medium))
+                        Text(row.isDetachedFromAnApp ? "\(row.ownerName)에서 시작된 셸 작업" : row.ownerName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(String(format: "%.1f%%", row.percent))
+                        .font(.callout.weight(.medium))
+                        .monospacedDigit()
+                }
+            }
+        }
+
+        if result.networkUnavailable {
+            Text("lsof를 사용할 수 없어 네트워크는 관찰하지 못했습니다.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else if result.newConnectionRows.isEmpty {
+            Text("관찰 구간 동안 새로 나타난 연결이나 포트가 없었습니다.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(result.newConnectionRows) { row in
+                HStack {
+                    Image(systemName: row.isListening ? "antenna.radiowaves.left.and.right" : "network")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.process)
+                            .font(.body.weight(.medium))
+                        Text(row.isListening ? "새 수신 포트" : "새 연결")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(row.address)
+                        .font(.callout.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }
