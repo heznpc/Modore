@@ -52,6 +52,7 @@ def test_codex_and_claude_work_records_are_protected_inventory(project_root):
         '$HOME/.claude/sessions',
         '$HOME/.claude/history.jsonl',
         '$HOME/.claude/session-env',
+        '$HOME/.claude/worktrees',
         '$HOME/.claude/shell-snapshots',
         '$HOME/.claude/tasks',
         '$HOME/.claude/plans',
