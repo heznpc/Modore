@@ -507,6 +507,67 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     )
 
 
+@pytest.mark.parametrize(
+    "script,args",
+    [
+        ("scripts/cleanup.sh", ["--list"]),
+        ("scripts/schedule.sh", ["--status"]),
+        ("scripts/login_items.sh", ["--preview", "NotARealLoginItem"]),
+    ],
+)
+def test_pinned_fd_execution_sources_support_dir_module(project_root, tmp_path, script, args):
+    """Sealed app runs execute these scripts from /dev/fd/N (LocalProcessRunner's
+    pinned-file mechanism), where the sibling-relative source of
+    modules/support_dir.sh resolves to the nonexistent /dev/fd/modules/... --
+    and bash CONTINUES past a failed source, leaving SUPPORT_DIR_NAME unset
+    and killing the script later under set -u. Every dev-mode and CI run
+    invokes the scripts by real path, so nothing else can catch this: sealed
+    cleanup/schedule/login-items were all silently dead from the day the
+    source line landed until this contract existed. The fix (and this test's
+    shape) is scanner.sh's existing pattern: the module rides its own pinned
+    descriptor, announced via PCH_PINNED_SUPPORT_DIR_MODULE."""
+    module_fd = os.open(str(project_root / "scripts" / "modules" / "support_dir.sh"), os.O_RDONLY)
+    script_fd = os.open(str(project_root / script), os.O_RDONLY)
+    try:
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        env = os.environ.copy()
+        env["PCH_PINNED_SUPPORT_DIR_MODULE"] = f"/dev/fd/{module_fd}"
+        # PCH_TEST_MODE + PCH_HOME_OVERRIDE is cleanup.sh/schedule.sh's own
+        # established test entry point (see run_cleanup in
+        # test_macos_cleanup.py) -- without it, both scripts refuse to run
+        # at all on a CI runner whose account home this test's tmp_path
+        # isn't (a real, separate safety guard unrelated to what this test
+        # checks), plain HOME override isn't enough to satisfy it.
+        env["PCH_TEST_MODE"] = "1"
+        env["PCH_HOME_OVERRIDE"] = str(home)
+        env["HOME"] = str(home)
+        if script.endswith("login_items.sh"):
+            stub = tmp_path / "osascript-stub"
+            stub.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+            stub.chmod(0o755)
+            env["PCH_TEST_OSASCRIPT_BIN"] = str(stub)
+        result = subprocess.run(
+            ["/bin/bash", f"/dev/fd/{script_fd}", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            pass_fds=(module_fd, script_fd),
+        )
+    finally:
+        os.close(module_fd)
+        os.close(script_fd)
+
+    assert "unbound variable" not in result.stderr, result.stderr
+    assert "support_dir.sh: No such file or directory" not in result.stderr, result.stderr
+    if script.endswith("cleanup.sh"):
+        assert result.returncode == 0, result.stderr
+        assert "recipe\t" in result.stdout
+    if script.endswith("login_items.sh"):
+        assert "status\tnot_found" in result.stdout
+
+
 def test_macos_launcher_is_executable(project_root):
     mode = (project_root / "scan.command").stat().st_mode
     assert mode & 0o111
