@@ -792,6 +792,21 @@ raw.sections.listeningPorts = tmp("listen.txt").split(/\r?\n/).map(line => {
   return { port: Number(m[1]), name: parts[0], process: parts[0], pid_: Number(parts[1]), path: "" };
 }).filter(Boolean).filter((p, i, arr) => arr.findIndex(x => x.port === p.port) === i).sort((a,b) => a.port - b.port);
 
+// Inventory only, from TCC.db's own access grants -- not live in-use
+// detection (macOS gives no entitlement-free way to ask "is another app
+// using the camera right now"), and no danger/warning verdict: most grants
+// here are ordinary (Zoom, FaceTime, browsers), so guessing which ones are
+// "concerning" without a curated allowlist would just be noise.
+raw.sections.privacyPermissions = tmp("privacy.tsv").trim().split(/\r?\n/).filter(Boolean).map(line => {
+  const parts = line.split("\t");
+  if (parts.length < 2) return null;
+  const [service, client] = parts;
+  const kind = service === "kTCCServiceCamera" ? "camera"
+    : service === "kTCCServiceMicrophone" ? "microphone" : null;
+  if (!kind || !client) return null;
+  return { kind, client };
+}).filter(Boolean);
+
 // codesign -dv writes its verdict to stderr, and exits non-zero for a
 // genuinely unsigned binary -- doShellScript() would throw and the stderr
 // text (which is what actually says "code object is not signed") would be

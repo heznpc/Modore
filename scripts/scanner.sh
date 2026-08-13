@@ -30,6 +30,7 @@ AUTORUNS_MODULE="${PCH_PINNED_AUTORUNS_MODULE:-$MODULES_DIR/autoruns.sh}"
 SECURITY_MODULE="${PCH_PINNED_SECURITY_MODULE:-$MODULES_DIR/security.sh}"
 STORAGE_MODULE="${PCH_PINNED_STORAGE_MODULE:-$MODULES_DIR/storage.sh}"
 IDLE_CPU_MODULE="${PCH_PINNED_IDLE_CPU_MODULE:-$MODULES_DIR/idle_cpu.sh}"
+PRIVACY_MODULE="${PCH_PINNED_PRIVACY_MODULE:-$MODULES_DIR/privacy.sh}"
 SCANNER_HELPER="${PCH_PINNED_SCANNER_HELPER:-$SCRIPT_DIR/scanner_helper.jxa.js}"
 PCH_PINNED_IDLE_CPU_SCRIPT="${PCH_PINNED_IDLE_CPU_SCRIPT:-$SCRIPT_DIR/idle_cpu.sh}"
 export PCH_PINNED_IDLE_CPU_SCRIPT
@@ -144,26 +145,31 @@ collection_failure_status() {
 # shellcheck source=modules/macos/idle_cpu.sh
 # shellcheck disable=SC1091
 . "$IDLE_CPU_MODULE"
+# shellcheck source=modules/macos/privacy.sh
+# shellcheck disable=SC1091
+. "$PRIVACY_MODULE"
 
 # ------------------------------------------------------------
 # 섹션별 수집
 # ------------------------------------------------------------
-echo "  [1/8] CPU 사용량..."
+echo "  [1/9] CPU 사용량..."
 collect_cpu
-echo "  [2/8] 네트워크 연결..."
+echo "  [2/9] 네트워크 연결..."
 collect_network
-echo "  [3/8] 열린 포트..."
+echo "  [3/9] 열린 포트..."
 collect_listening_ports
-echo "  [4/8] 자동 실행..."
+echo "  [4/9] 자동 실행..."
 collect_autoruns
-echo "  [5/8] 보안 상태..."
+echo "  [5/9] 보안 상태..."
 collect_security
-echo "  [6/8] 저장공간 압박..."
+echo "  [6/9] 저장공간 압박..."
 collect_storage
-echo "  [7/8] 시스템 부하..."
+echo "  [7/9] 시스템 부하..."
 collect_system_load
-echo "  [8/8] 유휴 CPU 관측..."
+echo "  [8/9] 유휴 CPU 관측..."
 collect_background_cpu
+echo "  [9/9] 카메라·마이크 권한..."
+collect_privacy_permissions
 echo "  → 결과 집계 및 rule engine 실행..."
 
 # ------------------------------------------------------------
