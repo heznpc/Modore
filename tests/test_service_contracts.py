@@ -529,15 +529,24 @@ def test_pinned_fd_execution_sources_support_dir_module(project_root, tmp_path, 
     module_fd = os.open(str(project_root / "scripts" / "modules" / "support_dir.sh"), os.O_RDONLY)
     script_fd = os.open(str(project_root / script), os.O_RDONLY)
     try:
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
         env = os.environ.copy()
         env["PCH_PINNED_SUPPORT_DIR_MODULE"] = f"/dev/fd/{module_fd}"
+        # PCH_TEST_MODE + PCH_HOME_OVERRIDE is cleanup.sh/schedule.sh's own
+        # established test entry point (see run_cleanup in
+        # test_macos_cleanup.py) -- without it, both scripts refuse to run
+        # at all on a CI runner whose account home this test's tmp_path
+        # isn't (a real, separate safety guard unrelated to what this test
+        # checks), plain HOME override isn't enough to satisfy it.
+        env["PCH_TEST_MODE"] = "1"
+        env["PCH_HOME_OVERRIDE"] = str(home)
+        env["HOME"] = str(home)
         if script.endswith("login_items.sh"):
             stub = tmp_path / "osascript-stub"
             stub.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
             stub.chmod(0o755)
-            env["PCH_TEST_MODE"] = "1"
             env["PCH_TEST_OSASCRIPT_BIN"] = str(stub)
-            env["HOME"] = str(tmp_path / "home")
         result = subprocess.run(
             ["/bin/bash", f"/dev/fd/{script_fd}", *args],
             capture_output=True,
