@@ -102,6 +102,14 @@ enum LoginItemService {
             .merging(supportModule.files) { current, _ in current }
             .merging(tokenModule.files) { current, _ in current }
         for (key, value) in pinnedFiles {
+            // The module dictionaries merge keep-first, but a raw value used
+            // to land with an unconditional overwrite -- the exact asymmetry
+            // that made the "approval_token" vs "approval_token_module" key
+            // collision possible to reintroduce silently. A colliding key now
+            // refuses instead of clobbering whichever payload merged first.
+            guard files[key] == nil else {
+                return .failure("내부 오류: 고정 파일 키가 충돌해 실행하지 않았습니다 (\(key)).")
+            }
             files[key] = value
         }
         let result = await LocalProcessRunner.capture(

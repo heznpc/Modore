@@ -214,6 +214,27 @@ def test_execute_rejects_reusing_an_already_consumed_token(project_root, tmp_pat
     assert second_payload["status"] == "blocked"
 
 
+def test_execute_rejects_a_manifest_from_a_different_protocol_version(project_root, tmp_path):
+    """Fields this version reads could mean something else under another
+    protocol version, so a version mismatch must block instead of executing
+    on a guess. cleanup.sh cross-checks its whole manifest; this is the
+    minimum equivalent for the login-item manifest."""
+    home = tmp_path / "home"
+    stub, state_file, _ = _fake_osascript(tmp_path, initial_items=["Foo", "Bar"])
+
+    _, preview_payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
+    token = preview_payload["approvalToken"]
+    manifest = home / "Library" / "Application Support" / "Modore" / "login-item-approvals" / f"{token}.tsv"
+    tampered = manifest.read_text(encoding="utf-8").replace("version\t1", "version\t2")
+    manifest.write_text(tampered, encoding="utf-8")
+
+    result, payload = _execute(project_root, tmp_path, "Bar", token, osascript_stub=stub, home=home)
+
+    assert payload["status"] == "blocked", payload
+    assert result.returncode == 1
+    assert "Bar" in state_file.read_text(encoding="utf-8")
+
+
 def test_execute_rejects_a_token_approved_for_a_different_name(project_root, tmp_path):
     home = tmp_path / "home"
     stub, state_file, _ = _fake_osascript(tmp_path, initial_items=["Foo", "Bar"])
