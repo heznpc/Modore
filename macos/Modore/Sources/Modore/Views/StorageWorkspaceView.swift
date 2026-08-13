@@ -2,6 +2,7 @@ import SwiftUI
 
 enum StorageWorkspaceSection: String, CaseIterable, Identifiable {
     case cleanup
+    case goal
     case development
     case applications
     case simulators
@@ -11,6 +12,7 @@ enum StorageWorkspaceSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .cleanup: return "정리"
+        case .goal: return "목표"
         case .development: return "개발"
         case .applications: return "앱"
         case .simulators: return "Simulator"
@@ -44,6 +46,7 @@ struct StorageWorkspacePage: View {
     private func workspaceList(_ storage: StorageSnapshot) -> some View {
         switch section {
         case .cleanup: CleanupWorkspaceList(storage: storage)
+        case .goal: SpaceGoalWorkspaceList(storage: storage)
         case .development: DevelopmentWorkspaceList(storage: storage)
         case .applications: ApplicationWorkspaceList(storage: storage)
         case .simulators: SimulatorWorkspaceList(storage: storage)
@@ -89,6 +92,7 @@ private struct StorageWorkspaceToolbar: View {
     private var summary: String {
         switch section {
         case .cleanup: return "실행 가능한 대상의 점유 추정이며 미리보기에서 다시 측정합니다."
+        case .goal: return "목표 용량을 정하면 가장 큰 항목부터 채워 도달하는 최소 조합을 계산합니다."
         case .development: return "빌드 도구와 실행 중인 생성원을 구분해 보여줍니다."
         case .applications: return "앱 본체와 정확히 귀속되는 사용자 데이터만 검토합니다."
         case .simulators: return "보존한 기기와 실행 중인 기기는 삭제하지 않습니다."
@@ -98,6 +102,7 @@ private struct StorageWorkspaceToolbar: View {
     private var value: String {
         switch section {
         case .cleanup: return storage.reclaimableText
+        case .goal: return storage.reclaimableText
         case .development: return storage.developerText
         case .applications: return storage.applicationsText
         case .simulators: return storage.simulatorText
