@@ -137,6 +137,48 @@ def test_no_changes_reports_zero_of_both(project_root, tmp_path):
     assert values["newListen"] == "0"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
+def test_lsof_escaped_spaces_in_process_names_are_unescaped(project_root, tmp_path):
+    # lsof escapes a space inside a COMMAND name as literal "\x20"
+    # ("Codex " -> "Codex\x20") -- real output from this machine, not
+    # hypothetical. Passed through verbatim it leaks into the app's UI;
+    # the trailing space itself is 9-character truncation residue and is
+    # trimmed rather than shown invisibly.
+    first = 'Chrome     1000 ren   23u  IPv4 0xaaa      0t0  TCP 192.168.0.156:51000->1.1.1.1:443 (ESTABLISHED)\n'
+    second = (
+        'Chrome     1000 ren   23u  IPv4 0xaaa      0t0  TCP 192.168.0.156:51000->1.1.1.1:443 (ESTABLISHED)\n'
+        'Codex\\x20  1142 ren   24u  IPv4 0xbbb      0t0  TCP 192.168.0.156:52000->2.2.2.2:8080 (ESTABLISHED)\n'
+    )
+    first_listen = ""
+    second_listen = 'Manus\\x20  2200 ren   11u  IPv4 0xccc      0t0  TCP *:9999 (LISTEN)\n'
+
+    result = run_watcher(
+        project_root, tmp_path, first, second, first_listen, second_listen, "--window", "5"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert parse_rows(result.stdout, "established") == [["Codex", "1142", "2.2.2.2:8080"]]
+    assert parse_rows(result.stdout, "listen") == [["Manus", "2200", "*:9999"]]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
+def test_a_failed_first_sample_does_not_suppress_new_reports(project_root, tmp_path):
+    # When the first lsof invocation fails, `|| true` swallows it and the
+    # first sample file is empty -- lsof also exits 1 with no output when
+    # nothing matches, so an empty sample is a real production shape. The
+    # original awk used the FNR==NR idiom, which misreads the second file
+    # as the first when the first is empty: every connection made during
+    # the window was registered as "already seen" and reporting went
+    # silent. With no baseline the row can't be distinguished from a
+    # genuinely new one, and over-reporting is the safe direction.
+    second = 'Codex      1142 ren   24u  IPv4 0xbbb      0t0  TCP 192.168.0.156:52000->2.2.2.2:8080 (ESTABLISHED)\n'
+
+    result = run_watcher(project_root, tmp_path, "", second, "", "", "--window", "5")
+
+    assert result.returncode == 0, result.stderr
+    assert parse_rows(result.stdout, "established") == [["Codex", "1142", "2.2.2.2:8080"]]
+
+
 def test_watcher_refuses_an_unbounded_window(project_root, tmp_path):
     result = run_watcher(project_root, tmp_path, "", "", "", "", "--window", "9000")
 
