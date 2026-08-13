@@ -51,6 +51,7 @@ enum LocalProcessRunner {
         "PCH_PINNED_WHITELIST",
         "PCH_STORAGE_DU_TIMEOUT",
         "PCH_STORAGE_TOTAL_DU_BUDGET",
+        "PCH_STORAGE_WATCH_APP_BUNDLE",
         "PCH_STORAGE_WATCH_SCRIPT",
         "PCH_STORAGE_WATCH_SHA256",
         "VT_API_KEY",

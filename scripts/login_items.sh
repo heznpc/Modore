@@ -79,9 +79,18 @@ current_login_item_names() {
     "$OSASCRIPT_BIN" -e 'tell application "System Events" to get the name of every login item' 2>/dev/null
 }
 
+# 0 = present, 1 = confirmed absent, 2 = could not determine.
+#
+# "Could not determine" must never collapse into "absent". A failed System
+# Events query and an item that is genuinely gone are indistinguishable from
+# the exit status alone, and treating the first as the second made this
+# script report a persistence item as removed while it was still installed --
+# the exact class of silent false success the post-delete recheck exists to
+# prevent. An empty list from a *successful* query is still a real answer
+# (this Mac has zero login items), so only the query failing yields 2.
 login_item_exists() {
     local target="$1" names entry
-    names="$(current_login_item_names)" || return 1
+    names="$(current_login_item_names)" || return 2
     IFS=',' read -ra parts <<< "$names"
     # A Mac with zero login items yields an empty array, and macOS's bash 3.2
     # treats "${parts[@]}" on an empty array as unbound under set -u.
@@ -94,8 +103,16 @@ login_item_exists() {
 }
 
 cmd_preview() {
-    local target="$1"
-    if ! login_item_exists "$target"; then
+    local target="$1" presence
+    login_item_exists "$target"
+    presence=$?
+    if [[ "$presence" -eq 2 ]]; then
+        # No token may be issued off a reading we could not actually take.
+        emit "status" "blocked"
+        emit "name" "$target"
+        return 1
+    fi
+    if [[ "$presence" -ne 0 ]]; then
         emit "status" "not_found"
         emit "name" "$target"
         return 1
@@ -209,7 +226,17 @@ cmd_execute() {
         return 1
     fi
 
-    if ! login_item_exists "$target"; then
+    local presence
+    login_item_exists "$target"
+    presence=$?
+    if [[ "$presence" -eq 2 ]]; then
+        # Cannot read the current list, so we can neither confirm the item is
+        # there nor claim it is gone. Refuse rather than delete blind.
+        emit "status" "blocked"
+        emit "name" "$target"
+        return 1
+    fi
+    if [[ "$presence" -ne 0 ]]; then
         # Removed some other way (System Settings, the app itself) between
         # preview and execute. The desired end state already holds.
         emit "status" "already_gone"
@@ -222,8 +249,13 @@ cmd_execute() {
     "$OSASCRIPT_BIN" -e "tell application \"System Events\" to delete login item \"$escaped\"" >/dev/null 2>&1
 
     # A clean osascript exit only means the command was accepted, not that
-    # the item is actually gone. Re-read the real list before reporting ok.
-    if login_item_exists "$target"; then
+    # the item is actually gone. Re-read the real list before reporting ok --
+    # and only a successful read proving absence counts. A failed re-read
+    # leaves the outcome unknown, which is a failure to report removal, not
+    # a removal.
+    login_item_exists "$target"
+    presence=$?
+    if [[ "$presence" -ne 1 ]]; then
         emit "status" "failed"
         emit "name" "$target"
         return 1

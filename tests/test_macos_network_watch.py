@@ -16,6 +16,11 @@ from pathlib import Path
 import pytest
 
 LSOF_HEADER = "COMMAND     PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME"
+# Every real Mac has listening sockets (launchd, rapportd, mDNSResponder), so
+# a genuinely empty closing LISTEN read means the read failed. Tests that
+# aren't about the listen delta still need a plausible baseline in both
+# samples, or they'd be exercising the can't-read path by accident.
+BASELINE_LISTEN = 'rapportd    658  ren   11u  IPv4 0x475      0t0  TCP *:49152 (LISTEN)\n'
 
 
 def run_watcher(
@@ -23,8 +28,8 @@ def run_watcher(
     tmp_path: Path,
     first_established: str,
     second_established: str,
-    first_listen: str = "",
-    second_listen: str = "",
+    first_listen: str = BASELINE_LISTEN,
+    second_listen: str = BASELINE_LISTEN,
     *args: str,
 ):
     files = {
@@ -149,8 +154,8 @@ def test_lsof_escaped_spaces_in_process_names_are_unescaped(project_root, tmp_pa
         'Chrome     1000 ren   23u  IPv4 0xaaa      0t0  TCP 192.168.0.156:51000->1.1.1.1:443 (ESTABLISHED)\n'
         'Codex\\x20  1142 ren   24u  IPv4 0xbbb      0t0  TCP 192.168.0.156:52000->2.2.2.2:8080 (ESTABLISHED)\n'
     )
-    first_listen = ""
-    second_listen = 'Manus\\x20  2200 ren   11u  IPv4 0xccc      0t0  TCP *:9999 (LISTEN)\n'
+    first_listen = BASELINE_LISTEN
+    second_listen = BASELINE_LISTEN + 'Manus\\x20  2200 ren   11u  IPv4 0xccc      0t0  TCP *:9999 (LISTEN)\n'
 
     result = run_watcher(
         project_root, tmp_path, first, second, first_listen, second_listen, "--window", "5"
@@ -173,10 +178,34 @@ def test_a_failed_first_sample_does_not_suppress_new_reports(project_root, tmp_p
     # genuinely new one, and over-reporting is the safe direction.
     second = 'Codex      1142 ren   24u  IPv4 0xbbb      0t0  TCP 192.168.0.156:52000->2.2.2.2:8080 (ESTABLISHED)\n'
 
-    result = run_watcher(project_root, tmp_path, "", second, "", "", "--window", "5")
+    result = run_watcher(
+        project_root, tmp_path, "", second, BASELINE_LISTEN, BASELINE_LISTEN, "--window", "5"
+    )
 
     assert result.returncode == 0, result.stderr
     assert parse_rows(result.stdout, "established") == [["Codex", "1142", "2.2.2.2:8080"]]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
+def test_an_unreadable_closing_sample_is_reported_not_read_as_a_quiet_window(project_root, tmp_path):
+    # lsof exits non-zero with no output both on failure and on zero matches,
+    # and `|| true` erases the difference. Emitting newEstablished/newListen 0
+    # off a closing sample we may never have taken is a false all-clear on a
+    # security surface: the window looks quiet precisely because nothing was
+    # read. Every real Mac has listening sockets, so an empty closing LISTEN
+    # list is the usable liveness signal.
+    established = 'Chrome     1000 ren   23u  IPv4 0xaaa      0t0  TCP 192.168.0.156:51000->1.1.1.1:443 (ESTABLISHED)\n'
+
+    result = run_watcher(
+        project_root, tmp_path, established, established, BASELINE_LISTEN, "", "--window", "5"
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = parse_values(result.stdout)
+    assert "error" in values, values
+    # A caller must not be able to read this as "0 new connections".
+    assert "newEstablished" not in values
+    assert "newListen" not in values
 
 
 def test_watcher_refuses_an_unbounded_window(project_root, tmp_path):
