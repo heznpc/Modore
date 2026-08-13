@@ -89,6 +89,23 @@ struct RuntimeExecutionContext: Equatable, Sendable {
         guard let contents = sealedRuntimeFiles?[relativePath] else { return nil }
         return SHA256.hash(data: contents).map { String(format: "%02x", $0) }.joined()
     }
+
+    /// Companion pinned file + env var for every bash entry point that
+    /// sources modules/support_dir.sh. Sealed runs execute the entry script
+    /// from /dev/fd/N, where a sibling-relative source silently fails and
+    /// leaves SUPPORT_DIR_NAME unset (fatal under set -u) -- the module must
+    /// ride its own pinned descriptor, announced via the same env-var
+    /// indirection scanner.sh's modules already use. Returns nil when sealed
+    /// but the module is missing (fail closed, like pinnedInvocation); an
+    /// empty pair in development mode, where the dirname fallback works.
+    func pinnedSupportDirectoryModule() -> (files: [String: Data], environment: [String: String])? {
+        guard let sealedRuntimeFiles else { return ([:], [:]) }
+        guard let contents = sealedRuntimeFiles["scripts/modules/support_dir.sh"] else { return nil }
+        return (
+            ["support_dir": contents],
+            ["PCH_PINNED_SUPPORT_DIR_MODULE": "@pch-pinned:support_dir"]
+        )
+    }
 }
 
 enum RuntimeWorkspace {
