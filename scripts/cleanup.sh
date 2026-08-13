@@ -18,6 +18,8 @@ unset BASH_ENV ENV CDPATH GLOBIGNORE
 # dirname fallback keeps direct/dev-mode invocations working unchanged.
 # shellcheck disable=SC1090  # target is env-selected; see scanner.sh
 source "${PCH_PINNED_SUPPORT_DIR_MODULE:-$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/support_dir.sh}"
+# shellcheck disable=SC1090  # target is env-selected; see scanner.sh
+source "${PCH_PINNED_APPROVAL_TOKEN_MODULE:-$(/usr/bin/dirname "${BASH_SOURCE[0]}")/modules/approval_token.sh}"
 
 PROTOCOL_VERSION="1"
 APPROVAL_TTL_SECONDS=900
@@ -93,28 +95,6 @@ fail_usage() {
     /usr/bin/printf 'ERROR: %s\n' "$1" >&2
     usage >&2
     exit 64
-}
-
-approval_token_file_size() {
-    local source="$1"
-    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
-        /usr/bin/stat -f '%z' "$source" 2>/dev/null
-    else
-        /usr/bin/stat -L -c '%s' "$source" 2>/dev/null
-    fi
-}
-
-read_approval_token_file() {
-    local source="$1"
-    local size token
-    [[ "$source" =~ ^/dev/fd/[0-9]+$ && -f "$source" ]] || return 1
-    size="$(approval_token_file_size "$source")" || return 1
-    [[ "$size" == "64" ]] || return 1
-    token="$(/bin/dd if="$source" bs=64 count=1 2>/dev/null)" || return 1
-    [[ "$token" =~ ^[0-9a-f]{64}$ ]] || return 1
-    APPROVAL_TOKEN="$token"
-    APPROVAL_TOKEN_FILE=""
-    return 0
 }
 
 path_owner_uid() {
@@ -1266,16 +1246,6 @@ remove_tree_same_device() {
     /usr/bin/find "$root" -xdev -depth -delete 2>/dev/null
 }
 
-prepare_private_directory() {
-    local directory="$1"
-    local canonical
-    /bin/mkdir -p "$directory" || return 1
-    [[ -d "$directory" && ! -L "$directory" ]] || return 1
-    canonical="$(cd -P "$directory" 2>/dev/null && /bin/pwd -P)" || return 1
-    [[ "$canonical" == "$directory" ]] || return 1
-    /bin/chmod 700 "$directory" 2>/dev/null || return 1
-}
-
 write_current_manifest() {
     local output="$1"
     local created_epoch="${2:-}"
@@ -1309,10 +1279,6 @@ write_current_manifest() {
     } >> "$output" || return 1
     MANIFEST_ESTIMATED_KB="$total"
     return 0
-}
-
-new_approval_token() {
-    /usr/bin/openssl rand -hex 32 2>/dev/null
 }
 
 create_approval_manifest() {

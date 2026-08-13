@@ -363,6 +363,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/package_macos_release.sh",
     "scripts/artifact_audit.py",
     "scripts/modules/support_dir.sh",
+    "scripts/modules/approval_token.sh",
     "scripts/modules/macos/cpu.sh",
     "scripts/modules/macos/network.sh",
     "scripts/modules/macos/autoruns.sh",
