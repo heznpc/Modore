@@ -69,7 +69,11 @@ applescript_escape() {
 
 approval_token_file_size() {
     local source="$1"
-    /usr/bin/stat -f '%z' "$source" 2>/dev/null
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        /usr/bin/stat -f '%z' "$source" 2>/dev/null
+    else
+        /usr/bin/stat -L -c '%s' "$source" 2>/dev/null
+    fi
 }
 
 read_approval_token_file() {
