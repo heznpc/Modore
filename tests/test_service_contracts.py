@@ -522,6 +522,51 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     )
 
 
+def test_storage_watch_plist_arguments_agree_across_schedule_sh_and_swift(project_root):
+    """schedule.sh writes the LaunchAgent's ProgramArguments; Swift's
+    StorageWatchService.runtimeState re-derives the same array and compares it
+    element-by-element to decide whether an installed watch is current or
+    stale. Nothing tied the two lists together, and they drifted: schedule.sh
+    started emitting a PCH_STORAGE_WATCH_APP_BUNDLE= entry while the Swift
+    expectation kept the older shape, so every freshly installed plist failed
+    the comparison. The toggle reported failure and the UI showed the watch as
+    off while launchd had actually loaded the job -- verified against a real
+    installed plist on a live machine, not hypothesised.
+
+    The Swift-side unit test could not catch this because its fixture built
+    the plist from the same wrong list the implementation used.
+    """
+    schedule = (project_root / "scripts" / "schedule.sh").read_text(encoding="utf-8")
+    service = (
+        project_root / "macos" / "Modore" / "Sources" / "Modore" / "Services"
+        / "StorageWatchService.swift"
+    ).read_text(encoding="utf-8")
+
+    shell_block = re.search(
+        r"expected_arguments=\"\$\(/usr/bin/printf '%s\\n' \\\n(.*?)\n\s*\[\[",
+        schedule,
+        re.DOTALL,
+    )
+    assert shell_block, "could not find schedule.sh's expected_arguments block"
+    swift_block = re.search(r"let expectedArguments = \[(.*?)\n\s*\]", service, re.DOTALL)
+    assert swift_block, "could not find StorageWatchService's expectedArguments array"
+
+    # Compare only the environment assignments -- the surrounding literals
+    # (paths, the wrapper body, the hash) are spelled differently per language
+    # by necessity, but an env entry appearing on one side only is exactly the
+    # drift that broke this.
+    def env_names(text: str) -> list[str]:
+        return re.findall(r"([A-Z][A-Z0-9_]*)=", text)
+
+    shell_env = env_names(shell_block.group(1))
+    swift_env = env_names(swift_block.group(1))
+    assert shell_env == swift_env, (
+        f"storage-watch plist argument drift:\n"
+        f"  schedule.sh: {shell_env}\n"
+        f"  Swift:       {swift_env}"
+    )
+
+
 def test_bundled_app_runtime_includes_every_macos_script(project_root):
     """release_smoke.py's MACOS_FILES (checked above) is a manifest-
     completeness gate, not what actually ships -- build_macos_swift_app.sh

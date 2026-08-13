@@ -80,6 +80,19 @@ sample_listen() {
     "$LSOF_BIN" -nP -iTCP -sTCP:LISTEN 2>/dev/null || true
 }
 
+# lsof exits non-zero with no output both when it fails and when nothing
+# matches, and `|| true` cannot tell those apart -- so an empty closing
+# sample is indistinguishable from "the window was quiet". Reporting 0 new
+# connections off a sample we may never have taken is a false all-clear on a
+# security surface, so the closing LISTEN set is used as the liveness probe:
+# a real Mac always has listening sockets (launchd/rapportd/mDNSResponder),
+# making an empty closing list overwhelmingly a failed read rather than a
+# genuine state. The opening sample needs no such probe -- an empty opening
+# baseline just makes everything look new, which errs toward over-reporting.
+closing_sample_looks_unreadable() {
+    [[ ! -s "$WORKSPACE/second_listen" ]]
+}
+
 # 테스트는 네 표본 파일을 직접 주입한다. 실제 lsof 표는 재현할 수 없으므로,
 # 델타 계산을 고정된 입력으로 검증한다.
 inject_or_empty() {
@@ -109,6 +122,11 @@ fi
 emit "version" "$PROTOCOL_VERSION"
 emit "operation" "network-watch"
 emit "windowSeconds" "$WINDOW_SECONDS"
+
+if closing_sample_looks_unreadable; then
+    emit "error" "관찰 종료 시점의 네트워크 목록을 읽지 못했습니다."
+    exit 0
+fi
 
 # lsof 열: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME (ESTABLISHED 행은
 # NAME 뒤에 "(ESTABLISHED)"가 하나 더 붙어 총 10 필드). NAME(9번째 필드)이
