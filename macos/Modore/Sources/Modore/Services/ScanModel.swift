@@ -35,6 +35,8 @@ final class ScanModel: ObservableObject {
     @Published var screePreserveInFlightSource: String?
     @Published var archiveCandidates: [ArchiveCandidate]?
     @Published var archiveLoading = false
+    @Published var pendingLoginItemRemoval: PendingLoginItemRemoval?
+    @Published var loginItemActionInFlight: String?
     @Published var archiveError: String?
 
     let logStore = ScanLogStore()

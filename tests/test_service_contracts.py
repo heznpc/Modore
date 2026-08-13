@@ -492,6 +492,20 @@ def test_release_artifacts_exclude_runtime_python(project_root):
         f"missing from MACOS_FILES: {macos_module_files - set(module.MACOS_FILES)}"
     )
 
+    # Same gap again, one directory up: top-level scripts/*.sh (cleanup.sh,
+    # storage_watch.sh, ...) are each asserted by name above rather than
+    # globbed, so a new standalone script (login_items.sh being the first
+    # one added after this guard existed) could go missing from MACOS_FILES
+    # the same silent way. Glob catches it regardless of whether anyone
+    # remembers to add a matching by-name assert.
+    macos_top_level_scripts = {
+        path.relative_to(project_root).as_posix()
+        for path in (project_root / "scripts").glob("*.sh")
+    }
+    assert macos_top_level_scripts.issubset(set(module.MACOS_FILES)), (
+        f"missing from MACOS_FILES: {macos_top_level_scripts - set(module.MACOS_FILES)}"
+    )
+
 
 def test_macos_launcher_is_executable(project_root):
     mode = (project_root / "scan.command").stat().st_mode

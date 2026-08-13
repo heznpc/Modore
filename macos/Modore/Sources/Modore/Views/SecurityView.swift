@@ -114,6 +114,23 @@ struct SecurityPage: View {
             }
         }
         .macSettingsFormStyle()
+        .confirmationDialog(
+            "\"\(model.pendingLoginItemRemoval?.name ?? "")\"를 로그인 항목에서 제거할까요?",
+            isPresented: Binding(
+                get: { model.pendingLoginItemRemoval != nil },
+                set: { if !$0 { model.cancelLoginItemRemoval() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("제거", role: .destructive) {
+                model.confirmLoginItemRemoval()
+            }
+            Button("취소", role: .cancel) {
+                model.cancelLoginItemRemoval()
+            }
+        } message: {
+            Text("로그인할 때 이 항목이 더 이상 자동으로 열리지 않습니다. 앱 자체는 지워지지 않습니다.")
+        }
     }
 
     @ViewBuilder
@@ -267,19 +284,30 @@ struct SecurityPage: View {
         if !model.autorunRows.isEmpty {
             DisclosureGroup(isExpanded: $showsAutoruns) {
                 ForEach(model.autorunRows) { row in
-                    if row.risk == "danger" || row.risk == "warning" {
-                        SecurityRiskDetailRow(
-                            symbol: "gearshape.2",
-                            title: row.entry,
-                            detail: autorunMetadata(row),
-                            risk: row.risk
-                        )
-                    } else {
-                        SecurityDetailRow(
-                            symbol: "gearshape.2",
-                            title: row.entry,
-                            detail: autorunMetadata(row)
-                        )
+                    Group {
+                        if row.risk == "danger" || row.risk == "warning" {
+                            SecurityRiskDetailRow(
+                                symbol: "gearshape.2",
+                                title: row.entry,
+                                detail: autorunMetadata(row),
+                                risk: row.risk
+                            )
+                        } else {
+                            SecurityDetailRow(
+                                symbol: "gearshape.2",
+                                title: row.entry,
+                                detail: autorunMetadata(row)
+                            )
+                        }
+                    }
+                    .opacity(model.loginItemActionInFlight == row.entry ? 0.5 : 1)
+                    .contextMenu {
+                        if row.category == "Login Item" {
+                            Button("로그인 항목에서 제거…") {
+                                model.previewLoginItemRemoval(row.entry)
+                            }
+                            .disabled(model.loginItemActionInFlight != nil)
+                        }
                     }
                 }
             } label: {
