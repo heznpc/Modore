@@ -14,7 +14,14 @@ if ! declare -F record_collection_status >/dev/null 2>&1; then
 fi
 
 collect_privacy_permissions() {
-    local tcc_db="${PCH_TCC_DB_PATH:-$HOME/Library/Application Support/com.apple.TCC/TCC.db}"
+    # PCH_TCC_DB_PATH는 테스트 주입용이며, devtool_updates.sh의
+    # PCH_TEST_BREW_BIN처럼 PCH_TEST_MODE=1일 때만 열린다. 게이트 없이 두면
+    # 이 모듈만 확립된 패턴의 예외가 되고, 어떤 미래 호출자가 이 변수를
+    # 통과시키는 순간 임의 sqlite 파일 읽기 리다이렉트가 된다.
+    local tcc_db="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+        tcc_db="${PCH_TCC_DB_PATH:-$tcc_db}"
+    fi
     local out_file="$TMP_DIR/privacy.tsv"
     local error_file="$TMP_DIR/privacy.err"
     local status row_count

@@ -219,6 +219,12 @@ extension ScanModel {
             var pinnedFiles = invocation.files
                 .merging(supportModule.files) { current, _ in current }
                 .merging(tokenModule.files) { current, _ in current }
+            // Same checked insert as LoginItemService: a raw-value key that
+            // collides with a module key must refuse, not clobber.
+            guard pinnedFiles["approval_token"] == nil else {
+                errorMessage = "내부 오류: 고정 파일 키가 충돌해 정리를 실행하지 않았습니다."
+                return
+            }
             pinnedFiles["approval_token"] = Data(preview.approvalToken.utf8)
             let result = await LocalProcessRunner.capture(
                 executable: "/bin/bash",
