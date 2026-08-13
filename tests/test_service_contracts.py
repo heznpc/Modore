@@ -620,6 +620,48 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
     missing = expected - runtime_files
     assert not missing, f"scripts missing from the shipped app runtime: {sorted(missing)}"
 
+    # The same gap exists for every non-.sh runtime dependency: a new rule
+    # file, i18n bundle, JXA program, or runtime .py works in every checkout-
+    # based test while silently absent from the signed bundle. Directories
+    # that are wholly runtime data are globbed outright; .py needs an explicit
+    # build/reference exclusion list, mirroring build_only_scripts above.
+    data_locals = {"data/config.json"}  # generated per-machine, gitignored
+    python_not_shipped = {
+        # Release/build tooling, never invoked by the running app.
+        "scripts/release_smoke.py",
+        "scripts/artifact_audit.py",
+        # The Python reference implementation kept for cross-engine parity
+        # tests; the app runs the JXA equivalents. A guard elsewhere asserts
+        # rule_engine.py/scanner_helper.py must NOT ship.
+        "scripts/report.py",
+        "scripts/report_render.py",
+        "scripts/report_i18n.py",
+        "scripts/_jsonutil.py",
+        "scripts/rule_engine.py",
+        "scripts/scanner_helper.py",
+    }
+    non_shell_expected = {
+        f"data/{path.name}" for path in (project_root / "data").glob("*.json")
+    } - data_locals
+    non_shell_expected |= {
+        f"data/report_i18n/{path.name}"
+        for path in (project_root / "data" / "report_i18n").glob("*.json")
+    }
+    non_shell_expected |= {
+        f"rules/{path.name}" for path in (project_root / "rules").glob("*.json")
+    }
+    non_shell_expected |= {
+        f"scripts/{path.name}" for path in (project_root / "scripts").glob("*.jxa.js")
+    }
+    non_shell_expected |= {
+        f"scripts/{path.name}" for path in (project_root / "scripts").glob("*.py")
+    } - python_not_shipped
+
+    non_shell_missing = non_shell_expected - runtime_files
+    assert not non_shell_missing, (
+        f"runtime data/programs missing from the shipped app runtime: {sorted(non_shell_missing)}"
+    )
+
 
 @pytest.mark.parametrize(
     "script,args",
@@ -1021,6 +1063,7 @@ def test_macos_privacy_permissions_reports_only_allowed_camera_and_microphone_gr
             f"""#!/bin/bash
 set -u
 TMP_DIR="{tmp_dir}"
+PCH_TEST_MODE=1
 PCH_TCC_DB_PATH="{tcc_db_path}"
 record_collection_status() {{
     printf 'status\\t%s\\n' "$3" > "{scenario_dir}/captured-status.txt"
