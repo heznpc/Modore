@@ -1222,15 +1222,19 @@ def test_write_receipt_strips_embedded_tabs_from_target_paths(project_root, tmp_
     line range and drives write_receipt directly with a target path that
     contains an embedded tab, checking the emitted line has exactly the two
     tab-separated fields (key, sanitized value) a TSV row must have."""
-    source_lines = (project_root / "scripts" / "cleanup.sh").read_text(encoding="utf-8").splitlines()
-
-    def extract(start_marker):
+    def extract(path, start_marker):
+        source_lines = path.read_text(encoding="utf-8").splitlines()
         start = next(i for i, line in enumerate(source_lines) if line.startswith(start_marker))
         end = next(i for i, line in enumerate(source_lines[start:], start) if line == "}") + 1
         return "\n".join(source_lines[start:end])
 
-    prepare_private_directory_src = extract("prepare_private_directory() {")
-    write_receipt_src = extract("write_receipt() {")
+    # prepare_private_directory now lives in the shared approval_token.sh
+    # module (cleanup.sh and login_items.sh both source it) rather than in
+    # cleanup.sh itself -- see that module's own header comment for why.
+    prepare_private_directory_src = extract(
+        project_root / "scripts" / "modules" / "approval_token.sh", "prepare_private_directory() {"
+    )
+    write_receipt_src = extract(project_root / "scripts" / "cleanup.sh", "write_receipt() {")
     for src in (prepare_private_directory_src, write_receipt_src):
         assert src.endswith("}"), "extraction boundary moved; update this test"
 

@@ -143,7 +143,8 @@ extension ScanModel {
             guard let invocation = execution.pinnedInvocation(
                 relativePath: "scripts/cleanup.sh",
                 name: "cleanup"
-            ), let supportModule = execution.pinnedSupportDirectoryModule() else {
+            ), let supportModule = execution.pinnedSupportDirectoryModule(),
+               let tokenModule = execution.pinnedApprovalTokenModule() else {
                 errorMessage = "봉인한 정리 프로그램을 확인하지 못해 실행하지 않았습니다."
                 return
             }
@@ -153,8 +154,10 @@ extension ScanModel {
                 currentDirectory: execution.runtimeRoot,
                 expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
                 expectedSignedBundleURL: execution.signedBundleURL,
-                pinnedFiles: invocation.files.merging(supportModule.files) { current, _ in current },
-                environment: supportModule.environment,
+                pinnedFiles: invocation.files
+                    .merging(supportModule.files) { current, _ in current }
+                    .merging(tokenModule.files) { current, _ in current },
+                environment: supportModule.environment.merging(tokenModule.environment) { current, _ in current },
                 timeout: 60,
                 maxOutputBytes: 256_000
             )
@@ -208,11 +211,14 @@ extension ScanModel {
             guard let invocation = execution.pinnedInvocation(
                 relativePath: "scripts/cleanup.sh",
                 name: "cleanup"
-            ), let supportModule = execution.pinnedSupportDirectoryModule() else {
+            ), let supportModule = execution.pinnedSupportDirectoryModule(),
+               let tokenModule = execution.pinnedApprovalTokenModule() else {
                 errorMessage = "봉인한 정리 프로그램을 확인하지 못해 아무것도 정리하지 않았습니다."
                 return
             }
-            var pinnedFiles = invocation.files.merging(supportModule.files) { current, _ in current }
+            var pinnedFiles = invocation.files
+                .merging(supportModule.files) { current, _ in current }
+                .merging(tokenModule.files) { current, _ in current }
             pinnedFiles["approval_token"] = Data(preview.approvalToken.utf8)
             let result = await LocalProcessRunner.capture(
                 executable: "/bin/bash",
@@ -224,7 +230,7 @@ extension ScanModel {
                 expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
                 expectedSignedBundleURL: execution.signedBundleURL,
                 pinnedFiles: pinnedFiles,
-                environment: supportModule.environment,
+                environment: supportModule.environment.merging(tokenModule.environment) { current, _ in current },
                 timeout: nil,
                 maxOutputBytes: 512_000
             )
