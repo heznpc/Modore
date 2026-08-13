@@ -10,6 +10,7 @@ genuinely new destination or listening port is.
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,7 @@ def parse_rows(stdout: str, kind: str) -> list[list[str]]:
     ]
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
 def test_reconnect_to_the_same_host_on_a_new_local_port_is_not_reported(project_root, tmp_path):
     first = 'Chrome     1000 ren   23u  IPv4 0xaaa      0t0  TCP 192.168.0.156:51000->1.1.1.1:443 (ESTABLISHED)\n'
     second = 'Chrome     1000 ren   23u  IPv4 0xaaa      0t0  TCP 192.168.0.156:51999->1.1.1.1:443 (ESTABLISHED)\n'
@@ -88,6 +90,7 @@ def test_reconnect_to_the_same_host_on_a_new_local_port_is_not_reported(project_
     assert values["newEstablished"] == "0"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
 def test_a_genuinely_new_remote_destination_is_reported(project_root, tmp_path):
     first = 'Chrome     1000 ren   23u  IPv4 0xaaa      0t0  TCP 192.168.0.156:51000->1.1.1.1:443 (ESTABLISHED)\n'
     second = (
@@ -104,6 +107,7 @@ def test_a_genuinely_new_remote_destination_is_reported(project_root, tmp_path):
     assert values["newEstablished"] == "1"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
 def test_a_new_listening_port_is_reported(project_root, tmp_path):
     first_listen = 'rapportd    658  ren   11u  IPv4 0x475      0t0  TCP *:49152 (LISTEN)\n'
     second_listen = (
@@ -120,6 +124,7 @@ def test_a_new_listening_port_is_reported(project_root, tmp_path):
     assert values["newListen"] == "1"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
 def test_no_changes_reports_zero_of_both(project_root, tmp_path):
     established = 'Chrome     1000 ren   23u  IPv4 0xaaa      0t0  TCP 192.168.0.156:51000->1.1.1.1:443 (ESTABLISHED)\n'
     listen = 'rapportd    658  ren   11u  IPv4 0x475      0t0  TCP *:49152 (LISTEN)\n'
