@@ -17,6 +17,7 @@ struct ScanContent {
         listeningPortRows: [],
         autorunRows: [],
         recentInstalls: [],
+        privacyPermissionRows: [],
         truncatedSections: []
     )
 
@@ -34,6 +35,7 @@ struct ScanContent {
     let listeningPortRows: [ListeningPortRow]
     let autorunRows: [AutorunRow]
     let recentInstalls: [RecentInstallRow]
+    let privacyPermissionRows: [PrivacyPermissionRow]
     let truncatedSections: [String]
 
     var securityAttentionFindings: [ScanFinding] {
@@ -63,6 +65,7 @@ struct ScanContent {
         let listeningPortRows = Self.rows(sections?["listeningPorts"])
         let autorunRows = Self.rows(sections?["autoruns"])
         let installRows = Self.rows(sections?["recentInstalls"])
+        let privacyPermissionRows = Self.rows(sections?["privacyPermissions"])
         let findingClassification = Self.classifyFindings(findingRows)
         let virusTotal = sections?["virustotal"] as? [String: Any]
         let sectionRows = [
@@ -73,6 +76,7 @@ struct ScanContent {
             "수신 포트": listeningPortRows,
             "자동 실행": autorunRows,
             "최근 설치": installRows,
+            "카메라·마이크 권한": privacyPermissionRows,
         ]
         self.init(
             summary: ScanSummary(json: root["summary"] as? [String: Any]),
@@ -91,6 +95,8 @@ struct ScanContent {
                 .compactMap(ListeningPortRow.init(json:)),
             autorunRows: autorunRows.prefix(Self.maximumRowsPerSection).compactMap(AutorunRow.init(json:)),
             recentInstalls: installRows.prefix(Self.maximumRowsPerSection).compactMap(RecentInstallRow.init(json:)),
+            privacyPermissionRows: privacyPermissionRows.prefix(Self.maximumRowsPerSection)
+                .compactMap(PrivacyPermissionRow.init(json:)),
             truncatedSections: sectionRows
                 .filter { $0.value.count > Self.maximumRowsPerSection }
                 .map(\.key)
@@ -113,6 +119,7 @@ struct ScanContent {
         listeningPortRows: [ListeningPortRow],
         autorunRows: [AutorunRow],
         recentInstalls: [RecentInstallRow],
+        privacyPermissionRows: [PrivacyPermissionRow],
         truncatedSections: [String]
     ) {
         self.summary = summary
@@ -129,6 +136,7 @@ struct ScanContent {
         self.listeningPortRows = listeningPortRows
         self.autorunRows = autorunRows
         self.recentInstalls = recentInstalls
+        self.privacyPermissionRows = privacyPermissionRows
         self.truncatedSections = truncatedSections
     }
 
