@@ -252,6 +252,7 @@ final class CleanupSafetyTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try "#!/bin/bash\nexit 0\n".write(to: expectedWatcher, atomically: true, encoding: .utf8)
+        let appBundlePath = "/Applications/Modore.app"
 
         func writePlist(watcher: URL, extraEnvironment: Bool = false) throws {
             let watcherData = (try? Data(contentsOf: watcher)) ?? Data(watcher.path.utf8)
@@ -265,6 +266,9 @@ final class CleanupSafetyTests: XCTestCase {
                 "PATH=\(LocalProcessRunner.safeSystemPath)",
                 "LANG=en_US.UTF-8",
                 "LC_ALL=en_US.UTF-8",
+                // schedule.sh writes this entry unconditionally; a fixture
+                // without it is not a plist this product can actually produce.
+                "PCH_STORAGE_WATCH_APP_BUNDLE=\(appBundlePath)",
                 "/bin/bash",
                 "-p",
                 "-c",
@@ -299,7 +303,8 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .stale)
 
         // Installing replaces the stale definition with the current signed
@@ -308,7 +313,8 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .current)
 
         try "#!/bin/bash\nexit 99\n".write(
@@ -319,7 +325,8 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .stale)
         try "#!/bin/bash\nexit 0\n".write(
             to: expectedWatcher,
@@ -333,7 +340,8 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: mismatchedLoadedValues,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .stale)
 
         try FileManager.default.setAttributes(
@@ -343,7 +351,8 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .stale)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
@@ -354,7 +363,8 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .stale)
 
         let mutableWatcher = root.appendingPathComponent("Application Support/Modore/runtime/scripts/storage_watch.sh")
@@ -362,7 +372,8 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .stale)
 
         let outsidePlist = root.appendingPathComponent("outside.plist")
@@ -371,7 +382,8 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .stale)
 
         // Uninstall must remove the entry rather than merely unload it.
@@ -379,11 +391,13 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .absent)
     }
 
     func testStorageWatchRejectsOversizedPlistAndSymlinkedParent() throws {
+        let appBundlePath = "/Applications/Modore.app"
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-watch-bounds-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -403,7 +417,8 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: values,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .stale)
 
         try FileManager.default.removeItem(at: launchAgents)
@@ -418,7 +433,8 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: values,
             expectedWatcherURL: expectedWatcher,
-            expectedHomeURL: root
+            expectedHomeURL: root,
+            expectedAppBundlePath: appBundlePath
         ), .stale)
     }
 

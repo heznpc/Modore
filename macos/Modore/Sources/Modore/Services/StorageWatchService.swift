@@ -171,11 +171,20 @@ enum StorageWatchService {
         return values
     }
 
+    /// `expectedAppBundlePath` must match what `schedule.sh` actually writes
+    /// into ProgramArguments. That script has emitted a
+    /// `PCH_STORAGE_WATCH_APP_BUNDLE=` entry unconditionally since the watch
+    /// notification moved under the app's own identity, but this expectation
+    /// was never updated to match, so the exact-array comparison below could
+    /// never succeed: every freshly installed plist was judged `.stale`, the
+    /// toggle reported failure, and the UI showed the watch as off while
+    /// launchd had in fact loaded the job.
     static func runtimeState(
         protocolValues: [String: String],
         expectedWatcherURL: URL,
         expectedWatcherSHA256: String? = nil,
-        expectedHomeURL: URL = FileManager.default.homeDirectoryForCurrentUser
+        expectedHomeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        expectedAppBundlePath: String = Bundle.main.bundleURL.path
     ) -> StorageWatchRuntimeState {
         guard let plistPath = protocolValues["plist"], plistPath.hasPrefix("/") else {
             return .stale
@@ -201,6 +210,7 @@ enum StorageWatchService {
             "PATH=\(LocalProcessRunner.safeSystemPath)",
             "LANG=en_US.UTF-8",
             "LC_ALL=en_US.UTF-8",
+            "PCH_STORAGE_WATCH_APP_BUNDLE=\(expectedAppBundlePath)",
             "/bin/bash",
             "-p",
             "-c",

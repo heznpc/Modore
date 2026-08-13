@@ -25,6 +25,38 @@ def parse_protocol(text: str) -> dict[str, str]:
     return values
 
 
+def _failing_query_osascript(tmp_path, *, initial_items, healthy_queries):
+    """System Events answers `healthy_queries` list reads, then fails every
+    later one (no output, non-zero exit) -- the shape of Automation being
+    revoked or System Events going unscriptable between preview and execute.
+    Deletes always fail, so the item genuinely survives."""
+    state_file = tmp_path / "login-items-state.txt"
+    state_file.write_text(initial_items, encoding="utf-8")
+    counter = tmp_path / "query-count.txt"
+    counter.write_text("0", encoding="utf-8")
+    stub = tmp_path / "osascript-failing-stub"
+    stub.write_text(
+        f"""#!/bin/bash
+        script="$2"
+        case "$script" in
+            *"get the name of every login item"*)
+                n=$(( $(cat "{counter}") + 1 ))
+                printf '%s' "$n" > "{counter}"
+                [[ "$n" -gt {healthy_queries} ]] && exit 1
+                cat "{state_file}"
+                ;;
+            *"delete login item"*)
+                exit 1
+                ;;
+        esac
+        exit 0
+        """,
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return stub, state_file
+
+
 def _fake_osascript(tmp_path, *, initial_items, delete_is_noop=False):
     """A stateful System Events stand-in. `state_file` holds the current
     comma-separated login item list; `get` reads it, `delete` mutates it
@@ -240,6 +272,60 @@ def test_execute_reports_already_gone_when_item_vanished_before_execute(project_
     assert payload["status"] == "already_gone"
     calls_after = calls_log.read_text(encoding="utf-8")
     assert "delete login item" not in calls_after[len(calls_before):]
+
+
+def test_execute_does_not_call_a_failed_query_already_gone(project_root, tmp_path):
+    """A failed System Events read and a genuinely removed item are the same
+    exit status, and treating the first as the second told the owner a
+    persistence mechanism was gone while it was still installed. Only a
+    successful read may assert absence."""
+    home = tmp_path / "home"
+    # Query 1 is the preview; every query from the execute onward fails.
+    stub, state_file = _failing_query_osascript(tmp_path, initial_items="Foo, Bar", healthy_queries=1)
+
+    _, preview_payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
+    assert preview_payload["status"] == "ready"
+
+    result, payload = _execute(
+        project_root, tmp_path, "Bar", preview_payload["approvalToken"], osascript_stub=stub, home=home
+    )
+
+    assert payload["status"] == "blocked", payload
+    assert result.returncode == 1
+    assert "Bar" in state_file.read_text(encoding="utf-8")
+
+
+def test_execute_does_not_report_ok_when_the_post_delete_recheck_fails(project_root, tmp_path):
+    """The recheck exists to distinguish "osascript accepted the command"
+    from "the item is actually gone". If the recheck itself cannot run, the
+    outcome is unknown -- which is a failure to confirm removal, not a
+    removal."""
+    home = tmp_path / "home"
+    # Queries 1 (preview) and 2 (pre-delete check) succeed; the post-delete
+    # recheck fails, and the delete itself failed too, so the item survives.
+    stub, state_file = _failing_query_osascript(tmp_path, initial_items="Foo, Bar", healthy_queries=2)
+
+    _, preview_payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
+    result, payload = _execute(
+        project_root, tmp_path, "Bar", preview_payload["approvalToken"], osascript_stub=stub, home=home
+    )
+
+    assert payload["status"] == "failed", payload
+    assert result.returncode == 1
+    assert "Bar" in state_file.read_text(encoding="utf-8")
+
+
+def test_preview_does_not_call_a_failed_query_not_found(project_root, tmp_path):
+    """not_found means "this is not a login item". A failed read means we do
+    not know, and must not issue an approval token off it either way."""
+    home = tmp_path / "home"
+    stub, _ = _failing_query_osascript(tmp_path, initial_items="Foo, Bar", healthy_queries=0)
+
+    result, payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
+
+    assert payload["status"] == "blocked", payload
+    assert result.returncode == 1
+    assert "approvalToken" not in payload
 
 
 def test_execute_requires_owner_approved_flag(project_root, tmp_path):
