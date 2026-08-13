@@ -91,3 +91,47 @@ def test_python_and_jxa_agree(project_root, case, tmp_path):
     py = _canonical(_python_result(project_root, raw))
     jxa = _canonical(_jxa_result(project_root, case, tmp_path))
     assert py == jxa, f"Python vs JXA divergence in {case.name}:\nPython={py}\nJXA={jxa}"
+
+
+# devtoolUpdates/privacyPermissions carry a "name"/"client" field shaped just
+# like a process fact, but neither has a risk dimension of its own. Both
+# engines' section->category maps default an unrecognized section to
+# "process", so without an explicit "none" entry a Homebrew package sharing a
+# name with a whitelisted process (e.g. "git") would silently inherit that
+# process's safe verdict, and one sharing a name with a malware pattern (e.g.
+# "xmrig") would fabricate a "cryptominer process" finding for a mere
+# outdated-package listing. This asserts both engines actually route these
+# sections to "none" instead of relying on the generic parity check, which
+# would not catch two engines consistently agreeing on the wrong answer.
+_NO_PROCESS_CLASSIFICATION_CASE = (
+    PARITY_DIR / "case_no_process_classification_for_informational_sections.json"
+)
+
+
+def test_devtool_updates_and_privacy_permissions_are_not_process_classified(project_root):
+    raw = json.loads(_NO_PROCESS_CLASSIFICATION_CASE.read_text(encoding="utf-8"))
+    result = _python_result(project_root, raw)
+
+    devtool_rows = result["sections"]["devtoolUpdates"]
+    assert {row["name"]: row["risk"] for row in devtool_rows} == {"git": "unknown", "xmrig": "unknown"}
+
+    privacy_rows = result["sections"]["privacyPermissions"]
+    assert privacy_rows[0]["risk"] == "unknown"
+
+    miner_findings = [f for f in result["findings"] if f["title"] == "채굴/악성 프로세스 의심: xmrig"]
+    # The cpu section's own xmrig entry (pid_ 14) must still fire the miner
+    # rule normally -- this proves the fix scopes the exclusion to the two
+    # informational sections rather than disabling process classification.
+    assert len(miner_findings) == 1
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="JXA runtime requires macOS osascript")
+def test_devtool_updates_and_privacy_permissions_are_not_process_classified_jxa(project_root, tmp_path):
+    raw = json.loads(_NO_PROCESS_CLASSIFICATION_CASE.read_text(encoding="utf-8"))
+    result = _jxa_result(project_root, _NO_PROCESS_CLASSIFICATION_CASE, tmp_path)
+
+    devtool_rows = result["sections"]["devtoolUpdates"]
+    assert {row["name"]: row["risk"] for row in devtool_rows} == {"git": "unknown", "xmrig": "unknown"}
+
+    miner_findings = [f for f in result["findings"] if f["title"] == "채굴/악성 프로세스 의심: xmrig"]
+    assert len(miner_findings) == 1
