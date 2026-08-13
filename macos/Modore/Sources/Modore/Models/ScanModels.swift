@@ -318,6 +318,27 @@ struct PrivacyPermissionRow: Identifiable {
     var isCamera: Bool { kind == "camera" }
 }
 
+/// One Homebrew package with a newer version available, from
+/// `brew outdated --verbose` (HOMEBREW_NO_AUTO_UPDATE=1 -- never triggers a
+/// network tap refresh, so this reflects whatever tap metadata is already on
+/// disk and can be stale if the user hasn't run `brew update` recently).
+/// Xcode and mise are intentionally not covered: Xcode has no local-only way
+/// to learn the latest version, and mise's `outdated` has no documented
+/// offline flag.
+struct DevtoolUpdateRow: Identifiable {
+    let id = UUID()
+    let name: String
+    let current: String
+    let latest: String
+
+    init?(json: [String: Any]) {
+        name = JsonRead.string(json, "name")
+        current = JsonRead.string(json, "current")
+        latest = JsonRead.string(json, "latest")
+        guard !name.isEmpty, !current.isEmpty, !latest.isEmpty else { return nil }
+    }
+}
+
 struct NetworkRow: Identifiable {
     let id = UUID()
     let process: String

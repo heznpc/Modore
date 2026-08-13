@@ -390,6 +390,10 @@ def apply_rules_to_raw(engine: RuleEngine, raw: Dict[str, Any]) -> Dict[str, Any
       defender      -> defender
       macosSecurity -> defender
       recentInstalls -> installs
+      privacyPermissions -> none  (no risk dimension of its own; kept out of
+                                    the "process" fallback so a client name
+                                    can't collide with a process rule)
+      devtoolUpdates     -> none  (same reasoning, for package names)
     """
     result = {k: v for k, v in raw.items() if k != "sections"}
     result.setdefault("findings", [])
@@ -403,6 +407,8 @@ def apply_rules_to_raw(engine: RuleEngine, raw: Dict[str, Any]) -> Dict[str, Any
         "listeningPorts": "process",
         "autoruns": "autoruns",
         "recentInstalls": "installs",
+        "privacyPermissions": "none",
+        "devtoolUpdates": "none",
     }
 
     # 한 프로세스가 여러 섹션에 등장할 수 있다. cpu와 backgroundCpu가 그렇다.

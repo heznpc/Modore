@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0",
+  "scannedAt": "2026-07-16 10:00:00",
+  "platform": "macos",
+  "findings": [],
+  "sections": {
+    "cpu": [
+      {"name": "xmrig", "pid_": 14, "cpu": 190, "memoryMB": 300, "path": "/tmp/xmrig"}
+    ],
+    "devtoolUpdates": [
+      {"name": "git", "current": "2.40.0", "latest": "2.50.0"},
+      {"name": "xmrig", "current": "1.0.0", "latest": "2.0.0"}
+    ],
+    "privacyPermissions": [
+      {"kind": "camera", "client": "com.apple.FaceTime"}
+    ]
+  }
+}

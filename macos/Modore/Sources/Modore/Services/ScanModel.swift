@@ -82,6 +82,7 @@ final class ScanModel: ObservableObject {
     var autorunRows: [AutorunRow] { content.autorunRows }
     var recentInstalls: [RecentInstallRow] { content.recentInstalls }
     var privacyPermissionRows: [PrivacyPermissionRow] { content.privacyPermissionRows }
+    var devtoolUpdateRows: [DevtoolUpdateRow] { content.devtoolUpdateRows }
     var truncatedSecuritySections: [String] { content.truncatedSections }
     var attentionCpuRows: [CpuRow] { cpuRows.filter(\.requiresAttention) }
     var attentionBackgroundCpuRows: [BackgroundCpuRow] {
