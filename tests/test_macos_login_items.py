@@ -31,7 +31,7 @@ def _failing_query_osascript(tmp_path, *, initial_items, healthy_queries):
     revoked or System Events going unscriptable between preview and execute.
     Deletes always fail, so the item genuinely survives."""
     state_file = tmp_path / "login-items-state.txt"
-    state_file.write_text(initial_items, encoding="utf-8")
+    state_file.write_text("\n".join(initial_items), encoding="utf-8")
     counter = tmp_path / "query-count.txt"
     counter.write_text("0", encoding="utf-8")
     stub = tmp_path / "osascript-failing-stub"
@@ -39,7 +39,7 @@ def _failing_query_osascript(tmp_path, *, initial_items, healthy_queries):
         f"""#!/bin/bash
         script="$2"
         case "$script" in
-            *"get the name of every login item"*)
+            *"name of every login item"*)
                 n=$(( $(cat "{counter}") + 1 ))
                 printf '%s' "$n" > "{counter}"
                 [[ "$n" -gt {healthy_queries} ]] && exit 1
@@ -64,7 +64,7 @@ def _fake_osascript(tmp_path, *, initial_items, delete_is_noop=False):
     but changes nothing -- exactly the gap the post-delete recheck exists
     to catch)."""
     state_file = tmp_path / "login-items-state.txt"
-    state_file.write_text(initial_items, encoding="utf-8")
+    state_file.write_text("\n".join(initial_items), encoding="utf-8")
     calls_log = tmp_path / "osascript-calls.log"
     stub = tmp_path / "osascript-stub"
     noop_flag = "1" if delete_is_noop else "0"
@@ -73,7 +73,7 @@ def _fake_osascript(tmp_path, *, initial_items, delete_is_noop=False):
         script="$2"
         printf '%s\\n' "$script" >> "{calls_log}"
         case "$script" in
-            *"get the name of every login item"*)
+            *"name of every login item"*)
                 cat "{state_file}"
                 ;;
             *"delete login item"*)
@@ -81,9 +81,7 @@ def _fake_osascript(tmp_path, *, initial_items, delete_is_noop=False):
                     exit 0
                 fi
                 name=$(printf '%s' "$script" | sed -E 's/.*delete login item "(.*)".*/\\1/')
-                current=$(cat "{state_file}")
-                new=$(printf '%s' "$current" | tr ',' '\\n' | sed 's/^ *//;s/ *$//' \\
-                    | grep -v -F -x "$name" | paste -sd, -)
+                new=$(grep -v -F -x "$name" "{state_file}" || true)
                 printf '%s' "$new" > "{state_file}"
                 ;;
         esac
@@ -140,7 +138,7 @@ def _execute(project_root, tmp_path, name, token, *, osascript_stub, home):
 
 def test_preview_issues_token_for_an_existing_item(project_root, tmp_path):
     home = tmp_path / "home"
-    stub, _, _ = _fake_osascript(tmp_path, initial_items="Foo, Bar, Baz")
+    stub, _, _ = _fake_osascript(tmp_path, initial_items=["Foo", "Bar", "Baz"])
 
     result, payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
 
@@ -158,7 +156,7 @@ def test_preview_issues_token_for_an_existing_item(project_root, tmp_path):
 
 def test_preview_refuses_a_name_that_is_not_actually_a_login_item(project_root, tmp_path):
     home = tmp_path / "home"
-    stub, _, _ = _fake_osascript(tmp_path, initial_items="Foo, Bar")
+    stub, _, _ = _fake_osascript(tmp_path, initial_items=["Foo", "Bar"])
 
     result, payload = _preview(project_root, tmp_path, "NotThere", osascript_stub=stub, home=home)
 
@@ -170,7 +168,7 @@ def test_preview_refuses_a_name_that_is_not_actually_a_login_item(project_root, 
 
 def test_execute_removes_the_item_and_confirms_it_is_actually_gone(project_root, tmp_path):
     home = tmp_path / "home"
-    stub, state_file, _ = _fake_osascript(tmp_path, initial_items="Foo, Bar, Baz")
+    stub, state_file, _ = _fake_osascript(tmp_path, initial_items=["Foo", "Bar", "Baz"])
 
     _, preview_payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
     result, payload = _execute(
@@ -179,7 +177,7 @@ def test_execute_removes_the_item_and_confirms_it_is_actually_gone(project_root,
 
     assert result.returncode == 0, result.stderr
     assert payload["status"] == "ok"
-    remaining = [n.strip() for n in state_file.read_text(encoding="utf-8").split(",")]
+    remaining = state_file.read_text(encoding="utf-8").splitlines()
     assert "Bar" not in remaining
     assert "Foo" in remaining and "Baz" in remaining
 
@@ -189,7 +187,7 @@ def test_execute_reports_failed_when_the_item_survives_the_delete_call(project_r
     real recheck of the live list can tell "deleted" from "command accepted,
     nothing actually changed"."""
     home = tmp_path / "home"
-    stub, state_file, _ = _fake_osascript(tmp_path, initial_items="Foo, Bar", delete_is_noop=True)
+    stub, state_file, _ = _fake_osascript(tmp_path, initial_items=["Foo", "Bar"], delete_is_noop=True)
 
     _, preview_payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
     result, payload = _execute(
@@ -203,7 +201,7 @@ def test_execute_reports_failed_when_the_item_survives_the_delete_call(project_r
 
 def test_execute_rejects_reusing_an_already_consumed_token(project_root, tmp_path):
     home = tmp_path / "home"
-    stub, _, _ = _fake_osascript(tmp_path, initial_items="Foo, Bar")
+    stub, _, _ = _fake_osascript(tmp_path, initial_items=["Foo", "Bar"])
 
     _, preview_payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
     token = preview_payload["approvalToken"]
@@ -218,7 +216,7 @@ def test_execute_rejects_reusing_an_already_consumed_token(project_root, tmp_pat
 
 def test_execute_rejects_a_token_approved_for_a_different_name(project_root, tmp_path):
     home = tmp_path / "home"
-    stub, state_file, _ = _fake_osascript(tmp_path, initial_items="Foo, Bar")
+    stub, state_file, _ = _fake_osascript(tmp_path, initial_items=["Foo", "Bar"])
 
     _, preview_payload = _preview(project_root, tmp_path, "Foo", osascript_stub=stub, home=home)
     result, payload = _execute(
@@ -227,13 +225,13 @@ def test_execute_rejects_a_token_approved_for_a_different_name(project_root, tmp
 
     assert result.returncode == 1
     assert payload["status"] == "mismatch"
-    remaining = [n.strip() for n in state_file.read_text(encoding="utf-8").split(",")]
+    remaining = state_file.read_text(encoding="utf-8").splitlines()
     assert "Foo" in remaining and "Bar" in remaining
 
 
 def test_execute_rejects_an_expired_token(project_root, tmp_path):
     home = tmp_path / "home"
-    stub, state_file, _ = _fake_osascript(tmp_path, initial_items="Foo, Bar")
+    stub, state_file, _ = _fake_osascript(tmp_path, initial_items=["Foo", "Bar"])
 
     _, preview_payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
     token = preview_payload["approvalToken"]
@@ -256,7 +254,7 @@ def test_execute_rejects_an_expired_token(project_root, tmp_path):
 
 def test_execute_reports_already_gone_when_item_vanished_before_execute(project_root, tmp_path):
     home = tmp_path / "home"
-    stub, state_file, calls_log = _fake_osascript(tmp_path, initial_items="Foo, Bar")
+    stub, state_file, calls_log = _fake_osascript(tmp_path, initial_items=["Foo", "Bar"])
 
     _, preview_payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
     # Simulate the item being removed some other way (System Settings, the
@@ -281,7 +279,7 @@ def test_execute_does_not_call_a_failed_query_already_gone(project_root, tmp_pat
     successful read may assert absence."""
     home = tmp_path / "home"
     # Query 1 is the preview; every query from the execute onward fails.
-    stub, state_file = _failing_query_osascript(tmp_path, initial_items="Foo, Bar", healthy_queries=1)
+    stub, state_file = _failing_query_osascript(tmp_path, initial_items=["Foo", "Bar"], healthy_queries=1)
 
     _, preview_payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
     assert preview_payload["status"] == "ready"
@@ -303,7 +301,7 @@ def test_execute_does_not_report_ok_when_the_post_delete_recheck_fails(project_r
     home = tmp_path / "home"
     # Queries 1 (preview) and 2 (pre-delete check) succeed; the post-delete
     # recheck fails, and the delete itself failed too, so the item survives.
-    stub, state_file = _failing_query_osascript(tmp_path, initial_items="Foo, Bar", healthy_queries=2)
+    stub, state_file = _failing_query_osascript(tmp_path, initial_items=["Foo", "Bar"], healthy_queries=2)
 
     _, preview_payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
     result, payload = _execute(
@@ -319,7 +317,7 @@ def test_preview_does_not_call_a_failed_query_not_found(project_root, tmp_path):
     """not_found means "this is not a login item". A failed read means we do
     not know, and must not issue an approval token off it either way."""
     home = tmp_path / "home"
-    stub, _ = _failing_query_osascript(tmp_path, initial_items="Foo, Bar", healthy_queries=0)
+    stub, _ = _failing_query_osascript(tmp_path, initial_items=["Foo", "Bar"], healthy_queries=0)
 
     result, payload = _preview(project_root, tmp_path, "Bar", osascript_stub=stub, home=home)
 
@@ -328,9 +326,47 @@ def test_preview_does_not_call_a_failed_query_not_found(project_root, tmp_path):
     assert "approvalToken" not in payload
 
 
+def test_a_name_containing_a_comma_is_matched_and_removed(project_root, tmp_path):
+    """osascript's default list serialization joins names with ", ", so a
+    single item named "Backup, Inc." was indistinguishable from two items
+    "Backup" and "Inc." -- the real item could never be matched, and was
+    therefore permanently unremovable through this tool."""
+    home = tmp_path / "home"
+    stub, state_file, _ = _fake_osascript(tmp_path, initial_items=["Backup, Inc.", "Mos"])
+
+    _, preview_payload = _preview(project_root, tmp_path, "Backup, Inc.", osascript_stub=stub, home=home)
+    assert preview_payload["status"] == "ready", preview_payload
+
+    result, payload = _execute(
+        project_root, tmp_path, "Backup, Inc.", preview_payload["approvalToken"],
+        osascript_stub=stub, home=home,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert payload["status"] == "ok"
+    assert state_file.read_text(encoding="utf-8").splitlines() == ["Mos"]
+
+
+def test_removing_one_item_is_not_reported_failed_by_a_similar_surviving_name(project_root, tmp_path):
+    """Under the old comma split, a surviving "Foo, Bar" still produced a
+    "Foo" fragment, so removing a genuinely separate "Foo" re-matched on the
+    recheck and reported failed even though the removal succeeded."""
+    home = tmp_path / "home"
+    stub, state_file, _ = _fake_osascript(tmp_path, initial_items=["Foo", "Foo, Bar"])
+
+    _, preview_payload = _preview(project_root, tmp_path, "Foo", osascript_stub=stub, home=home)
+    result, payload = _execute(
+        project_root, tmp_path, "Foo", preview_payload["approvalToken"], osascript_stub=stub, home=home
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert payload["status"] == "ok"
+    assert state_file.read_text(encoding="utf-8").splitlines() == ["Foo, Bar"]
+
+
 def test_execute_requires_owner_approved_flag(project_root, tmp_path):
     home = tmp_path / "home"
-    stub, _, _ = _fake_osascript(tmp_path, initial_items="Foo")
+    stub, _, _ = _fake_osascript(tmp_path, initial_items=["Foo"])
     token_file = tmp_path / "token"
     token_file.write_text("0" * 64, encoding="utf-8")
 
@@ -347,7 +383,7 @@ def test_execute_requires_owner_approved_flag(project_root, tmp_path):
 
 def test_execute_requires_an_approval_token_file(project_root, tmp_path):
     home = tmp_path / "home"
-    stub, _, _ = _fake_osascript(tmp_path, initial_items="Foo")
+    stub, _, _ = _fake_osascript(tmp_path, initial_items=["Foo"])
 
     result = _run(
         project_root, tmp_path, ["--execute", "Foo", "--owner-approved"], osascript_stub=stub, home=home

@@ -43,11 +43,19 @@ enum MothballService {
             .sorted { $0.repo.sizeBytes > $1.repo.sizeBytes }
     }
 
-    static func scanCandidates(lineagePaths: [ScreeLineagePath]) async -> [ArchiveCandidate] {
+    /// `scanReport`, not `scan`: the latter drops the inspection failures,
+    /// and MothballCore's own API comment warns why that matters -- a repo
+    /// found but not inspectable (corrupt .git, permission denied, git
+    /// timeout) would otherwise be indistinguishable from no repo at all, and
+    /// the page would state "nothing worth archiving" when the truth is that
+    /// it could not look.
+    static func scanCandidates(
+        lineagePaths: [ScreeLineagePath]
+    ) async -> (candidates: [ArchiveCandidate], failureCount: Int) {
         let roots = candidateRoots(from: lineagePaths)
-        guard !roots.isEmpty else { return [] }
-        let repos = await RepoScanner().scan(roots: roots)
-        return rankCandidates(repos: repos)
+        guard !roots.isEmpty else { return ([], 0) }
+        let report = await RepoScanner().scanReport(roots: roots)
+        return (rankCandidates(repos: report.repos), report.failures.count)
     }
 }
 
@@ -63,7 +71,9 @@ extension ScanModel {
         let paths = report.lineagePaths
         Task {
             defer { archiveLoading = false }
-            archiveCandidates = await MothballService.scanCandidates(lineagePaths: paths)
+            let outcome = await MothballService.scanCandidates(lineagePaths: paths)
+            archiveCandidates = outcome.candidates
+            archiveInspectionFailures = outcome.failureCount
         }
     }
 }

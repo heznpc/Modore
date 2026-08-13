@@ -126,8 +126,15 @@ enum LoginItemService {
 }
 
 extension ScanModel {
+    // `isBusy` as well as the per-action flag: the Security page stays
+    // interactive during a scan, and confirming a removal kicks off its own
+    // rescan. Without this a right-click removal mid-scan started a second
+    // ScanPipeline writing the same scan_result.json/report files as the
+    // first, with two finishRun()s racing over whichever mix survived --
+    // and the second run isn't held in `scanTask`, so 검사 취소 could not
+    // stop it. prepareCleanup already guards this way.
     func previewLoginItemRemoval(_ name: String) {
-        guard loginItemActionInFlight == nil else { return }
+        guard !isBusy, loginItemActionInFlight == nil else { return }
         loginItemActionInFlight = name
         errorMessage = nil
         let root = projectRoot
@@ -145,7 +152,7 @@ extension ScanModel {
     }
 
     func confirmLoginItemRemoval() {
-        guard let pending = pendingLoginItemRemoval, loginItemActionInFlight == nil else { return }
+        guard !isBusy, let pending = pendingLoginItemRemoval, loginItemActionInFlight == nil else { return }
         pendingLoginItemRemoval = nil
         loginItemActionInFlight = pending.name
         let root = projectRoot
