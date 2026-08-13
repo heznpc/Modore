@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -519,6 +520,60 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     assert macos_shared_module_files.issubset(set(module.MACOS_FILES)), (
         f"missing from MACOS_FILES: {macos_shared_module_files - set(module.MACOS_FILES)}"
     )
+
+
+def test_bundled_app_runtime_includes_every_macos_script(project_root):
+    """release_smoke.py's MACOS_FILES (checked above) is a manifest-
+    completeness gate, not what actually ships -- build_macos_swift_app.sh
+    has its own, completely separate hand-maintained RUNTIME_FILES array
+    that controls what's actually copied into the signed app bundle. A
+    script can pass every assertion above while still being silently absent
+    from RUNTIME_FILES, because the two lists were never cross-checked.
+
+    This happened for real, discovered by running scanner.sh from this
+    machine's actual installed runtime: modules/macos/idle_cpu.sh,
+    privacy.sh, and devtool_updates.sh were all missing, so `source` failed
+    for each (no `set -e`, so the scan kept going with three collector
+    functions permanently undefined) -- scanner.sh printed "command not
+    found" for each and the resulting scan_result.json silently reported
+    `collection.complete: true` with those three sections simply absent.
+    Separately, scripts/login_items.sh and modules/approval_token.sh were
+    also missing, which fails closed instead (pinnedApprovalTokenModule()
+    returns nil when the sealed payload doesn't contain the module) -- but
+    that means every cleanup preview/execute and login-item removal in a
+    real signed build failed outright since approval_token.sh was extracted
+    out of cleanup.sh in PR #67, with no test anywhere catching it because
+    every test runs against the checkout directly, never the installed
+    runtime tree a real user's app actually uses.
+    """
+    build_script = (project_root / "scripts" / "build_macos_swift_app.sh").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"RUNTIME_FILES=\((.*?)\n\)", build_script, re.DOTALL)
+    assert match, "could not find RUNTIME_FILES=(...) in build_macos_swift_app.sh"
+    runtime_files = set(re.findall(r'"([^"]+)"', match.group(1)))
+
+    # These build/release-time tools are never invoked by the running app,
+    # so they belong in the repo but not inside the shipped runtime folder.
+    build_only_scripts = {
+        "scripts/build_macos_icon.sh",
+        "scripts/build_macos_swift_app.sh",
+        "scripts/package_macos_release.sh",
+    }
+    expected = {
+        f"scripts/{path.name}" for path in (project_root / "scripts").glob("*.sh")
+    } - build_only_scripts
+    expected |= {
+        f"scripts/modules/{path.name}"
+        for path in (project_root / "scripts" / "modules").glob("*.sh")
+    }
+    expected |= {
+        f"scripts/modules/macos/{path.name}"
+        for path in (project_root / "scripts" / "modules" / "macos").glob("*.sh")
+    }
+
+    missing = expected - runtime_files
+    assert not missing, f"scripts missing from the shipped app runtime: {sorted(missing)}"
 
 
 @pytest.mark.parametrize(
