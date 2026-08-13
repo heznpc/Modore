@@ -34,6 +34,7 @@ final class ScanModel: ObservableObject {
     @Published var screeError: String?
     @Published var screePreserveInFlightSource: String?
     @Published var archiveCandidates: [ArchiveCandidate]?
+    @Published var archiveInspectionFailures = 0
     @Published var archiveLoading = false
     @Published var pendingLoginItemRemoval: PendingLoginItemRemoval?
     @Published var loginItemActionInFlight: String?
@@ -67,6 +68,12 @@ final class ScanModel: ObservableObject {
             || cleanupInFlight
             || browserAutomationStopInFlight
             || storageWatchInFlight
+            // An observation measures what this Mac is doing on its own. A
+            // scan or cleanup started underneath it lands in its own results
+            // -- the scanner's du/lsof become the top "real CPU use" rows and
+            // VirusTotal lookups appear as new connections -- so the window
+            // would report the app's own work as the finding.
+            || observationInFlight
             || resultLoading
     }
     var logText: String { logStore.text }

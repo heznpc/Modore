@@ -785,7 +785,26 @@ raw.sections.gpu = [];
 // 9-character truncation ("Codex\x20" -> "Codex ") is invisible in the UI
 // while still splitting dedup keys, so it is dropped too.
 function lsofCommandName(value) {
-  return String(value || "").replace(/\\x20/g, " ").replace(/ +$/, "");
+  // lsof escapes every byte it considers unprintable, not just the space that
+  // motivated this: a tab arrives as \x09 and a non-ASCII name as a run of
+  // \xNN bytes. Decoding only \x20 left those literal in the reported name
+  // and in anything matching on it. A run is decoded as UTF-8 so multi-byte
+  // names reassemble instead of turning into per-byte mojibake; control bytes
+  // become a space, and an undecodable run degrades to a space rather than
+  // throwing mid-scan.
+  return String(value || "")
+    .replace(/(?:\\x[0-9A-Fa-f]{2})+/g, run => {
+      const bytes = run.match(/[0-9A-Fa-f]{2}/g).map(hex => parseInt(hex, 16));
+      if (bytes.every(byte => byte < 32 || byte === 127)) return " ";
+      try {
+        return decodeURIComponent(bytes.map(byte =>
+          "%" + (byte < 16 ? "0" : "") + byte.toString(16)
+        ).join(""));
+      } catch (error) {
+        return " ";
+      }
+    })
+    .replace(/ +$/, "");
 }
 
 const connections = [];
@@ -832,11 +851,17 @@ raw.sections.privacyPermissions = tmp("privacy.tsv").trim().split(/\r?\n/).filte
 // Casks compare with "!=" instead of "<" since cask versions aren't always
 // strictly ordered; a formula can also list multiple installed versions
 // comma-separated inside the parens (e.g. "sqlite (3.53.2, 3.53.3) < 3.53.4").
+// A pinned formula or cask appends " [pinned at X]" after the latest version,
+// which an end-anchored latest-version capture silently dropped: the row
+// vanished from this list while the collector's own line count still included
+// it, so the "N개 업데이트" total disagreed with the rows shown, and a pinned
+// package's available update was invisible. The suffix is captured instead so
+// the row survives and can say why it is being held back.
 raw.sections.devtoolUpdates = tmp("devtool_updates.txt").trim().split(/\r?\n/).filter(Boolean).map(line => {
-  const m = line.match(/^(\S+)\s+\((.+?)\)\s+(?:<|!=)\s+(\S+)\s*$/);
+  const m = line.match(/^(\S+)\s+\((.+?)\)\s+(?:<|!=)\s+(\S+)(\s+\[pinned at [^\]]*\])?\s*$/);
   if (!m) return null;
-  const [, name, current, latest] = m;
-  return { name, current, latest };
+  const [, name, current, latest, pinned] = m;
+  return { name, current, latest, pinned: !!pinned };
 }).filter(Boolean);
 
 // codesign -dv writes its verdict to stderr, and exits non-zero for a

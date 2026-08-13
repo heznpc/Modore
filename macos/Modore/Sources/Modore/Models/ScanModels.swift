@@ -330,11 +330,15 @@ struct DevtoolUpdateRow: Identifiable {
     let name: String
     let current: String
     let latest: String
+    /// `brew pin`ned: an update exists but the owner deliberately held this
+    /// package back, so listing it without saying so reads as a missed update.
+    let pinned: Bool
 
     init?(json: [String: Any]) {
         name = JsonRead.string(json, "name")
         current = JsonRead.string(json, "current")
         latest = JsonRead.string(json, "latest")
+        pinned = JsonRead.bool(json, "pinned") ?? false
         guard !name.isEmpty, !current.isEmpty, !latest.isEmpty else { return nil }
     }
 }

@@ -79,6 +79,9 @@ private struct StorageWatchActivitySection: View {
 private struct ContinuousObservationSection: View {
     @EnvironmentObject private var model: ScanModel
     @State private var windowSeconds = 60
+    /// The window the in-flight run was actually started with, so the
+    /// progress caption cannot drift from it.
+    @State private var runningWindowSeconds = 60
 
     var body: some View {
         Section {
@@ -91,19 +94,23 @@ private struct ContinuousObservationSection: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 140)
+                // Left enabled mid-run, the picker rewrote the caption below
+                // to a window the run in progress is not actually using.
+                .disabled(model.observationInFlight)
                 Spacer()
                 Button(model.observationInFlight ? "관찰 중…" : "지금 관찰하기") {
+                    runningWindowSeconds = windowSeconds
                     model.observeNow(windowSeconds: windowSeconds)
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.observationInFlight)
+                .disabled(model.isBusy || model.observationInFlight)
             }
 
             if model.observationInFlight {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("\(windowSeconds)초 동안 CPU와 네트워크를 관찰하는 중입니다…")
+                    Text("\(runningWindowSeconds)초 동안 CPU와 네트워크를 관찰하는 중입니다…")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
