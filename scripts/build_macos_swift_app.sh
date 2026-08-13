@@ -369,7 +369,6 @@ RUNTIME_FILES=(
     "scripts/report.jxa.js"
     "scripts/scanner_helper.jxa.js"
     "scripts/idle_cpu.sh"
-    "scripts/network_watch.sh"
     "scripts/login_items.sh"
     "scripts/modules/support_dir.sh"
     "scripts/modules/approval_token.sh"
