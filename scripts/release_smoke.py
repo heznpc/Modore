@@ -355,6 +355,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/schedule.sh",
     "scripts/scree.py",
     "scripts/idle_cpu.sh",
+    "scripts/login_items.sh",
     "scripts/report.jxa.js",
     "scripts/scanner_helper.jxa.js",
     "scripts/build_macos_swift_app.sh",
