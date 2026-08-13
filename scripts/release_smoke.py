@@ -371,6 +371,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/modules/macos/storage.sh",
     "scripts/modules/macos/idle_cpu.sh",
     "scripts/modules/macos/privacy.sh",
+    "scripts/modules/macos/devtool_updates.sh",
     "macos/Modore/Package.swift",
     "vendor/mothball/Package.swift",
     "vendor/mothball/LICENSE",

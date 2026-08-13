@@ -18,6 +18,7 @@ struct ScanContent {
         autorunRows: [],
         recentInstalls: [],
         privacyPermissionRows: [],
+        devtoolUpdateRows: [],
         truncatedSections: []
     )
 
@@ -36,6 +37,7 @@ struct ScanContent {
     let autorunRows: [AutorunRow]
     let recentInstalls: [RecentInstallRow]
     let privacyPermissionRows: [PrivacyPermissionRow]
+    let devtoolUpdateRows: [DevtoolUpdateRow]
     let truncatedSections: [String]
 
     var securityAttentionFindings: [ScanFinding] {
@@ -66,6 +68,7 @@ struct ScanContent {
         let autorunRows = Self.rows(sections?["autoruns"])
         let installRows = Self.rows(sections?["recentInstalls"])
         let privacyPermissionRows = Self.rows(sections?["privacyPermissions"])
+        let devtoolUpdateRows = Self.rows(sections?["devtoolUpdates"])
         let findingClassification = Self.classifyFindings(findingRows)
         let virusTotal = sections?["virustotal"] as? [String: Any]
         let sectionRows = [
@@ -77,6 +80,7 @@ struct ScanContent {
             "자동 실행": autorunRows,
             "최근 설치": installRows,
             "카메라·마이크 권한": privacyPermissionRows,
+            "개발도구 업데이트": devtoolUpdateRows,
         ]
         self.init(
             summary: ScanSummary(json: root["summary"] as? [String: Any]),
@@ -97,6 +101,8 @@ struct ScanContent {
             recentInstalls: installRows.prefix(Self.maximumRowsPerSection).compactMap(RecentInstallRow.init(json:)),
             privacyPermissionRows: privacyPermissionRows.prefix(Self.maximumRowsPerSection)
                 .compactMap(PrivacyPermissionRow.init(json:)),
+            devtoolUpdateRows: devtoolUpdateRows.prefix(Self.maximumRowsPerSection)
+                .compactMap(DevtoolUpdateRow.init(json:)),
             truncatedSections: sectionRows
                 .filter { $0.value.count > Self.maximumRowsPerSection }
                 .map(\.key)
@@ -120,6 +126,7 @@ struct ScanContent {
         autorunRows: [AutorunRow],
         recentInstalls: [RecentInstallRow],
         privacyPermissionRows: [PrivacyPermissionRow],
+        devtoolUpdateRows: [DevtoolUpdateRow],
         truncatedSections: [String]
     ) {
         self.summary = summary
@@ -137,6 +144,7 @@ struct ScanContent {
         self.autorunRows = autorunRows
         self.recentInstalls = recentInstalls
         self.privacyPermissionRows = privacyPermissionRows
+        self.devtoolUpdateRows = devtoolUpdateRows
         self.truncatedSections = truncatedSections
     }
 

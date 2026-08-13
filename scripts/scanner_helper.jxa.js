@@ -327,7 +327,13 @@ function classify(fact, category, rules, wl) {
 function applyRules(raw, rules, wl, loadIssues) {
   loadIssues = loadIssues || [];
   const result = Object.assign({}, raw, { findings: raw.findings || [], sections: {} });
-  const map = { cpu: "process", backgroundCpu: "process", network: "network", listeningPorts: "process", autoruns: "autoruns", recentInstalls: "installs" };
+  // privacyPermissions/devtoolUpdates carry no risk dimension of their own
+  // (see their own section comments below) -- mapping them to "none" (a
+  // category with no loaded rules) keeps them out of the "process" fallback,
+  // where a package/client name could otherwise collide with a process
+  // whitelist entry or a malware name.iregex pattern and get a fabricated
+  // process verdict or, worse, a phantom finding.
+  const map = { cpu: "process", backgroundCpu: "process", network: "network", listeningPorts: "process", autoruns: "autoruns", recentInstalls: "installs", privacyPermissions: "none", devtoolUpdates: "none" };
   // 한 프로세스가 여러 섹션에 등장할 수 있다. cpu와 backgroundCpu가 그렇다.
   // 이름으로 판정하는 규칙은 양쪽에서 발동해 같은 프로세스를 두 번 세고, 그중
   // 하나는 그 섹션에 없는 필드가 "?"로 남은 열화된 사본이 된다. 규칙을 억제하면
@@ -805,6 +811,19 @@ raw.sections.privacyPermissions = tmp("privacy.tsv").trim().split(/\r?\n/).filte
     : service === "kTCCServiceMicrophone" ? "microphone" : null;
   if (!kind || !client) return null;
   return { kind, client };
+}).filter(Boolean);
+
+// Read-only version comparison from brew outdated --verbose, run with
+// HOMEBREW_NO_AUTO_UPDATE=1 by the collector so it never triggers a network
+// tap refresh -- results reflect whatever tap metadata is already on disk.
+// Casks compare with "!=" instead of "<" since cask versions aren't always
+// strictly ordered; a formula can also list multiple installed versions
+// comma-separated inside the parens (e.g. "sqlite (3.53.2, 3.53.3) < 3.53.4").
+raw.sections.devtoolUpdates = tmp("devtool_updates.txt").trim().split(/\r?\n/).filter(Boolean).map(line => {
+  const m = line.match(/^(\S+)\s+\((.+?)\)\s+(?:<|!=)\s+(\S+)\s*$/);
+  if (!m) return null;
+  const [, name, current, latest] = m;
+  return { name, current, latest };
 }).filter(Boolean);
 
 // codesign -dv writes its verdict to stderr, and exits non-zero for a

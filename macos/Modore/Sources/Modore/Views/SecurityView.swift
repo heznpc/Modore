@@ -11,6 +11,7 @@ struct SecurityPage: View {
     @State private var showsAutoruns = false
     @State private var showsRecentInstalls = false
     @State private var showsPrivacyPermissions = false
+    @State private var showsDevtoolUpdates = false
 
     var body: some View {
         Form {
@@ -106,6 +107,18 @@ struct SecurityPage: View {
                 }
             }
 
+            if !model.devtoolUpdateRows.isEmpty {
+                Section {
+                    devtoolUpdatesDisclosure
+                } header: {
+                    NativeSectionHeader(
+                        title: "개발도구 업데이트",
+                        subtitle: "Homebrew로 설치한 패키지 중 새 버전이 있는 항목입니다. 업데이트를 실행하지 않으며, 로컬에 이미 있는 정보만 비교합니다.",
+                        value: "\(model.devtoolUpdateRows.count)개"
+                    )
+                }
+            }
+
             if !model.autorunRows.isEmpty || !model.recentInstalls.isEmpty {
                 Section("시스템 변경") {
                     autorunDisclosure
@@ -150,6 +163,28 @@ struct SecurityPage: View {
                     title: "카메라·마이크 권한",
                     detail: "전체 디스크 접근 권한이 있는 경우에만 확인됩니다.",
                     value: "\(model.privacyPermissionRows.count)개"
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var devtoolUpdatesDisclosure: some View {
+        if !model.devtoolUpdateRows.isEmpty {
+            DisclosureGroup(isExpanded: $showsDevtoolUpdates) {
+                ForEach(model.devtoolUpdateRows) { row in
+                    SecurityDetailRow(
+                        symbol: "shippingbox",
+                        title: row.name,
+                        detail: "\(row.current) → \(row.latest)"
+                    )
+                }
+            } label: {
+                SecurityDisclosureLabel(
+                    symbol: "shippingbox",
+                    title: "Homebrew 패키지",
+                    detail: "brew outdated 기준이며, 네트워크 조회 없이 로컬 정보만 비교합니다.",
+                    value: "\(model.devtoolUpdateRows.count)개"
                 )
             }
         }
