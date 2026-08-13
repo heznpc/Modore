@@ -409,6 +409,7 @@ _pch_collect_known_storage_paths() {
     add_du_path "protected_history" "Claude sessions" "$HOME/.claude/sessions"
     add_du_path "protected_history" "Claude command history" "$HOME/.claude/history.jsonl"
     add_du_path "protected_history" "Claude session environments" "$HOME/.claude/session-env"
+    add_du_path "protected_history" "Claude worktrees" "$HOME/.claude/worktrees"
     add_du_path "protected_history" "Claude shell snapshots" "$HOME/.claude/shell-snapshots"
     add_du_path "protected_history" "Claude tasks" "$HOME/.claude/tasks"
     add_du_path "protected_history" "Claude user backups" "$HOME/.claude/backups"
