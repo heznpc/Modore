@@ -7,18 +7,30 @@ import SwiftUI
 /// regardless of the scan's original ordering -- not an exact/optimal subset
 /// sum, just a simple, explainable greedy-largest-first rule.
 enum SpaceGoalSelection {
+    /// Sizes arrive rounded to a tenth of a GB, and a tenth is not exact in
+    /// binary: four items truly summing to 3.0 add up to 2.9999999999999996,
+    /// so a bare `>=` walked past the exact-match set and appended one more
+    /// item than the goal needed, then reported the result as short of it.
+    private static let goalTolerance = 0.000_001
+
     static func select(from candidates: [StorageItem], targetGB: Double) -> [StorageItem] {
         guard targetGB > 0 else { return [] }
         let eligible = candidates
             .filter(\.canCleanup)
             .sorted { lhs, rhs in
                 if lhs.sizeGB != rhs.sizeGB { return lhs.sizeGB > rhs.sizeGB }
-                return lhs.label < rhs.label
+                if lhs.label != rhs.label { return lhs.label < rhs.label }
+                // Same size and same label still has to resolve to one fixed
+                // order, or the "same set regardless of scan order" promise
+                // above is only true until two rows collide -- which they do:
+                // label falls back to `kind`, so two same-size rows of one
+                // kind tie. Paths are unique per row.
+                return lhs.path < rhs.path
             }
         var selected: [StorageItem] = []
         var total = 0.0
         for item in eligible {
-            if total >= targetGB { break }
+            if total >= targetGB - goalTolerance { break }
             selected.append(item)
             total += item.sizeGB
         }

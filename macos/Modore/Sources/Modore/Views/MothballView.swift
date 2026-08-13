@@ -56,7 +56,10 @@ struct MothballPage: View {
             }
 
             if let candidates = model.archiveCandidates {
-                MothballCandidateSection(candidates: candidates)
+                MothballCandidateSection(
+                    candidates: candidates,
+                    inspectionFailures: model.archiveInspectionFailures
+                )
             }
         }
         .macSettingsFormStyle()
@@ -65,11 +68,19 @@ struct MothballPage: View {
 
 private struct MothballCandidateSection: View {
     let candidates: [ArchiveCandidate]
+    let inspectionFailures: Int
 
     var body: some View {
         Section {
             if candidates.isEmpty {
-                Text("보관할 만한 저장소가 없습니다.")
+                // "None found" and "could not look" are different answers.
+                Text(inspectionFailures > 0
+                    ? "저장소 \(inspectionFailures)개를 검사하지 못해 보관 후보를 판단할 수 없습니다."
+                    : "보관할 만한 저장소가 없습니다.")
+                    .foregroundStyle(.secondary)
+            } else if inspectionFailures > 0 {
+                Text("저장소 \(inspectionFailures)개는 검사하지 못했습니다. 아래 목록은 확인된 것만입니다.")
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
             ForEach(candidates) { candidate in
