@@ -42,6 +42,19 @@ struct SpaceGoalWorkspaceList: View {
 
     private var achievableGB: Double { Self.achievableGB(storage) }
 
+    /// Upper bound for the goal slider. SwiftUI's Slider divides the range by
+    /// `step` and fatals with "max stride must be positive" on a zero-width
+    /// range, so `1...max(achievableGB, 1)` hard-crashed the whole page
+    /// whenever the cleanable total was greater than zero but at or below
+    /// 1GB (one small npm cache is enough). Rounding up and flooring at 2
+    /// keeps the range provably wider than its lower bound.
+    private var goalUpperBoundGB: Double { max(achievableGB.rounded(.up), 2) }
+
+    /// A whole-GB goal picker is meaningless below 1GB, and that is exactly
+    /// the range where a degenerate slider used to crash -- show the real
+    /// achievable total instead of a control the user cannot move.
+    private var supportsGoalSlider: Bool { achievableGB >= 1 }
+
     private var selection: [StorageItem] {
         SpaceGoalSelection.select(from: storage.cleanupCandidates, targetGB: targetGB)
     }
@@ -92,9 +105,13 @@ struct SpaceGoalWorkspaceList: View {
     @ViewBuilder
     private var goalPicker: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Slider(value: $targetGB, in: 1...max(achievableGB, 1), step: 1)
+            if supportsGoalSlider {
+                Slider(value: $targetGB, in: 1...goalUpperBoundGB, step: 1)
+            }
             HStack {
-                Text("목표: \(String(format: "%.0f", targetGB))GB")
+                Text(supportsGoalSlider
+                    ? "목표: \(String(format: "%.0f", targetGB))GB"
+                    : "정리 가능한 용량이 1GB 미만이라 목표를 나눌 수 없습니다.")
                     .font(.callout.weight(.medium))
                 Spacer()
                 Text("정리 가능 총합 \(String(format: "%.1f", achievableGB))GB")
@@ -103,6 +120,13 @@ struct SpaceGoalWorkspaceList: View {
             }
         }
         .padding(.vertical, 4)
+        // A rescan can shrink what is cleanable while this tab stays on
+        // screen; @State survives that, so an old goal could sit outside the
+        // new range (slider pinned at its end, header quoting a goal the
+        // track cannot reach).
+        .onChange(of: goalUpperBoundGB) { newUpperBound in
+            targetGB = min(max(targetGB, 1), newUpperBound)
+        }
     }
 
     private static func achievableGB(_ storage: StorageSnapshot) -> Double {
