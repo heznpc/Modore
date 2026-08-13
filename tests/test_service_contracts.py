@@ -1021,6 +1021,58 @@ collect_privacy_permissions
     assert missing_privacy == ""
 
 
+@pytest.mark.skipif(platform.system() != "Darwin", reason="osascript JXA requires macOS")
+def test_macos_network_process_names_unescape_lsof_spaces(project_root, tmp_path):
+    """lsof escapes a space inside a COMMAND name as literal "\\x20"
+    ("Codex " -> "Codex\\x20") -- confirmed against this machine's real
+    output, where the GUI Codex and Manus apps both surface that way. The
+    network/listeningPorts parsers passed the token through verbatim, so
+    the escaped form leaked into scan_result.json, the security page's
+    connection list, and rule matching against process names."""
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    (facts / "net.txt").write_text(
+        "COMMAND     PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\n"
+        "Codex\\x20  1142  ren   23u  IPv4 0xaaa      0t0  TCP 192.168.0.156:51962->104.18.32.47:443 (ESTABLISHED)\n",
+        encoding="utf-8",
+    )
+    (facts / "listen.txt").write_text(
+        "COMMAND     PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\n"
+        "Manus\\x20  2200  ren   11u  IPv4 0xbbb      0t0  TCP *:9999 (LISTEN)\n",
+        encoding="utf-8",
+    )
+    for name in ("ps.txt", "security.txt", "load.txt", "plists.txt",
+                 "storage_simulators.tsv", "collection_status.tsv"):
+        (facts / name).write_text("", encoding="utf-8")
+
+    output = tmp_path / "scan.json"
+    env = os.environ.copy()
+    env.update({
+        "TMP_DIR": str(facts),
+        "PCH_OUTPUT": str(output),
+        "PCH_RAW_PATH": str(tmp_path / "raw.json"),
+        "PCH_RULES_DIR": str(project_root / "rules"),
+        "PCH_CONFIG_PATH": str(tmp_path / "config.json"),
+        "PCH_WHITELIST_PATH": str(project_root / "data" / "whitelist.json"),
+        "PCH_SIMULATOR_KEEP_PATH": str(tmp_path / "simulator-keep.txt"),
+        "PCH_NO_VT": "true",
+    })
+    result = subprocess.run(
+        ["/usr/bin/osascript", "-l", "JavaScript", str(project_root / "scripts" / "scanner_helper.jxa.js")],
+        capture_output=True, text=True, encoding="utf-8", env=env, timeout=30,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    scan = json.loads(output.read_text(encoding="utf-8"))
+
+    # The trailing space itself is truncation residue (lsof cuts COMMAND at
+    # 9 characters), invisible in the UI while still splitting dedup keys,
+    # so the parsed name is both unescaped and right-trimmed.
+    network_processes = [row["process"] for row in scan["sections"]["network"]]
+    assert network_processes == ["Codex"], network_processes
+    listen_rows = [(row["process"], row["name"]) for row in scan["sections"]["listeningPorts"]]
+    assert listen_rows == [("Manus", "Manus")], listen_rows
+
+
 def test_macos_default_scan_never_prompts_for_sfltool_admin_access(project_root):
     autoruns = (
         project_root / "scripts/modules/macos/autoruns.sh"
