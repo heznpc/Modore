@@ -584,3 +584,154 @@ def test_cli_report_default_unchanged_without_subcommand(tmp_path, capsys):
     assert rc == 0
     parsed = json.loads(capsys.readouterr().out)
     assert "groups" in parsed and "retention" in parsed
+
+
+# --- bind: 세션↔워크스페이스 결합 -------------------------------------------
+
+
+@pytest.fixture
+def bind_home(tmp_path):
+    """레포 1개 + 그 레포의 worktree 1개. Claude 세션은 cwd만, Codex 세션은
+    자기 헤더에 remote URL을 적어둔 상태 — 실제 두 공급자의 차이 그대로."""
+    home = tmp_path / "home"
+    repo = tmp_path / "work" / "flowship"
+    worktree = repo / ".claude" / "worktrees" / "wt-1"
+    other = tmp_path / "work" / "unrelated"
+    for path in (repo, worktree, other):
+        path.mkdir(parents=True, exist_ok=True)
+
+    # Claude: 본체 세션 1개(서브에이전트 2개) + worktree 세션 1개 + 무관 세션 1개
+    proj = home / ".claude" / "projects" / "-slug-flowship"
+    _write(proj / "sess-main.jsonl", _jsonl({"cwd": str(repo), "gitBranch": "main"}))
+    for i in range(2):
+        _write(proj / "sess-main" / "subagents" / f"agent-{i}.jsonl", _jsonl({"x": i}))
+    _write(proj / "sess-wt.jsonl", _jsonl({"cwd": str(worktree)}))
+    _write(home / ".claude" / "projects" / "-slug-other" / "sess-other.jsonl",
+           _jsonl({"cwd": str(other)}))
+
+    # Codex: remote URL로 묶이는 세션 1개 + cwd로만 묶이는 세션 1개 + 무관 1개
+    sessions = home / ".codex" / "sessions"
+    _write(sessions / "rollout-a.jsonl", _jsonl({
+        "type": "session_meta",
+        "payload": {"id": "codex-a", "cwd": str(other),
+                    "git": {"repository_url": "git@github.com:heznpc/flowship.git"}},
+    }))
+    _write(sessions / "rollout-b.jsonl", _jsonl({
+        "type": "session_meta", "payload": {"id": "codex-b", "cwd": str(repo), "git": {}},
+    }))
+    _write(sessions / "rollout-c.jsonl", _jsonl({
+        "type": "session_meta", "payload": {"id": "codex-c", "cwd": str(other), "git": {}},
+    }))
+    return {"home": home, "repo": repo, "worktree": worktree, "other": other}
+
+
+def test_bind_always_reports_that_an_assessment_happened(bind_home):
+    """`assessed`가 이 출력의 존재 이유다. 빈 목록 하나로는 '바인더가 돌았고
+    아무것도 없었다'와 '바인더가 안 돌았다'를 구분할 수 없고, 둘을 같게 다루는
+    소비자는 아무도 확인하지 않은 워크스페이스를 지운다."""
+    nothing = scree.build_bindings(bind_home["home"], str(bind_home["other"] / "nope"))
+    assert nothing["assessed"] is True
+    assert nothing["bindings"] == []
+
+
+def test_bind_matches_codex_by_recorded_remote_url_not_path(bind_home):
+    """Codex 세션 A는 다른 디렉터리에서 실행됐지만 자기 헤더에 이 레포의 remote를
+    적어뒀다. 경로만 보는 결합이 놓치는 바로 그 경우."""
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]),
+                               repo_url="https://github.com/heznpc/flowship")
+    by_id = {b["sessionId"]: b for b in out["bindings"]}
+    assert "codex-a" in by_id
+    assert by_id["codex-a"]["evidence"] == ["remote-url"]
+    assert by_id["codex-a"]["confidence"] == "high"
+
+
+def test_bind_claude_never_reaches_high_from_metadata_alone(bind_home):
+    """Claude는 remote URL을 기록하지 않는다. 그래서 공급자 메타데이터만으로는
+    high가 나올 수 없고, 이 비대칭이 바인더를 공급자별로 나눈 이유다."""
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]),
+                               repo_url="https://github.com/heznpc/flowship")
+    claude = [b for b in out["bindings"] if b["provider"] == "claude"]
+    assert claude, "cwd가 일치하는 Claude 세션은 잡혀야 한다"
+    assert all(b["confidence"] == "medium" for b in claude)
+
+
+def test_bind_includes_worktree_sessions_of_the_same_repo(bind_home):
+    """레포를 은퇴시키면 그 레포의 worktree에서 오간 대화도 똑같이 고립된다.
+    이 맥에서 실제로 고아가 된 세션은 전부 worktree 쪽이었다."""
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    ids = {b["sessionId"] for b in out["bindings"]}
+    assert "sess-wt" in ids
+
+
+def test_bind_carries_subagent_transcripts(bind_home):
+    """공급자 정리는 최상위 파일만 지우고 하위 트리는 남긴다. 최상위만 복사하는
+    번들은 보존한 기록의 작은 쪽만 보존한다."""
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    main = next(b for b in out["bindings"] if b["sessionId"] == "sess-main")
+    assert len(main["subtranscripts"]) == 2
+    assert main["sizeBytes"] > 0
+
+
+def test_bind_excludes_unrelated_workspaces(bind_home):
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    ids = {b["sessionId"] for b in out["bindings"]}
+    assert "sess-other" not in ids
+    assert "codex-c" not in ids
+
+
+def test_bind_works_after_the_workspace_is_deleted(bind_home):
+    """고아 세션은 경로가 사라진 뒤에야 문제가 된다. 기록된 cwd 문자열로 묶기
+    때문에 결합은 삭제 후에도 성립해야 한다."""
+    shutil.rmtree(bind_home["repo"])
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    assert out["assessed"] is True
+    assert {b["sessionId"] for b in out["bindings"]} >= {"sess-main", "sess-wt", "codex-b"}
+
+
+def test_bind_deep_scan_finds_file_access_but_stays_low(bind_home):
+    """본문 스캔은 파일을 읽지만 내보내는 것은 증거 유형뿐이다. 그리고 경로를
+    읽었다는 사실은 방문을 증명할 뿐 소유를 증명하지 않으므로 low에 머문다."""
+    stray = bind_home["home"] / ".claude" / "projects" / "-slug-stray" / "sess-stray.jsonl"
+    _write(stray, _jsonl({"cwd": str(bind_home["other"])},
+                         {"tool": "Read", "path": f"{bind_home['repo']}/README.md"}))
+    shallow = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    assert "sess-stray" not in {b["sessionId"] for b in shallow["bindings"]}
+
+    deep = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    found = next(b for b in deep["bindings"] if b["sessionId"] == "sess-stray")
+    assert found["evidence"] == ["file-access"]
+    assert found["confidence"] == "low"
+
+
+def test_bind_does_not_rescan_sessions_already_matched_by_cwd(bind_home):
+    """cwd로 이미 묶인 세션은 본문을 읽어도 얻을 게 없다. deep 스캔을 켜도
+    증거가 늘지 않아야 비용이 정당화된다."""
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    main = next(b for b in out["bindings"] if b["sessionId"] == "sess-main")
+    assert main["evidence"] == ["working-directory"]
+
+
+def test_bind_emits_no_transcript_content(bind_home):
+    """report의 metadata-only 계약을 bind가 대신 깨서는 안 된다. 본문을 읽되
+    출력에는 세션 id·증거 유형·크기만 남는다."""
+    secret = "SUPER-SECRET-PROMPT-TEXT"
+    _write(bind_home["home"] / ".claude" / "projects" / "-slug-flowship" / "sess-secret.jsonl",
+           _jsonl({"cwd": str(bind_home["repo"])}, {"text": secret}))
+    blob = json.dumps(scree.build_bindings(
+        bind_home["home"], str(bind_home["repo"]), deep=True), ensure_ascii=False)
+    assert secret not in blob
+
+
+def test_bind_cli_prints_json(bind_home, capsys):
+    rc = scree.main(["bind", str(bind_home["repo"]), "--home", str(bind_home["home"])])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["assessed"] is True
+    assert payload["summary"]["total"] == len(payload["bindings"])
+
+
+def test_report_still_emits_no_bindings(bind_home):
+    """bind는 별도 명령이다. report는 예전 계약 그대로여야 한다."""
+    report = scree.build_scree(bind_home["home"])
+    assert "bindings" not in report
+    assert "assessed" not in report

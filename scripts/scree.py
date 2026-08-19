@@ -646,6 +646,213 @@ def build_scree(home: Path) -> dict:
     }
 
 
+# --- Session binding (the second deliberate exception to the no-content
+# contract, alongside `preserve`) -------------------------------------------
+#
+# `report` answers "how much debris, and whose", and its metadata-only
+# contract is what makes it safe to run on a whim. Binding answers a
+# different question -- "which conversations would be stranded if this
+# workspace were deleted" -- and that answer has to be right, because a
+# consumer acts destructively on it. So binding is its own command:
+# invoked for one named workspace, never during a report, and emitting
+# evidence *types* and session ids rather than anything said in them.
+
+BINDER_DEEP_SCAN_BYTES = 4 * 1024 * 1024
+
+
+def _binding_confidence(evidence: list[str]) -> str:
+    """Confidence follows the strongest evidence present, not a count.
+
+    `remote-url` is the only signal the provider itself recorded about
+    repository identity, and the only one that survives the workspace
+    being moved or deleted -- so it outranks any amount of weaker
+    corroboration. File access alone stays `low` on its own: reading a
+    path proves a visit, not ownership.
+    """
+    if "remote-url" in evidence:
+        return "high"
+    if "working-directory" in evidence:
+        return "medium"
+    return "low"
+
+
+def _under(path: str, root: str) -> bool:
+    """True when `path` is `root` or lives inside it.
+
+    Prefix matching rather than equality so a repo's own worktrees --
+    `<repo>/.claude/worktrees/*`, each a separate session store slug --
+    bind to the repo being retired. Retiring the repo strands those
+    conversations exactly as much as it strands the top-level ones.
+    """
+    root = _canon_workspace(root)
+    return path == root or path.startswith(root + "/")
+
+
+def _claude_subtranscripts(project_dir: Path, session_id: str) -> list[Path]:
+    """Subagent/workflow transcripts for one session.
+
+    Kept separate from the top-level file because the provider's cleanup
+    deletes the parent and leaves these behind: on this machine 181 such
+    orphans exist. A bundle that copied only the parent would preserve
+    the smaller half of the record.
+    """
+    nested = project_dir / session_id
+    if not nested.is_dir():
+        return []
+    return sorted(p for p in nested.rglob("*.jsonl") if p.is_file())
+
+
+def _scans_for_paths(source: Path, root: str, budget: int) -> bool:
+    """Deep scan: does this transcript mention any path inside `root`?
+
+    Reads content, returns one boolean. Nothing read here is retained or
+    emitted -- the caller learns only that `file-access` evidence exists,
+    which is the whole point of returning a bool rather than the matches.
+    Bounded by `budget` so a pathological multi-hundred-megabyte
+    transcript cannot stall the command.
+    """
+    needle = _canon_workspace(root)
+    try:
+        with source.open("r", encoding="utf-8", errors="replace") as handle:
+            read = 0
+            while read < budget:
+                chunk = handle.read(min(1 << 20, budget - read))
+                if not chunk:
+                    break
+                read += len(chunk)
+                if needle in chunk:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def bind_codex(home: Path, workspace: str, repo_url: Optional[str]) -> list[dict]:
+    """Codex bindings are nearly free: the repository URL is already in
+    the rollout's own `session_meta` header, which `collect_codex` reads
+    and then discards into a group count. Nothing is inferred here that
+    the provider did not already state."""
+    wanted = normalize_repo_url(repo_url) if repo_url else None
+    out: list[dict] = []
+    for root in (home / ".codex" / "sessions", home / ".codex" / "archived_sessions"):
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.jsonl")):
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    first = _read_json_line(handle)
+            except OSError:
+                continue
+            payload = (first or {}).get("payload")
+            if (first or {}).get("type") != "session_meta" or not isinstance(payload, dict):
+                continue
+            git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
+            evidence: list[str] = []
+            recorded = git.get("repository_url")
+            if wanted and recorded and normalize_repo_url(recorded) == wanted:
+                evidence.append("remote-url")
+            cwd = payload.get("cwd")
+            if isinstance(cwd, str) and _under(_canon_workspace(cwd), workspace):
+                evidence.append("working-directory")
+            if not evidence:
+                continue
+            session_id = payload.get("id") or path.stem
+            out.append({
+                "provider": "codex",
+                "sessionId": str(session_id),
+                "source": str(path),
+                "subtranscripts": [],
+                "evidence": evidence,
+                "confidence": _binding_confidence(evidence),
+                "sizeBytes": path.stat().st_size,
+            })
+    return out
+
+
+def bind_claude(home: Path, workspace: str, *, deep: bool) -> list[dict]:
+    """Claude records `gitBranch` but never a remote URL, so no Claude
+    session can ever reach `high` confidence from provider metadata
+    alone. That asymmetry is why binding is per-provider rather than one
+    generic scanner: the Codex path reads one line, this one may have to
+    read the file."""
+    root = home / ".claude" / "projects"
+    if not root.is_dir():
+        return []
+    out: list[dict] = []
+    for project_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        for path in sorted(project_dir.glob("*.jsonl")):
+            cwd = None
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    for _ in range(CLAUDE_SCAN_LINES):
+                        line = _read_json_line(handle)
+                        if line is None:
+                            break
+                        if isinstance(line.get("cwd"), str):
+                            cwd = _canon_workspace(line["cwd"])
+                            break
+            except OSError:
+                continue
+            evidence: list[str] = []
+            if cwd and _under(cwd, workspace):
+                evidence.append("working-directory")
+            elif deep and _scans_for_paths(path, workspace, BINDER_DEEP_SCAN_BYTES):
+                # Only when the cheap signal missed. A session already
+                # bound by its cwd gains nothing from also having read
+                # files there, and scanning it would be pure cost.
+                evidence.append("file-access")
+            if not evidence:
+                continue
+            session_id = path.stem
+            subs = _claude_subtranscripts(project_dir, session_id)
+            out.append({
+                "provider": "claude",
+                "sessionId": session_id,
+                "source": str(path),
+                "subtranscripts": [str(p) for p in subs],
+                "evidence": evidence,
+                "confidence": _binding_confidence(evidence),
+                "sizeBytes": path.stat().st_size + sum(p.stat().st_size for p in subs),
+            })
+    return out
+
+
+def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None,
+                   deep: bool = False) -> dict:
+    """The whole output of `bind`.
+
+    `assessed` is always true here, and that is the field the consumer
+    actually needs: it is what lets "a binder ran and found nothing" be
+    told apart from "no binder ran". An empty `bindings` list on its own
+    cannot make that distinction, and a consumer that treats the two the
+    same will delete a workspace whose conversations nobody checked for.
+    """
+    workspace = _canon_workspace(workspace)
+    bindings = bind_claude(home, workspace, deep=deep) + bind_codex(home, workspace, repo_url)
+    bindings.sort(key=lambda b: (b["provider"], b["sessionId"]))
+    return {
+        "contract": ("session ids, evidence types, and sizes only; transcript "
+                     "content is read for file-access evidence but never retained"),
+        "workspace": workspace,
+        "repoUrl": normalize_repo_url(repo_url) if repo_url else None,
+        "deep": deep,
+        "assessed": True,
+        "bindings": bindings,
+        "summary": {
+            "total": len(bindings),
+            "byProvider": {
+                p: sum(1 for b in bindings if b["provider"] == p)
+                for p in ("claude", "codex")
+            },
+            "byConfidence": {
+                c: sum(1 for b in bindings if b["confidence"] == c)
+                for c in ("high", "medium", "low")
+            },
+            "sizeBytes": sum(b["sizeBytes"] for b in bindings),
+        },
+    }
+
+
 def _format_size(size_bytes: int) -> str:
     if size_bytes >= 1 << 30:
         return f"{size_bytes / (1 << 30):.1f}GB"
@@ -847,6 +1054,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                           help="disable masking (explicit opt-out, off by default)")
     preserve.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    bind = sub.add_parser(
+        "bind", help="list the AI sessions bound to ONE named workspace (explicit, never automatic)")
+    bind.add_argument("workspace", type=Path,
+                      help="workspace path to bind against; need not still exist")
+    bind.add_argument("--repo-url", default=None,
+                      help="remote URL, so Codex sessions can bind by the repository "
+                           "identity they recorded rather than by path alone")
+    bind.add_argument("--deep", action="store_true",
+                      help="also scan transcript bodies for file access under the workspace "
+                           "(slower; finds sessions that ran elsewhere but worked here)")
+    bind.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--limit", type=int, default=12, help=argparse.SUPPRESS)
     parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
@@ -869,6 +1088,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"wrote {args.out}")
         else:
             print(text)
+        return 0
+
+    if args.command == "bind":
+        # Always JSON: the only consumer is a program deciding whether a
+        # workspace may be retired, and that decision must not be parsed
+        # out of a human-readable table.
+        print(json.dumps(
+            build_bindings(args.home, str(args.workspace),
+                           repo_url=args.repo_url, deep=args.deep),
+            ensure_ascii=False, indent=2))
         return 0
 
     scree = build_scree(args.home)
