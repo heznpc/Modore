@@ -50,6 +50,21 @@ Every app build embeds an explicit runtime allowlist under `Contents/Resources/r
   mask-by-default Markdown export for records about to expire. There is no bulk-export path, and
   no cleanup recipe consumes scree output.
 
+## Absorbed audits (hfscan, mcpaudit)
+
+- `scripts/hfscan.py` judges the Hugging Face hub cache: it derives each cached model's identifier
+  from its hub directory name and searches the given roots for any occurrence. Absorbed from
+  decant's `ContextProbe.swift` with that module's central defect inverted — an incomplete search
+  (missing root, file cap reached, unreadable subtree) reports every model `unknown`, never
+  `unreferenced`. Absence of evidence counts only when the search actually ran; the escape hatches
+  are explicit flags, never a side effect of a mistyped argument.
+- `scripts/mcpaudit.py` judges MCP configuration: which registered servers cannot start. Absorbed
+  from decant's `MCPHygiene.swift`. `env` is reported as a key count only, and any verdict that
+  depends on PATH is withheld when PATH is unusable — the same fail-safe rule as above.
+- Both are metadata-only, write nothing, and start nothing. Neither ships inside the signed app
+  bundle: they have no Swift caller, so they stay CLI-and-MCP surfaces, and a test pins that
+  giving either one a view means moving it into `RUNTIME_FILES`.
+
 ## Cleanup invariants
 
 - No caller-supplied deletion path.
@@ -74,7 +89,7 @@ Changes to outbound networking, signature verification, cleanup targets, standal
 
 ## Verification map
 
-- `python3 -I -B -m pytest tests/ -q`: rule/report/runtime contracts and destructive-boundary tests in isolated fixtures — including `tests/test_scree.py`, which pins scree's no-content-leak, masking, and single-session-export contracts.
+- `python3 -I -B -m pytest tests/ -q`: rule/report/runtime contracts and destructive-boundary tests in isolated fixtures — including `tests/test_scree.py`, which pins scree's no-content-leak, masking, and single-session-export contracts, and `tests/test_hfscan.py`, which pins that every way a reference search can fail yields a withheld verdict rather than a false orphan.
 - `swift test --package-path macos/Modore -Xswiftc -warnings-as-errors -Xswiftc -strict-concurrency=complete`: native model, selection, history, presentation, and runtime-staging tests under the CI compiler policy.
 - `python3 -I -B scripts/release_smoke.py`: OS-specific source allowlists plus secret/PII/archive-structure audit.
 - `scripts/package_macos_release.sh --local`: strict Universal 2 standalone app/DMG build under `dist/local/`, clearly unsigned for distribution and never overwriting a release artifact. Git, Swift/Xcode, Python audit, signing, and disk-image tools run from a minimal environment; metadata records the selected developer directory and Swift version.
