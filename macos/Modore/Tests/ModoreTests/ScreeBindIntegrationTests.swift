@@ -71,8 +71,13 @@ final class ScreeBindIntegrationTests: XCTestCase {
         let workspace = home.appending(path: "untouched", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
 
+        // `homeOverride`, not the real home: this test is about the
+        // subprocess path, and the machine running it has Gemini and
+        // Kiro stores that no binder reads -- which correctly makes any
+        // real-home scan incomplete and would mask a broken pipe.
         let outcome = await ScreeService.bind(
-            execution: execution, workspace: workspace, repoURL: nil
+            execution: execution, workspace: workspace, repoURL: nil,
+            homeOverride: home
         )
         XCTAssertNil(outcome.diagnostic,
                      "a diagnostic means the binder never ran: \(outcome.diagnostic ?? "")")
@@ -91,7 +96,8 @@ final class ScreeBindIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
 
         let outcome = await ScreeService.bind(
-            execution: execution, workspace: workspace, repoURL: nil
+            execution: execution, workspace: workspace, repoURL: nil,
+            homeOverride: home
         )
         XCTAssertEqual(ContinuityGate.evaluate(outcome.assessment), .allow)
     }
@@ -174,5 +180,55 @@ final class ShallowEscalationTests: XCTestCase {
     /// rerunning it deeper would just fail again more slowly.
     func test_unparseableOutputIsNotEscalated() {
         XCTAssertFalse(ScreeService.reportedNothingWithinShallowLimits(data("not json")))
+    }
+}
+
+/// An incomplete scan is only actionable if it says which gap left it
+/// short: an unreadable transcript is a permissions problem, a store with
+/// no binder is a missing feature, and one message for both sends the
+/// user looking for neither.
+final class IncompleteScanReasonTests: XCTestCase {
+    private func data(_ s: String) -> Data { Data(s.utf8) }
+
+    func test_namesTheStoresNoBinderReads() {
+        let reason = ScreeService.incompleteScanReason(data("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"truncated","bindings":[],
+         "coverageDetail":{"claude":"complete","codex":"complete",
+                           "unboundStores":["Gemini","Kiro"]}}
+        """))
+        XCTAssertTrue(reason.contains("Gemini"), reason)
+        XCTAssertTrue(reason.contains("Kiro"), reason)
+    }
+
+    func test_namesTheStoreThatCouldNotBeFullyRead() {
+        let reason = ScreeService.incompleteScanReason(data("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"truncated","bindings":[],
+         "coverageDetail":{"claude":"incomplete","codex":"complete",
+                           "unboundStores":[]}}
+        """))
+        XCTAssertTrue(reason.contains("Claude"), reason)
+        XCTAssertFalse(reason.contains("Codex"), reason)
+    }
+
+    /// A store nobody looked at outranks one that was read imperfectly:
+    /// closing the second still leaves the first unexamined.
+    func test_unboundStoresOutrankPartialReads() {
+        let reason = ScreeService.incompleteScanReason(data("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"truncated","bindings":[],
+         "coverageDetail":{"claude":"incomplete","codex":"complete",
+                           "unboundStores":["Gemini"]}}
+        """))
+        XCTAssertTrue(reason.contains("Gemini"), reason)
+    }
+
+    func test_fallsBackToAGenericReasonWithoutDetail() {
+        let reason = ScreeService.incompleteScanReason(data("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"truncated","bindings":[]}
+        """))
+        XCTAssertFalse(reason.isEmpty)
     }
 }
