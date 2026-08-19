@@ -50,7 +50,7 @@ Every app build embeds an explicit runtime allowlist under `Contents/Resources/r
   mask-by-default Markdown export for records about to expire. There is no bulk-export path, and
   no cleanup recipe consumes scree output.
 
-## Absorbed audits (hfscan, mcpaudit)
+## Absorbed audits (hfscan, mcpaudit, fileaccess)
 
 - `scripts/hfscan.py` judges the Hugging Face hub cache: it derives each cached model's identifier
   from its hub directory name and searches the given roots for any occurrence. Absorbed from
@@ -61,9 +61,16 @@ Every app build embeds an explicit runtime allowlist under `Contents/Resources/r
 - `scripts/mcpaudit.py` judges MCP configuration: which registered servers cannot start. Absorbed
   from decant's `MCPHygiene.swift`. `env` is reported as a key count only, and any verdict that
   depends on PATH is withheld when PATH is unusable — the same fail-safe rule as above.
-- Both are metadata-only, write nothing, and start nothing. Neither ships inside the signed app
+- `scripts/fileaccess.py` inverts scree's evidence to path → sessions: reads, writes, shell
+  references, session count, and last touch, with agent rule surfaces sorted first. Absorbed from
+  canary's `get_file_access`. Its content contract is *stricter* than the original's — canary
+  attached a 200-character excerpt of the shell command to every row, and that excerpt is command
+  content, so it is dropped. A path extracted from a command is metadata about which file was
+  touched; the command that touched it is not. Nested subagent transcripts stay unopened, matching
+  scree's collector.
+- All three are metadata-only, write nothing, and start nothing. None ships inside the signed app
   bundle: they have no Swift caller, so they stay CLI-and-MCP surfaces, and a test pins that
-  giving either one a view means moving it into `RUNTIME_FILES`.
+  giving one a view means moving it into `RUNTIME_FILES`.
 
 ## Cleanup invariants
 
