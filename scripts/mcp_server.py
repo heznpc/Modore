@@ -26,7 +26,10 @@ directory names, process names -- so every payload is fenced as untrusted.
 Nothing in a tool result is an instruction to follow.
 
 Transport: JSON-RPC 2.0, one message per line, stdin/stdout. Zero dependencies,
-same as every other script in this repository.
+same as every other script in this repository. The shape follows AirMCP's own
+Swift MCP server (ios/Sources/AirMCPServer/MCPServer.swift): a hand-rolled
+dispatch over a small tool table, no SDK, with the read-only contract enforced
+where tools are registered.
 
 Register with an MCP client:
     {"mcpServers": {"modore": {"command": "python3",
@@ -447,8 +450,33 @@ TOOLS: list[dict] = [
     },
 ]
 
-HANDLERS: dict[str, Callable[[dict], dict]] = {t["name"]: t["handler"] for t in TOOLS}
-TOOL_DESCRIPTORS = [{k: v for k, v in t.items() if k != "handler"} for t in TOOLS]
+# Read-only contract, ported from AirMCP's iOS server (`IOSPreviewContract` in
+# ios/Sources/AirMCPServer/PreviewTools.swift): a tool becomes reachable only if
+# it is named on this allowlist AND annotated read-only and non-destructive.
+# The gate runs at registration, not at `tools/list`, so a tool that is added
+# without a deliberate edit here -- or one that loses its annotation in a later
+# refactor -- is unreachable rather than merely unlisted. Failing closed is the
+# point: "we simply never wrote a destructive tool" is an intention, and this
+# turns it into a mechanism.
+EXPOSED_TOOL_NAMES = frozenset({"scree_report", "friction_scan", "system_scan_summary"})
+
+
+def contract_allows(tool: dict) -> bool:
+    annotations = tool.get("annotations") or {}
+    return (tool.get("name") in EXPOSED_TOOL_NAMES
+            and annotations.get("readOnlyHint") is True
+            and annotations.get("destructiveHint") is False)
+
+
+REGISTERED_TOOLS = [t for t in TOOLS if contract_allows(t)]
+# Observable rather than silent: a rejected tool is a wiring mistake worth
+# seeing in `--tools` output, not something to discover by its absence.
+REJECTED_TOOLS = [t["name"] for t in TOOLS if not contract_allows(t)]
+
+HANDLERS: dict[str, Callable[[dict], dict]] = {
+    t["name"]: t["handler"] for t in REGISTERED_TOOLS}
+TOOL_DESCRIPTORS = [{k: v for k, v in t.items() if k != "handler"}
+                    for t in REGISTERED_TOOLS]
 
 
 # ---------------------------------------------------------------------------
@@ -575,7 +603,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if "--tools" in args:
         # Inspect the surface without speaking JSON-RPC at it.
-        print(json.dumps(TOOL_DESCRIPTORS, ensure_ascii=False, indent=2))
+        print(json.dumps({"exposed": TOOL_DESCRIPTORS, "rejected": REJECTED_TOOLS},
+                         ensure_ascii=False, indent=2))
         return 0
     if "--help" in args or "-h" in args:
         print(__doc__)
