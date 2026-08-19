@@ -657,7 +657,10 @@ def build_scree(home: Path) -> dict:
 # invoked for one named workspace, never during a report, and emitting
 # evidence *types* and session ids rather than anything said in them.
 
-BINDER_DEEP_SCAN_BYTES = 4 * 1024 * 1024
+# Safety valve, not a scan depth. A content scan that stops early has not
+# established absence, so tripping this is recorded and downgrades the
+# run's coverage rather than passing silently as a completed look.
+BINDER_SCAN_CEILING_BYTES = 512 * 1024 * 1024
 
 
 def _binding_confidence(evidence: list[str]) -> str:
@@ -702,29 +705,46 @@ def _claude_subtranscripts(project_dir: Path, session_id: str) -> list[Path]:
     return sorted(p for p in nested.rglob("*.jsonl") if p.is_file())
 
 
-def _scans_for_paths(source: Path, root: str, budget: int) -> bool:
+def _scans_for_paths(source: Path, root: str,
+                     ceiling: Optional[int] = None) -> tuple[bool, bool]:
     """Deep scan: does this transcript mention any path inside `root`?
 
-    Reads content, returns one boolean. Nothing read here is retained or
-    emitted -- the caller learns only that `file-access` evidence exists,
-    which is the whole point of returning a bool rather than the matches.
-    Bounded by `budget` so a pathological multi-hundred-megabyte
-    transcript cannot stall the command.
+    Returns `(found, complete)`. Reads content and emits neither -- the
+    caller learns only that `file-access` evidence exists, which is why
+    this returns a boolean rather than the matches.
+
+    `complete` is the half that matters for the gate. A scan that stopped
+    before the end has not established absence, and a repo path can appear
+    anywhere in a transcript: the tool call that touched it may be the
+    last line of a fifty-megabyte session. Reporting a truncated look as a
+    finished one is how a workspace with bindings comes back empty.
+
+    Chunks overlap by the needle length so a path split across a chunk
+    boundary is still matched -- without that, a scan is silently
+    incomplete even when it reads every byte.
     """
+    # Read the module constant at call time rather than binding it as a
+    # default: a default is captured at definition and cannot be lowered
+    # by a test, which would leave the truncation path unexercised.
+    ceiling = BINDER_SCAN_CEILING_BYTES if ceiling is None else ceiling
     needle = _canon_workspace(root)
+    overlap = max(0, len(needle) - 1)
     try:
         with source.open("r", encoding="utf-8", errors="replace") as handle:
             read = 0
-            while read < budget:
-                chunk = handle.read(min(1 << 20, budget - read))
+            carry = ""
+            while True:
+                chunk = handle.read(1 << 20)
                 if not chunk:
-                    break
+                    return (False, True)
                 read += len(chunk)
-                if needle in chunk:
-                    return True
+                if needle in carry + chunk:
+                    return (True, True)
+                carry = chunk[-overlap:] if overlap else ""
+                if read >= ceiling:
+                    return (False, False)
     except OSError:
-        return False
-    return False
+        return (False, False)
 
 
 def bind_codex(home: Path, workspace: str, repo_url: Optional[str]) -> list[dict]:
@@ -769,7 +789,7 @@ def bind_codex(home: Path, workspace: str, repo_url: Optional[str]) -> list[dict
     return out
 
 
-def bind_claude(home: Path, workspace: str, *, deep: bool) -> list[dict]:
+def bind_claude(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], bool]:
     """Claude records `gitBranch` but never a remote URL, so no Claude
     session can ever reach `high` confidence from provider metadata
     alone. That asymmetry is why binding is per-provider rather than one
@@ -777,8 +797,9 @@ def bind_claude(home: Path, workspace: str, *, deep: bool) -> list[dict]:
     read the file."""
     root = home / ".claude" / "projects"
     if not root.is_dir():
-        return []
+        return ([], True)
     out: list[dict] = []
+    complete = True
     for project_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         for path in sorted(project_dir.glob("*.jsonl")):
             cwd = None
@@ -796,11 +817,15 @@ def bind_claude(home: Path, workspace: str, *, deep: bool) -> list[dict]:
             evidence: list[str] = []
             if cwd and _under(cwd, workspace):
                 evidence.append("working-directory")
-            elif deep and _scans_for_paths(path, workspace, BINDER_DEEP_SCAN_BYTES):
+            elif deep:
                 # Only when the cheap signal missed. A session already
                 # bound by its cwd gains nothing from also having read
                 # files there, and scanning it would be pure cost.
-                evidence.append("file-access")
+                found, scanned_fully = _scans_for_paths(path, workspace)
+                if not scanned_fully:
+                    complete = False
+                if found:
+                    evidence.append("file-access")
             if not evidence:
                 continue
             session_id = path.stem
@@ -814,7 +839,7 @@ def bind_claude(home: Path, workspace: str, *, deep: bool) -> list[dict]:
                 "confidence": _binding_confidence(evidence),
                 "sizeBytes": path.stat().st_size + sum(p.stat().st_size for p in subs),
             })
-    return out
+    return (out, complete)
 
 
 def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None,
@@ -828,7 +853,8 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
     same will delete a workspace whose conversations nobody checked for.
     """
     workspace = _canon_workspace(workspace)
-    bindings = bind_claude(home, workspace, deep=deep) + bind_codex(home, workspace, repo_url)
+    claude_bindings, scanned_fully = bind_claude(home, workspace, deep=deep)
+    bindings = claude_bindings + bind_codex(home, workspace, repo_url)
     bindings.sort(key=lambda b: (b["provider"], b["sessionId"]))
     return {
         "contract": ("session ids, evidence types, and sizes only; transcript "
@@ -836,15 +862,19 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
         "workspace": workspace,
         "repoUrl": normalize_repo_url(repo_url) if repo_url else None,
         "deep": deep,
-        # How much of the store was actually examined, which is a different
-        # claim from whether the run finished. A shallow pass matches on
-        # recorded working directories only, so finding nothing means "no
-        # session was *run* here" -- not "no session touched this repo". A
-        # consumer that treats a shallow empty result as proof of absence
-        # deletes workspaces whose conversations were held from a parent
-        # directory, which is the common case for a repo worked on from
-        # `~`. Only a deep pass can claim emptiness.
-        "coverage": "deep" if deep else "shallow",
+        # How much of the store was actually examined, which is a
+        # different claim from whether the run finished.
+        #
+        #   shallow   -- matched recorded working directories only, so an
+        #                empty result means "no session was *run* here",
+        #                not "no session touched this repo". The common
+        #                case for a repo worked on from `~`.
+        #   truncated -- a content scan started and stopped early. It tried
+        #                deeply; it did not look completely, and a repo
+        #                path can appear on the last line of a session.
+        #   complete  -- every byte of every candidate transcript was read.
+        #                The only value from which emptiness is a finding.
+        "coverage": ("complete" if scanned_fully else "truncated") if deep else "shallow",
         "assessed": True,
         "bindings": bindings,
         "summary": {

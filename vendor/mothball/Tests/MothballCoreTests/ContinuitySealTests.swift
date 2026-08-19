@@ -463,3 +463,82 @@ final class SessionRestoreRoundTripTests: XCTestCase {
         }
     }
 }
+
+extension SessionRestoreRoundTripTests {
+
+    /// Everything that can refuse has to refuse before anything moves. A
+    /// digest mismatch found after the working tree is in place leaves a
+    /// half-restored repo behind and reports only a thrown error, which is
+    /// the worst of both: the caller believes nothing happened and the
+    /// filesystem disagrees.
+    func test_aSessionMismatchLeavesTheDestinationUntouched() async throws {
+        let archived = try await archiveWithSessionsForTamper()
+        let sessionArchive = try XCTUnwrap(archived.sessionArchive)
+
+        let fake = restoreParent.appending(path: "fake2/sessions/claude/round", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: fake, withIntermediateDirectories: true)
+        try Data("{\"tampered\":true}\n".utf8).write(to: fake.appending(path: "transcript.jsonl"))
+        try FileManager.default.removeItem(at: sessionArchive)
+        _ = try await ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/tar"),
+            arguments: ["--zstd", "-cf", sessionArchive.path,
+                        "-C", restoreParent.appending(path: "fake2").path, "--", "sessions"],
+            timeout: .seconds(30)
+        )
+
+        let dest = restoreParent.appending(path: "atomic", directoryHint: .isDirectory)
+        do {
+            _ = try await Restorer().restore(manifestURL: archived.manifest, to: dest)
+            XCTFail("expected the mismatch to fail the restore")
+        } catch Restorer.RestoreError.sessionDigestMismatch {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: dest.path),
+                "a refused restore must not leave a repo behind"
+            )
+        }
+    }
+
+    /// Conversations coming back readable is not the same as the provider
+    /// being able to resume them, and the result says which it is rather
+    /// than leaving it to be inferred.
+    func test_restoreReportsReadableButNotProviderResumable() async throws {
+        let archived = try await archiveWithSessionsForTamper()
+        let dest = restoreParent.appending(path: "readable", directoryHint: .isDirectory)
+        let restored = try await Restorer().restore(manifestURL: archived.manifest, to: dest)
+        XCTAssertTrue(restored.sessionsReadable)
+        XCTAssertFalse(restored.providerResumable,
+                       "restored transcripts live in the repo, not the provider's store")
+    }
+
+    private func archiveWithSessionsForTamper() async throws -> ArchiveOrchestrator.ArchiveResult {
+        try await repo.initialize()
+        try repo.writeFile("README.md", contents: "atomic\n")
+        try await repo.commit("initial")
+        try await repo.fakePushedOrigin()
+        let scanned = await RepoScanner().scan(roots: [repo.url.deletingLastPathComponent()])
+        let info = try XCTUnwrap(
+            scanned.first { $0.path.standardizedFileURL == repo.url.standardizedFileURL }
+        )
+        let bundle = try sealedBundleForTamper()
+        defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
+        return try await ArchiveOrchestrator(configuration: .init(
+            archiveDirectory: archiveDir, zstdLevel: 1,
+            compressionTimeout: .seconds(60), verificationTimeout: .seconds(30)
+        )).archive(info, continuity: .sealed(bundle))
+    }
+
+    private func sealedBundleForTamper() throws -> ContinuityBundle {
+        let store = scratch.appending(path: "store2", directoryHint: .isDirectory)
+        let dir = store.appending(path: "round", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let transcript = store.appending(path: "round.jsonl")
+        try Data("{\"parent\":true}\n".utf8).write(to: transcript)
+        return try ContinuitySealer().seal(
+            bindings: [SessionBinding(
+                provider: .claude, sessionID: "round", source: transcript,
+                evidence: [.workingDirectory], confidence: .medium
+            )],
+            stagingParent: scratch
+        )
+    }
+}

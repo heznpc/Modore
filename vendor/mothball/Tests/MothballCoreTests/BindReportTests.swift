@@ -8,10 +8,10 @@ final class BindReportTests: XCTestCase {
 
     private func data(_ s: String) -> Data { Data(s.utf8) }
 
-    func test_deepPassWithNoBindings_isAssessedNoSessions() {
+    func test_completePassWithNoBindings_isAssessedNoSessions() {
         let json = """
         {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
-         "coverage":"deep","bindings":[]}
+         "coverage":"complete","bindings":[]}
         """
         guard case .assessedNoSessions = ContinuityAssessment.fromBindReport(data(json)) else {
             return XCTFail("a pass that could have seen everything and found nothing must say so")
@@ -35,7 +35,21 @@ final class BindReportTests: XCTestCase {
         }
     }
 
-    /// An older binder with no `coverage` field cannot have been deep.
+    /// A content scan that stopped early looked deeply, not completely --
+    /// a repo path can appear on the last line of a fifty-megabyte
+    /// session. Treating "tried hard" as "found nothing" is the same
+    /// false-completeness the shallow case already blocks.
+    func test_truncatedPassWithNoBindings_doesNotClaimEmptiness() {
+        let json = """
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"truncated","bindings":[]}
+        """
+        guard case .notAssessed = ContinuityAssessment.fromBindReport(data(json)) else {
+            return XCTFail("a scan that stopped early must not read as proof of absence")
+        }
+    }
+
+    /// An older binder with no `coverage` field cannot have been complete.
     func test_missingCoverage_isTreatedAsShallow() {
         let json = """
         {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,"bindings":[]}
@@ -126,7 +140,7 @@ final class BindReportTests: XCTestCase {
     func test_gateFollowsTheDecodedAssessment() {
         let empty = """
         {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
-         "coverage":"deep","bindings":[]}
+         "coverage":"complete","bindings":[]}
         """
         let found = """
         {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,

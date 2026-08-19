@@ -17,14 +17,17 @@ public struct BindReport: Codable, Sendable, Equatable {
     public let assessed: Bool
     public let deep: Bool?
 
-    /// How much of the store was examined: `"deep"` or `"shallow"`.
+    /// How much of the store was examined: `"shallow"`, `"truncated"`,
+    /// or `"complete"`.
     ///
-    /// Separate from `assessed`, which only says the run finished. A
-    /// shallow pass matches recorded working directories, so an empty
-    /// result means no session *ran* in this workspace -- not that none
-    /// touched it. A repo worked on from a parent directory has all its
-    /// conversations recorded under that parent, and a shallow empty
-    /// result there is a false negative, not an answer.
+    /// Separate from `assessed`, which only says the run finished, and
+    /// separate again from how hard it tried. A shallow pass matches
+    /// recorded working directories, so an empty result means no session
+    /// *ran* in this workspace -- not that none touched it. A truncated
+    /// pass read transcript bodies and stopped early, which is "looked
+    /// deeply" rather than "looked completely": a repo path can appear on
+    /// the last line of a fifty-megabyte session. Only `complete` makes
+    /// emptiness a finding.
     public let coverage: String?
     public let bindings: [Entry]
 
@@ -60,11 +63,12 @@ extension ContinuityAssessment {
         // this build cannot read, which is the `notAssessed` case again.
         guard bindings.count == report.bindings.count else { return .notAssessed }
         if bindings.isEmpty {
-            // Emptiness is only a finding when the pass could have seen a
-            // session that ran elsewhere. A shallow pass could not, so it
-            // reports what it is: nobody has established this workspace is
-            // conversation-free, which is `notAssessed` and blocks.
-            return report.coverage == "deep" ? .assessedNoSessions : .notAssessed
+            // Emptiness is only a finding when the pass could have seen
+            // every session that might mention this workspace. Anything
+            // less -- matched no directories, or read bodies and stopped
+            // early -- reports what it is: nobody has established this
+            // workspace is conversation-free, which blocks.
+            return report.coverage == "complete" ? .assessedNoSessions : .notAssessed
         }
         return .bindings(bindings)
     }

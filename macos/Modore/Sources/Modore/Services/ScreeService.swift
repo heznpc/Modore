@@ -170,7 +170,15 @@ extension ScreeService {
                 // that one repo rather than reporting an absence nobody
                 // established, or running the expensive pass over every
                 // candidate that already answered.
-                if !deep, Self.reportedNothingWithinShallowLimits(data) {
+                if Self.reportedNothingWithinShallowLimits(data) {
+                    guard !deep else {
+                        // Already the deepest pass available and it still
+                        // stopped early. Nothing was established, and
+                        // saying so beats reporting a parse failure that
+                        // did not happen -- the user can act on "the scan
+                        // was cut short", not on "unreadable output".
+                        return .failed("세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다.")
+                    }
                     return await bind(execution: execution, workspace: workspace,
                                       repoURL: repoURL, deep: true,
                                       homeOverride: homeOverride)
@@ -190,7 +198,9 @@ extension ScreeService {
         guard let report = try? BindReport.decoder().decode(BindReport.self, from: data) else {
             return false
         }
-        return report.assessed && report.bindings.isEmpty && report.coverage != "deep"
+        // A truncated run is worth retrying too -- it stopped early, so it
+        // established nothing either. Only a completed one is final.
+        return report.assessed && report.bindings.isEmpty && report.coverage != "complete"
     }
 }
 

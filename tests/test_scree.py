@@ -807,7 +807,7 @@ def test_bind_reports_scan_coverage(bind_home):
     shallow = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
     assert shallow["coverage"] == "shallow"
     deep = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
-    assert deep["coverage"] == "deep"
+    assert deep["coverage"] == "complete"
 
 
 def test_bind_coverage_is_reported_even_when_nothing_is_found(bind_home):
@@ -816,3 +816,31 @@ def test_bind_coverage_is_reported_even_when_nothing_is_found(bind_home):
     assert empty["bindings"] == []
     # 소비자가 "못 찾음"과 "없음을 증명함"을 구분하려면 이 필드가 있어야 한다.
     assert empty["coverage"] == "shallow"
+
+
+def test_deep_scan_reports_truncation_instead_of_claiming_completeness(bind_home, monkeypatch):
+    """`deep`는 "깊게 시도함"이고 `complete`는 "끝까지 확인함"이다. 레포 경로는
+    50MB 세션의 마지막 줄에 나올 수도 있으므로, 중간에 멈춘 스캔을 완료로 보고하면
+    바인딩이 있는 워크스페이스가 빈 결과로 돌아온다."""
+    stray = bind_home["home"] / ".claude" / "projects" / "-slug-big" / "big.jsonl"
+    _write(stray, _jsonl({"cwd": str(bind_home["other"])}) + "x" * 4096)
+    monkeypatch.setattr(scree, "BINDER_SCAN_CEILING_BYTES", 512)
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    assert out["coverage"] == "truncated"
+
+
+def test_completed_deep_scan_reports_complete(bind_home):
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    assert out["coverage"] == "complete"
+
+
+def test_deep_scan_matches_a_path_split_across_a_read_boundary(bind_home, monkeypatch):
+    """청크 경계에 경로가 걸쳐 있으면 전부 읽고도 못 찾는다. 겹침 없이 나눠 읽는
+    스캔은 모든 바이트를 읽고도 조용히 불완전하다."""
+    target = str(bind_home["repo"])
+    # 경로가 1MB 경계를 정확히 가로지르도록 앞을 채운다.
+    padding = "y" * ((1 << 20) - len(target) // 2)
+    stray = bind_home["home"] / ".claude" / "projects" / "-slug-split" / "split.jsonl"
+    _write(stray, _jsonl({"cwd": str(bind_home["other"])}) + padding + target + "\n")
+    out = scree.build_bindings(bind_home["home"], target, deep=True)
+    assert "split" in {b["sessionId"] for b in out["bindings"]}
