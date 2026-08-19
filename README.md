@@ -28,6 +28,36 @@ python3 scripts/scree.py preserve <session-file>  # masked single-session export
 - **Orphans & lineage** — sessions pointing at vanished workspaces (`orphan_basis: path_missing`), and every remembered work path classified alive+git / alive+plain / vanished, with macOS case-variant ghosts merged.
 - **Contract** — leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by `stat()` without being opened; pinned by tests. `preserve` is the single deliberate exception: one caller-named file, mask-by-default (`--raw` opts out), no bulk export.
 
+**friction**, scree's sibling, reads the same four session stores for the opposite question — not what the agents left behind, but where the operator stopped them:
+
+```bash
+python3 scripts/friction.py                                  # 9-category pushback taxonomy · severity 1-3
+python3 scripts/friction.py scan --json --source codex       # structured output, one store
+```
+
+- **Nine categories** — wrong-action, no-research-assertion, stalling-approval, rule-contamination, over-orchestration-token, stale-repetition, verbosity, tone-attitude, other-ai-friction, at severity 1 (mild correction) / 2 (clear irritation) / 3 (rage). Taxonomy and severity ladder are cited from a 2026-07 human audit of 2,630 user turns yielding 515 findings; they are not re-derived here.
+- **Four stores** — Claude Code and Codex are discovered through scree's own collectors; Gemini CLI chats and Claude Desktop local-agent sessions are added on top, joined to a real workspace path where the store records one.
+- **Same judgment contract** — keyword and tone matching only, no model anywhere in the path; a review aid that both under- and over-catches, so every verdict is tagged `evidence: preview`.
+- **Content contract** — only turns authored by the user are examined; assistant text, tool calls, and nested subagent transcripts are never emitted. Quotes are capped at 200 characters and masked (email / JWT / API keys / private keys / home path) by default, with `--raw-quotes` as the explicit opt-out. Nothing is written.
+
+### Both questions, mid-session (MCP)
+
+The judgments above were terminal-only, which meant the agent doing the work could not ask them while working. Modore ships a zero-dependency MCP server so it can — before deleting a worktree, before assuming a session will still be there tomorrow, before repeating something the operator already objected to:
+
+```bash
+python3 scripts/mcp_server.py --tools    # inspect the surface without speaking JSON-RPC at it
+```
+
+```json
+{"mcpServers": {"modore": {"command": "python3", "args": ["<repo>/scripts/mcp_server.py"]}}}
+```
+
+- `scree_report` — the join, retention forecast, orphan/sole-copy/lineage judgment, by section, with every truncation reported.
+- `friction_scan` — the pushback taxonomy, filterable by store, category, and minimum severity.
+- `system_scan_summary` — the storage and security scan result *already on disk*, with its age, because a stale result read as current is the failure mode here.
+- **A thin layer, not a second implementation** — each tool runs `scree.py --json` or `friction.py --json` and forwards what it prints, so the CLI, the Mac app, and the MCP surface cannot disagree about what is true.
+- **Read-only by contract** — cleanup, deletion, and scan execution are deliberately absent. Modore gates destruction on an approval a human grants on screen; an agent-reachable bypass would not be a feature, it would be the end of that guarantee. Every result is fenced as untrusted data.
+
 ### 2. Why is my PC this busy?
 
 A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange network connection, disk space vanishing overnight. Generic scanners detect but do not explain — and on a Korean banking/government PC they cry wolf over IPinside, nProtect, MagicLine and the rest of the mandated plugin set until users either panic-uninstall critical software or learn to ignore every warning. Modore is the second opinion: it joins process, network, autorun, security, and storage signals, checks miner-like runtime patterns, recognizes the Korean plugin set with a locale-aware whitelist, and explains every finding in plain Korean, English, or Japanese with a 🟢🟡🔴 verdict. Nothing is ever deleted automatically.
@@ -38,6 +68,8 @@ A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange
 
 - **Two OS editions under one brand**: Modore for Windows and Modore for Mac share the same promise — explain local machine state in plain language without deleting anything automatically.
 - **Mac Edition — AI-agent session audit**: `scree` (above) is the flagship Mac capability — cross-tool join, retention forecast, orphan/sole-copy/lineage judgment, metadata-only.
+- **Mac Edition — operator-friction scan**: `friction` classifies the turns where the operator pushed back on agent behaviour across Claude Code, Codex, Gemini CLI, and Claude Desktop transcripts — nine categories, severity 1-3, deterministic keyword/tone matching, user-authored turns only, quotes masked by default.
+- **Read-only MCP surface**: a zero-dependency stdio MCP server exposing scree, friction, and the existing storage/security scan summary to an agent mid-session. Judgment only — no cleanup, no deletion, no scan execution.
 - **Mac Edition scanner**: Bash + JXA collectors for macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and developer-runtime incidents. Every collector reports `ok`, `permission_denied`, `unavailable`, `timed_out`, or `failed`; a missing required collector can never become a safe verdict.
 - **Mac Edition app**: the native SwiftUI app presents one incident judgment followed by evidence, likely impact, and approval-gated recovery; bounded local history keeps the judgment without storing raw commands or URLs. Browser automation is grouped into roots with PID, parent, elapsed time, channel, profile type, and a privacy-preserving controller label.
 - **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
@@ -205,6 +237,8 @@ modore/
 │   └── process.json
 ├── scripts/
 │   ├── scree.py              AI-agent session & residue audit (metadata-only)
+│   ├── friction.py           operator-pushback scan over the same session stores
+│   ├── mcp_server.py         read-only MCP surface (scree · friction · scan summary)
 │   ├── menu.ps1              Windows interactive menu
 │   ├── scanner.ps1           Windows scanner
 │   ├── monitor.ps1           Windows 5-min idle monitor

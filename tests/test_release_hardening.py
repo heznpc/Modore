@@ -1315,6 +1315,16 @@ def test_release_ships_scree_the_readme_leads_with(project_root):
     assert "scripts/scree.py" in module.MACOS_FILES
 
 
+def test_release_ships_frictions_and_the_mcp_surfaces_dependencies(project_root):
+    """friction.py imports scree.py at module scope, and mcp_server.py runs both
+    as subprocesses. Shipping any one of the three without the others produces a
+    release where the documented command fails at import or at first call — the
+    exact failure mode the scree test above exists to prevent, one layer up."""
+    module = load_release_smoke(project_root)
+    for script in ("scripts/scree.py", "scripts/friction.py", "scripts/mcp_server.py"):
+        assert script in module.MACOS_FILES
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="swift build is macOS-only")
 def test_release_extracted_swift_package_actually_builds(project_root, tmp_path):
     """Ground truth for the Package.swift -> vendor/mothball local dependency:
