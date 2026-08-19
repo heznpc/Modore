@@ -646,6 +646,7 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
         # same way scree.py did. mcp_server.py is a stdio server that a separate
         # MCP client launches from a checkout; the app never spawns it.
         "scripts/friction.py",
+        "scripts/moraine.py",
         "scripts/mcp_server.py",
     }
     non_shell_expected = {
