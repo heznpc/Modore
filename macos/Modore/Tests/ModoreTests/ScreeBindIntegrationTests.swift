@@ -139,12 +139,21 @@ final class ShallowEscalationTests: XCTestCase {
         """)))
     }
 
-    /// A deep pass already looked everywhere it can. Escalating again
-    /// would be an infinite regress, and its emptiness is a real finding.
-    func test_emptyDeepRunIsNotEscalated() {
+    /// A completed pass read every byte it could. Escalating again would
+    /// be an infinite regress, and its emptiness is a real finding.
+    func test_completeEmptyRunIsNotEscalated() {
         XCTAssertFalse(ScreeService.reportedNothingWithinShallowLimits(data("""
         {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
-         "coverage":"deep","bindings":[]}
+         "coverage":"complete","bindings":[]}
+        """)))
+    }
+
+    /// A scan that stopped early established nothing either, so it is
+    /// worth retrying — "tried deeply" is not "looked completely".
+    func test_truncatedEmptyRunIsStillEscalated() {
+        XCTAssertTrue(ScreeService.reportedNothingWithinShallowLimits(data("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"truncated","bindings":[]}
         """)))
     }
 
