@@ -241,3 +241,81 @@ final class BoundSessionRowTests: XCTestCase {
         XCTAssertLessThanOrEqual(MothballCandidateSection.boundSessionDisplayLimit, 50)
     }
 }
+
+/// The page's job is to keep a delete from quietly stranding
+/// conversations, so what it sorts by and what it puts in the row's most
+/// readable slot both have to follow that, not repo size.
+final class CandidateOrderingTests: XCTestCase {
+    private let referenceNow = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func candidate(sizeBytes: Int64, sessions: Int) -> ArchiveCandidate {
+        let activity = referenceNow.addingTimeInterval(-400 * 86_400)
+        let repo = RepoInfo(
+            path: URL(fileURLWithPath: "/tmp/r\(sizeBytes)"), sizeBytes: sizeBytes,
+            lastFileMTime: activity,
+            git: GitMetadata(lastCommitDate: activity, isDirty: false, aheadOfOrigin: 0,
+                             originURL: "git@example.com:t/r.git", currentBranch: "main",
+                             headSHA: "abc")
+        )
+        var c = ArchiveCandidate(
+            repo: repo, verdict: SafetyClassifier().classify(repo, now: referenceNow),
+            dormancyDays: 400
+        )
+        if sessions > 0 {
+            c.continuity = .bindings((0..<sessions).map { i in
+                SessionBinding(provider: .claude, sessionID: "s\(i)",
+                               source: URL(fileURLWithPath: "/s/\(i).jsonl"),
+                               evidence: [.workingDirectory], confidence: .medium,
+                               sizeBytes: 1_000)
+            })
+        } else {
+            c.continuity = .assessedNoSessions
+        }
+        return c
+    }
+
+    /// The largest repo is not the riskiest one to delete.
+    func test_moreStrandedConversationsSortsAboveALargerRepo() {
+        let big = candidate(sizeBytes: 10_000_000_000, sessions: 4)
+        let small = candidate(sizeBytes: 1_000, sessions: 120)
+        let ordered = [big, small].sorted {
+            if $0.boundSessions.count != $1.boundSessions.count {
+                return $0.boundSessions.count > $1.boundSessions.count
+            }
+            return $0.repo.sizeBytes > $1.repo.sizeBytes
+        }
+        XCTAssertEqual(ordered.first?.boundSessions.count, 120)
+    }
+
+    /// Fifty-three rows reading "주의 필요" sort nothing. The slot goes to
+    /// the value that differs.
+    func test_trailingLabelCarriesTheVaryingValue() {
+        XCTAssertEqual(candidate(sizeBytes: 1, sessions: 7).trailingLabel, "대화 7개")
+        XCTAssertNotEqual(
+            candidate(sizeBytes: 1, sessions: 7).trailingLabel,
+            candidate(sizeBytes: 1, sessions: 120).trailingLabel
+        )
+    }
+
+    /// With nothing bound there is no count to show, so the tier is still
+    /// the most useful thing available.
+    func test_trailingLabelFallsBackToTheTierWhenNothingIsBound() {
+        let none = candidate(sizeBytes: 1, sessions: 0)
+        XCTAssertEqual(none.trailingLabel, none.tierLabel)
+    }
+
+    func test_summaryStatesTheTotalAtRiskRatherThanWhereTheFeatureIsNot() {
+        let summary = MothballCandidateSection.boundSummary([
+            candidate(sizeBytes: 1, sessions: 3),
+            candidate(sizeBytes: 2, sessions: 5),
+            candidate(sizeBytes: 3, sessions: 0),
+        ])
+        XCTAssertTrue(summary.contains("2개 저장소"), summary)
+        XCTAssertTrue(summary.contains("8개"), summary)
+    }
+
+    func test_summarySaysSoWhenNothingIsAtRisk() {
+        let summary = MothballCandidateSection.boundSummary([candidate(sizeBytes: 1, sessions: 0)])
+        XCTAssertTrue(summary.contains("없습니다"), summary)
+    }
+}

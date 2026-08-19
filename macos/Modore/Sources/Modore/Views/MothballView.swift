@@ -50,8 +50,8 @@ struct MothballPage: View {
                 .disabled(model.archiveLoading || model.screeReport == nil)
             } header: {
                 NativeSectionHeader(
-                    title: "저장소 보관 후보",
-                    subtitle: "MothballCore가 git 메타데이터만으로 판정한 미리보기입니다. 실제 압축·보관 실행은 아직 지원하지 않습니다.",
+                    title: "레포 은퇴 후보",
+                    subtitle: "오래 안 쓴 저장소와, 그 저장소를 지우면 함께 끊기는 AI 대화를 함께 판정합니다.",
                     value: model.archiveCandidates != nil ? "완료" : ""
                 )
             }
@@ -107,8 +107,11 @@ struct MothballCandidateSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "후보 목록",
-                subtitle: "압축 후 원본 삭제는 이 화면에서 지원하지 않습니다. 필요하면 Mothball 앱을 별도로 사용하세요.",
+                title: "후보",
+                // The one number that decides anything on this page. The
+                // previous subtitle said only where the feature *isn't*,
+                // which is not something the reader can act on.
+                subtitle: Self.boundSummary(candidates),
                 value: candidates.isEmpty ? "" : "\(candidates.count)개"
             )
         }
@@ -135,9 +138,13 @@ struct MothballCandidateSection: View {
                     .foregroundStyle(candidate.hasUnsealedSessions ? Color.orange : Color.secondary)
             }
             Spacer()
-            Text(candidate.tierLabel)
+            // The tier is already in the icon, and on a machine that uses
+            // agents every candidate lands on the same tier -- fifty-three
+            // rows all reading "주의 필요" sort nothing and cost a scan.
+            // The trailing slot goes to the number that actually differs.
+            Text(candidate.trailingLabel)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(Color.secondary)
+                .foregroundStyle(candidate.hasUnsealedSessions ? Color.orange : Color.secondary)
         }
     }
 
@@ -183,6 +190,25 @@ struct MothballCandidateSection: View {
         }
         .padding(.leading, 32)
         .padding(.top, 4)
+    }
+
+    /// What the whole list amounts to, stated once at the top.
+    ///
+    /// Every row here already carries a tier label, and on a machine that
+    /// uses agents heavily every row reads the same -- so the label sorts
+    /// nothing and the reader has to scan 53 identical lines to learn the
+    /// only fact that varies. This says it up front instead.
+    static func boundSummary(_ candidates: [ArchiveCandidate]) -> String {
+        let withSessions = candidates.filter { !$0.boundSessions.isEmpty }
+        guard !withSessions.isEmpty else {
+            return "연결된 AI 대화가 있는 저장소는 없습니다."
+        }
+        let sessions = withSessions.reduce(0) { $0 + $1.boundSessions.count }
+        let bytes = withSessions.reduce(Int64(0)) { total, candidate in
+            total + candidate.boundSessions.reduce(Int64(0)) { $0 + $1.sizeBytes }
+        }
+        let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        return "\(withSessions.count)개 저장소에 AI 대화 \(sessions)개(\(size))가 묶여 있습니다. 지우면 함께 끊깁니다."
     }
 
     /// Long enough to browse, short enough that a 120-session repo does
