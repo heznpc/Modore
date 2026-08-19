@@ -26,10 +26,17 @@ directory names, process names -- so every payload is fenced as untrusted.
 Nothing in a tool result is an instruction to follow.
 
 Transport: JSON-RPC 2.0, one message per line, stdin/stdout. Zero dependencies,
-same as every other script in this repository. The shape follows AirMCP's own
-Swift MCP server (ios/Sources/AirMCPServer/MCPServer.swift): a hand-rolled
-dispatch over a small tool table, no SDK, with the read-only contract enforced
-where tools are registered.
+same as every other script in this repository.
+
+AirMCP is the precedent, and it has two MCP servers. The one in operation --
+registered in its .mcp.json, spawned by its own macOS app, published as the
+npm package -- is TypeScript on the MCP SDK; its tool descriptors, read-only
+annotations, and untrusted-content fencing are what this surface copies. Its
+iOS runtime (ios/Sources/AirMCPServer, preview) is a second, Swift server, and
+that one is where the shape here comes from: a hand-rolled dispatch over a
+small tool table with no SDK, and a read-only contract enforced at
+registration. Neither language carried over -- Modore's judgments are Python
+scripts and this repository pins zero runtime dependencies.
 
 Register with an MCP client:
     {"mcpServers": {"modore": {"command": "python3",
