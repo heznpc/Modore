@@ -74,11 +74,13 @@ enum MothballService {
         out.reserveCapacity(candidates.count)
         for candidate in candidates {
             var updated = candidate
-            updated.continuity = await ScreeService.bind(
+            let outcome = await ScreeService.bind(
                 projectRoot: projectRoot,
                 workspace: candidate.repo.path,
                 repoURL: candidate.repo.git.originURL
             )
+            updated.continuity = outcome.assessment
+            updated.continuityDiagnostic = outcome.diagnostic
             out.append(updated)
         }
         return out

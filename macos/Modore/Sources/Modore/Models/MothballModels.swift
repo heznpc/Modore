@@ -26,6 +26,14 @@ struct ArchiveCandidate: Identifiable {
     /// to it, and whether `ContinuityGate` lets an archive proceed.
     var continuity: ContinuityAssessment = .notAssessed
 
+    /// Why `continuity` is `.notAssessed`, when the reason is that the
+    /// binder could not run rather than that it has not been asked to.
+    ///
+    /// Without this the two look identical in the UI, and a broken binder
+    /// presents as "every repo is unassessed" — which is true, and
+    /// useless, and hides that the tool itself is what needs fixing.
+    var continuityDiagnostic: String?
+
     var pathText: String { repo.path.path }
     var pathLastComponent: String { repo.path.lastPathComponent }
 
@@ -56,7 +64,7 @@ struct ArchiveCandidate: Identifiable {
     var continuityText: String {
         switch continuity {
         case .notAssessed:
-            return "AI 세션 확인 안 됨"
+            return continuityDiagnostic.map { "AI 세션 확인 실패 · \($0)" } ?? "AI 세션 확인 안 됨"
         case .assessedNoSessions:
             return "연결된 AI 세션 없음"
         case .bindings(let bindings):
