@@ -143,10 +143,10 @@ public struct ContinuitySealer: Sendable {
 
     // MARK: - Hashing
 
-    struct TreeDigest {
-        let digest: String
-        let sizeBytes: Int64
-        let fileCount: Int
+    public struct TreeDigest {
+        public let digest: String
+        public let sizeBytes: Int64
+        public let fileCount: Int
     }
 
     /// Digest over a whole session directory, not just its top-level
@@ -158,7 +158,7 @@ public struct ContinuitySealer: Sendable {
     /// Each file contributes its path and its bytes, in sorted path
     /// order, so the result is stable across filesystems that enumerate
     /// differently.
-    static func treeDigest(of root: URL) throws -> TreeDigest {
+    public static func treeDigest(of root: URL) throws -> TreeDigest {
         let fm = FileManager.default
         var files: [(relative: String, url: URL)] = []
         let base = root.standardizedFileURL.path
@@ -186,7 +186,19 @@ public struct ContinuitySealer: Sendable {
                 throw SealError.hashFailed(file.url, underlying: error)
             }
             defer { try? handle.close() }
-            while let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            // `try?` here would turn a mid-file read failure into a
+            // digest of the bytes that happened to arrive first -- a hash
+            // that verifies successfully against nothing, recorded in a
+            // manifest whose entire job is to prove the archive holds what
+            // it says. A truncated read has to fail the seal.
+            while true {
+                let chunk: Data?
+                do {
+                    chunk = try handle.read(upToCount: 1 << 20)
+                } catch {
+                    throw SealError.hashFailed(file.url, underlying: error)
+                }
+                guard let chunk, !chunk.isEmpty else { break }
                 hasher.update(data: chunk)
                 total += Int64(chunk.count)
             }

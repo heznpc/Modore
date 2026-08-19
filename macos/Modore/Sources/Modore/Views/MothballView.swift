@@ -203,10 +203,17 @@ struct MothballCandidateSection: View {
         guard !withSessions.isEmpty else {
             return "연결된 AI 대화가 있는 저장소는 없습니다."
         }
-        let sessions = withSessions.reduce(0) { $0 + $1.boundSessions.count }
-        let bytes = withSessions.reduce(Int64(0)) { total, candidate in
-            total + candidate.boundSessions.reduce(Int64(0)) { $0 + $1.sizeBytes }
+        /// Deduplicate conversations shared by a repository and its worktrees before presenting totals.
+        var seen: Set<String> = []
+        var bytes: Int64 = 0
+        for candidate in withSessions {
+            for binding in candidate.boundSessions {
+                let key = "\(binding.provider.rawValue)/\(binding.sessionID)"
+                guard seen.insert(key).inserted else { continue }
+                bytes += binding.sizeBytes
+            }
         }
+        let sessions = seen.count
         let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         return "\(withSessions.count)개 저장소에 AI 대화 \(sessions)개(\(size))가 묶여 있습니다. 지우면 함께 끊깁니다."
     }

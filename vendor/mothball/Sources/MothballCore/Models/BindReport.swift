@@ -16,6 +16,16 @@ public struct BindReport: Codable, Sendable, Equatable {
     public let repoUrl: String?
     public let assessed: Bool
     public let deep: Bool?
+
+    /// How much of the store was examined: `"deep"` or `"shallow"`.
+    ///
+    /// Separate from `assessed`, which only says the run finished. A
+    /// shallow pass matches recorded working directories, so an empty
+    /// result means no session *ran* in this workspace -- not that none
+    /// touched it. A repo worked on from a parent directory has all its
+    /// conversations recorded under that parent, and a shallow empty
+    /// result there is a false negative, not an answer.
+    public let coverage: String?
     public let bindings: [Entry]
 
     public struct Entry: Codable, Sendable, Equatable {
@@ -48,8 +58,13 @@ extension ContinuityAssessment {
         // A binder that returned entries none of which survive decoding
         // has not established "no sessions" — it has produced something
         // this build cannot read, which is the `notAssessed` case again.
+        guard bindings.count == report.bindings.count else { return .notAssessed }
         if bindings.isEmpty {
-            return report.bindings.isEmpty ? .assessedNoSessions : .notAssessed
+            // Emptiness is only a finding when the pass could have seen a
+            // session that ran elsewhere. A shallow pass could not, so it
+            // reports what it is: nobody has established this workspace is
+            // conversation-free, which is `notAssessed` and blocks.
+            return report.coverage == "deep" ? .assessedNoSessions : .notAssessed
         }
         return .bindings(bindings)
     }

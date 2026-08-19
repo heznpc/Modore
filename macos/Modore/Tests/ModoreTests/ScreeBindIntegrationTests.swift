@@ -125,3 +125,45 @@ final class ScreeBindIntegrationTests: XCTestCase {
                        .block(.unsealedSessions(count: 1)))
     }
 }
+
+/// The escalation rule, tested on payloads rather than through the
+/// subprocess so the policy is pinned independently of scree's runtime.
+final class ShallowEscalationTests: XCTestCase {
+    private func data(_ s: String) -> Data { Data(s.utf8) }
+
+    /// The case worth a deep pass: a clean shallow run that found nothing.
+    func test_emptyShallowRunIsWorthEscalating() {
+        XCTAssertTrue(ScreeService.reportedNothingWithinShallowLimits(data("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,
+         "coverage":"shallow","bindings":[]}
+        """)))
+    }
+
+    /// A deep pass already looked everywhere it can. Escalating again
+    /// would be an infinite regress, and its emptiness is a real finding.
+    func test_emptyDeepRunIsNotEscalated() {
+        XCTAssertFalse(ScreeService.reportedNothingWithinShallowLimits(data("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"deep","bindings":[]}
+        """)))
+    }
+
+    /// Sessions were found; there is nothing a content scan would add,
+    /// and it is the expensive pass over every candidate that already
+    /// answered.
+    func test_runThatFoundSessionsIsNotEscalated() {
+        XCTAssertFalse(ScreeService.reportedNothingWithinShallowLimits(data("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,
+         "coverage":"shallow",
+         "bindings":[{"provider":"claude","sessionId":"a","source":"/s/a.jsonl",
+                      "subtranscripts":[],"evidence":["working-directory"],
+                      "confidence":"medium","sizeBytes":1}]}
+        """)))
+    }
+
+    /// Unreadable output is schema drift, not a scan-depth problem;
+    /// rerunning it deeper would just fail again more slowly.
+    func test_unparseableOutputIsNotEscalated() {
+        XCTAssertFalse(ScreeService.reportedNothingWithinShallowLimits(data("not json")))
+    }
+}

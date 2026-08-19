@@ -27,8 +27,8 @@ final class ArchiveRun: ObservableObject, Identifiable {
     ///   repo path. Standalone Mothball has no session binder — it scans
     ///   git repositories, not `~/.claude` — so this map is empty when
     ///   the app runs on its own and every repo falls to
-    ///   `standaloneOverride` below. Modore, which does run a binder,
-    ///   supplies real assessments.
+    ///   `.notAssessed`, which the gate refuses. Modore, which does run
+    ///   a binder, supplies real assessments.
     init(
         repos: [InspectedRepo],
         continuity: [URL: ContinuityAssessment] = [:],
@@ -48,19 +48,6 @@ final class ArchiveRun: ObservableObject, Identifiable {
         self.total = repos.count
         self.results = repos.map { PerRepoResult(repoPath: $0.info.path) }
     }
-
-    /// What standalone Mothball records when nobody assessed sessions.
-    ///
-    /// `.notAssessed` would be the honest state, but it blocks, and
-    /// blocking every archive would make the standalone app unusable for
-    /// the git-only job it already does correctly. So the archive
-    /// proceeds and the manifest says, permanently and in writing, that
-    /// no one looked — which is the fact a future reader needs and the
-    /// thing an empty session list would have hidden. Modore passing a
-    /// real assessment is what removes this.
-    static let standaloneOverride = ContinuityAssessment.overriddenByUser(
-        reason: "standalone Mothball: 세션 바인더 없음 (연결된 AI 세션 미확인)"
-    )
 
     func requestCancellation() {
         isCancellationRequested = true
@@ -83,7 +70,13 @@ final class ArchiveRun: ObservableObject, Identifiable {
 
             do {
                 let freshInfo = try await preflight(repo)
-                let assessment = continuity[repo.info.path] ?? Self.standaloneOverride
+                // `.notAssessed`, not an override. An override is a record
+                // that a person was shown the gap and chose to proceed;
+                // writing one automatically puts a human decision in the
+                // manifest that no human made, and turns the fail-closed
+                // gate into a formality that always passes. Standalone
+                // Mothball has no binder, so it refuses and says why.
+                let assessment = continuity[repo.info.path] ?? .notAssessed
                 let result = try await orchestrator.archive(freshInfo, continuity: assessment) { [weak self] step in
                     let mapped = ArchiveStep(step)
                     await MainActor.run { [weak self] in
@@ -113,6 +106,17 @@ final class ArchiveRun: ObservableObject, Identifiable {
                 ))
                 results[index].failure = ArchiveOrchestrator.ArchiveError
                     .trashFailed(path, underlying: underlying)
+            } catch ArchiveOrchestrator.ArchiveError.continuityRefused(let refusal) {
+                // Every refusal here is recoverable by running one more
+                // step, and `String(describing:)` on the enum would print
+                // a case name instead of saying which step. This is the
+                // one error a user is expected to hit and act on.
+                await log?.append(.archiveFailed(
+                    path: repo.info.path,
+                    error: refusal.message
+                ))
+                results[index].failure = ArchiveOrchestrator.ArchiveError
+                    .continuityRefused(refusal)
             } catch {
                 await log?.append(.archiveFailed(
                     path: repo.info.path,
