@@ -57,6 +57,32 @@ enum MothballService {
         let report = await RepoScanner().scanReport(roots: roots)
         return (rankCandidates(repos: report.repos), report.failures.count)
     }
+
+    /// Asks the binder which AI sessions belong to each candidate.
+    ///
+    /// Run after ranking rather than inside it: `rankCandidates` is a pure
+    /// function over git state and stays that way, and binding is a
+    /// subprocess per repo. Candidates that were never bound keep their
+    /// `.notAssessed` default, which is the honest answer and the one the
+    /// gate refuses to archive from — a binder that fails must not leave a
+    /// repo looking session-free.
+    static func withContinuity(
+        _ candidates: [ArchiveCandidate],
+        projectRoot: URL
+    ) async -> [ArchiveCandidate] {
+        var out: [ArchiveCandidate] = []
+        out.reserveCapacity(candidates.count)
+        for candidate in candidates {
+            var updated = candidate
+            updated.continuity = await ScreeService.bind(
+                projectRoot: projectRoot,
+                workspace: candidate.repo.path,
+                repoURL: candidate.repo.git.originURL
+            )
+            out.append(updated)
+        }
+        return out
+    }
 }
 
 extension ScanModel {
@@ -72,8 +98,16 @@ extension ScanModel {
         Task {
             defer { archiveLoading = false }
             let outcome = await MothballService.scanCandidates(lineagePaths: paths)
+            // Show the git judgment first, then fill in session bindings:
+            // binding spawns one subprocess per repo, and a long wait for
+            // it would otherwise hold back a list that is already useful.
+            // Until it lands every row reads "AI 세션 확인 안 됨", which is
+            // true rather than reassuring.
             archiveCandidates = outcome.candidates
             archiveInspectionFailures = outcome.failureCount
+            archiveCandidates = await MothballService.withContinuity(
+                outcome.candidates, projectRoot: projectRoot
+            )
         }
     }
 }

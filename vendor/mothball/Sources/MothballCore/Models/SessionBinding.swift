@@ -66,13 +66,17 @@ public struct SessionBinding: Sendable, Hashable {
     public let evidence: [BindingEvidence]
     public let confidence: BindingConfidence
 
+    /// Expose the uncompressed transcript and subagent size before sealing starts.
+    public let sizeBytes: Int64
+
     public init(
         provider: SessionProvider,
         sessionID: String,
         source: URL,
         subtranscripts: [URL] = [],
         evidence: [BindingEvidence],
-        confidence: BindingConfidence
+        confidence: BindingConfidence,
+        sizeBytes: Int64 = 0
     ) {
         self.provider = provider
         self.sessionID = sessionID
@@ -80,6 +84,7 @@ public struct SessionBinding: Sendable, Hashable {
         self.subtranscripts = subtranscripts
         self.evidence = evidence
         self.confidence = confidence
+        self.sizeBytes = sizeBytes
     }
 }
 

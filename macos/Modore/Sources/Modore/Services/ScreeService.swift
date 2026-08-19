@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MothballCore
 
 /// Runs the sealed `scree.py` and parses its report. Read-only: this never
 /// deletes anything and never retains session content — scree's own contract
@@ -78,6 +79,36 @@ enum ScreeService {
             return cleaned.isEmpty ? "session" : cleaned
         }
         return "\(sanitize(tool))-\(sanitize(stem)).md"
+    }
+
+    /// Runs `scree.py bind` for one workspace and decodes the result into
+    /// the assessment MothballCore's gate reads.
+    ///
+    /// Every failure path returns `.notAssessed` rather than an error the
+    /// caller might log and move past. A timed-out or unparseable binder
+    /// run is, for the purposes of deciding whether a workspace may be
+    /// retired, exactly the same as never having run one: nobody
+    /// established what conversations would be stranded.
+    static func bind(
+        projectRoot: URL,
+        workspace: URL,
+        repoURL: String?,
+        deep: Bool = false
+    ) async -> ContinuityAssessment {
+        var arguments = ["bind", workspace.path]
+        if let repoURL, !repoURL.isEmpty { arguments += ["--repo-url", repoURL] }
+        if deep { arguments.append("--deep") }
+
+        switch await invoke(projectRoot: projectRoot, arguments: arguments, timeout: 120) {
+        case .failure, .timedOut:
+            return .notAssessed
+        case .success(let output):
+            guard let start = output.firstIndex(of: "{"),
+                  let data = output[start...].data(using: .utf8) else {
+                return .notAssessed
+            }
+            return .fromBindReport(data)
+        }
     }
 
     private enum RawOutcome {
