@@ -82,6 +82,40 @@ def test_no_tool_can_run_anything_but_the_two_judgment_scripts(monkeypatch, tmp_
             assert forbidden not in joined, argv
 
 
+def test_the_read_only_contract_is_enforced_where_tools_are_registered():
+    """Ported from AirMCP's iOS server, which fails a tool closed at
+    registration rather than hiding it from tools/list. Absence-by-intention is
+    not a boundary; this is."""
+    assert mcp_server.REJECTED_TOOLS == []
+    assert {t["name"] for t in mcp_server.REGISTERED_TOOLS} == mcp_server.EXPOSED_TOOL_NAMES
+
+    forgot_annotation = {"name": "scree_report",
+                         "annotations": {"destructiveHint": False}}
+    assert not mcp_server.contract_allows(forgot_annotation)
+
+    destructive = {"name": "scree_report",
+                   "annotations": {"readOnlyHint": True, "destructiveHint": True}}
+    assert not mcp_server.contract_allows(destructive)
+
+    not_on_the_allowlist = {"name": "run_cleanup",
+                            "annotations": {"readOnlyHint": True, "destructiveHint": False}}
+    assert not mcp_server.contract_allows(not_on_the_allowlist)
+
+
+def test_a_tool_rejected_by_the_contract_is_unreachable_not_merely_unlisted(monkeypatch):
+    smuggled = {"name": "run_cleanup", "title": "x", "description": "x",
+                "inputSchema": {"type": "object"},
+                "annotations": {"readOnlyHint": False, "destructiveHint": True},
+                "handler": lambda args: {"ran": True}}
+    monkeypatch.setattr(mcp_server, "TOOLS", mcp_server.TOOLS + [smuggled])
+    registered = [t for t in mcp_server.TOOLS if mcp_server.contract_allows(t)]
+    assert "run_cleanup" not in {t["name"] for t in registered}
+    # And the live registry, built through the same gate, never learned it.
+    response = mcp_server.dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                    "params": {"name": "run_cleanup", "arguments": {}}})
+    assert response["error"]["code"] == mcp_server.METHOD_NOT_FOUND
+
+
 def test_the_two_judgment_scripts_are_the_declared_targets():
     assert mcp_server.SCREE.name == "scree.py"
     assert mcp_server.FRICTION.name == "friction.py"
@@ -308,8 +342,9 @@ def test_serve_handles_a_full_session_including_malformed_input():
 def test_cli_tools_dump_is_the_registered_surface(capsys):
     assert mcp_server.main(["--tools"]) == 0
     dumped = json.loads(capsys.readouterr().out)
-    assert [t["name"] for t in dumped] == ["scree_report", "friction_scan",
-                                           "system_scan_summary"]
+    assert [t["name"] for t in dumped["exposed"]] == ["scree_report", "friction_scan",
+                                                      "system_scan_summary"]
+    assert dumped["rejected"] == []
 
 
 def test_cli_rejects_unknown_arguments(capsys):

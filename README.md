@@ -56,7 +56,7 @@ python3 scripts/mcp_server.py --tools    # inspect the surface without speaking 
 - `friction_scan` — the pushback taxonomy, filterable by store, category, and minimum severity.
 - `system_scan_summary` — the storage and security scan result *already on disk*, with its age, because a stale result read as current is the failure mode here.
 - **A thin layer, not a second implementation** — each tool runs `scree.py --json` or `friction.py --json` and forwards what it prints, so the CLI, the Mac app, and the MCP surface cannot disagree about what is true.
-- **Read-only by contract** — cleanup, deletion, and scan execution are deliberately absent. Modore gates destruction on an approval a human grants on screen; an agent-reachable bypass would not be a feature, it would be the end of that guarantee. Every result is fenced as untrusted data.
+- **Read-only by contract, enforced at registration** — a tool is reachable only if it is on an explicit allowlist and annotated read-only and non-destructive; one added without a deliberate edit fails closed. Cleanup, deletion, and scan execution are deliberately absent. Modore gates destruction on an approval a human grants on screen; an agent-reachable bypass would not be a feature, it would be the end of that guarantee. Every result is fenced as untrusted data.
 
 ### 2. Why is my PC this busy?
 
