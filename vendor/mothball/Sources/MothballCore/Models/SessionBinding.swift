@@ -66,13 +66,21 @@ public struct SessionBinding: Sendable, Hashable {
     public let evidence: [BindingEvidence]
     public let confidence: BindingConfidence
 
+    /// Uncompressed size of the transcript plus its subagent tree, as the
+    /// binder measured it. Carried this far so the user sees what sealing
+    /// will cost *before* agreeing to it — on this machine one repo's
+    /// sessions come to 624 MB, which is not a number to discover
+    /// afterwards.
+    public let sizeBytes: Int64
+
     public init(
         provider: SessionProvider,
         sessionID: String,
         source: URL,
         subtranscripts: [URL] = [],
         evidence: [BindingEvidence],
-        confidence: BindingConfidence
+        confidence: BindingConfidence,
+        sizeBytes: Int64 = 0
     ) {
         self.provider = provider
         self.sessionID = sessionID
@@ -80,6 +88,7 @@ public struct SessionBinding: Sendable, Hashable {
         self.subtranscripts = subtranscripts
         self.evidence = evidence
         self.confidence = confidence
+        self.sizeBytes = sizeBytes
     }
 }
 

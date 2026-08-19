@@ -14,6 +14,18 @@ struct ArchiveCandidate: Identifiable {
     /// never drift from the tier it was judged against.
     let dormancyDays: Int
 
+    /// What a binder found out about this repo's AI sessions, or
+    /// `.notAssessed` when none has run yet.
+    ///
+    /// Deliberately not folded into `verdict`. `SafetyClassifier` answers
+    /// a git question and grades it into tiers a human reads; this is a
+    /// different question with a different shape, and the tier a repo
+    /// gets must not change depending on whether a binder happened to
+    /// have finished. A repo with forty bound conversations and one with
+    /// none are the same `.safe` — what differs is what the row says next
+    /// to it, and whether `ContinuityGate` lets an archive proceed.
+    var continuity: ContinuityAssessment = .notAssessed
+
     var pathText: String { repo.path.path }
     var pathLastComponent: String { repo.path.lastPathComponent }
 
@@ -35,6 +47,37 @@ struct ArchiveCandidate: Identifiable {
         case .caution: return "exclamationmark.triangle"
         case .unsafe: return "lock.fill"
         }
+    }
+
+    /// The line the user reads before deciding. Phrased so the
+    /// unassessed state is visible rather than looking like a clean bill
+    /// of health — "확인 안 됨" and "없음" have to be different sentences,
+    /// for the same reason they are different cases in the model.
+    var continuityText: String {
+        switch continuity {
+        case .notAssessed:
+            return "AI 세션 확인 안 됨"
+        case .assessedNoSessions:
+            return "연결된 AI 세션 없음"
+        case .bindings(let bindings):
+            let bytes = ByteCountFormatter.string(
+                fromByteCount: bindings.reduce(0) { $0 + $1.sizeBytes },
+                countStyle: .file
+            )
+            return "연결된 AI 세션 \(bindings.count)개 · \(bytes)"
+        case .sealed(let bundle):
+            return "AI 세션 \(bundle.sessions.count)개 봉인됨"
+        case .overriddenByUser:
+            return "AI 세션 확인 없이 진행함"
+        }
+    }
+
+    /// True while the repo still has conversations that only exist in the
+    /// provider's own store — the state `ContinuityGate` refuses to
+    /// archive from.
+    var hasUnsealedSessions: Bool {
+        if case .bindings(let bindings) = continuity { return !bindings.isEmpty }
+        return false
     }
 
     var reasonText: String {

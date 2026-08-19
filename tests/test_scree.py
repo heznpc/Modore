@@ -735,3 +735,23 @@ def test_report_still_emits_no_bindings(bind_home):
     report = scree.build_scree(bind_home["home"])
     assert "bindings" not in report
     assert "assessed" not in report
+
+
+def test_bind_output_keys_match_the_swift_decoder(bind_home):
+    """MothballCore의 `BindReport`가 요구하는 키 이름을 여기서 고정한다.
+
+    이 계약이 깨지면 Swift 쪽은 `notAssessed`로 떨어진다 — 안전한 방향이지만
+    조용하다. 모든 아카이브가 차단되기만 하고 이유는 어디에도 안 나오므로,
+    깨진 사실을 여기서 잡아야 한다."""
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]),
+                               repo_url="https://github.com/heznpc/flowship")
+    assert {"workspace", "repoUrl", "assessed", "deep", "bindings"} <= set(out)
+    entry = out["bindings"][0]
+    assert set(entry) == {"provider", "sessionId", "source", "subtranscripts",
+                          "evidence", "confidence", "sizeBytes"}
+    # 열거형 값도 Swift 쪽 rawValue와 1:1이어야 한다. 모르는 값이 오면
+    # Swift 디코더는 바인딩을 조용히 빼는 대신 전체를 실패 처리한다.
+    assert entry["provider"] in {"claude", "codex"}
+    assert entry["confidence"] in {"high", "medium", "low"}
+    for binding in out["bindings"]:
+        assert set(binding["evidence"]) <= {"remote-url", "working-directory", "file-access"}

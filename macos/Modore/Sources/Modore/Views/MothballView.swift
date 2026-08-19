@@ -94,6 +94,13 @@ private struct MothballCandidateSection: View {
                         Text("\(candidate.reasonText) · \(candidate.sizeText)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        // The line this whole feature exists for. A repo
+                        // with bound conversations and one without are the
+                        // same git tier, and until now the row said nothing
+                        // that told them apart.
+                        Text(candidate.continuityText)
+                            .font(.caption)
+                            .foregroundStyle(candidate.hasUnsealedSessions ? Color.orange : Color.secondary)
                     }
                     Spacer()
                     Text(candidate.tierLabel)
