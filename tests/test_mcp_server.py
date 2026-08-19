@@ -23,8 +23,9 @@ def _payload(result: dict) -> dict:
 # 읽기 전용 경계 — 이 표면의 존재 이유
 # ---------------------------------------------------------------------------
 
-def test_only_three_read_only_tools_are_exposed():
-    assert sorted(mcp_server.HANDLERS) == ["friction_scan", "scree_report",
+def test_only_the_read_only_judgment_tools_are_exposed():
+    assert sorted(mcp_server.HANDLERS) == ["friction_scan", "hf_orphans",
+                                           "mcp_hygiene", "scree_report",
                                            "system_scan_summary"]
 
 
@@ -50,7 +51,7 @@ def test_the_module_has_exactly_one_way_to_start_a_process():
         assert forbidden not in source, f"MCP surface must not use {forbidden}"
 
 
-def test_no_tool_can_run_anything_but_the_two_judgment_scripts(monkeypatch, tmp_path):
+def test_no_tool_can_run_anything_but_the_judgment_scripts(monkeypatch, tmp_path):
     """Exercised, not inspected: every tool is called and the real spawn point is
     recorded. cleanup.sh, scanner.sh, and scree's content-reading `preserve`
     subcommand must never appear in an argument vector."""
@@ -75,7 +76,7 @@ def test_no_tool_can_run_anything_but_the_two_judgment_scripts(monkeypatch, tmp_
     assert spawned, "expected the judgment scripts to be invoked"
     for argv in spawned:
         script = Path(argv[3]).name
-        assert script in ("scree.py", "friction.py"), argv
+        assert script in ("scree.py", "friction.py", "hfscan.py", "mcpaudit.py"), argv
         joined = " ".join(argv)
         for forbidden in ("cleanup", "scanner", "storage_watch", "schedule",
                           "preserve", "--raw"):
@@ -116,9 +117,11 @@ def test_a_tool_rejected_by_the_contract_is_unreachable_not_merely_unlisted(monk
     assert response["error"]["code"] == mcp_server.METHOD_NOT_FOUND
 
 
-def test_the_two_judgment_scripts_are_the_declared_targets():
+def test_the_judgment_scripts_are_the_declared_targets():
     assert mcp_server.SCREE.name == "scree.py"
     assert mcp_server.FRICTION.name == "friction.py"
+    assert mcp_server.HFSCAN.name == "hfscan.py"
+    assert mcp_server.MCPAUDIT.name == "mcpaudit.py"
 
 
 def test_scan_summary_states_that_it_cannot_start_a_scan(tmp_path, monkeypatch):
@@ -294,6 +297,7 @@ def test_initialize_echoes_a_supported_version_and_falls_back_otherwise():
 def test_tools_list_declares_closed_input_schemas():
     tools = mcp_server.handle_request("tools/list", {})["tools"]
     assert [t["name"] for t in tools] == ["scree_report", "friction_scan",
+                                          "hf_orphans", "mcp_hygiene",
                                           "system_scan_summary"]
     for tool in tools:
         assert tool["inputSchema"]["additionalProperties"] is False
@@ -343,9 +347,70 @@ def test_cli_tools_dump_is_the_registered_surface(capsys):
     assert mcp_server.main(["--tools"]) == 0
     dumped = json.loads(capsys.readouterr().out)
     assert [t["name"] for t in dumped["exposed"]] == ["scree_report", "friction_scan",
+                                                      "hf_orphans", "mcp_hygiene",
                                                       "system_scan_summary"]
     assert dumped["rejected"] == []
 
 
 def test_cli_rejects_unknown_arguments(capsys):
     assert mcp_server.main(["--run-cleanup"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# 흡수한 판정 두 개 (decant → hfscan / mcpaudit)
+# ---------------------------------------------------------------------------
+
+def test_a_search_root_cannot_be_smuggled_in_as_an_option():
+    """`roots`는 이 표면에서 호출자가 경로를 넘기는 유일한 자리다."""
+    for bad in (["--home"], ["-x"], [""], "not-a-list", [1]):
+        result = _call("hf_orphans", {"roots": bad})
+        assert result.get("isError"), bad
+
+    too_many = [f"/tmp/r{i}" for i in range(mcp_server.MAX_HF_ROOTS + 1)]
+    assert _call("hf_orphans", {"roots": too_many}).get("isError")
+
+
+def test_hf_orphans_surfaces_a_withheld_verdict_at_the_top_level(monkeypatch):
+    """불완전한 검색은 조용히 '미참조 0건'으로 보이면 안 된다."""
+    incomplete = {
+        "evidence": "preview", "requires_revalidation": True,
+        "hub": {"path": "~/.cache/huggingface/hub", "exists": True,
+                "model_count": 1, "total_bytes": 10},
+        "search": {"complete": False, "incomplete_reasons": ["search-root-missing"]},
+        "summary": {"referenced": 0, "unreferenced": 0, "unknown": 1,
+                    "unreferenced_bytes": 0},
+        "models": [{"name": "models--a--b", "verdict": "unknown", "size_bytes": 10}],
+    }
+    monkeypatch.setattr(mcp_server, "_run_json",
+                        lambda script, arguments, timeout: incomplete)
+    payload = _payload(_call("hf_orphans", {}))
+    assert payload["search_complete"] is False
+    assert payload["verdicts_withheld"] is True
+    assert payload["models"][0]["verdict"] == "unknown"
+
+
+def test_mcp_hygiene_filters_by_status_and_never_forwards_env(monkeypatch):
+    report = {
+        "evidence": "preview", "requires_revalidation": True,
+        "configs": ["~/.claude.json"], "config_errors": [], "server_count": 2,
+        "path_available": True,
+        "summary": {"dead": 1, "unknown": 0, "duplicate": 0,
+                    "manual-review": 1, "healthy": 0},
+        "findings": [
+            {"server": "gone", "status": "dead", "reasons": ["command-not-found"],
+             "config": "~/.claude.json", "command_kind": "node", "env_key_count": 0},
+            {"server": "keyed", "status": "manual-review",
+             "reasons": ["env-present-not-read"], "config": "~/.claude.json",
+             "command_kind": "node", "env_key_count": 3},
+        ],
+    }
+    monkeypatch.setattr(mcp_server, "_run_json",
+                        lambda script, arguments, timeout: report)
+
+    payload = _payload(_call("mcp_hygiene", {"status": "dead"}))
+    assert [f["server"] for f in payload["findings"]] == ["gone"]
+
+    everything = json.dumps(_payload(_call("mcp_hygiene", {})), ensure_ascii=False)
+    assert "env_key_count" in everything
+    for leaked in ("ANTHROPIC_API_KEY", "sk-ant", "env_values"):
+        assert leaked not in everything
