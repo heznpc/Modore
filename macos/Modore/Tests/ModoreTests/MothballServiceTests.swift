@@ -188,3 +188,56 @@ final class ArchiveCandidateContinuityTests: XCTestCase {
         ])).hasUnsealedSessions)
     }
 }
+
+/// The per-session line the expanded row shows. A count says a delete
+/// costs something; this says what and how firmly it is attached.
+final class BoundSessionRowTests: XCTestCase {
+
+    private func binding(
+        provider: SessionProvider = .claude,
+        evidence: [BindingEvidence] = [.workingDirectory],
+        confidence: BindingConfidence = .medium,
+        sizeBytes: Int64 = 2_000_000
+    ) -> SessionBinding {
+        SessionBinding(
+            provider: provider, sessionID: "3a4f0f71",
+            source: URL(fileURLWithPath: "/s/3a4f0f71.jsonl"),
+            evidence: evidence, confidence: confidence, sizeBytes: sizeBytes
+        )
+    }
+
+    func test_evidenceTextNamesTheEvidenceConfidenceAndSize() {
+        let text = MothballCandidateSection.evidenceText(binding())
+        XCTAssertTrue(text.contains("작업 디렉터리"), text)
+        XCTAssertTrue(text.contains("보통"), text)
+        XCTAssertTrue(text.contains("MB"), text)
+    }
+
+    /// Codex records the remote URL itself, and that is a stronger claim
+    /// than a path match — the row has to say which one it is.
+    func test_remoteURLEvidenceReadsDifferentlyFromAPathMatch() {
+        let recorded = MothballCandidateSection.evidenceText(
+            binding(provider: .codex, evidence: [.remoteURL], confidence: .high)
+        )
+        let inferred = MothballCandidateSection.evidenceText(binding())
+        XCTAssertNotEqual(recorded, inferred)
+        XCTAssertTrue(recorded.contains("원격 URL"), recorded)
+        XCTAssertTrue(recorded.contains("확실"), recorded)
+    }
+
+    func test_allEvidenceTypesAreLabelled() {
+        let text = MothballCandidateSection.evidenceText(
+            binding(evidence: [.remoteURL, .workingDirectory, .fileAccess])
+        )
+        for fragment in ["원격 URL", "작업 디렉터리", "파일 접근"] {
+            XCTAssertTrue(text.contains(fragment), "\(fragment) missing from \(text)")
+        }
+    }
+
+    /// A truncated list that ends silently reads as a complete one, and a
+    /// repo with 120 bound sessions would otherwise look like it had 20.
+    func test_displayLimitIsBoundedSoOneRowCannotBecomeAPage() {
+        XCTAssertGreaterThan(MothballCandidateSection.boundSessionDisplayLimit, 0)
+        XCTAssertLessThanOrEqual(MothballCandidateSection.boundSessionDisplayLimit, 50)
+    }
+}

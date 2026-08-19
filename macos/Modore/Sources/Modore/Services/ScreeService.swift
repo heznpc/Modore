@@ -292,4 +292,34 @@ extension ScanModel {
             }
         }
     }
+
+    /// Exports one session bound to an archive candidate, through the same
+    /// masked single-session path the expiring-session list already uses.
+    ///
+    /// A count and a size say a delete would cost something; they do not
+    /// say what. Reading the conversation back is the only way to judge
+    /// whether it was worth keeping, and that judgement belongs to the
+    /// person about to approve the delete -- so the export is reachable
+    /// from the row where they decide, not only from the session page.
+    func preserveBoundSession(_ binding: SessionBinding) {
+        guard screePreserveInFlightSource == nil else { return }
+        let source = binding.source.path
+        screePreserveInFlightSource = source
+        errorMessage = nil
+        let root = projectRoot
+        // scree's own fixed store labels, so the export filename matches
+        // what the session page produces for the same file.
+        let tool = binding.provider == .claude ? "Claude" : "Codex"
+        Task {
+            defer { screePreserveInFlightSource = nil }
+            switch await ScreeService.preserve(projectRoot: root, tool: tool, source: source) {
+            case .success(let url):
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+                appendLog("세션 보존: \(url.lastPathComponent)")
+                AccessibilityAnnouncer.announce("세션을 보존했습니다")
+            case .failure(let message):
+                errorMessage = message
+            }
+        }
+    }
 }

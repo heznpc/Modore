@@ -755,3 +755,45 @@ def test_bind_output_keys_match_the_swift_decoder(bind_home):
     assert entry["confidence"] in {"high", "medium", "low"}
     for binding in out["bindings"]:
         assert set(binding["evidence"]) <= {"remote-url", "working-directory", "file-access"}
+
+
+def test_preserve_extracts_codex_content_blocks(tmp_path):
+    """Codex는 같은 본문을 방향별로 `input_text`/`output_text`로 나눠 적는다.
+    `text`만 찾던 동안 모든 Codex 세션이 빈 export가 됐다 — 이 맥 기준 바인딩
+    163개 중 147개가 Codex라 대부분이 여기 해당했다."""
+    source = tmp_path / "rollout.jsonl"
+    _write(source, _jsonl(
+        {"type": "session_meta", "payload": {"id": "c1", "cwd": str(tmp_path)}},
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "사용자가 물어본 것"}]}},
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "에이전트가 답한 것"}]}},
+    ))
+    out = scree.render_preserve(source, tmp_path, raw=True)
+    assert "사용자가 물어본 것" in out
+    assert "에이전트가 답한 것" in out
+    assert "no recognizable turns" not in out
+
+
+def test_preserve_still_extracts_claude_text_blocks(tmp_path):
+    source = tmp_path / "session.jsonl"
+    _write(source, _jsonl(
+        {"cwd": str(tmp_path)},
+        {"message": {"role": "assistant", "content": [{"type": "text", "text": "클로드 응답"}]}},
+    ))
+    assert "클로드 응답" in scree.render_preserve(source, tmp_path, raw=True)
+
+
+def test_preserve_masks_by_default(tmp_path):
+    """마스킹이 기본이라는 계약은 Codex 경로가 열린 뒤에도 그대로여야 한다."""
+    source = tmp_path / "rollout.jsonl"
+    _write(source, _jsonl(
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "연락처는 someone@example.com 입니다"}]}},
+    ))
+    masked = scree.render_preserve(source, tmp_path, raw=False)
+    assert "someone@example.com" not in masked
+    assert "someone@example.com" in scree.render_preserve(source, tmp_path, raw=True)

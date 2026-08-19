@@ -982,6 +982,14 @@ def mask_text(text: str, home: Path) -> str:
     return text
 
 
+# Content-block kinds that carry prose across the stores seen so far.
+# Claude writes `text`; Codex splits the same thing by direction into
+# `input_text`/`output_text`. Matching only `text` silently produced empty
+# exports for every Codex session -- and Codex is the larger store on a
+# machine that uses both.
+TURN_TEXT_TYPES = ("text", "input_text", "output_text")
+
+
 def _extract_turn(line: dict) -> Optional[tuple[str, str]]:
     """Best-effort (role, text) from one Claude or Codex JSONL line."""
     message = line.get("message") if isinstance(line.get("message"), dict) else None
@@ -994,9 +1002,14 @@ def _extract_turn(line: dict) -> Optional[tuple[str, str]]:
     if isinstance(content, str):
         return (str(role or "?"), content)
     if isinstance(content, list):
-        parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+        parts = [c.get("text", "") for c in content
+                 if isinstance(c, dict) and c.get("type") in TURN_TEXT_TYPES]
         joined = "\n".join(p for p in parts if p)
         return (str(role or "?"), joined) if joined else None
+    # Codex also emits a plain `agent_message` payload whose text is not
+    # wrapped in a content list at all.
+    if isinstance(container.get("message"), str) and container.get("type") == "agent_message":
+        return ("assistant", container["message"])
     return None
 
 
