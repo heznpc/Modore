@@ -61,14 +61,29 @@ public struct ContinuitySealer: Sendable {
             }
             try Self.copy(binding.source, to: dir.appending(path: "transcript.jsonl"))
             if !binding.subtranscripts.isEmpty {
-                let subDir = dir.appending(path: "subagents", directoryHint: .isDirectory)
-                do {
-                    try fm.createDirectory(at: subDir, withIntermediateDirectories: true)
-                } catch {
-                    throw SealError.stagingUnusable(subDir, underlying: error)
-                }
+                // Destination root is the session directory, not
+                // `.../subagents`: the relative path computed below
+                // already carries the `subagents/` segment, and rooting
+                // at `subagents` would nest it twice.
+                // The provider's subagent tree is nested, not flat:
+                // `subagents/workflows/<wf-id>/agent-*.jsonl`, with a
+                // `journal.jsonl` per workflow. Copying by
+                // `lastPathComponent` collapses those onto each other and
+                // the second copy fails outright -- found by sealing a
+                // real 163-session store, which a flat fixture cannot
+                // reproduce. The layout is reproduced instead.
+                let origin = Self.subtranscriptOrigin(for: binding)
                 for sub in binding.subtranscripts {
-                    try Self.copy(sub, to: subDir.appending(path: sub.lastPathComponent))
+                    let destination = dir.appending(
+                        path: Self.relativePath(of: sub, under: origin)
+                    )
+                    let parent = destination.deletingLastPathComponent()
+                    do {
+                        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+                    } catch {
+                        throw SealError.stagingUnusable(parent, underlying: error)
+                    }
+                    try Self.copy(sub, to: destination)
                 }
             }
 
@@ -87,6 +102,35 @@ public struct ContinuitySealer: Sendable {
         }
 
         return ContinuityBundle(stagingRoot: stagingRoot, sessions: sealed)
+    }
+
+    /// Directory the subagent tree hangs off, which for every provider
+    /// seen so far is the transcript's path minus its extension:
+    /// `<store>/<session-id>.jsonl` alongside `<store>/<session-id>/...`.
+    /// Derived rather than passed in because the binder reports absolute
+    /// paths and this keeps the two from having to agree on a second
+    /// field.
+    static func subtranscriptOrigin(for binding: SessionBinding) -> URL {
+        binding.source.deletingPathExtension()
+    }
+
+    /// Path of `url` relative to `origin`.
+    ///
+    /// A subtranscript outside `origin` -- which should not happen, but
+    /// would silently collide if it did -- keeps its filename prefixed by
+    /// a digest of its full path. Uniqueness matters more here than
+    /// readability: a collision is a lost transcript, and losing one
+    /// quietly is the failure this type exists to prevent.
+    static func relativePath(of url: URL, under origin: URL) -> String {
+        let base = origin.standardizedFileURL.path
+        let full = url.standardizedFileURL.path
+        if full.hasPrefix(base + "/") {
+            return String(full.dropFirst(base.count + 1))
+        }
+        var hasher = SHA256()
+        hasher.update(data: Data(full.utf8))
+        let tag = hasher.finalize().prefix(4).map { String(format: "%02x", $0) }.joined()
+        return "\(tag)-\(url.lastPathComponent)"
     }
 
     private static func copy(_ source: URL, to destination: URL) throws {

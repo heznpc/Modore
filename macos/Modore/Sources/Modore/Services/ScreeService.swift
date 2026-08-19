@@ -80,37 +80,98 @@ enum ScreeService {
         }
         return "\(sanitize(tool))-\(sanitize(stem)).md"
     }
+}
 
+/// A binder run's verdict plus, when it failed, why.
+///
+/// The assessment alone is not enough to act on. Every failure here
+/// collapses to `.notAssessed`, which is correct — a binder that could
+/// not run has established nothing — but it is also indistinguishable
+/// from a binder that ran and could not reach a conclusion. If the
+/// subprocess path ever breaks, every workspace reads "확인 안 됨" and
+/// every archive refuses, with nothing anywhere saying the tool is
+/// broken rather than the repos being unassessed. The diagnostic is what
+/// tells those apart.
+struct ScreeBindOutcome {
+    let assessment: ContinuityAssessment
+    /// nil when the binder ran and answered. Non-nil means the answer is
+    /// `.notAssessed` because something went wrong, not because the
+    /// binder said so.
+    let diagnostic: String?
+
+    static func failed(_ reason: String) -> ScreeBindOutcome {
+        ScreeBindOutcome(assessment: .notAssessed, diagnostic: reason)
+    }
+}
+
+extension ScreeService {
     /// Runs `scree.py bind` for one workspace and decodes the result into
     /// the assessment MothballCore's gate reads.
     ///
-    /// Every failure path returns `.notAssessed` rather than an error the
-    /// caller might log and move past. A timed-out or unparseable binder
-    /// run is, for the purposes of deciding whether a workspace may be
-    /// retired, exactly the same as never having run one: nobody
-    /// established what conversations would be stranded.
+    /// Failure never becomes a permissive assessment: a timed-out or
+    /// unparseable binder run is, for deciding whether a workspace may be
+    /// retired, exactly the same as never having run one.
     static func bind(
         projectRoot: URL,
         workspace: URL,
         repoURL: String?,
         deep: Bool = false
-    ) async -> ContinuityAssessment {
+    ) async -> ScreeBindOutcome {
+        guard let execution = await Task.detached(priority: .userInitiated, operation: {
+            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
+        }).value else {
+            return .failed("서명된 실행 런타임을 확인하지 못해 세션 바인더를 실행하지 않았습니다.")
+        }
+        return await bind(execution: execution, workspace: workspace,
+                          repoURL: repoURL, deep: deep)
+    }
+
+    /// Execution-injecting overload, mirroring `invoke`'s own split.
+    ///
+    /// It exists so the subprocess path can be tested. The two halves of
+    /// this feature are written in different languages and meet over a
+    /// pipe; unit tests on either side pass while the pipe is broken, and
+    /// a broken pipe fails closed and silent. Without an injection point
+    /// the only way to exercise it is to launch the app.
+    /// - Parameter homeOverride: session-store root, for tests that need
+    ///   a hermetic fake home instead of the machine's real history.
+    ///   scree's own `--home` flag is already suppressed from its help for
+    ///   the same reason.
+    static func bind(
+        execution: RuntimeExecutionContext,
+        workspace: URL,
+        repoURL: String?,
+        deep: Bool = false,
+        homeOverride: URL? = nil
+    ) async -> ScreeBindOutcome {
         var arguments = ["bind", workspace.path]
         if let repoURL, !repoURL.isEmpty { arguments += ["--repo-url", repoURL] }
         if deep { arguments.append("--deep") }
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
 
-        switch await invoke(projectRoot: projectRoot, arguments: arguments, timeout: 120) {
-        case .failure, .timedOut:
-            return .notAssessed
+        switch await invoke(execution: execution, arguments: arguments, timeout: 120) {
+        case .failure(let message):
+            return .failed(message)
+        case .timedOut:
+            return .failed("세션 바인딩이 2분 안에 끝나지 않았습니다.")
         case .success(let output):
             guard let start = output.firstIndex(of: "{"),
                   let data = output[start...].data(using: .utf8) else {
-                return .notAssessed
+                return .failed("세션 바인더 출력에서 JSON을 찾지 못했습니다.")
             }
-            return .fromBindReport(data)
+            let assessment = ContinuityAssessment.fromBindReport(data)
+            if case .notAssessed = assessment {
+                // The binder printed JSON this build could not read as a
+                // completed assessment — a schema drift between the two
+                // languages, not a repo with unknown sessions.
+                return .failed("세션 바인더 출력을 해석하지 못했습니다.")
+            }
+            return ScreeBindOutcome(assessment: assessment, diagnostic: nil)
         }
     }
+}
 
+extension ScreeService {
     private enum RawOutcome {
         case success(String)
         case timedOut

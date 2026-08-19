@@ -41,10 +41,16 @@ final class ContinuitySealTests: XCTestCase {
     private func makeSessionOnDisk(
         id: String, subagents: Int = 2
     ) throws -> SessionBinding {
-        let dir = scratch.appending(path: "store/\(id)", directoryHint: .isDirectory)
+        // The provider's real layout: the transcript sits *beside* the
+        // directory holding its subagent tree, not inside it.
+        // `~/.claude/projects/<slug>/<id>.jsonl` next to
+        // `<slug>/<id>/subagents/...`. A fixture that nests them differently
+        // silently exercises the fallback path instead of the real one.
+        let store = scratch.appending(path: "store", directoryHint: .isDirectory)
+        let dir = store.appending(path: id, directoryHint: .isDirectory)
         let subDir = dir.appending(path: "subagents", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: subDir, withIntermediateDirectories: true)
-        let transcript = dir.appending(path: "\(id).jsonl")
+        let transcript = store.appending(path: "\(id).jsonl")
         try Data("{\"parent\":\"\(id)\"}\n".utf8).write(to: transcript)
         var subs: [URL] = []
         for i in 0..<subagents {
@@ -142,6 +148,66 @@ final class ContinuitySealTests: XCTestCase {
         )
         XCTAssertEqual(staged.digest, recorded,
                        "the manifest must describe the staged copy, which cannot change")
+    }
+
+    /// The shape the provider actually writes, found by sealing a real
+    /// 163-session store: subagent transcripts are nested under
+    /// `subagents/workflows/<wf-id>/`, and every workflow has its own
+    /// `journal.jsonl`. Copying by `lastPathComponent` collapses those
+    /// onto one destination and the second copy fails outright, so a flat
+    /// fixture proves nothing about the real store.
+    func test_seal_preservesNestedSubagentLayoutAndCollidingFilenames() throws {
+        let dir = scratch.appending(path: "store/nested", directoryHint: .isDirectory)
+        let transcript = dir.appendingPathExtension("jsonl")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("{}\n".utf8).write(to: transcript)
+
+        var subs: [URL] = []
+        for wf in ["wf_aaa", "wf_bbb"] {
+            let wfDir = dir.appending(path: "subagents/workflows/\(wf)", directoryHint: .isDirectory)
+            try FileManager.default.createDirectory(at: wfDir, withIntermediateDirectories: true)
+            for name in ["journal.jsonl", "agent-1.jsonl"] {
+                let file = wfDir.appending(path: name)
+                try Data("{\"wf\":\"\(wf)\"}\n".utf8).write(to: file)
+                subs.append(file)
+            }
+        }
+
+        let binding = SessionBinding(
+            provider: .claude, sessionID: "nested", source: transcript,
+            subtranscripts: subs, evidence: [.workingDirectory], confidence: .medium
+        )
+        let bundle = try ContinuitySealer().seal(bindings: [binding], stagingParent: scratch)
+        defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
+
+        let sealedDir = bundle.stagingRoot.appending(path: "sessions/claude/nested")
+        for wf in ["wf_aaa", "wf_bbb"] {
+            for name in ["journal.jsonl", "agent-1.jsonl"] {
+                let path = sealedDir.appending(path: "subagents/workflows/\(wf)/\(name)")
+                XCTAssertTrue(FileManager.default.fileExists(atPath: path.path),
+                              "\(wf)/\(name) must survive with its layout intact")
+            }
+        }
+        // 4 subagents + 1 transcript. A collapse would silently lose one.
+        XCTAssertEqual(bundle.sessions.first?.fileCount, 5)
+    }
+
+    /// A subtranscript outside the session directory would collide on
+    /// filename alone; it keeps a path-derived prefix instead. Losing a
+    /// transcript quietly is the failure this type exists to prevent.
+    func test_relativePath_disambiguatesFilesOutsideTheSessionDirectory() {
+        let origin = URL(fileURLWithPath: "/store/session")
+        let inside = URL(fileURLWithPath: "/store/session/subagents/a/journal.jsonl")
+        XCTAssertEqual(
+            ContinuitySealer.relativePath(of: inside, under: origin),
+            "subagents/a/journal.jsonl"
+        )
+        let strayA = URL(fileURLWithPath: "/elsewhere/one/journal.jsonl")
+        let strayB = URL(fileURLWithPath: "/elsewhere/two/journal.jsonl")
+        XCTAssertNotEqual(
+            ContinuitySealer.relativePath(of: strayA, under: origin),
+            ContinuitySealer.relativePath(of: strayB, under: origin)
+        )
     }
 
     // MARK: - Orchestrator integration
