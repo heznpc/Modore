@@ -177,7 +177,7 @@ extension ScreeService {
                         // saying so beats reporting a parse failure that
                         // did not happen -- the user can act on "the scan
                         // was cut short", not on "unreadable output".
-                        return .failed("세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다.")
+                        return .failed(Self.incompleteScanReason(data))
                     }
                     return await bind(execution: execution, workspace: workspace,
                                       repoURL: repoURL, deep: true,
@@ -190,6 +190,28 @@ extension ScreeService {
             }
             return ScreeBindOutcome(assessment: assessment, diagnostic: nil)
         }
+    }
+
+    /// Says which gap left the scan short, because the gaps close
+    /// differently: an unreadable transcript is a permissions problem, a
+    /// store with no binder is a missing feature, and "검사가 완전하지
+    /// 않았습니다" sends the user looking for neither.
+    static func incompleteScanReason(_ data: Data) -> String {
+        guard let report = try? BindReport.decoder().decode(BindReport.self, from: data),
+              let detail = report.coverageDetail else {
+            return "세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다."
+        }
+        if let unbound = detail.unboundStores, !unbound.isEmpty {
+            return "\(unbound.joined(separator: "·")) 세션 저장소는 아직 검사하지 않습니다. "
+                + "이 저장소에 연결된 대화가 없다고 단정할 수 없습니다."
+        }
+        let stalled = [("Claude", detail.claude), ("Codex", detail.codex)]
+            .filter { $0.1 != nil && $0.1 != "complete" }
+            .map(\.0)
+        if !stalled.isEmpty {
+            return "\(stalled.joined(separator: "·")) 세션 일부를 읽지 못해 연결 여부를 확정하지 못했습니다."
+        }
+        return "세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다."
     }
 
     /// True when the payload is a well-formed shallow run that found

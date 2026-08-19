@@ -29,6 +29,20 @@ public struct BindReport: Codable, Sendable, Equatable {
     /// the last line of a fifty-megabyte session. Only `complete` makes
     /// emptiness a finding.
     public let coverage: String?
+
+    /// Why a pass fell short of `complete`, per store. Carried so a
+    /// consumer can name the gap -- an unreadable rollout is closed by
+    /// fixing permissions, a store with no binder is closed by writing
+    /// one, and "incomplete" alone tells the user neither.
+    public let coverageDetail: CoverageDetail?
+
+    public struct CoverageDetail: Codable, Sendable, Equatable {
+        public let claude: String?
+        public let codex: String?
+        /// Session stores present on this machine that no binder reads.
+        /// The loudest incompleteness there is: the scan never looked.
+        public let unboundStores: [String]?
+    }
     public let bindings: [Entry]
 
     public struct Entry: Codable, Sendable, Equatable {

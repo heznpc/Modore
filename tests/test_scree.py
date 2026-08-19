@@ -844,3 +844,74 @@ def test_deep_scan_matches_a_path_split_across_a_read_boundary(bind_home, monkey
     _write(stray, _jsonl({"cwd": str(bind_home["other"])}) + padding + target + "\n")
     out = scree.build_bindings(bind_home["home"], target, deep=True)
     assert "split" in {b["sessionId"] for b in out["bindings"]}
+
+
+# --- coverage 완전성: 실패 경로별 회귀 ------------------------------------
+
+
+@pytest.fixture
+def only_bindable_stores(bind_home, monkeypatch):
+    """이 맥에는 Gemini·Kiro·VS Code 저장소가 실제로 있어서 coverage가 항상
+    incomplete가 된다. 아래 테스트들은 *다른* 불완전성 원인을 검사하므로,
+    바인더 없는 저장소 요인만 제거한 상태에서 본다."""
+    monkeypatch.setattr(scree, "unbound_stores_present", lambda home: [])
+    return bind_home
+
+
+def test_coverage_is_complete_when_every_bindable_store_was_read(only_bindable_stores):
+    out = scree.build_bindings(only_bindable_stores["home"],
+                               str(only_bindable_stores["repo"]), deep=True)
+    assert out["coverage"] == "complete"
+    assert out["coverageDetail"]["claude"] == "complete"
+    assert out["coverageDetail"]["codex"] == "complete"
+
+
+def test_unreadable_claude_transcript_makes_coverage_incomplete(only_bindable_stores):
+    """선행 읽기가 실패한 파일은 '검사했는데 없었다'가 아니라 '검사하지 못했다'다."""
+    blocked = only_bindable_stores["home"] / ".claude" / "projects" / "-slug-locked" / "x.jsonl"
+    _write(blocked, _jsonl({"cwd": "/somewhere"}))
+    blocked.chmod(0o000)
+    try:
+        out = scree.build_bindings(only_bindable_stores["home"],
+                                   str(only_bindable_stores["repo"]), deep=True)
+        assert out["coverageDetail"]["claude"] == "incomplete"
+        assert out["coverage"] == "truncated"
+    finally:
+        blocked.chmod(0o644)
+
+
+def test_unreadable_codex_rollout_makes_coverage_incomplete(only_bindable_stores):
+    blocked = only_bindable_stores["home"] / ".codex" / "sessions" / "locked.jsonl"
+    _write(blocked, _jsonl({"type": "session_meta", "payload": {"id": "x", "cwd": "/z"}}))
+    blocked.chmod(0o000)
+    try:
+        out = scree.build_bindings(only_bindable_stores["home"],
+                                   str(only_bindable_stores["repo"]), deep=True)
+        assert out["coverageDetail"]["codex"] == "incomplete"
+        assert out["coverage"] == "truncated"
+    finally:
+        blocked.chmod(0o644)
+
+
+def test_unrecognized_codex_header_makes_coverage_incomplete(only_bindable_stores):
+    """헤더를 못 알아본 롤아웃은 '없는 후보'가 아니라 '못 읽은 후보'다."""
+    _write(only_bindable_stores["home"] / ".codex" / "sessions" / "weird.jsonl",
+           _jsonl({"type": "something_else", "payload": {}}))
+    out = scree.build_bindings(only_bindable_stores["home"],
+                               str(only_bindable_stores["repo"]), deep=True)
+    assert out["coverageDetail"]["codex"] == "incomplete"
+    assert out["coverage"] == "truncated"
+
+
+def test_store_without_a_binder_blocks_completeness(bind_home):
+    """가장 큰 불완전성: 아예 들여다보지도 않은 저장소. 이 맥에는 Gemini 세션이
+    실제로 4천 개 넘게 있는데 바인더는 Claude·Codex뿐이다. 두 저장소만 보고
+    '대화 없음'이라고 말하면 다섯 저장소에 대한 주장을 두 개로 하는 것이다."""
+    (bind_home["home"] / ".gemini" / "tmp").mkdir(parents=True, exist_ok=True)
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    assert "Gemini" in out["coverageDetail"]["unboundStores"]
+    assert out["coverage"] == "truncated"
+
+
+def test_unbound_store_detection_ignores_stores_that_are_absent(only_bindable_stores):
+    assert scree.unbound_stores_present(only_bindable_stores["home"]) == []

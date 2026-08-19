@@ -747,13 +747,14 @@ def _scans_for_paths(source: Path, root: str,
         return (False, False)
 
 
-def bind_codex(home: Path, workspace: str, repo_url: Optional[str]) -> list[dict]:
+def bind_codex(home: Path, workspace: str, repo_url: Optional[str]) -> tuple[list[dict], bool]:
     """Codex bindings are nearly free: the repository URL is already in
     the rollout's own `session_meta` header, which `collect_codex` reads
     and then discards into a group count. Nothing is inferred here that
     the provider did not already state."""
     wanted = normalize_repo_url(repo_url) if repo_url else None
     out: list[dict] = []
+    complete = True
     for root in (home / ".codex" / "sessions", home / ".codex" / "archived_sessions"):
         if not root.is_dir():
             continue
@@ -762,9 +763,17 @@ def bind_codex(home: Path, workspace: str, repo_url: Optional[str]) -> list[dict
                 with path.open("r", encoding="utf-8", errors="replace") as handle:
                     first = _read_json_line(handle)
             except OSError:
+                # A rollout that could not be opened was not examined. It
+                # may name this workspace; nobody knows. Skipping it and
+                # still reporting a completed look is how "no sessions"
+                # gets asserted about a store that was never read.
+                complete = False
                 continue
             payload = (first or {}).get("payload")
             if (first or {}).get("type") != "session_meta" or not isinstance(payload, dict):
+                # Same reasoning: a rollout whose header this build cannot
+                # recognise is an unexamined candidate, not an absent one.
+                complete = False
                 continue
             git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
             evidence: list[str] = []
@@ -786,7 +795,7 @@ def bind_codex(home: Path, workspace: str, repo_url: Optional[str]) -> list[dict
                 "confidence": _binding_confidence(evidence),
                 "sizeBytes": path.stat().st_size,
             })
-    return out
+    return (out, complete)
 
 
 def bind_claude(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], bool]:
@@ -813,6 +822,10 @@ def bind_claude(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
                             cwd = _canon_workspace(line["cwd"])
                             break
             except OSError:
+                # The metadata pre-read failed, so this transcript was
+                # never examined at all -- weaker than a scan that ran and
+                # found nothing.
+                complete = False
                 continue
             evidence: list[str] = []
             if cwd and _under(cwd, workspace):
@@ -842,6 +855,41 @@ def bind_claude(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
     return (out, complete)
 
 
+# Session stores this module knows how to *find* (see the `collect_*`
+# functions) paired with whether it can also *bind* them to a workspace.
+# A store present on disk with no binder is the loudest kind of
+# incompleteness: the scan never looked there at all, so "no sessions"
+# would be a claim about two stores made on behalf of five.
+BINDABLE_STORES = {"Claude", "Codex"}
+KNOWN_STORE_ROOTS = {
+    "Claude": (".claude/projects",),
+    "Codex": (".codex/sessions", ".codex/archived_sessions"),
+    "Gemini": (".gemini/tmp",),
+}
+
+
+def unbound_stores_present(home: Path) -> list[str]:
+    """Stores that exist on this machine but have no binder.
+
+    VS Code forks live under Application Support and are enumerated by
+    `collect_vscode_forks`; they are checked through the same table so a
+    future binder only has to be added in one place.
+    """
+    present: list[str] = []
+    for store, roots in KNOWN_STORE_ROOTS.items():
+        if store in BINDABLE_STORES:
+            continue
+        if any((home / root).is_dir() for root in roots):
+            present.append(store)
+    support = home / "Library" / "Application Support"
+    for label, folder in VSCODE_FORKS:
+        if label in BINDABLE_STORES:
+            continue
+        if (support / folder).is_dir():
+            present.append(label)
+    return sorted(set(present))
+
+
 def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None,
                    deep: bool = False) -> dict:
     """The whole output of `bind`.
@@ -853,8 +901,15 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
     same will delete a workspace whose conversations nobody checked for.
     """
     workspace = _canon_workspace(workspace)
-    claude_bindings, scanned_fully = bind_claude(home, workspace, deep=deep)
-    bindings = claude_bindings + bind_codex(home, workspace, repo_url)
+    claude_bindings, claude_complete = bind_claude(home, workspace, deep=deep)
+    codex_bindings, codex_complete = bind_codex(home, workspace, repo_url)
+    bindings = claude_bindings + codex_bindings
+    unbound = unbound_stores_present(home)
+    # Completeness is a property of the whole machine, not of the store
+    # that happened to be scanned last. One unreadable rollout, one
+    # unrecognised header, or one store with no binder is enough to make
+    # "this workspace has no conversations" an assertion nobody checked.
+    scanned_fully = claude_complete and codex_complete and not unbound
     bindings.sort(key=lambda b: (b["provider"], b["sessionId"]))
     return {
         "contract": ("session ids, evidence types, and sizes only; transcript "
@@ -875,6 +930,13 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
         #   complete  -- every byte of every candidate transcript was read.
         #                The only value from which emptiness is a finding.
         "coverage": ("complete" if scanned_fully else "truncated") if deep else "shallow",
+        # Why a deep pass came back short of `complete`, so a consumer can
+        # say which gap to close rather than only that one exists.
+        "coverageDetail": {
+            "claude": "complete" if claude_complete else "incomplete",
+            "codex": "complete" if codex_complete else "incomplete",
+            "unboundStores": unbound,
+        },
         "assessed": True,
         "bindings": bindings,
         "summary": {
