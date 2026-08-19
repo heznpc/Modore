@@ -83,6 +83,13 @@ struct ArchiveCandidate: Identifiable {
     /// True while the repo still has conversations that only exist in the
     /// provider's own store — the state `ContinuityGate` refuses to
     /// archive from.
+    /// The sessions themselves, so the row can offer to open one. Empty
+    /// unless a binder has run and found some.
+    var boundSessions: [SessionBinding] {
+        if case .bindings(let bindings) = continuity { return bindings }
+        return []
+    }
+
     var hasUnsealedSessions: Bool {
         if case .bindings(let bindings) = continuity { return !bindings.isEmpty }
         return false
