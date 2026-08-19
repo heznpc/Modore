@@ -50,7 +50,7 @@ struct MothballPage: View {
             } header: {
                 NativeSectionHeader(
                     title: "저장소 보관 후보",
-                    subtitle: "MothballCore가 git 메타데이터만으로 판정한 미리보기입니다. 실제 압축·보관 실행은 아직 지원하지 않습니다.",
+                    subtitle: "git 메타데이터만으로 판정한 미리보기입니다. 압축·보관 실행은 아직 없습니다.",
                     value: model.archiveCandidates != nil ? "완료" : ""
                 )
             }
@@ -104,7 +104,7 @@ private struct MothballCandidateSection: View {
         } header: {
             NativeSectionHeader(
                 title: "후보 목록",
-                subtitle: "압축 후 원본 삭제는 이 화면에서 지원하지 않습니다. 필요하면 Mothball 앱을 별도로 사용하세요.",
+                subtitle: "압축 후 원본 삭제는 아직 어디에서도 실행되지 않습니다. 실행이 붙으면 다른 삭제 작업과 같이 미리보기·승인 절차를 거칩니다.",
                 value: candidates.isEmpty ? "" : "\(candidates.count)개"
             )
         }
