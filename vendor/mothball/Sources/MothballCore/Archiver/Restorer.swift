@@ -36,7 +36,7 @@ public struct Restorer: Sendable {
     public enum RestoreError: Error, Sendable {
         case manifestUnreadable(URL, underlying: Error?)
         case manifestDecodeFailed(URL, underlying: Error)
-        case unsupportedSchema(found: Int, supported: Int)
+        case unsupportedSchema(found: Int, supported: ClosedRange<Int>)
         case archiveMissing(URL)
         case destinationRefused(URL, reason: String)
         case destinationNotEmpty(URL)
@@ -88,10 +88,15 @@ public struct Restorer: Sendable {
         // 1. Decode the sidecar. This is the source of truth for where the
         //    repo came from and what schema we're dealing with.
         let manifest = try Self.decodeManifest(at: manifestURL)
-        guard manifest.schemaVersion == ArchiveManifest.currentSchemaVersion else {
+        // Membership, not equality. Every archive this tool ever wrote is
+        // the only remaining copy of a workspace it also trashed, so a
+        // writer-side schema bump must never be what makes one
+        // unrestorable. `ArchiveManifest`'s decoder already fills the
+        // fields a v1 sidecar predates.
+        guard ArchiveManifest.supportedSchemaVersions.contains(manifest.schemaVersion) else {
             throw RestoreError.unsupportedSchema(
                 found: manifest.schemaVersion,
-                supported: ArchiveManifest.currentSchemaVersion
+                supported: ArchiveManifest.supportedSchemaVersions
             )
         }
 
