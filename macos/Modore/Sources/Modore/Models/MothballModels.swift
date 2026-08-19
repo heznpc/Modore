@@ -90,6 +90,14 @@ struct ArchiveCandidate: Identifiable {
         return []
     }
 
+    /// What the row shows on the right. The safety tier when nothing is
+    /// bound, and the binding count when something is -- because that is
+    /// the value that varies between rows and the one the decision turns
+    /// on.
+    var trailingLabel: String {
+        boundSessions.isEmpty ? tierLabel : "대화 \(boundSessions.count)개"
+    }
+
     var hasUnsealedSessions: Bool {
         if case .bindings(let bindings) = continuity { return !bindings.isEmpty }
         return false

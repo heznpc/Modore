@@ -16,7 +16,11 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
         case .storage: return "저장공간"
         case .security: return "보안"
         case .aiSessions: return "AI 세션"
-        case .archive: return "저장소 보관"
+        // Not "저장소 보관": it sits directly under "저장공간" in the same
+        // sidebar, both start with 저장, and one means disk space while the
+        // other means git repositories. The page is about retiring a repo
+        // and what that would strand, so it says so.
+        case .archive: return "레포 은퇴"
         case .activity: return "기록"
         }
     }

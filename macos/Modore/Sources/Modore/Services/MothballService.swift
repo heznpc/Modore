@@ -83,7 +83,17 @@ enum MothballService {
             updated.continuityDiagnostic = outcome.diagnostic
             out.append(updated)
         }
-        return out
+        // Re-sort once bindings are known. `rankCandidates` orders by repo
+        // size because that is all it has; what actually decides this page
+        // is how much conversation a delete would strand, and the two
+        // orders disagree -- the largest repo here has four bound sessions
+        // and a smaller one has a hundred and twenty.
+        return out.sorted {
+            if $0.boundSessions.count != $1.boundSessions.count {
+                return $0.boundSessions.count > $1.boundSessions.count
+            }
+            return $0.repo.sizeBytes > $1.repo.sizeBytes
+        }
     }
 }
 
