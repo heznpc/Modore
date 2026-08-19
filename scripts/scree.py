@@ -836,6 +836,15 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
         "workspace": workspace,
         "repoUrl": normalize_repo_url(repo_url) if repo_url else None,
         "deep": deep,
+        # How much of the store was actually examined, which is a different
+        # claim from whether the run finished. A shallow pass matches on
+        # recorded working directories only, so finding nothing means "no
+        # session was *run* here" -- not "no session touched this repo". A
+        # consumer that treats a shallow empty result as proof of absence
+        # deletes workspaces whose conversations were held from a parent
+        # directory, which is the common case for a repo worked on from
+        # `~`. Only a deep pass can claim emptiness.
+        "coverage": "deep" if deep else "shallow",
         "assessed": True,
         "bindings": bindings,
         "summary": {

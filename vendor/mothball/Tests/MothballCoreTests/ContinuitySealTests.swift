@@ -331,3 +331,135 @@ final class ContinuitySealTests: XCTestCase {
         XCTAssertEqual(manifest.continuity?.overrideReason, "no binder in standalone")
     }
 }
+
+/// Restoring the working tree without the conversations puts the user
+/// back exactly where the gate exists to stop them getting: the code
+/// returns, the reasoning behind it does not. So the round trip has to
+/// carry both, and the digests have to be checked on the way back --
+/// a manifest that promises sessions and delivers unverifiable bytes is
+/// the false assurance this design is built to avoid.
+final class SessionRestoreRoundTripTests: XCTestCase {
+    var scratch: URL!
+    var archiveDir: URL!
+    var restoreParent: URL!
+    var repo: TempGitRepo!
+
+    override func setUp() async throws {
+        try XCTSkipUnless(
+            FileManager.default.isExecutableFile(atPath: "/usr/bin/git") &&
+            FileManager.default.isExecutableFile(atPath: "/usr/bin/tar"),
+            "git and tar both required at /usr/bin"
+        )
+        scratch = try Self.tempDir("SessionRestoreScratch")
+        archiveDir = try Self.tempDir("SessionRestoreArchive")
+        restoreParent = try Self.tempDir("SessionRestoreDest")
+        repo = try TempGitRepo()
+    }
+
+    override func tearDown() async throws {
+        repo?.cleanup()
+        for dir in [scratch, archiveDir, restoreParent] where dir != nil {
+            try? FileManager.default.removeItem(at: dir!)
+        }
+    }
+
+    private static func tempDir(_ prefix: String) throws -> URL {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "\(prefix)-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func sealedBundle(id: String = "round") throws -> ContinuityBundle {
+        let store = scratch.appending(path: "store", directoryHint: .isDirectory)
+        let dir = store.appending(path: id, directoryHint: .isDirectory)
+        let subDir = dir.appending(path: "subagents/workflows/wf_a", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: subDir, withIntermediateDirectories: true)
+        let transcript = store.appending(path: "\(id).jsonl")
+        try Data("{\"parent\":true}\n".utf8).write(to: transcript)
+        let sub = subDir.appending(path: "journal.jsonl")
+        try Data("{\"sub\":true}\n".utf8).write(to: sub)
+
+        return try ContinuitySealer().seal(
+            bindings: [SessionBinding(
+                provider: .claude, sessionID: id, source: transcript,
+                subtranscripts: [sub], evidence: [.workingDirectory], confidence: .medium
+            )],
+            stagingParent: scratch
+        )
+    }
+
+    private func archiveWithSessions() async throws -> ArchiveOrchestrator.ArchiveResult {
+        try await repo.initialize()
+        try repo.writeFile("README.md", contents: "round trip\n")
+        try await repo.commit("initial")
+        try await repo.fakePushedOrigin()
+        let scanned = await RepoScanner().scan(roots: [repo.url.deletingLastPathComponent()])
+        let info = try XCTUnwrap(
+            scanned.first { $0.path.standardizedFileURL == repo.url.standardizedFileURL }
+        )
+        let bundle = try sealedBundle()
+        defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
+        return try await ArchiveOrchestrator(configuration: .init(
+            archiveDirectory: archiveDir, zstdLevel: 1,
+            compressionTimeout: .seconds(60), verificationTimeout: .seconds(30)
+        )).archive(info, continuity: .sealed(bundle))
+    }
+
+    func test_restoreBringsBackTheSessionsAndVerifiesTheirDigests() async throws {
+        let archived = try await archiveWithSessions()
+        let dest = restoreParent.appending(path: "back", directoryHint: .isDirectory)
+
+        let restored = try await Restorer().restore(manifestURL: archived.manifest, to: dest)
+
+        XCTAssertEqual(restored.verifiedSessionCount, 1)
+        let sessions = try XCTUnwrap(restored.restoredSessions)
+        let transcript = sessions.appending(path: "sessions/claude/round/transcript.jsonl")
+        let sub = sessions.appending(path: "sessions/claude/round/subagents/workflows/wf_a/journal.jsonl")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sub.path),
+                      "the subagent tree has to survive the round trip too")
+    }
+
+    /// A manifest whose sessions no longer hash to what it recorded is
+    /// worse than one with no sessions at all: it certifies bytes nobody
+    /// can trust. Restore refuses rather than handing them back quietly.
+    func test_tamperedSessionArchiveFailsTheRestore() async throws {
+        let archived = try await archiveWithSessions()
+        let sessionArchive = try XCTUnwrap(archived.sessionArchive)
+
+        // Repack the session archive with different bytes under the same
+        // name, leaving the manifest's digest describing the old content.
+        let fake = restoreParent.appending(path: "fake/sessions/claude/round", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: fake, withIntermediateDirectories: true)
+        try Data("{\"tampered\":true}\n".utf8).write(to: fake.appending(path: "transcript.jsonl"))
+        try FileManager.default.removeItem(at: sessionArchive)
+        _ = try await ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/tar"),
+            arguments: ["--zstd", "-cf", sessionArchive.path,
+                        "-C", restoreParent.appending(path: "fake").path, "--", "sessions"],
+            timeout: .seconds(30)
+        )
+
+        let dest = restoreParent.appending(path: "back2", directoryHint: .isDirectory)
+        do {
+            _ = try await Restorer().restore(manifestURL: archived.manifest, to: dest)
+            XCTFail("a session digest mismatch must fail the restore")
+        } catch Restorer.RestoreError.sessionDigestMismatch(let id, _, _) {
+            XCTAssertEqual(id, "round")
+        }
+    }
+
+    func test_missingSessionArchiveFailsRatherThanRestoringHalfTheRecord() async throws {
+        let archived = try await archiveWithSessions()
+        try FileManager.default.removeItem(at: try XCTUnwrap(archived.sessionArchive))
+
+        let dest = restoreParent.appending(path: "back3", directoryHint: .isDirectory)
+        do {
+            _ = try await Restorer().restore(manifestURL: archived.manifest, to: dest)
+            XCTFail("a manifest promising sessions must not restore without them")
+        } catch Restorer.RestoreError.sessionArchiveMissing {
+            // expected
+        }
+    }
+}

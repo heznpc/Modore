@@ -248,7 +248,7 @@ final class BoundSessionRowTests: XCTestCase {
 final class CandidateOrderingTests: XCTestCase {
     private let referenceNow = Date(timeIntervalSince1970: 1_800_000_000)
 
-    private func candidate(sizeBytes: Int64, sessions: Int) -> ArchiveCandidate {
+    private func candidate(sizeBytes: Int64, sessions: Int, idPrefix: String = "s") -> ArchiveCandidate {
         let activity = referenceNow.addingTimeInterval(-400 * 86_400)
         let repo = RepoInfo(
             path: URL(fileURLWithPath: "/tmp/r\(sizeBytes)"), sizeBytes: sizeBytes,
@@ -263,7 +263,7 @@ final class CandidateOrderingTests: XCTestCase {
         )
         if sessions > 0 {
             c.continuity = .bindings((0..<sessions).map { i in
-                SessionBinding(provider: .claude, sessionID: "s\(i)",
+                SessionBinding(provider: .claude, sessionID: "\(idPrefix)\(i)",
                                source: URL(fileURLWithPath: "/s/\(i).jsonl"),
                                evidence: [.workingDirectory], confidence: .medium,
                                sizeBytes: 1_000)
@@ -306,12 +306,26 @@ final class CandidateOrderingTests: XCTestCase {
 
     func test_summaryStatesTheTotalAtRiskRatherThanWhereTheFeatureIsNot() {
         let summary = MothballCandidateSection.boundSummary([
-            candidate(sizeBytes: 1, sessions: 3),
-            candidate(sizeBytes: 2, sessions: 5),
+            candidate(sizeBytes: 1, sessions: 3, idPrefix: "a"),
+            candidate(sizeBytes: 2, sessions: 5, idPrefix: "b"),
             candidate(sizeBytes: 3, sessions: 0),
         ])
         XCTAssertTrue(summary.contains("2개 저장소"), summary)
         XCTAssertTrue(summary.contains("8개"), summary)
+    }
+
+    /// A repo and its own worktrees are separate rows, and binding matches
+    /// by path prefix, so every worktree conversation is bound to both.
+    /// Measured on this machine, five of AirMCP's sessions appear under two
+    /// candidates. Summing the rows would tell the user they are about to
+    /// lose more than exists.
+    func test_summaryCountsASessionBoundToTwoCandidatesOnce() {
+        let shared = MothballCandidateSection.boundSummary([
+            candidate(sizeBytes: 1, sessions: 5, idPrefix: "same"),
+            candidate(sizeBytes: 2, sessions: 5, idPrefix: "same"),
+        ])
+        XCTAssertTrue(shared.contains("5개"), shared)
+        XCTAssertFalse(shared.contains("10개"), shared)
     }
 
     func test_summarySaysSoWhenNothingIsAtRisk() {

@@ -8,12 +8,40 @@ final class BindReportTests: XCTestCase {
 
     private func data(_ s: String) -> Data { Data(s.utf8) }
 
-    func test_assessedWithNoBindings_isAssessedNoSessions() {
+    func test_deepPassWithNoBindings_isAssessedNoSessions() {
+        let json = """
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"deep","bindings":[]}
+        """
+        guard case .assessedNoSessions = ContinuityAssessment.fromBindReport(data(json)) else {
+            return XCTFail("a pass that could have seen everything and found nothing must say so")
+        }
+    }
+
+    /// A shallow pass matches recorded working directories only. Finding
+    /// nothing there means no session *ran* in this workspace, which is a
+    /// weaker claim than no session touched it — a repo worked on from a
+    /// parent directory records every conversation under the parent. So a
+    /// shallow empty result is not evidence of absence, and treating it as
+    /// one deletes exactly the workspaces whose bindings are hardest to
+    /// see.
+    func test_shallowPassWithNoBindings_doesNotClaimEmptiness() {
+        let json = """
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,
+         "coverage":"shallow","bindings":[]}
+        """
+        guard case .notAssessed = ContinuityAssessment.fromBindReport(data(json)) else {
+            return XCTFail("a shallow empty result must not read as proof of absence")
+        }
+    }
+
+    /// An older binder with no `coverage` field cannot have been deep.
+    func test_missingCoverage_isTreatedAsShallow() {
         let json = """
         {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,"bindings":[]}
         """
-        guard case .assessedNoSessions = ContinuityAssessment.fromBindReport(data(json)) else {
-            return XCTFail("a completed binder run that found nothing must say so")
+        guard case .notAssessed = ContinuityAssessment.fromBindReport(data(json)) else {
+            return XCTFail("absent coverage must not be assumed complete")
         }
     }
 
@@ -97,10 +125,12 @@ final class BindReportTests: XCTestCase {
     /// the archive may proceed.
     func test_gateFollowsTheDecodedAssessment() {
         let empty = """
-        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,"bindings":[]}
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"deep","bindings":[]}
         """
         let found = """
         {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,
+         "coverage":"shallow",
          "bindings":[{"provider":"claude","sessionId":"a1","source":"/s/a1.jsonl",
                       "subtranscripts":[],"evidence":["working-directory"],
                       "confidence":"medium","sizeBytes":1}]}

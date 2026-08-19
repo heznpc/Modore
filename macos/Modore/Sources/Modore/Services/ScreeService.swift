@@ -161,13 +161,36 @@ extension ScreeService {
             }
             let assessment = ContinuityAssessment.fromBindReport(data)
             if case .notAssessed = assessment {
-                // The binder printed JSON this build could not read as a
-                // completed assessment — a schema drift between the two
-                // languages, not a repo with unknown sessions.
+                // A shallow pass that found nothing has not failed -- it
+                // has reached the limit of what matching recorded working
+                // directories can tell you. Sessions run from a parent
+                // directory record their cwd there, so the workspaces that
+                // look emptiest under a shallow pass are exactly the ones
+                // whose bindings only a content scan can see. Escalate
+                // that one repo rather than reporting an absence nobody
+                // established, or running the expensive pass over every
+                // candidate that already answered.
+                if !deep, Self.reportedNothingWithinShallowLimits(data) {
+                    return await bind(execution: execution, workspace: workspace,
+                                      repoURL: repoURL, deep: true,
+                                      homeOverride: homeOverride)
+                }
+                // Otherwise the binder printed JSON this build could not
+                // read as a completed assessment -- schema drift between
+                // the two languages, not a repo with unknown sessions.
                 return .failed("세션 바인더 출력을 해석하지 못했습니다.")
             }
             return ScreeBindOutcome(assessment: assessment, diagnostic: nil)
         }
+    }
+
+    /// True when the payload is a well-formed shallow run that found
+    /// nothing — the one `notAssessed` worth spending a deep pass on.
+    static func reportedNothingWithinShallowLimits(_ data: Data) -> Bool {
+        guard let report = try? BindReport.decoder().decode(BindReport.self, from: data) else {
+            return false
+        }
+        return report.assessed && report.bindings.isEmpty && report.coverage != "deep"
     }
 }
 

@@ -42,6 +42,11 @@ public struct Restorer: Sendable {
         case destinationNotEmpty(URL)
         case extractionFailed(stderr: String, exitCode: Int32)
         case verificationFailed(reason: String)
+        /// The manifest names a session archive that is not beside it.
+        case sessionArchiveMissing(URL)
+        /// A restored session's bytes do not match the digest the manifest
+        /// recorded for them.
+        case sessionDigestMismatch(sessionID: String, expected: String, found: String)
         case finalMoveFailed(underlying: Error)
         case process(ProcessError)
     }
@@ -50,6 +55,7 @@ public struct Restorer: Sendable {
         case starting(manifest: URL)
         case extracting(archive: URL)
         case verifying
+        case restoringSessions(count: Int)
         case completed(restoredTo: URL, fileCount: Int)
     }
 
@@ -60,6 +66,13 @@ public struct Restorer: Sendable {
         public let archive: URL
         /// The decoded sidecar that drove the restore.
         public let manifest: ArchiveManifest
+        /// Where the sealed conversations were put back, when the archive
+        /// had any. Restoring the working tree without them would put the
+        /// user back exactly where the gate exists to stop them getting:
+        /// the code returns, the reasoning behind it does not.
+        public let restoredSessions: URL?
+        /// Sessions whose staged bytes were re-hashed and matched.
+        public let verifiedSessionCount: Int
     }
 
     public let configuration: Configuration
@@ -163,9 +176,61 @@ public struct Restorer: Sendable {
             throw RestoreError.finalMoveFailed(underlying: error)
         }
 
+        // 8. Sessions, when the manifest recorded any. Done after the
+        //    working tree is in place so a session failure cannot leave the
+        //    repo half-restored -- and it throws rather than warning,
+        //    because a manifest that promises conversations and delivers
+        //    unverifiable bytes is exactly the false assurance this whole
+        //    path exists to prevent.
+        var restoredSessions: URL?
+        var verified = 0
+        if let continuity = manifest.continuity,
+           let archiveName = continuity.sessionArchive,
+           !continuity.sessions.isEmpty {
+            progress?(.restoringSessions(count: continuity.sessions.count))
+            let sessionArchive = manifestURL
+                .deletingLastPathComponent()
+                .appending(path: archiveName)
+            guard FileManager.default.fileExists(atPath: sessionArchive.path) else {
+                throw RestoreError.sessionArchiveMissing(sessionArchive)
+            }
+            let sessionsRoot = dest.appending(
+                path: ".mothball-sessions", directoryHint: .isDirectory
+            )
+            do {
+                try FileManager.default.createDirectory(
+                    at: sessionsRoot, withIntermediateDirectories: true
+                )
+            } catch {
+                throw RestoreError.destinationRefused(
+                    sessionsRoot, reason: "세션 복원 위치를 만들 수 없음: \(error.localizedDescription)"
+                )
+            }
+            try await runTarExtract(archive: sessionArchive, into: sessionsRoot)
+            for session in continuity.sessions {
+                let dir = sessionsRoot.appending(path: session.artifact)
+                let digest = try ContinuitySealer.treeDigest(of: dir)
+                guard digest.digest == session.sha256 else {
+                    throw RestoreError.sessionDigestMismatch(
+                        sessionID: session.sessionID,
+                        expected: session.sha256,
+                        found: digest.digest
+                    )
+                }
+                verified += 1
+            }
+            restoredSessions = sessionsRoot
+        }
+
         let fileCount = Self.countRegularFiles(in: dest)
         progress?(.completed(restoredTo: dest, fileCount: fileCount))
-        return RestoreResult(restoredPath: dest, archive: archiveURL, manifest: manifest)
+        return RestoreResult(
+            restoredPath: dest,
+            archive: archiveURL,
+            manifest: manifest,
+            restoredSessions: restoredSessions,
+            verifiedSessionCount: verified
+        )
     }
 
     // MARK: - Manifest / archive pairing

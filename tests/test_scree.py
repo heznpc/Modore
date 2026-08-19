@@ -797,3 +797,22 @@ def test_preserve_masks_by_default(tmp_path):
     masked = scree.render_preserve(source, tmp_path, raw=False)
     assert "someone@example.com" not in masked
     assert "someone@example.com" in scree.render_preserve(source, tmp_path, raw=True)
+
+
+def test_bind_reports_scan_coverage(bind_home):
+    """`assessed`는 실행이 끝났다는 말이고 `coverage`는 어디까지 봤다는 말이다.
+    얕은 패스는 기록된 작업 디렉터리만 대조하므로, 아무것도 못 찾았다는 건
+    "여기서 실행된 세션이 없다"이지 "이 레포를 건드린 세션이 없다"가 아니다.
+    부모 디렉터리에서 작업한 레포는 대화가 전부 부모 밑에 기록된다."""
+    shallow = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    assert shallow["coverage"] == "shallow"
+    deep = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    assert deep["coverage"] == "deep"
+
+
+def test_bind_coverage_is_reported_even_when_nothing_is_found(bind_home):
+    empty = scree.build_bindings(bind_home["home"], str(bind_home["other"] / "nope"))
+    assert empty["assessed"] is True
+    assert empty["bindings"] == []
+    # 소비자가 "못 찾음"과 "없음을 증명함"을 구분하려면 이 필드가 있어야 한다.
+    assert empty["coverage"] == "shallow"
