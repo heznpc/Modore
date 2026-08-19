@@ -56,6 +56,7 @@ python3 scripts/mcp_server.py --tools    # inspect the surface without speaking 
 - `friction_scan` — the pushback taxonomy, filterable by store, category, and minimum severity.
 - `hf_orphans` — which models in the Hugging Face hub cache no project file names, and how many gigabytes those account for. Reports `search_complete`; when the search could not be exhaustive every model is `unknown`, never `unreferenced`.
 - `mcp_hygiene` — registered MCP servers that cannot start: dead command, missing script path, duplicate entry, or an `env` block worth a human look (reported as a key count, never as keys or values).
+- `file_access` — the reverse index: which sessions touched which paths, with reads/writes/shell counts. Agent rule surfaces first, because a silently edited `CLAUDE.md` is the case it exists for.
 - `system_scan_summary` — the storage and security scan result *already on disk*, with its age, because a stale result read as current is the failure mode here.
 - **A thin layer, not a second implementation** — each tool runs one judgment script with `--json` and forwards what it prints, so the CLI, the Mac app, and the MCP surface cannot disagree about what is true.
 - **Read-only by contract, enforced at registration** — a tool is reachable only if it is on an explicit allowlist and annotated read-only and non-destructive; one added without a deliberate edit fails closed. Cleanup, deletion, and scan execution are deliberately absent. Modore gates destruction on an approval a human grants on screen; an agent-reachable bypass would not be a feature, it would be the end of that guarantee. Every result is fenced as untrusted data.
@@ -73,6 +74,7 @@ A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange
 - **Mac Edition — operator-friction scan**: `friction` classifies the turns where the operator pushed back on agent behaviour across Claude Code, Codex, Gemini CLI, and Claude Desktop transcripts — nine categories, severity 1-3, deterministic keyword/tone matching, user-authored turns only, quotes masked by default.
 - **Mac Edition — Hugging Face cache audit**: `hfscan` cross-references every cached model against the code on this machine and reports which ones nothing names. An incomplete search withholds the verdict instead of guessing.
 - **Mac Edition — MCP config hygiene**: `mcpaudit` reads the registered MCP servers and reports the entries that cannot start. It never edits a config, disables a server, or starts one.
+- **Mac Edition — file-access reverse index**: `fileaccess` answers "which sessions touched this file, how often, and when last", rule surfaces first. Only paths and tool names are kept — the command a path came from is never emitted.
 - **Read-only MCP surface**: a zero-dependency stdio MCP server exposing scree, friction, the two audits above, and the existing storage/security scan summary to an agent mid-session. Judgment only — no cleanup, no deletion, no scan execution.
 - **Mac Edition scanner**: Bash + JXA collectors for macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and developer-runtime incidents. Every collector reports `ok`, `permission_denied`, `unavailable`, `timed_out`, or `failed`; a missing required collector can never become a safe verdict.
 - **Mac Edition app**: the native SwiftUI app presents one incident judgment followed by evidence, likely impact, and approval-gated recovery; bounded local history keeps the judgment without storing raw commands or URLs. Browser automation is grouped into roots with PID, parent, elapsed time, channel, profile type, and a privacy-preserving controller label.
@@ -244,7 +246,8 @@ modore/
 │   ├── friction.py           operator-pushback scan over the same session stores
 │   ├── hfscan.py             Hugging Face hub cache: which models nothing here names
 │   ├── mcpaudit.py           MCP config hygiene: registered servers that cannot start
-│   ├── mcp_server.py         read-only MCP surface (scree · friction · hfscan · mcpaudit · scan summary)
+│   ├── fileaccess.py         reverse index: which sessions touched which paths
+│   ├── mcp_server.py         read-only MCP surface (scree · friction · hfscan · mcpaudit · fileaccess · scan summary)
 │   ├── menu.ps1              Windows interactive menu
 │   ├── scanner.ps1           Windows scanner
 │   ├── monitor.ps1           Windows 5-min idle monitor

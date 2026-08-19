@@ -82,12 +82,15 @@ SCREE = SCRIPT_DIR / "scree.py"
 FRICTION = SCRIPT_DIR / "friction.py"
 HFSCAN = SCRIPT_DIR / "hfscan.py"
 MCPAUDIT = SCRIPT_DIR / "mcpaudit.py"
+FILEACCESS = SCRIPT_DIR / "fileaccess.py"
 
 SCREE_TIMEOUT = 300
 FRICTION_TIMEOUT = 300
 # hfscan walks whole project trees; mcpaudit reads four small JSON files.
 HFSCAN_TIMEOUT = 600
 MCPAUDIT_TIMEOUT = 60
+# fileaccess streams whole transcripts rather than their leading lines.
+FILEACCESS_TIMEOUT = 600
 
 # scree's full report is large (hundreds of lineage paths on a working machine).
 # Sections are selectable and lists are truncated, but never silently: every
@@ -352,6 +355,37 @@ def tool_mcp_hygiene(args: dict) -> dict:
     }
 
 
+def tool_file_access(args: dict) -> dict:
+    limit = _int_arg(args, "limit", default=30, minimum=1, maximum=500)
+    max_sessions = _int_arg(args, "max_sessions", default=400, minimum=1, maximum=4000)
+    include_all = bool(args.get("include_all", False))
+    query = args.get("query")
+    if query is not None and not isinstance(query, str):
+        raise ToolFailure("query must be a string")
+
+    arguments = ["--json", "--max-sessions", str(max_sessions)]
+    if include_all:
+        arguments.append("--all")
+    if query:
+        arguments += ["--query", query]
+    report = _run_json(FILEACCESS, arguments, FILEACCESS_TIMEOUT)
+
+    paths = report.get("paths") or []
+    items, note = _truncate(paths, limit)
+    return {
+        "evidence": report.get("evidence"),
+        "requires_revalidation": report.get("requires_revalidation"),
+        "stores": report.get("stores"),
+        "sessions_scanned": report.get("sessions_scanned"),
+        "sessions_skipped_by_cap": report.get("sessions_skipped_by_cap"),
+        "path_count": report.get("path_count"),
+        "rule_surface_count": report.get("rule_surface_count"),
+        "filters": {"query": query, "rule_surfaces_only": not include_all},
+        "paths": items,
+        **note,
+    }
+
+
 def tool_system_scan_summary(args: dict) -> dict:
     limit = _int_arg(args, "limit", default=10, minimum=1, maximum=100)
     path, checked = _locate_scan_result()
@@ -587,6 +621,42 @@ TOOLS: list[dict] = [
         "handler": tool_mcp_hygiene,
     },
     {
+        "name": "file_access",
+        "title": "File access — which sessions touched which paths",
+        "description": (
+            "Reverse index over local Claude Code and Codex transcripts: for each path, "
+            "how many reads, writes, and shell references it received, from how many "
+            "sessions, and when last. Agent rule and config surfaces -- CLAUDE.md, "
+            "AGENTS.md, settings.json, anything under ~/.claude or ~/.codex -- are "
+            "returned first and by default, because a silently edited rule file is the "
+            "case this view exists for; pass include_all to see ordinary files too. Ask "
+            "when something changed and no one remembers doing it, or to find every "
+            "session that touched a file before editing it again. Only paths and tool "
+            "names are retained: the shell command a path came from is never emitted. "
+            "Shell paths are recovered heuristically and both over- and under-catch, and "
+            "absence from this index means no *indexed* session touched the file, not "
+            "that no agent did. Read-only."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "Substring filter over paths, case-insensitive."},
+                "include_all": {"type": "boolean", "default": False,
+                                "description": ("Include paths that are not agent rule "
+                                                "surfaces. Off by default.")},
+                "max_sessions": {"type": "integer", "minimum": 1, "maximum": 4000,
+                                 "default": 400,
+                                 "description": ("Newest-first cap on transcripts parsed. "
+                                                 "What the cap skipped is always reported.")},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 30,
+                          "description": "Max paths returned. Truncation is always reported."},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {"title": "File access — which sessions touched which paths", **READ_ONLY},
+        "handler": tool_file_access,
+    },
+    {
         "name": "system_scan_summary",
         "title": "System scan summary — storage & security",
         "description": (
@@ -620,7 +690,7 @@ TOOLS: list[dict] = [
 # point: "we simply never wrote a destructive tool" is an intention, and this
 # turns it into a mechanism.
 EXPOSED_TOOL_NAMES = frozenset({"scree_report", "friction_scan", "hf_orphans",
-                                "mcp_hygiene", "system_scan_summary"})
+                                "mcp_hygiene", "file_access", "system_scan_summary"})
 
 
 def contract_allows(tool: dict) -> bool:

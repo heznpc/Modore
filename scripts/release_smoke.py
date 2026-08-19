@@ -357,6 +357,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/friction.py",
     "scripts/hfscan.py",
     "scripts/mcpaudit.py",
+    "scripts/fileaccess.py",
     "scripts/mcp_server.py",
     "scripts/idle_cpu.sh",
     "scripts/network_watch.sh",

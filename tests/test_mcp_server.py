@@ -24,9 +24,9 @@ def _payload(result: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_only_the_read_only_judgment_tools_are_exposed():
-    assert sorted(mcp_server.HANDLERS) == ["friction_scan", "hf_orphans",
-                                           "mcp_hygiene", "scree_report",
-                                           "system_scan_summary"]
+    assert sorted(mcp_server.HANDLERS) == ["file_access", "friction_scan",
+                                           "hf_orphans", "mcp_hygiene",
+                                           "scree_report", "system_scan_summary"]
 
 
 def test_every_tool_is_annotated_read_only_and_non_destructive():
@@ -76,7 +76,8 @@ def test_no_tool_can_run_anything_but_the_judgment_scripts(monkeypatch, tmp_path
     assert spawned, "expected the judgment scripts to be invoked"
     for argv in spawned:
         script = Path(argv[3]).name
-        assert script in ("scree.py", "friction.py", "hfscan.py", "mcpaudit.py"), argv
+        assert script in ("scree.py", "friction.py", "hfscan.py", "mcpaudit.py",
+                          "fileaccess.py"), argv
         joined = " ".join(argv)
         for forbidden in ("cleanup", "scanner", "storage_watch", "schedule",
                           "preserve", "--raw"):
@@ -122,6 +123,7 @@ def test_the_judgment_scripts_are_the_declared_targets():
     assert mcp_server.FRICTION.name == "friction.py"
     assert mcp_server.HFSCAN.name == "hfscan.py"
     assert mcp_server.MCPAUDIT.name == "mcpaudit.py"
+    assert mcp_server.FILEACCESS.name == "fileaccess.py"
 
 
 def test_scan_summary_states_that_it_cannot_start_a_scan(tmp_path, monkeypatch):
@@ -298,7 +300,7 @@ def test_tools_list_declares_closed_input_schemas():
     tools = mcp_server.handle_request("tools/list", {})["tools"]
     assert [t["name"] for t in tools] == ["scree_report", "friction_scan",
                                           "hf_orphans", "mcp_hygiene",
-                                          "system_scan_summary"]
+                                          "file_access", "system_scan_summary"]
     for tool in tools:
         assert tool["inputSchema"]["additionalProperties"] is False
         assert tool["description"] and tool["title"]
@@ -348,7 +350,7 @@ def test_cli_tools_dump_is_the_registered_surface(capsys):
     dumped = json.loads(capsys.readouterr().out)
     assert [t["name"] for t in dumped["exposed"]] == ["scree_report", "friction_scan",
                                                       "hf_orphans", "mcp_hygiene",
-                                                      "system_scan_summary"]
+                                                      "file_access", "system_scan_summary"]
     assert dumped["rejected"] == []
 
 
@@ -414,3 +416,37 @@ def test_mcp_hygiene_filters_by_status_and_never_forwards_env(monkeypatch):
     assert "env_key_count" in everything
     for leaked in ("ANTHROPIC_API_KEY", "sk-ant", "env_values"):
         assert leaked not in everything
+
+
+def test_file_access_defaults_to_rule_surfaces_and_never_forwards_a_command(monkeypatch):
+    """canary는 행마다 명령문 200자 발췌를 실었다. 이 표면은 경로만 넘긴다."""
+    captured = {}
+
+    def fake_run(script, arguments, timeout):
+        captured["argv"] = arguments
+        return {
+            "evidence": "preview", "requires_revalidation": True,
+            "stores": [], "sessions_scanned": 3, "sessions_skipped_by_cap": 0,
+            "path_count": 1, "rule_surface_count": 1,
+            "paths": [{"path": "~/.claude/settings.json", "rule_surface": True,
+                       "reads": 1, "writes": 2, "shell": 0, "tools": ["Edit"],
+                       "session_count": 2, "session_ids": ["a", "b"],
+                       "last_ts": "2026-08-01T00:00:00Z"}],
+        }
+
+    monkeypatch.setattr(mcp_server, "_run_json", fake_run)
+
+    payload = _payload(_call("file_access", {}))
+    assert payload["filters"]["rule_surfaces_only"] is True
+    assert "--all" not in captured["argv"]
+    assert payload["paths"][0]["path"] == "~/.claude/settings.json"
+    for key in ("detail", "command", "cmd"):
+        assert key not in payload["paths"][0]
+
+    _call("file_access", {"include_all": True, "query": "settings"})
+    assert "--all" in captured["argv"]
+    assert "--query" in captured["argv"] and "settings" in captured["argv"]
+
+
+def test_file_access_rejects_a_non_string_query():
+    assert _call("file_access", {"query": 5}).get("isError")
