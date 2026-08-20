@@ -61,7 +61,8 @@ struct MothballPage: View {
                     candidates: candidates,
                     inspectionFailures: model.archiveInspectionFailures,
                     preserveInFlightSource: model.screePreserveInFlightSource,
-                    onPreserve: { model.preserveBoundSession($0) }
+                    onPreserve: { model.preserveBoundSession($0) },
+                    onExpand: { model.loadTitles(for: $0) }
                 )
             }
         }
@@ -77,6 +78,12 @@ struct MothballCandidateSection: View {
     /// explicit at the call site keeps it that way.
     let preserveInFlightSource: String?
     let onPreserve: (SessionBinding) -> Void
+    /// Called when a row is opened. Titles are read then, not during a
+    /// scan: an audit that titled everything would turn every refresh
+    /// into a content read of every transcript on the machine.
+    let onExpand: (ArchiveCandidate) -> Void
+
+    @State private var expanded: Set<String> = []
 
     var body: some View {
         Section {
@@ -98,7 +105,7 @@ struct MothballCandidateSection: View {
                     // Expandable only when there is something to expand
                     // into. A disclosure arrow on a row that opens to
                     // nothing teaches the user to stop pressing them.
-                    DisclosureGroup {
+                    DisclosureGroup(isExpanded: binding(for: candidate)) {
                         boundSessionList(candidate)
                     } label: {
                         candidateSummary(candidate)
@@ -115,6 +122,20 @@ struct MothballCandidateSection: View {
                 value: candidates.isEmpty ? "" : "\(candidates.count)개"
             )
         }
+    }
+
+    private func binding(for candidate: ArchiveCandidate) -> Binding<Bool> {
+        Binding(
+            get: { expanded.contains(candidate.id) },
+            set: { isOpen in
+                if isOpen {
+                    expanded.insert(candidate.id)
+                    onExpand(candidate)
+                } else {
+                    expanded.remove(candidate.id)
+                }
+            }
+        )
     }
 
     @ViewBuilder

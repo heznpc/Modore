@@ -41,6 +41,17 @@ public struct ContinuitySealer: Sendable {
             throw SealError.stagingUnusable(stagingRoot, underlying: error)
         }
 
+        // The sealer owns the staging tree until it hands it back. Every
+        // path below can throw -- an unreadable source, a failed hash, a
+        // full disk -- and what would be left behind is not an ordinary
+        // temp file: it is a partial copy of the user's transcripts,
+        // sitting in the archive directory, that nobody holds a reference
+        // to. The caller cannot clean up a path it was never given.
+        var committed = false
+        defer {
+            if !committed { try? fm.removeItem(at: stagingRoot) }
+        }
+
         var sealed: [SealedSession] = []
         for binding in bindings {
             // `provider/sessionID` rather than a flat name: two providers
@@ -106,17 +117,21 @@ public struct ContinuitySealer: Sendable {
             ))
         }
 
+        committed = true
         return ContinuityBundle(stagingRoot: stagingRoot, sessions: sealed)
     }
 
-    /// Directory the subagent tree hangs off, which for every provider
-    /// seen so far is the transcript's path minus its extension:
-    /// `<store>/<session-id>.jsonl` alongside `<store>/<session-id>/...`.
-    /// Derived rather than passed in because the binder reports absolute
-    /// paths and this keeps the two from having to agree on a second
-    /// field.
+    /// Directory the subtranscript paths are relative to.
+    ///
+    /// The binder's own answer when it has one. The fallback -- the
+    /// transcript's path minus its extension -- holds for the agent
+    /// stores, where `<store>/<id>.jsonl` sits beside `<store>/<id>/`,
+    /// and is wrong for an editor entry, where `workspace.json` lives
+    /// inside the directory its siblings do. Inferring provider
+    /// filesystem layout from a filename only ever worked by
+    /// coincidence.
     static func subtranscriptOrigin(for binding: SessionBinding) -> URL {
-        binding.source.deletingPathExtension()
+        binding.artifactRoot ?? binding.source.deletingPathExtension()
     }
 
     /// Path of `url` relative to `origin`.

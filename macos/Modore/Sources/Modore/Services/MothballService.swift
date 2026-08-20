@@ -58,40 +58,36 @@ enum MothballService {
         return (rankCandidates(repos: report.repos), report.failures.count)
     }
 
-    /// Reads titles for the handful of sessions each row will show.
+    /// Reads titles for the handful of sessions one row will show, when
+    /// that row is opened.
     ///
-    /// Bounded on purpose. Titling every binding would mean opening
-    /// nearly two thousand transcripts for one screen, and the screen
-    /// shows five. The rest stay counted, unopened, and unread.
-    static func withTitles(
-        _ candidates: [ArchiveCandidate],
+    /// Never during a scan. scree's contract is that an audit reads
+    /// metadata and retains no conversation content, with `preserve` as
+    /// the one deliberate exception a person asks for by name. Titling
+    /// every candidate on refresh would quietly make every scan a
+    /// content read, which is a change to the security model rather than
+    /// a feature -- so it happens on expand, for one repo, bounded to
+    /// what is displayed.
+    static func titles(
+        for candidate: ArchiveCandidate,
         projectRoot: URL
-    ) async -> [ArchiveCandidate] {
+    ) async -> [SessionPresentation] {
         guard let execution = await Task.detached(priority: .userInitiated, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
         }).value else {
-            return candidates
+            return []
         }
-        var out: [ArchiveCandidate] = []
-        out.reserveCapacity(candidates.count)
-        for candidate in candidates {
-            var updated = candidate
-            var titles: [SessionPresentation] = []
-            for binding in candidate.topBindings() {
-                if let presentation = await ScreeService.title(
-                    execution: execution, binding: binding
-                ) {
-                    titles.append(presentation)
-                }
+        var titles: [SessionPresentation] = []
+        for binding in candidate.topBindings() {
+            if let presentation = await ScreeService.title(
+                execution: execution, binding: binding
+            ) {
+                titles.append(presentation)
             }
-            // Most recent first: the conversation someone might still be
-            // in the middle of is the one a delete hurts most.
-            updated.presentations = titles.sorted {
-                ($0.lastActiveAt ?? .distantPast) > ($1.lastActiveAt ?? .distantPast)
-            }
-            out.append(updated)
         }
-        return out
+        return titles.sorted {
+            ($0.lastActiveAt ?? .distantPast) > ($1.lastActiveAt ?? .distantPast)
+        }
     }
 
     /// Asks the binder which AI sessions belong to each candidate.
@@ -134,6 +130,22 @@ enum MothballService {
 }
 
 extension ScanModel {
+    /// Fills in one row's titles when it is opened. Idempotent: a row
+    /// already titled is not read again.
+    func loadTitles(for candidate: ArchiveCandidate) {
+        guard let index = archiveCandidates?.firstIndex(where: { $0.id == candidate.id }),
+              archiveCandidates?[index].presentations.isEmpty == true,
+              !candidate.boundSessions.isEmpty else { return }
+        let root = projectRoot
+        let target = candidate
+        Task {
+            let titles = await MothballService.titles(for: target, projectRoot: root)
+            guard let current = archiveCandidates?.firstIndex(where: { $0.id == target.id })
+            else { return }
+            archiveCandidates?[current].presentations = titles
+        }
+    }
+
     func refreshArchiveCandidates() {
         guard !archiveLoading else { return }
         guard let report = screeReport else {
@@ -153,15 +165,8 @@ extension ScanModel {
             // true rather than reassuring.
             archiveCandidates = outcome.candidates
             archiveInspectionFailures = outcome.failureCount
-            let bound = await MothballService.withContinuity(
+            archiveCandidates = await MothballService.withContinuity(
                 outcome.candidates, projectRoot: projectRoot
-            )
-            archiveCandidates = bound
-            // Titles last and separately: the counts are already useful,
-            // and reading transcripts is the slowest step and the only one
-            // that touches conversation content.
-            archiveCandidates = await MothballService.withTitles(
-                bound, projectRoot: projectRoot
             )
         }
     }
