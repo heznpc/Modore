@@ -53,6 +53,16 @@ public enum BindingCoverage: String, Codable, Sendable, Hashable {
 /// What is known about a workspace's agent sessions at the moment an
 /// archive is attempted.
 ///
+/// There is deliberately no "the user decided to proceed anyway" case.
+/// One existed while Mothball shipped standalone with no binder, and
+/// nothing ever constructed it: it sat in the enum passing the gate and
+/// serialising to a manifest tag no manifest could carry. A case that
+/// always allows and nobody creates is not an escape hatch, it is an
+/// unguarded one -- the next person adding an override reaches for it
+/// and inherits the permission without building the confirmation that
+/// would justify it. If an override is wanted, it arrives with the UI
+/// that asks.
+///
 /// The distinction that makes this type worth existing is `notAssessed`
 /// versus `assessedNoSessions`. Collapsing both into "no sessions" — an
 /// empty array, a nil, a zero count — is the bug this whole gate exists
@@ -81,12 +91,6 @@ public enum ContinuityAssessment: Sendable {
     /// looks like success.
     case sealed(ContinuityBundle, coverage: BindingCoverage)
 
-    /// A human was shown that no assessment could be made and chose to
-    /// archive anyway. Allowed, but the reason is written into the
-    /// manifest so a later reader can tell this archive apart from one
-    /// that was genuinely session-free.
-    case overriddenByUser(reason: String)
-
     /// Sessions carried into the manifest, if any are sealed yet.
     public var sealedSessions: [SealedSession] {
         if case .sealed(let bundle, _) = self { return bundle.sessions }
@@ -98,7 +102,7 @@ public enum ContinuityAssessment: Sendable {
     /// predate any scan have no coverage to report.
     public var coverage: BindingCoverage? {
         switch self {
-        case .notAssessed, .overriddenByUser: return nil
+        case .notAssessed: return nil
         case .assessedNoSessions: return .complete
         case .bindings(_, let coverage), .sealed(_, let coverage): return coverage
         }
@@ -113,7 +117,6 @@ public enum ContinuityAssessment: Sendable {
         case .assessedNoSessions: return "assessed-no-sessions"
         case .bindings: return "bindings-unsealed"
         case .sealed: return "sealed"
-        case .overriddenByUser: return "overridden-by-user"
         }
     }
 }

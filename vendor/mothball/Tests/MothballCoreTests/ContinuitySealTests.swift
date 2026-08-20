@@ -321,14 +321,14 @@ final class ContinuitySealTests: XCTestCase {
         XCTAssertNil(manifest.continuity?.overrideReason)
     }
 
-    func test_userOverride_isWrittenIntoTheManifest() async throws {
+    /// Nothing writes an override any more. The gate has no case that
+    /// allows without either a finding or a completed empty look, so a
+    /// manifest cannot claim a decision no one made.
+    func test_noAssessmentWritesAnOverride() async throws {
         let info = try await repoInfo()
-        let result = try await makeOrchestrator().archive(
-            info, continuity: .overriddenByUser(reason: "no binder in standalone")
-        )
+        let result = try await makeOrchestrator().archive(info, continuity: .assessedNoSessions)
         let manifest = try Restorer.decodeManifest(at: result.manifest)
-        XCTAssertEqual(manifest.continuity?.assessment, "overridden-by-user")
-        XCTAssertEqual(manifest.continuity?.overrideReason, "no binder in standalone")
+        XCTAssertNil(manifest.continuity?.overrideReason)
     }
 }
 
@@ -673,8 +673,7 @@ final class ContinuityPreparationTests: XCTestCase {
     }
 
     func test_statesWithNothingToPreservePassThroughUnchanged() throws {
-        for assessment in [ContinuityAssessment.notAssessed, .assessedNoSessions,
-                           .overriddenByUser(reason: "x")] {
+        for assessment in [ContinuityAssessment.notAssessed, .assessedNoSessions] {
             let prepared = try ContinuityPreparation.seal(assessment, stagingParent: scratch)
             XCTAssertNil(prepared.stagingRoot)
             XCTAssertEqual(

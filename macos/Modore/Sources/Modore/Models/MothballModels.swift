@@ -75,8 +75,6 @@ struct ArchiveCandidate: Identifiable {
             return "연결된 AI 세션 \(bindings.count)개 · \(bytes)"
         case .sealed(let bundle, _):
             return "AI 세션 \(bundle.sessions.count)개 봉인됨"
-        case .overriddenByUser:
-            return "AI 세션 확인 없이 진행함"
         }
     }
 

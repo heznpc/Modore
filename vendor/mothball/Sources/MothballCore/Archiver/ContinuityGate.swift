@@ -54,7 +54,7 @@ public enum ContinuityGate {
             // where the others are; letting that through trades a visible
             // refusal for an invisible loss.
             return coverage == .complete ? .allow : .block(.incompleteCoverage(coverage))
-        case .assessedNoSessions, .overriddenByUser:
+        case .assessedNoSessions:
             return .allow
         }
     }

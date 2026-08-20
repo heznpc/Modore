@@ -67,20 +67,12 @@ final class ContinuityGateTests: XCTestCase {
         XCTAssertEqual(ContinuityGate.evaluate(.sealed(bundle, coverage: .complete)), .allow)
     }
 
-    func test_userOverride_allows() {
-        XCTAssertEqual(
-            ContinuityGate.evaluate(.overriddenByUser(reason: "no binder")),
-            .allow
-        )
-    }
-
     func test_manifestTags_areDistinctPerState() {
         let tags = [
             ContinuityAssessment.notAssessed.manifestTag,
             ContinuityAssessment.assessedNoSessions.manifestTag,
             ContinuityAssessment.bindings([], coverage: .complete).manifestTag,
             ContinuityAssessment.sealed(.init(stagingRoot: URL(fileURLWithPath: "/tmp"), sessions: []), coverage: .complete).manifestTag,
-            ContinuityAssessment.overriddenByUser(reason: "x").manifestTag,
         ]
         XCTAssertEqual(Set(tags).count, tags.count, "each state must be distinguishable on disk")
     }

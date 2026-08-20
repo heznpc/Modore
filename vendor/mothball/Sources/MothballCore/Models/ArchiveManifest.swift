@@ -86,9 +86,11 @@ public struct ArchiveManifest: Codable, Sendable, Equatable {
 
         public let sessions: [SealedSession]
 
-        /// Set only for `overridden-by-user`. Its presence is the marker
-        /// that separates an archive nobody checked from one that was
-        /// checked and came back empty.
+        /// Legacy, read-only. Standalone Mothball wrote an override here
+        /// while it had no session binder; nothing writes one now. Kept
+        /// so those manifests still decode -- `assessment` is a plain
+        /// string, so a tag this build no longer produces costs nothing
+        /// to read back.
         public let overrideReason: String?
 
         public init(

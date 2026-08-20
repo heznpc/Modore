@@ -374,8 +374,6 @@ public struct ArchiveOrchestrator: Sendable {
         continuity: ContinuityAssessment,
         sessionArchiveName: String?
     ) -> ArchiveManifest {
-        var overrideReason: String?
-        if case .overriddenByUser(let reason) = continuity { overrideReason = reason }
         return ArchiveManifest(
             schemaVersion: ArchiveManifest.currentSchemaVersion,
             archivedAt: archivedAt,
@@ -394,7 +392,9 @@ public struct ArchiveOrchestrator: Sendable {
                 assessment: continuity.manifestTag,
                 sessionArchive: sessionArchiveName,
                 sessions: continuity.sealedSessions,
-                overrideReason: overrideReason
+                // Nothing writes an override any more; the field stays so
+                // manifests from the standalone era still decode.
+                overrideReason: nil
             )
         )
     }
