@@ -258,9 +258,16 @@ struct MothballCandidateSection: View {
     /// nothing and the reader has to scan 53 identical lines to learn the
     /// only fact that varies. This says it up front instead.
     static func boundSummary(_ candidates: [ArchiveCandidate]) -> String {
+        // "None" and "not checked yet" are the distinction this whole
+        // feature exists to keep, and the summary was collapsing it: while
+        // the binder ran, every row correctly read "확인 안 됨" and the
+        // line above them announced that nothing was connected.
+        let unassessed = candidates.filter { $0.continuity.coverage == nil }
         let withSessions = candidates.filter { !$0.boundSessions.isEmpty }
         guard !withSessions.isEmpty else {
-            return "연결된 AI 대화가 있는 저장소는 없습니다."
+            return unassessed.isEmpty
+                ? "연결된 AI 대화가 있는 저장소는 없습니다."
+                : "AI 대화 연결을 확인하는 중입니다. 아직 아무것도 확정하지 않았습니다."
         }
         // Deduplicate across candidates. A repo and its own worktrees are
         // separate rows, and binding matches by path prefix, so every

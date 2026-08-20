@@ -1279,3 +1279,78 @@ def test_fingerprint_cli_emits_json(bind_home, capsys):
     assert scree.main(["fingerprint", "--home", str(bind_home["home"])]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert set(payload) == {"digest", "fileCount"}
+
+
+# --- 배치 바인딩 (저장소를 후보 수만큼 다시 읽지 않는다) --------------------
+
+
+def test_bind_all_matches_single_binding_per_workspace(bind_home):
+    """배치와 단건이 같은 답을 내야 한다. 다르면 화면과 CLI가 서로 다른 사실을
+    말하게 되고, 어느 쪽이 게이트의 근거인지 알 수 없어진다."""
+    targets = [{"workspace": str(bind_home["repo"]), "repoUrl": None},
+               {"workspace": str(bind_home["other"]), "repoUrl": None}]
+    batch = scree.build_bindings_many(bind_home["home"], targets, deep=True)["results"]
+    for target in targets:
+        single = scree.build_bindings(bind_home["home"], target["workspace"], deep=True)
+        assert (sorted(b["sessionId"] for b in batch[target["workspace"]]["bindings"])
+                == sorted(b["sessionId"] for b in single["bindings"]))
+        assert batch[target["workspace"]]["coverage"] == single["coverage"]
+
+
+def test_bind_all_finds_file_access_for_each_workspace_in_one_pass(bind_home):
+    """한 트랜스크립트가 두 워크스페이스를 언급하면 둘 다 잡혀야 한다.
+    파일을 한 번만 읽으면서도 needle을 전부 확인한다는 뜻이다."""
+    _write(bind_home["home"] / ".claude" / "projects" / "-slug-both" / "both.jsonl",
+           _jsonl({"cwd": "/elsewhere"},
+                  {"tool": "Read", "path": f"{bind_home['repo']}/a"},
+                  {"tool": "Read", "path": f"{bind_home['other']}/b"}))
+    targets = [{"workspace": str(bind_home["repo"]), "repoUrl": None},
+               {"workspace": str(bind_home["other"]), "repoUrl": None}]
+    results = scree.build_bindings_many(bind_home["home"], targets, deep=True)["results"]
+    for target in targets:
+        ids = {b["sessionId"] for b in results[target["workspace"]]["bindings"]}
+        assert "both" in ids, target["workspace"]
+
+
+def test_bind_all_carries_coverage_and_fingerprint_per_workspace(bind_home):
+    targets = [{"workspace": str(bind_home["repo"]), "repoUrl": None}]
+    result = scree.build_bindings_many(bind_home["home"], targets, deep=True)["results"]
+    payload = result[str(bind_home["repo"])]
+    assert payload["assessed"] is True
+    assert payload["storeFingerprint"] == scree.store_fingerprint(bind_home["home"])
+    assert set(payload["coverageDetail"]) >= {"claude", "codex", "gemini", "editors"}
+
+
+def test_bind_all_cli_reads_targets_from_a_file(bind_home, tmp_path, capsys):
+    listing = tmp_path / "targets.json"
+    listing.write_text(json.dumps([{"workspace": str(bind_home["repo"]), "repoUrl": None}]),
+                       encoding="utf-8")
+    assert scree.main(["bind-all", "--targets", str(listing),
+                       "--home", str(bind_home["home"])]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert str(bind_home["repo"]) in payload["results"]
+
+
+def test_bind_all_on_an_empty_list_returns_nothing_without_scanning(bind_home):
+    assert scree.build_bindings_many(bind_home["home"], [], deep=True) == {"results": {}}
+
+
+def test_bind_all_writes_to_a_file_when_asked(bind_home, tmp_path, capsys):
+    """답의 크기는 그 머신의 세션 수에 비례해서 커진다. 이 맥에서는 후보 53개에
+    바인딩 8,424개가 나와 프로세스 러너의 출력 상한을 넘겼다. 폭주하는
+    서브프로세스를 막으려고 있는 상한을, 정당하게 큰 결과 때문에 올리는 것은
+    잘못된 대응이다."""
+    listing = tmp_path / "targets.json"
+    listing.write_text(json.dumps([{"workspace": str(bind_home["repo"]), "repoUrl": None}]),
+                       encoding="utf-8")
+    out = tmp_path / "nested" / "results.json"
+    assert scree.main(["bind-all", "--targets", str(listing), "--out", str(out),
+                       "--home", str(bind_home["home"])]) == 0
+
+    # stdout에는 경로만 남는다 — 결과 자체가 파이프를 지나지 않는 것이 요점이다.
+    printed = capsys.readouterr().out
+    assert str(out) in printed
+    assert "bindings" not in printed
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert str(bind_home["repo"]) in payload["results"]

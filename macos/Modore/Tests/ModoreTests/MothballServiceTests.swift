@@ -449,3 +449,46 @@ final class SessionPresentationTests: XCTestCase {
         ))
     }
 }
+
+/// The summary was collapsing the one distinction this feature exists to
+/// keep: while the binder ran, every row correctly read "확인 안 됨" and
+/// the line above them announced that nothing was connected.
+final class SummaryDuringLoadingTests: XCTestCase {
+    private let referenceNow = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func candidate(_ continuity: ContinuityAssessment) -> ArchiveCandidate {
+        let activity = referenceNow.addingTimeInterval(-400 * 86_400)
+        let repo = RepoInfo(
+            path: URL(fileURLWithPath: "/tmp/s"), sizeBytes: 1, lastFileMTime: activity,
+            git: GitMetadata(lastCommitDate: activity, isDirty: false, aheadOfOrigin: 0,
+                             originURL: "git@example.com:t/r.git", currentBranch: "main",
+                             headSHA: "abc")
+        )
+        var c = ArchiveCandidate(
+            repo: repo, verdict: SafetyClassifier().classify(repo, now: referenceNow),
+            dormancyDays: 400
+        )
+        c.continuity = continuity
+        return c
+    }
+
+    func test_unassessedCandidatesAreNotReportedAsHavingNothing() {
+        let loading = MothballCandidateSection.boundSummary([candidate(.notAssessed)])
+        XCTAssertFalse(loading.contains("없습니다"), loading)
+        XCTAssertTrue(loading.contains("확인"), loading)
+    }
+
+    /// Once every candidate has actually been assessed, "none" is a
+    /// finding and should be stated plainly.
+    func test_assessedAndEmptyIsStatedAsAFinding() {
+        let done = MothballCandidateSection.boundSummary([candidate(.assessedNoSessions)])
+        XCTAssertTrue(done.contains("없습니다"), done)
+    }
+
+    func test_theTwoStatesReadDifferently() {
+        XCTAssertNotEqual(
+            MothballCandidateSection.boundSummary([candidate(.notAssessed)]),
+            MothballCandidateSection.boundSummary([candidate(.assessedNoSessions)])
+        )
+    }
+}

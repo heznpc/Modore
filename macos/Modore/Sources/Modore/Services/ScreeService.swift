@@ -264,6 +264,88 @@ extension ScreeService {
         )
     }
 
+    /// Binds many workspaces in one pass.
+    ///
+    /// A shallow pass never establishes completeness, so every candidate
+    /// on the screen needs a deep look -- and asking one repo at a time
+    /// re-reads the whole session store per repo. Measured here: 12.8
+    /// minutes across 53 candidates one by one, 2.8 minutes in a single
+    /// pass, with every candidate reaching complete coverage either way.
+    static func bindAll(
+        execution: RuntimeExecutionContext,
+        targets: [(workspace: URL, repoURL: String?)],
+        deep: Bool = true,
+        homeOverride: URL? = nil
+    ) async -> [String: ScreeBindOutcome] {
+        guard !targets.isEmpty else { return [:] }
+        let payload = targets.map { target in
+            ["workspace": target.workspace.path, "repoUrl": target.repoURL as Any]
+        }
+        // Written to a file rather than passed as arguments: a screen can
+        // carry fifty candidates and their absolute paths, which is past
+        // what a command line should be asked to hold.
+        let listing = execution.outputRoot.appending(path: "scree-bind-targets.json")
+        guard let input = try? JSONSerialization.data(withJSONObject: payload),
+              (try? input.write(to: listing, options: [.atomic])) != nil else {
+            return failAll(targets, "바인딩 대상 목록을 기록하지 못했습니다.")
+        }
+        defer { try? FileManager.default.removeItem(at: listing) }
+
+        // The answer goes to a file too. It grows with the machine's
+        // session count -- 8,424 bindings across 53 candidates here, past
+        // the runner's output ceiling -- and a limit that exists to stop a
+        // runaway subprocess is the wrong thing to raise for a result
+        // that is legitimately large.
+        let resultFile = execution.outputRoot.appending(path: "scree-bind-results.json")
+        try? FileManager.default.removeItem(at: resultFile)
+        defer { try? FileManager.default.removeItem(at: resultFile) }
+
+        var arguments = ["bind-all", "--targets", listing.path, "--out", resultFile.path]
+        if deep { arguments.append("--deep") }
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+
+        // A full content scan of every store; the per-repo timeout would
+        // be the wrong budget for one pass over all of them.
+        switch await invoke(execution: execution, arguments: arguments, timeout: 900) {
+        case .failure(let message):
+            return failAll(targets, message)
+        case .timedOut:
+            return failAll(targets, "세션 바인딩이 15분 안에 끝나지 않았습니다.")
+        case .success:
+            guard let data = try? Data(contentsOf: resultFile),
+                  let decoded = try? BindReport.decoder().decode(BatchPayload.self, from: data) else {
+                return failAll(targets, "세션 바인더 출력을 해석하지 못했습니다.")
+            }
+            var out: [String: ScreeBindOutcome] = [:]
+            for target in targets {
+                guard let report = decoded.results[target.workspace.path],
+                      let encoded = try? JSONEncoder().encode(report) else {
+                    out[target.workspace.path] = .failed("이 저장소에 대한 바인딩 결과가 없습니다.")
+                    continue
+                }
+                let assessment = ContinuityAssessment.fromBindReport(encoded)
+                if case .notAssessed = assessment {
+                    out[target.workspace.path] = .failed(Self.incompleteScanReason(encoded))
+                } else {
+                    out[target.workspace.path] = ScreeBindOutcome(
+                        assessment: assessment, diagnostic: nil
+                    )
+                }
+            }
+            return out
+        }
+    }
+
+    private struct BatchPayload: Decodable {
+        let results: [String: BindReport]
+    }
+
+    private static func failAll(
+        _ targets: [(workspace: URL, repoURL: String?)], _ reason: String
+    ) -> [String: ScreeBindOutcome] {
+        Dictionary(uniqueKeysWithValues: targets.map { ($0.workspace.path, .failed(reason)) })
+    }
+
     /// Digest of every bindable session store right now.
     ///
     /// Read again before a retire so a binding taken minutes ago is not

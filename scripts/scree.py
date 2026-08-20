@@ -734,6 +734,13 @@ def _claude_subtranscripts(project_dir: Path, session_id: str) -> list[Path]:
 
 def _scans_for_paths(source: Path, root: str,
                      ceiling: Optional[int] = None) -> tuple[bool, bool]:
+    """Single-workspace form, kept for callers with one question."""
+    matched, complete = _scan_for_any_path(source, [root], ceiling=ceiling)
+    return (bool(matched), complete)
+
+
+def _scan_for_any_path(source: Path, roots: list[str],
+                       ceiling: Optional[int] = None) -> tuple[set[str], bool]:
     """Deep scan: does this transcript mention any path inside `root`?
 
     Returns `(found, complete)`. Reads content and emits neither -- the
@@ -756,8 +763,16 @@ def _scans_for_paths(source: Path, root: str,
     ceiling = BINDER_SCAN_CEILING_BYTES if ceiling is None else ceiling
     # Folded for the same reason `_under` is: the transcript records the
     # casing the user typed, which need not match the casing on disk.
-    needle = _canon_workspace(root).casefold()
-    overlap = max(0, len(needle) - 1)
+    #
+    # Every workspace at once. One pass per candidate re-reads the same
+    # stores for each repo on the list -- measured here at 14.5s per repo
+    # across 53 candidates, thirteen minutes spent re-reading the same six
+    # gigabytes.
+    needles = {root: _canon_workspace(root).casefold() for root in roots}
+    if not needles:
+        return (set(), True)
+    overlap = max(len(n) for n in needles.values()) - 1
+    found: set[str] = set()
     try:
         with source.open("r", encoding="utf-8", errors="replace") as handle:
             read = 0
@@ -765,16 +780,20 @@ def _scans_for_paths(source: Path, root: str,
             while True:
                 chunk = handle.read(1 << 20)
                 if not chunk:
-                    return (False, True)
+                    return (found, True)
                 read += len(chunk)
-                folded = chunk.casefold()
-                if needle in carry + folded:
-                    return (True, True)
-                carry = folded[-overlap:] if overlap else ""
+                window = carry + chunk.casefold()
+                for root, needle in needles.items():
+                    if root not in found and needle in window:
+                        found.add(root)
+                if len(found) == len(needles):
+                    # Nothing left to look for in this file.
+                    return (found, True)
+                carry = window[-overlap:] if overlap else ""
                 if read >= ceiling:
-                    return (False, False)
+                    return (found, False)
     except OSError:
-        return (False, False)
+        return (found, False)
 
 
 def bind_codex(home: Path, workspace: str, repo_url: Optional[str], *,
@@ -1070,6 +1089,132 @@ def unbound_stores_present(home: Path) -> list[str]:
     return sorted(set(present))
 
 
+def build_bindings_many(home: Path, targets: list[dict], *, deep: bool = False) -> dict:
+    """`build_bindings` for several workspaces, reading each store once.
+
+    Modore asks about every archive candidate on the screen, and a
+    shallow pass never establishes completeness -- so every candidate
+    needs a deep look, and doing that one repo at a time re-reads the
+    whole session store per repo. Measured on this machine that is 14.5s
+    across 53 candidates: thirteen minutes to answer a question the
+    stores could have answered in one pass.
+
+    Each `target` is `{"workspace": str, "repoUrl": str | None}`. The
+    result maps workspace to the same shape `build_bindings` returns, so
+    a caller can move between the two without reshaping anything.
+    """
+    workspaces = [_canon_workspace(t["workspace"]) for t in targets]
+    repo_urls = {_canon_workspace(t["workspace"]): t.get("repoUrl") for t in targets}
+    if not workspaces:
+        return {"results": {}}
+
+    per_workspace: dict[str, list[dict]] = {w: [] for w in workspaces}
+    claude_complete = codex_complete = gemini_complete = forks_complete = True
+
+    for workspace in workspaces:
+        # The cheap, per-workspace parts stay per-workspace: they are
+        # metadata comparisons, not file reads, and the shared cost is
+        # entirely in the content scan below.
+        claude, ok = bind_claude(home, workspace, deep=False)
+        claude_complete = claude_complete and ok
+        codex, ok = bind_codex(home, workspace, repo_urls[workspace], deep=False)
+        codex_complete = codex_complete and ok
+        gemini, ok = bind_gemini(home, workspace, deep=False)
+        gemini_complete = gemini_complete and ok
+        forks, ok = bind_vscode_forks(home, workspace)
+        forks_complete = forks_complete and ok
+        per_workspace[workspace] = claude + codex + gemini + forks
+
+    if deep:
+        bound_sources = {w: {b["source"] for b in per_workspace[w]} for w in workspaces}
+        for provider, path in _deep_scan_candidates(home):
+            # `str`, not `Path`: `bound_sources` holds the same strings the
+            # binders emit, and comparing the two types silently never
+            # matches -- which rescans every already-bound file and adds a
+            # second, differently-identified binding for it.
+            source = str(path)
+            unbound = [w for w in workspaces if source not in bound_sources[w]]
+            if not unbound:
+                continue
+            matched, scanned_fully = _scan_for_any_path(path, unbound)
+            if not scanned_fully:
+                if provider == "claude":
+                    claude_complete = False
+                elif provider == "codex":
+                    codex_complete = False
+                else:
+                    gemini_complete = False
+            for workspace in matched:
+                per_workspace[workspace].append(
+                    _file_access_binding(provider, path)
+                )
+
+    unbound_stores = unbound_stores_present(home)
+    scanned_fully = (claude_complete and codex_complete and gemini_complete
+                     and forks_complete and not unbound_stores)
+    fingerprint = store_fingerprint(home)
+    results = {}
+    for workspace in workspaces:
+        bindings = sorted(per_workspace[workspace],
+                          key=lambda b: (b["provider"], b["sessionId"]))
+        results[workspace] = _binding_result(
+            workspace, repo_urls[workspace], deep, bindings, fingerprint,
+            claude_complete, codex_complete, gemini_complete, forks_complete,
+            unbound_stores, scanned_fully,
+        )
+    return {"results": results}
+
+
+def _deep_scan_candidates(home: Path):
+    """Every file a content scan would consider, tagged by store."""
+    for path in sorted((home / ".claude" / "projects").glob("*/*.jsonl")):
+        yield ("claude", path)
+    for root in (home / ".codex" / "sessions", home / ".codex" / "archived_sessions"):
+        if root.is_dir():
+            for path in sorted(root.rglob("*.jsonl")):
+                yield ("codex", path)
+    for path in sorted((home / ".gemini" / "tmp").glob("*/chats/*.json")):
+        yield ("gemini", path)
+
+
+def _file_access_session_id(provider: str, path: Path) -> str:
+    """The id each store's own binder would have used.
+
+    Falling back to the filename would give the same session two
+    different identities depending on which evidence found it, and the
+    manifest would then record a session the provider cannot be asked
+    about.
+    """
+    if provider == "claude":
+        return path.stem
+    try:
+        if provider == "gemini":
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(payload, dict) and payload.get("sessionId"):
+                return str(payload["sessionId"])
+        else:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                first = _read_json_line(handle)
+            payload = (first or {}).get("payload")
+            if isinstance(payload, dict) and payload.get("id"):
+                return str(payload["id"])
+    except (OSError, json.JSONDecodeError):
+        pass
+    return path.stem
+
+
+def _file_access_binding(provider: str, path: Path) -> dict:
+    return {
+        "provider": provider,
+        "sessionId": _file_access_session_id(provider, path),
+        "source": str(path),
+        "subtranscripts": [],
+        "evidence": ["file-access"],
+        "confidence": _binding_confidence(["file-access"]),
+        "sizeBytes": path.stat().st_size,
+    }
+
+
 def store_fingerprint(home: Path) -> dict:
     """Digest over every candidate file in every bindable store.
 
@@ -1131,6 +1276,19 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
     scanned_fully = (claude_complete and codex_complete and gemini_complete
                      and forks_complete and not unbound)
     bindings.sort(key=lambda b: (b["provider"], b["sessionId"]))
+    return _binding_result(
+        workspace, repo_url, deep, bindings, store_fingerprint(home),
+        claude_complete, codex_complete, gemini_complete, forks_complete,
+        unbound, scanned_fully,
+    )
+
+
+def _binding_result(workspace, repo_url, deep, bindings, fingerprint,
+                    claude_complete, codex_complete, gemini_complete,
+                    forks_complete, unbound, scanned_fully) -> dict:
+    """One workspace's answer, assembled the same way whichever path
+    produced it -- single or batch. Kept in one place so the two cannot
+    drift into reporting coverage differently."""
     return {
         "contract": ("session ids, evidence types, and sizes only; transcript "
                      "content is read for file-access evidence but never retained"),
@@ -1142,24 +1300,19 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
         #
         #   shallow   -- matched recorded working directories only, so an
         #                empty result means "no session was *run* here",
-        #                not "no session touched this repo". The common
-        #                case for a repo worked on from `~`.
+        #                not "no session touched this repo".
         #   truncated -- a look that started and could not finish: a
         #                content scan that stopped early, a transcript
         #                that would not open, a store whose identity data
         #                is missing. It tried; it did not conclude.
         #   complete  -- every candidate was conclusively classified.
         #                Either its own metadata was authoritative enough
-        #                to decide -- a recorded remote, a matching cwd,
-        #                a workspace hash -- or it was read to EOF and
-        #                found not to mention the workspace. Not "every
-        #                byte was read": a session already bound by its
-        #                header gains nothing from being read again, and
-        #                editor entries have no transcript body at all.
-        #                The only value from which emptiness is a finding.
+        #                to decide, or it was read to EOF and found not to
+        #                mention the workspace. Not "every byte was read":
+        #                a session already bound by its header gains
+        #                nothing from being read again, and editor entries
+        #                have no transcript body at all.
         "coverage": ("complete" if scanned_fully else "truncated") if deep else "shallow",
-        # Why a deep pass came back short of `complete`, so a consumer can
-        # say which gap to close rather than only that one exists.
         "coverageDetail": {
             "claude": "complete" if claude_complete else "incomplete",
             "codex": "complete" if codex_complete else "incomplete",
@@ -1168,9 +1321,7 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
             "unboundStores": unbound,
         },
         "assessed": True,
-        # Taken with the bindings so a later caller can ask whether the
-        # stores still look the way they did when this answer was true.
-        "storeFingerprint": store_fingerprint(home),
+        "storeFingerprint": fingerprint,
         "bindings": bindings,
         "summary": {
             "total": len(bindings),
@@ -1573,6 +1724,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                            "(slower; finds sessions that ran elsewhere but worked here)")
     bind.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    bind_all = sub.add_parser(
+        "bind-all",
+        help="bind MANY workspaces in one pass; reads a JSON array on stdin")
+    bind_all.add_argument("--targets", type=Path, default=None,
+                          help="read the JSON array from this file instead of stdin; "
+                               "a screen's worth of absolute paths is past what a "
+                               "command line should be asked to hold")
+    bind_all.add_argument("--out", type=Path, default=None,
+                          help="write the result here instead of stdout; the answer "
+                               "grows with the machine's session count and is not "
+                               "something a pipe should be asked to carry")
+    bind_all.add_argument("--deep", action="store_true",
+                          help="also scan transcript bodies for file access")
+    bind_all.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     fingerprint = sub.add_parser(
         "fingerprint", help="digest of every bindable session store, to detect drift")
     fingerprint.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
@@ -1608,6 +1774,35 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"wrote {args.out}")
         else:
             print(text)
+        return 0
+
+    if args.command == "bind-all":
+        # stdin rather than argv: a screen can carry fifty candidates and
+        # their absolute paths, which is past what a command line should
+        # be asked to hold.
+        try:
+            raw = (args.targets.read_text(encoding="utf-8")
+                   if args.targets else sys.stdin.read())
+            targets = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"bind-all: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(targets, list):
+            print("bind-all: expected a JSON array of {workspace, repoUrl}", file=sys.stderr)
+            return 1
+        payload = json.dumps(
+            build_bindings_many(args.home, targets, deep=args.deep),
+            ensure_ascii=False, indent=2)
+        if args.out:
+            try:
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                args.out.write_text(payload, encoding="utf-8")
+            except OSError as exc:
+                print(f"bind-all: {exc}", file=sys.stderr)
+                return 1
+            print(f"wrote {args.out}")
+        else:
+            print(payload)
         return 0
 
     if args.command == "fingerprint":
