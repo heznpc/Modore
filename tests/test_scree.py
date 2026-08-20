@@ -1019,3 +1019,107 @@ def test_every_known_store_is_now_bindable(bind_home):
     assert scree.unbound_stores_present(bind_home["home"]) == []
     out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
     assert out["coverage"] == "complete"
+
+
+# --- 제목 추출 (표시 전용) --------------------------------------------------
+
+
+def _session_with_turns(path, *turns):
+    lines = [{"cwd": "/w"}]
+    for role, text in turns:
+        lines.append({"message": {"role": role, "content": [{"type": "text", "text": text}]}})
+    _write(path, _jsonl(*lines))
+    return path
+
+
+def test_title_quotes_the_first_real_request(tmp_path):
+    src = _session_with_turns(tmp_path / "s.jsonl", ("user", "결제 오류를 재현하고 고쳐줘"))
+    out = scree.build_title(src, tmp_path)
+    assert out["title"] == "결제 오류를 재현하고 고쳐줘"
+    assert out["titleSource"] == "first-request"
+
+
+def test_title_skips_resumption_markers(tmp_path):
+    """이어서 진행한 세션은 전부 같은 문장으로 시작한다. 그걸 그대로 제목으로
+    쓰면 모든 세션 제목이 같아지고, 목록이 아무것도 구분하지 못한다."""
+    src = _session_with_turns(
+        tmp_path / "s.jsonl",
+        ("user", "Continue from where you left off."),
+        ("assistant", "네"),
+        ("user", "배포 파이프라인을 교체하자"),
+    )
+    out = scree.build_title(src, tmp_path)
+    assert out["title"] == "배포 파이프라인을 교체하자"
+
+
+def test_title_falls_back_to_resumption_when_that_is_all_there_is(tmp_path):
+    src = _session_with_turns(tmp_path / "s.jsonl", ("user", "continue"))
+    out = scree.build_title(src, tmp_path)
+    assert out["titleSource"] == "resumption"
+
+
+def test_title_skips_slash_commands_and_wrapped_blocks(tmp_path):
+    src = _session_with_turns(
+        tmp_path / "s.jsonl",
+        ("user", "/continue"),
+        ("user", "<system-reminder>무시하세요</system-reminder>"),
+        ("user", "API 응답 지연 원인을 조사해줘"),
+    )
+    assert scree.build_title(src, tmp_path)["title"] == "API 응답 지연 원인을 조사해줘"
+
+
+def test_title_skips_large_pasted_context(tmp_path):
+    """붙여넣은 스택트레이스나 파일은 사용자가 원한 것이 아니라 에이전트에게
+    건넨 것이다. 첫 사용자 턴이지만 제목이 되면 안 된다."""
+    src = _session_with_turns(
+        tmp_path / "s.jsonl",
+        ("user", "로그 첨부\n" + "x" * scree.TITLE_PASTE_CHARS),
+        ("user", "이 로그에서 원인을 찾아줘"),
+    )
+    assert scree.build_title(src, tmp_path)["title"] == "이 로그에서 원인을 찾아줘"
+
+
+def test_title_skips_acknowledgements(tmp_path):
+    src = _session_with_turns(tmp_path / "s.jsonl", ("user", "ㅇㅇ"),
+                              ("user", "레포 은퇴 패키지를 설계하자"))
+    assert scree.build_title(src, tmp_path)["title"] == "레포 은퇴 패키지를 설계하자"
+
+
+def test_title_is_masked_by_default(tmp_path):
+    """제목은 이 모듈이 대화 내용을 처음으로 계속 보관하는 지점이다."""
+    src = _session_with_turns(tmp_path / "s.jsonl", ("user", "someone@example.com 로 메일 보내줘"))
+    assert "someone@example.com" not in scree.build_title(src, tmp_path)["title"]
+    assert "someone@example.com" in scree.build_title(src, tmp_path, raw=True)["title"]
+
+
+def test_title_is_capped_to_one_short_line(tmp_path):
+    src = _session_with_turns(tmp_path / "s.jsonl", ("user", "가" * 300))
+    title = scree.build_title(src, tmp_path)["title"]
+    assert len(title) <= scree.TITLE_MAX_CHARS
+    assert "\n" not in title
+
+
+def test_title_falls_back_to_the_date_when_nothing_is_readable(tmp_path):
+    src = tmp_path / "empty.jsonl"
+    _write(src, "")
+    out = scree.build_title(src, tmp_path, fallback_label="Claude 작업")
+    assert out["titleSource"] == "date"
+    assert "Claude 작업" in out["title"]
+
+
+def test_title_reads_gemini_json_sessions(tmp_path):
+    """Gemini는 JSONL이 아니라 단일 JSON이고 content 항목에 type이 없다."""
+    src = tmp_path / "g.json"
+    _write(src, json.dumps({
+        "sessionId": "g1",
+        "messages": [{"type": "user", "content": [{"text": "논문 그래프를 다시 그려줘"}]}],
+    }))
+    out = scree.build_title(src, tmp_path)
+    assert out["title"] == "논문 그래프를 다시 그려줘"
+    assert out["titleSource"] == "first-request"
+
+
+def test_title_cli_emits_json(tmp_path, capsys):
+    src = _session_with_turns(tmp_path / "s.jsonl", ("user", "빌드 스크립트를 정리해줘"))
+    assert scree.main(["title", str(src), "--home", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["title"] == "빌드 스크립트를 정리해줘"

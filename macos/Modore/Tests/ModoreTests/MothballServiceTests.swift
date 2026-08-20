@@ -333,3 +333,101 @@ final class CandidateOrderingTests: XCTestCase {
         XCTAssertTrue(summary.contains("없습니다"), summary)
     }
 }
+
+/// The row a person reads. The old one showed a UUID, an evidence type,
+/// and a byte count -- storage identity. What someone remembers is the
+/// work, so that is what the row leads with; the forensic detail stays
+/// available and stops being the headline.
+final class SessionPresentationTests: XCTestCase {
+
+    private func session(
+        title: String = "결제 오류 재현 및 수정",
+        source: TitleSource = .firstRequest,
+        provider: SessionProvider = .claude,
+        daysAgo: Int = 1
+    ) -> SessionPresentation {
+        SessionPresentation(
+            provider: provider, sessionID: "abc123",
+            title: title, titleSource: source,
+            lastActiveAt: Date(timeIntervalSince1970: 1_800_000_000)
+                .addingTimeInterval(-Double(daysAgo) * 86_400),
+            sizeBytes: 2_000_000
+        )
+    }
+
+    /// A quoted request and a date-shaped label look alike in a list and
+    /// mean very different things. Showing a guess with the confidence of
+    /// a quotation is how someone decides against a conversation they
+    /// never actually saw.
+    func test_inferredTitlesAreMarkedAndQuotedOnesAreNot() {
+        XCTAssertTrue(MothballCandidateSection.subtitle(session(source: .date)).contains("추정"))
+        XCTAssertTrue(MothballCandidateSection.subtitle(session(source: .recentTurn)).contains("추정"))
+        XCTAssertFalse(MothballCandidateSection.subtitle(session(source: .firstRequest)).contains("추정"))
+    }
+
+    /// Every continued session opens with a resumption marker, so a title
+    /// taken from one is a guess about the subject, not a quote of it.
+    func test_resumptionTitlesCountAsWeak() {
+        XCTAssertTrue(TitleSource.resumption.isWeak)
+        XCTAssertFalse(TitleSource.firstRequest.isWeak)
+    }
+
+    /// "세 개의 대화"와 "세 개의 편집기 창이 이 폴더를 기억함"은 다른 경고다.
+    func test_editorStateIsNotLabelledAsAConversation() {
+        XCTAssertEqual(session(provider: .claude).kindLabel, "대화")
+        XCTAssertEqual(session(provider: .vscode).kindLabel, "편집기 상태")
+        XCTAssertTrue(MothballCandidateSection.subtitle(session(provider: .kiro)).contains("편집기"))
+    }
+
+    /// A consequence view, not a browser: a hundred and twenty rows
+    /// answer "what would I lose" worse than the few that carry the
+    /// weight -- and the ones left out have to be named.
+    func test_highlightsAreBoundedAndTheRemainderIsCounted() {
+        let repo = RepoInfo(
+            path: URL(fileURLWithPath: "/tmp/x"), sizeBytes: 1,
+            lastFileMTime: Date(timeIntervalSince1970: 0),
+            git: GitMetadata(lastCommitDate: nil, isDirty: false, aheadOfOrigin: 0,
+                             originURL: nil, currentBranch: nil, headSHA: nil)
+        )
+        var candidate = ArchiveCandidate(
+            repo: repo, verdict: SafetyClassifier().classify(repo), dormancyDays: 400
+        )
+        candidate.continuity = .bindings((0..<120).map { i in
+            SessionBinding(provider: .claude, sessionID: "s\(i)",
+                           source: URL(fileURLWithPath: "/s/\(i).jsonl"),
+                           evidence: [.workingDirectory], confidence: .medium,
+                           sizeBytes: Int64(i))
+        }, coverage: .complete)
+
+        XCTAssertEqual(candidate.topBindings().count, ArchiveCandidate.highlightLimit)
+        XCTAssertEqual(candidate.remainingSessionCount, 120 - ArchiveCandidate.highlightLimit)
+        // Largest first, so the five shown are the ones worth most.
+        XCTAssertEqual(candidate.topBindings().first?.sessionID, "s119")
+    }
+
+    /// The cache has to notice a transcript rewritten to the same length,
+    /// which is what a compaction produces -- mtime and size alone do not.
+    func test_cacheKeyIncludesFileIdentity() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "PresentationKey-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let a = dir.appending(path: "a.jsonl")
+        let b = dir.appending(path: "b.jsonl")
+        try Data("same-size".utf8).write(to: a)
+        try Data("same-size".utf8).write(to: b)
+
+        let keyA = PresentationCacheKey(provider: .claude, sessionID: "s", source: a)
+        let keyB = PresentationCacheKey(provider: .claude, sessionID: "s", source: b)
+        XCTAssertNotNil(keyA)
+        XCTAssertNotEqual(keyA, keyB, "identical size and near-identical mtime must not collide")
+    }
+
+    func test_cacheKeyIsNilForAMissingSource() {
+        XCTAssertNil(PresentationCacheKey(
+            provider: .claude, sessionID: "s",
+            source: URL(fileURLWithPath: "/nope/\(UUID().uuidString).jsonl")
+        ))
+    }
+}

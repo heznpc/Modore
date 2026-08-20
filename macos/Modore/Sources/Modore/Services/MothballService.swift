@@ -58,6 +58,42 @@ enum MothballService {
         return (rankCandidates(repos: report.repos), report.failures.count)
     }
 
+    /// Reads titles for the handful of sessions each row will show.
+    ///
+    /// Bounded on purpose. Titling every binding would mean opening
+    /// nearly two thousand transcripts for one screen, and the screen
+    /// shows five. The rest stay counted, unopened, and unread.
+    static func withTitles(
+        _ candidates: [ArchiveCandidate],
+        projectRoot: URL
+    ) async -> [ArchiveCandidate] {
+        guard let execution = await Task.detached(priority: .userInitiated, operation: {
+            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
+        }).value else {
+            return candidates
+        }
+        var out: [ArchiveCandidate] = []
+        out.reserveCapacity(candidates.count)
+        for candidate in candidates {
+            var updated = candidate
+            var titles: [SessionPresentation] = []
+            for binding in candidate.topBindings() {
+                if let presentation = await ScreeService.title(
+                    execution: execution, binding: binding
+                ) {
+                    titles.append(presentation)
+                }
+            }
+            // Most recent first: the conversation someone might still be
+            // in the middle of is the one a delete hurts most.
+            updated.presentations = titles.sorted {
+                ($0.lastActiveAt ?? .distantPast) > ($1.lastActiveAt ?? .distantPast)
+            }
+            out.append(updated)
+        }
+        return out
+    }
+
     /// Asks the binder which AI sessions belong to each candidate.
     ///
     /// Run after ranking rather than inside it: `rankCandidates` is a pure
@@ -117,8 +153,15 @@ extension ScanModel {
             // true rather than reassuring.
             archiveCandidates = outcome.candidates
             archiveInspectionFailures = outcome.failureCount
-            archiveCandidates = await MothballService.withContinuity(
+            let bound = await MothballService.withContinuity(
                 outcome.candidates, projectRoot: projectRoot
+            )
+            archiveCandidates = bound
+            // Titles last and separately: the counts are already useful,
+            // and reading transcripts is the slowest step and the only one
+            // that touches conversation content.
+            archiveCandidates = await MothballService.withTitles(
+                bound, projectRoot: projectRoot
             )
         }
     }

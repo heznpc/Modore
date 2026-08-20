@@ -1253,8 +1253,11 @@ def _extract_turn(line: dict) -> Optional[tuple[str, str]]:
     if isinstance(content, str):
         return (str(role or "?"), content)
     if isinstance(content, list):
+        # Gemini's items carry `text` with no `type` at all, so an item
+        # that is nothing but text counts as text.
         parts = [c.get("text", "") for c in content
-                 if isinstance(c, dict) and c.get("type") in TURN_TEXT_TYPES]
+                 if isinstance(c, dict)
+                 and (c.get("type") in TURN_TEXT_TYPES or ("text" in c and "type" not in c))]
         joined = "\n".join(p for p in parts if p)
         return (str(role or "?"), joined) if joined else None
     # Codex also emits a plain `agent_message` payload whose text is not
@@ -1262,6 +1265,163 @@ def _extract_turn(line: dict) -> Optional[tuple[str, str]]:
     if isinstance(container.get("message"), str) and container.get("type") == "agent_message":
         return ("assistant", container["message"])
     return None
+
+
+# --- Session titles (display only, never gate input) -----------------------
+#
+# Binding evidence is a fact about deletion safety. A title is a fact
+# about a person's memory, and the two must not be mixed: a title is
+# lossy, guessed, and sometimes wrong, and nothing that decides whether a
+# workspace may be deleted is allowed to rest on it.
+#
+# Extracting one is the first time this module retains any part of a
+# conversation, so the terms are narrow: local only, masked by default,
+# one line, length-capped, and produced for a session the caller names --
+# never swept.
+
+TITLE_MAX_CHARS = 80
+# Above this a user turn is pasted context -- a stack trace, a file, a
+# transcript -- not a request. Such a turn describes what was handed to
+# the agent, not what the person wanted.
+TITLE_PASTE_CHARS = 600
+# Below this it is an acknowledgement: "네", "ok", "continue".
+TITLE_MIN_CHARS = 8
+# Turns that are structurally not requests, however long they are.
+TITLE_SKIP_PREFIXES = ("/", "<", "#", "```")
+# Phrases that resume or acknowledge rather than ask. They are real user
+# turns of a reasonable length, so no length or shape rule catches them,
+# and as a title they describe the mechanics of the session instead of
+# its subject. Matched against the whole first line, folded -- a request
+# that merely contains "continue" is still a request.
+TITLE_BOILERPLATE = {
+    "continue", "continue.", "go on", "go ahead", "proceed", "keep going",
+    "continue from where you left off", "continue from where you left off.",
+    "resume", "이어서", "계속", "계속해", "계속해줘", "진행", "진행해", "ㄱㄱ",
+}
+
+
+def _turns_from_session(source: Path) -> list[tuple[str, str]]:
+    """(role, text) for one session, whatever container the provider uses.
+
+    Shared with `preserve` at the decoder rather than by calling it: the
+    export writes an entire transcript to disk as Markdown, and a title
+    needs a handful of user turns. Reusing the whole flow to get a title
+    would read and render everything to throw nearly all of it away.
+    """
+    turns: list[tuple[str, str]] = []
+    if source.suffix == ".json":
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        messages = payload.get("messages") if isinstance(payload, dict) else None
+        for message in messages or []:
+            if not isinstance(message, dict):
+                continue
+            # Gemini names the speaker `type`, where the JSONL stores use
+            # `role`. Without normalising it every Gemini turn arrives
+            # with an unknown speaker and no user request is ever found,
+            # so the title silently degrades to the weakest fallback.
+            normalised = dict(message)
+            if "role" not in normalised and isinstance(normalised.get("type"), str):
+                normalised["role"] = normalised["type"]
+            turn = _extract_turn({"message": normalised})
+            if turn:
+                turns.append(turn)
+        return turns
+    try:
+        with source.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if len(line) > MAX_LINE_BYTES:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    turn = _extract_turn(parsed)
+                    if turn:
+                        turns.append(turn)
+    except OSError:
+        return []
+    return turns
+
+
+def _is_user_role(role: str) -> bool:
+    return role.lower() in {"user", "human", "user_message"}
+
+
+def _meaningful_request(text: str) -> Optional[str]:
+    """The one line of a user turn worth showing, or None.
+
+    Without this the title becomes an attachment notice, a slash command,
+    a wrapped system block, or the first line of a pasted file -- all of
+    which are the first user turn and none of which is what the person
+    was trying to do.
+    """
+    stripped = text.strip()
+    if not stripped or len(stripped) > TITLE_PASTE_CHARS:
+        return None
+    if stripped.startswith(TITLE_SKIP_PREFIXES):
+        return None
+    first = next((line.strip() for line in stripped.splitlines() if line.strip()), "")
+    if len(first) < TITLE_MIN_CHARS or first.startswith(TITLE_SKIP_PREFIXES):
+        return None
+    return first
+
+
+def _clip(text: str) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= TITLE_MAX_CHARS:
+        return collapsed
+    return collapsed[: TITLE_MAX_CHARS - 1].rstrip() + "\u2026"
+
+
+def build_title(source: Path, home: Path, *, raw: bool = False,
+                fallback_label: Optional[str] = None) -> dict:
+    """Title, and where it came from.
+
+    `titleSource` is not decoration. A first-request title and a
+    date-shaped fallback look alike in a list and mean very different
+    things, and only the caller showing them can decide whether to admit
+    the difference.
+    """
+    turns = _turns_from_session(source)
+    requests = [candidate for role, text in turns if _is_user_role(role)
+                for candidate in [_meaningful_request(text)] if candidate]
+
+    def is_boilerplate(candidate: str) -> bool:
+        return candidate.strip().casefold().rstrip(".!~ ") in {
+            phrase.rstrip(".!~ ") for phrase in TITLE_BOILERPLATE
+        }
+
+    title = None
+    origin = "date"
+    if requests:
+        # Prefer the first request that says what the session was about.
+        # A resumption marker is the first user turn of every continued
+        # session, and taking it verbatim titles them all identically.
+        subject = next((r for r in requests if not is_boilerplate(r)), None)
+        title, origin = (subject, "first-request") if subject else (requests[0], "resumption")
+    elif turns:
+        # Nothing recognisable as a request, but the session had content:
+        # the last thing said is a better anchor than the file's mtime.
+        for role, text in reversed(turns):
+            candidate = _meaningful_request(text)
+            if candidate:
+                title, origin = candidate, "recent-turn"
+                break
+
+    if title is None:
+        try:
+            stamp = time.strftime("%Y-%m-%d", time.localtime(source.stat().st_mtime))
+        except OSError:
+            stamp = "날짜 미상"
+        title = f"{stamp} {fallback_label or '작업'}"
+
+    if not raw:
+        title = mask_text(title, home)
+    return {"title": _clip(title), "titleSource": origin}
 
 
 def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
@@ -1330,6 +1490,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                            "(slower; finds sessions that ran elsewhere but worked here)")
     bind.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    title = sub.add_parser(
+        "title", help="one-line title for ONE named session (display only, never gate input)")
+    title.add_argument("source", type=Path, help="session file path from a bind result")
+    title.add_argument("--label", default=None,
+                       help="fallback label when the session has no recognisable request")
+    title.add_argument("--raw", action="store_true",
+                       help="disable masking (explicit opt-out, off by default)")
+    title.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--limit", type=int, default=12, help=argparse.SUPPRESS)
     parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
@@ -1352,6 +1521,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"wrote {args.out}")
         else:
             print(text)
+        return 0
+
+    if args.command == "title":
+        try:
+            payload = build_title(args.source, args.home, raw=args.raw,
+                                  fallback_label=args.label)
+        except OSError as exc:
+            print(f"title: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "bind":
