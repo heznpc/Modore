@@ -31,6 +31,7 @@ above this line in the module never calls it.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -52,6 +53,16 @@ RETENTION_MIN_SESSIONS = 5      # below this a window cannot be inferred honestl
 ROLLING_WINDOW_DAYS = (20, 45)  # oldest-session age in this band suggests auto-cleanup
 EXPIRY_SOON_DAYS = 7            # sessions this close to the inferred window are flagged
 STALLED_STORE_DAYS = 21         # no new session for this long → store no longer written
+
+# Stable provider ids for the fork labels, so a display name change in
+# `VSCODE_FORKS` cannot silently invalidate manifests already on disk.
+VSCODE_PROVIDER_IDS = {
+    "VS Code": "vscode",
+    "Kiro": "kiro",
+    "Cursor": "cursor",
+    "Windsurf": "windsurf",
+    "Antigravity": "antigravity",
+}
 
 VSCODE_FORKS = (
     ("VS Code", "Code"),
@@ -809,6 +820,129 @@ def bind_codex(home: Path, workspace: str, repo_url: Optional[str]) -> tuple[lis
     return (out, complete)
 
 
+def bind_vscode_forks(home: Path, workspace: str) -> tuple[list[dict], bool]:
+    """VS Code and its forks record the folder a window was opened on, as
+    a `file://` URI in each workspace-storage entry.
+
+    What they store is editor state -- open tabs, an AI panel's history,
+    per-workspace settings -- not a transcript, so a binding here says
+    "this tool held state about this workspace", which is still work that
+    a delete strands. Being unable to read one of these entries makes the
+    scan incomplete for the same reason it does everywhere else: an entry
+    that was not examined is not an entry that was absent.
+    """
+    out: list[dict] = []
+    complete = True
+    for tool, dir_name in VSCODE_FORKS:
+        root = home / "Library" / "Application Support" / dir_name / "User" / "workspaceStorage"
+        if not root.is_dir():
+            continue
+        for meta_path in sorted(root.glob("*/workspace.json")):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                complete = False
+                continue
+            target = meta.get("folder") or meta.get("workspace")
+            recorded = _uri_to_path(target) if isinstance(target, str) else None
+            if not recorded:
+                complete = False
+                continue
+            if not _under(recorded, workspace):
+                continue
+            entry = meta_path.parent
+            try:
+                size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+            except OSError:
+                complete = False
+                size = 0
+            out.append({
+                "provider": VSCODE_PROVIDER_IDS[tool],
+                "sessionId": entry.name,
+                "source": str(meta_path),
+                "subtranscripts": sorted(
+                    str(f) for f in entry.rglob("*") if f.is_file() and f != meta_path
+                ),
+                "evidence": ["working-directory"],
+                "confidence": "medium",
+                "sizeBytes": size,
+            })
+    return (out, complete)
+
+
+def bind_gemini(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], bool]:
+    """Gemini records the workspace as `sha256(absolute path)` in every
+    session file, which is an exact identity rather than a prefix guess --
+    verified against this machine's own store before relying on it.
+
+    The hash is over the path string, so it cannot answer "is this under
+    the repo". `projects.json` supplies the registered paths and the ones
+    inside the workspace are hashed too, which is what makes a repo's
+    subdirectories and worktrees bind to the repo being retired.
+
+    Case folding cannot help here: the hash is of the exact bytes the
+    provider recorded. A workspace registered under different casing
+    hashes differently and is invisible to this binder, which is why a
+    content scan still runs when `deep` is set.
+    """
+    chats = sorted((home / ".gemini" / "tmp").glob("*/chats/*.json"))
+    if not chats:
+        return ([], True)
+
+    wanted: dict[str, str] = {}
+
+    def remember(path: str) -> None:
+        wanted[hashlib.sha256(path.encode("utf-8")).hexdigest()] = path
+
+    remember(workspace)
+    registry = home / ".gemini" / "projects.json"
+    complete = True
+    if registry.is_file():
+        try:
+            projects = json.loads(registry.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            # Without the registry only the workspace itself can be
+            # hashed, so its subdirectories and worktrees go unchecked.
+            complete = False
+            projects = {}
+        for path in (projects.get("projects") or {}):
+            if isinstance(path, str) and _under(_canon_workspace(path), workspace):
+                remember(_canon_workspace(path))
+
+    out: list[dict] = []
+    for path in chats:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            complete = False
+            continue
+        if not isinstance(payload, dict):
+            complete = False
+            continue
+        evidence: list[str] = []
+        if payload.get("projectHash") in wanted:
+            evidence.append("working-directory")
+        elif deep:
+            found, scanned_fully = _scans_for_paths(path, workspace)
+            if not scanned_fully:
+                complete = False
+            if found:
+                evidence.append("file-access")
+        if not evidence:
+            continue
+        session_id = payload.get("sessionId") or path.stem
+        out.append({
+            "provider": "gemini",
+            "sessionId": str(session_id),
+            "source": str(path),
+            "subtranscripts": [],
+            "evidence": evidence,
+            "confidence": _binding_confidence(evidence),
+            "sizeBytes": path.stat().st_size,
+        })
+    return (out, complete)
+
+
 def bind_claude(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], bool]:
     """Claude records `gitBranch` but never a remote URL, so no Claude
     session can ever reach `high` confidence from provider metadata
@@ -871,7 +1005,7 @@ def bind_claude(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
 # A store present on disk with no binder is the loudest kind of
 # incompleteness: the scan never looked there at all, so "no sessions"
 # would be a claim about two stores made on behalf of five.
-BINDABLE_STORES = {"Claude", "Codex"}
+BINDABLE_STORES = {"Claude", "Codex", "Gemini"} | set(VSCODE_PROVIDER_IDS)
 KNOWN_STORE_ROOTS = {
     "Claude": (".claude/projects",),
     "Codex": (".codex/sessions", ".codex/archived_sessions"),
@@ -914,13 +1048,16 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
     workspace = _canon_workspace(workspace)
     claude_bindings, claude_complete = bind_claude(home, workspace, deep=deep)
     codex_bindings, codex_complete = bind_codex(home, workspace, repo_url)
-    bindings = claude_bindings + codex_bindings
+    gemini_bindings, gemini_complete = bind_gemini(home, workspace, deep=deep)
+    fork_bindings, forks_complete = bind_vscode_forks(home, workspace)
+    bindings = claude_bindings + codex_bindings + gemini_bindings + fork_bindings
     unbound = unbound_stores_present(home)
     # Completeness is a property of the whole machine, not of the store
     # that happened to be scanned last. One unreadable rollout, one
     # unrecognised header, or one store with no binder is enough to make
     # "this workspace has no conversations" an assertion nobody checked.
-    scanned_fully = claude_complete and codex_complete and not unbound
+    scanned_fully = (claude_complete and codex_complete and gemini_complete
+                     and forks_complete and not unbound)
     bindings.sort(key=lambda b: (b["provider"], b["sessionId"]))
     return {
         "contract": ("session ids, evidence types, and sizes only; transcript "
@@ -946,6 +1083,8 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
         "coverageDetail": {
             "claude": "complete" if claude_complete else "incomplete",
             "codex": "complete" if codex_complete else "incomplete",
+            "gemini": "complete" if gemini_complete else "incomplete",
+            "editors": "complete" if forks_complete else "incomplete",
             "unboundStores": unbound,
         },
         "assessed": True,
@@ -954,7 +1093,7 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
             "total": len(bindings),
             "byProvider": {
                 p: sum(1 for b in bindings if b["provider"] == p)
-                for p in ("claude", "codex")
+                for p in ("claude", "codex", "gemini", *sorted(VSCODE_PROVIDER_IDS.values()))
             },
             "byConfidence": {
                 c: sum(1 for b in bindings if b["confidence"] == c)

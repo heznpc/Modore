@@ -903,10 +903,12 @@ def test_unrecognized_codex_header_makes_coverage_incomplete(only_bindable_store
     assert out["coverage"] == "truncated"
 
 
-def test_store_without_a_binder_blocks_completeness(bind_home):
-    """가장 큰 불완전성: 아예 들여다보지도 않은 저장소. 이 맥에는 Gemini 세션이
-    실제로 4천 개 넘게 있는데 바인더는 Claude·Codex뿐이다. 두 저장소만 보고
-    '대화 없음'이라고 말하면 다섯 저장소에 대한 주장을 두 개로 하는 것이다."""
+def test_store_without_a_binder_blocks_completeness(bind_home, monkeypatch):
+    """가장 큰 불완전성은 아예 들여다보지 않은 저장소다. 지금은 알려진 저장소에
+    전부 바인더가 있지만, 새 도구가 추가되고 바인더가 안 따라오면 그 순간
+    "대화 없음"은 확인한 저장소들에 대한 주장을 전체에 대한 주장처럼 하는 것이
+    된다. 그래서 바인더 목록에서 하나를 빼서 규칙 자체를 고정한다."""
+    monkeypatch.setattr(scree, "BINDABLE_STORES", scree.BINDABLE_STORES - {"Gemini"})
     (bind_home["home"] / ".gemini" / "tmp").mkdir(parents=True, exist_ok=True)
     out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
     assert "Gemini" in out["coverageDetail"]["unboundStores"]
@@ -937,3 +939,83 @@ def test_deep_scan_matches_file_access_with_different_casing(bind_home):
     out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
     found = next(b for b in out["bindings"] if b["sessionId"] == "acc")
     assert found["evidence"] == ["file-access"]
+
+
+# --- Gemini / 에디터 계열 바인더 -------------------------------------------
+
+
+def _gemini_session(home, workspace, session_id, project_path=None):
+    import hashlib
+    target = project_path or workspace
+    digest = hashlib.sha256(str(target).encode("utf-8")).hexdigest()
+    path = home / ".gemini" / "tmp" / f"tmp-{session_id}" / "chats" / f"{session_id}.json"
+    _write(path, json.dumps({
+        "sessionId": session_id, "projectHash": digest,
+        "messages": [{"id": 1, "type": "user", "content": "안녕"}],
+    }))
+    return path
+
+
+def test_bind_gemini_matches_the_recorded_project_hash(bind_home):
+    """Gemini는 워크스페이스를 sha256(절대경로)로 기록한다 — 접두사 추측이 아니라
+    정확한 정체성이다. 이 맥의 실제 저장소에 대조해 확인한 뒤 사용한다."""
+    _gemini_session(bind_home["home"], bind_home["repo"], "g1")
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    found = next(b for b in out["bindings"] if b["provider"] == "gemini")
+    assert found["sessionId"] == "g1"
+    assert found["evidence"] == ["working-directory"]
+
+
+def test_bind_gemini_includes_registered_subpaths_of_the_workspace(bind_home):
+    """해시는 경로 문자열에 대한 것이라 '레포 안인가'를 답하지 못한다.
+    projects.json에 등록된 하위 경로도 함께 해시해야 worktree가 레포에 묶인다."""
+    sub = bind_home["worktree"]
+    _write(bind_home["home"] / ".gemini" / "projects.json",
+           json.dumps({"projects": {str(sub): "wt"}}))
+    _gemini_session(bind_home["home"], bind_home["repo"], "g2", project_path=sub)
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    assert "g2" in {b["sessionId"] for b in out["bindings"]}
+
+
+def test_bind_gemini_ignores_other_workspaces(bind_home):
+    _gemini_session(bind_home["home"], bind_home["other"], "g3", project_path=bind_home["other"])
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    assert "g3" not in {b["sessionId"] for b in out["bindings"]}
+
+
+def test_unreadable_gemini_session_makes_coverage_incomplete(only_bindable_stores):
+    path = _gemini_session(only_bindable_stores["home"], only_bindable_stores["repo"], "g4")
+    path.chmod(0o000)
+    try:
+        out = scree.build_bindings(only_bindable_stores["home"],
+                                   str(only_bindable_stores["repo"]), deep=True)
+        assert out["coverageDetail"]["gemini"] == "incomplete"
+    finally:
+        path.chmod(0o644)
+
+
+def test_bind_vscode_forks_matches_the_recorded_folder(bind_home):
+    """에디터는 트랜스크립트가 아니라 워크스페이스 상태를 남긴다. 그래도 지우면
+    사라지는 작업이므로 게이트의 판단 대상이다."""
+    entry = (bind_home["home"] / "Library" / "Application Support" / "Code"
+             / "User" / "workspaceStorage" / "abc123")
+    _write(entry / "workspace.json",
+           json.dumps({"folder": f"file://{bind_home['repo']}"}))
+    _write(entry / "state.vscdb", "x")
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    found = next(b for b in out["bindings"] if b["provider"] == "vscode")
+    assert found["sessionId"] == "abc123"
+    assert any(s.endswith("state.vscdb") for s in found["subtranscripts"])
+
+
+def test_every_known_store_is_now_bindable(bind_home):
+    """바인더 없는 저장소가 남아 있으면 coverage는 절대 complete가 될 수 없고,
+    게이트는 영원히 차단한다. 이 목록이 비어야 게이트가 실제로 동작한다."""
+    for relative in [".gemini/tmp", ".claude/projects", ".codex/sessions"]:
+        (bind_home["home"] / relative).mkdir(parents=True, exist_ok=True)
+    support = bind_home["home"] / "Library" / "Application Support"
+    for _, folder in scree.VSCODE_FORKS:
+        (support / folder).mkdir(parents=True, exist_ok=True)
+    assert scree.unbound_stores_present(bind_home["home"]) == []
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    assert out["coverage"] == "complete"

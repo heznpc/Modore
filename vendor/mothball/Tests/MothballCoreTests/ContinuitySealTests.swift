@@ -542,3 +542,62 @@ extension SessionRestoreRoundTripTests {
         )
     }
 }
+
+/// Providers do not all write JSONL. Sealing a Gemini `.json` or an
+/// editor's `workspace.json` under a fixed `transcript.jsonl` produces a
+/// capsule whose filenames describe a format the bytes do not have.
+final class TranscriptNamingTests: XCTestCase {
+
+    private func binding(_ path: String, provider: SessionProvider = .claude) -> SessionBinding {
+        SessionBinding(
+            provider: provider, sessionID: "s",
+            source: URL(fileURLWithPath: path),
+            evidence: [.workingDirectory], confidence: .medium
+        )
+    }
+
+    func test_keepsTheProvidersExtension() {
+        XCTAssertEqual(
+            ContinuitySealer.transcriptName(for: binding("/s/abc.jsonl")),
+            "transcript.jsonl"
+        )
+        XCTAssertEqual(
+            ContinuitySealer.transcriptName(for: binding("/s/session.json", provider: .gemini)),
+            "transcript.json"
+        )
+    }
+
+    /// The stem stays fixed so a reader finds the top-level record
+    /// without knowing which tool wrote it.
+    func test_stemIsStableAcrossProviders() {
+        for name in ["/s/a.jsonl", "/s/b.json", "/s/workspace.json"] {
+            XCTAssertTrue(
+                ContinuitySealer.transcriptName(for: binding(name)).hasPrefix("transcript"),
+                name
+            )
+        }
+    }
+
+    func test_extensionlessSourceGetsNoInventedExtension() {
+        XCTAssertEqual(ContinuitySealer.transcriptName(for: binding("/s/rollout")), "transcript")
+    }
+
+    /// Editors keep per-workspace state rather than a conversation, and
+    /// the UI has to be able to say so: "three conversations" and "three
+    /// editor windows remembered this folder" are different warnings.
+    func test_providersDeclareWhetherTheyKeepTranscripts() {
+        XCTAssertTrue(SessionProvider.claude.keepsTranscripts)
+        XCTAssertTrue(SessionProvider.gemini.keepsTranscripts)
+        XCTAssertFalse(SessionProvider.vscode.keepsTranscripts)
+        XCTAssertFalse(SessionProvider.kiro.keepsTranscripts)
+    }
+
+    /// Provider ids are on-disk identity in every manifest already
+    /// written; a rename would strand them.
+    func test_providerRawValuesAreStable() {
+        XCTAssertEqual(
+            Set(SessionProvider.allCases.map(\.rawValue)),
+            ["claude", "codex", "gemini", "vscode", "kiro", "cursor", "windsurf", "antigravity"]
+        )
+    }
+}

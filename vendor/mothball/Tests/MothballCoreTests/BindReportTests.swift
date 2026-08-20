@@ -114,7 +114,7 @@ final class BindReportTests: XCTestCase {
     func test_unknownProvider_failsTheAssessmentRatherThanShrinkingIt() {
         let json = """
         {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,
-         "bindings":[{"provider":"gemini","sessionId":"g1","source":"/s/g1.jsonl",
+         "bindings":[{"provider":"telepath","sessionId":"g1","source":"/s/g1.jsonl",
                       "subtranscripts":[],"evidence":["working-directory"],
                       "confidence":"medium","sizeBytes":1}]}
         """
