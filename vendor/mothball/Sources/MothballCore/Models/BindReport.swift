@@ -24,10 +24,16 @@ public struct BindReport: Codable, Sendable, Equatable {
     /// separate again from how hard it tried. A shallow pass matches
     /// recorded working directories, so an empty result means no session
     /// *ran* in this workspace -- not that none touched it. A truncated
-    /// pass read transcript bodies and stopped early, which is "looked
-    /// deeply" rather than "looked completely": a repo path can appear on
-    /// the last line of a fifty-megabyte session. Only `complete` makes
-    /// emptiness a finding.
+    /// pass tried and could not conclude: a content scan that stopped
+    /// early, a transcript that would not open, a store whose identity
+    /// data is missing.
+    ///
+    /// `complete` means every candidate was conclusively classified --
+    /// decided by metadata authoritative enough on its own, or read to
+    /// EOF and found not to mention the workspace. Not "every byte was
+    /// read": a session already bound by its header gains nothing from
+    /// being read again, and editor entries have no transcript body at
+    /// all. Only `complete` makes emptiness a finding.
     public let coverage: String?
 
     /// Why a pass fell short of `complete`, per store. Carried so a

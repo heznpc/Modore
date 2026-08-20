@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Which agent wrote a session transcript. The two providers differ in a
@@ -72,6 +73,53 @@ public enum BindingConfidence: String, Codable, Sendable, Hashable {
     /// Inferred only from file access, or from a path that no longer
     /// exists and could not be re-checked against git.
     case low
+}
+
+/// Turns a provider's session identifier into something safe to use as
+/// a directory name.
+///
+/// A session id is data a provider wrote, not a path this build chose.
+/// `URL.appending(path:)` does not confine it -- verified directly:
+/// appending `../../../escaped` to `/tmp/base/sessions/codex` resolves
+/// to `/tmp/escaped`. A hostile or merely corrupt id would place
+/// transcript copies outside the staging tree, where the sealer's own
+/// failure cleanup cannot reach them, reopening the leak that cleanup
+/// exists to close.
+///
+/// Readable ids pass through so a person opening an archive still
+/// recognises `sessions/claude/3a4f0f71-.../`; anything else is replaced
+/// by a digest. The raw id is kept in the manifest either way, so
+/// nothing is lost by refusing to trust it as a filename.
+public enum ArtifactKey {
+    /// Characters allowed to survive verbatim. Deliberately narrow:
+    /// every real session id seen across the five stores is a UUID, a
+    /// ULID, or a timestamped slug.
+    private static let safe = CharacterSet(charactersIn:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+    public static func derive(provider: SessionProvider, sessionID: String) -> String {
+        if isSafeComponent(sessionID) { return sessionID }
+        // Provider is mixed in so two stores cannot collide on the same
+        // unsafe id, and the prefix marks the substitution as deliberate
+        // rather than leaving a bare hash to look like an id.
+        var hasher = SHA256()
+        hasher.update(data: Data(provider.rawValue.utf8))
+        hasher.update(data: Data([0]))
+        hasher.update(data: Data(sessionID.utf8))
+        let digest = hasher.finalize().prefix(16).map { String(format: "%02x", $0) }.joined()
+        return "id-\(digest)"
+    }
+
+    /// A single path component that cannot traverse, hide, or vanish.
+    static func isSafeComponent(_ value: String) -> Bool {
+        guard !value.isEmpty, value.count <= 128 else { return false }
+        guard value != ".", value != ".." else { return false }
+        // A leading dot would hide the directory from an ordinary
+        // listing, which is the wrong default for an archive someone
+        // opens years later to see what is in it.
+        guard !value.hasPrefix(".") else { return false }
+        return value.unicodeScalars.allSatisfy { safe.contains($0) }
+    }
 }
 
 /// One session found to belong to a repository, before sealing.
