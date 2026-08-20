@@ -915,3 +915,25 @@ def test_store_without_a_binder_blocks_completeness(bind_home):
 
 def test_unbound_store_detection_ignores_stores_that_are_absent(only_bindable_stores):
     assert scree.unbound_stores_present(only_bindable_stores["home"]) == []
+
+
+def test_bind_matches_a_workspace_recorded_with_different_casing(bind_home):
+    """macOS 기본 파일시스템은 대소문자를 구분하지 않고, provider는 사용자가
+    입력한 casing을 그대로 적는다. scree 본체는 이미 같은 워크스페이스가 여러
+    casing으로 기록된 걸 실측해서 합치고 있다 — 바인더만 구분하면 바로 그
+    기록들을 놓치고, 그 누락은 "이 워크스페이스에서 오간 대화가 없다"로 읽힌다."""
+    variant = str(bind_home["repo"]).upper()
+    _write(bind_home["home"] / ".claude" / "projects" / "-slug-case" / "cased.jsonl",
+           _jsonl({"cwd": variant}))
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    assert "cased" in {b["sessionId"] for b in out["bindings"]}
+
+
+def test_deep_scan_matches_file_access_with_different_casing(bind_home):
+    variant = str(bind_home["repo"]).upper()
+    _write(bind_home["home"] / ".claude" / "projects" / "-slug-cased-access" / "acc.jsonl",
+           _jsonl({"cwd": str(bind_home["other"])},
+                  {"tool": "Read", "path": f"{variant}/README.md"}))
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    found = next(b for b in out["bindings"] if b["sessionId"] == "acc")
+    assert found["evidence"] == ["file-access"]

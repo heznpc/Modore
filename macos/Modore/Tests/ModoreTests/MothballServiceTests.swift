@@ -160,7 +160,7 @@ final class ArchiveCandidateContinuityTests: XCTestCase {
                 sizeBytes: 1_000_000
             )
         }
-        let text = candidate(continuity: .bindings(bindings)).continuityText
+        let text = candidate(continuity: .bindings(bindings, coverage: .complete)).continuityText
         XCTAssertTrue(text.contains("3개"), text)
         XCTAssertTrue(text.contains("MB"), "봉인 비용을 결정 전에 보여줘야 한다: \(text)")
     }
@@ -174,7 +174,7 @@ final class ArchiveCandidateContinuityTests: XCTestCase {
                 SessionBinding(provider: .codex, sessionID: "c",
                                source: URL(fileURLWithPath: "/s/c.jsonl"),
                                evidence: [.remoteURL], confidence: .high)
-            ])).verdict.tier
+            ], coverage: .complete)).verdict.tier
         )
     }
 
@@ -185,7 +185,7 @@ final class ArchiveCandidateContinuityTests: XCTestCase {
             SessionBinding(provider: .codex, sessionID: "c",
                            source: URL(fileURLWithPath: "/s/c.jsonl"),
                            evidence: [.remoteURL], confidence: .high)
-        ])).hasUnsealedSessions)
+        ], coverage: .complete)).hasUnsealedSessions)
     }
 }
 
@@ -267,7 +267,7 @@ final class CandidateOrderingTests: XCTestCase {
                                source: URL(fileURLWithPath: "/s/\(i).jsonl"),
                                evidence: [.workingDirectory], confidence: .medium,
                                sizeBytes: 1_000)
-            })
+            }, coverage: .complete)
         } else {
             c.continuity = .assessedNoSessions
         }

@@ -233,7 +233,7 @@ final class ContinuitySealTests: XCTestCase {
         let info = try await repoInfo()
         let binding = try makeSessionOnDisk(id: "s5")
         do {
-            _ = try await makeOrchestrator().archive(info, continuity: .bindings([binding]))
+            _ = try await makeOrchestrator().archive(info, continuity: .bindings([binding], coverage: .complete))
             XCTFail("sessions that are still only in the provider's store must block")
         } catch let error as ArchiveOrchestrator.ArchiveError {
             guard case .continuityRefused(.unsealedSessions(let count)) = error, count == 1 else {
@@ -250,7 +250,7 @@ final class ContinuitySealTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
 
-        let result = try await makeOrchestrator().archive(info, continuity: .sealed(bundle))
+        let result = try await makeOrchestrator().archive(info, continuity: .sealed(bundle, coverage: .complete))
 
         let sessionArchive = try XCTUnwrap(result.sessionArchive)
         XCTAssertTrue(FileManager.default.fileExists(atPath: sessionArchive.path))
@@ -275,7 +275,7 @@ final class ContinuitySealTests: XCTestCase {
             bindings: [try makeSessionOnDisk(id: "s7")], stagingParent: scratch
         )
         defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
-        let result = try await makeOrchestrator().archive(info, continuity: .sealed(bundle))
+        let result = try await makeOrchestrator().archive(info, continuity: .sealed(bundle, coverage: .complete))
 
         let listing = try await ProcessRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/tar"),
@@ -294,7 +294,7 @@ final class ContinuitySealTests: XCTestCase {
             bindings: [try makeSessionOnDisk(id: "s8")], stagingParent: scratch
         )
         defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
-        let result = try await makeOrchestrator().archive(info, continuity: .sealed(bundle))
+        let result = try await makeOrchestrator().archive(info, continuity: .sealed(bundle, coverage: .complete))
 
         let listing = try await ProcessRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/tar"),
@@ -403,7 +403,7 @@ final class SessionRestoreRoundTripTests: XCTestCase {
         return try await ArchiveOrchestrator(configuration: .init(
             archiveDirectory: archiveDir, zstdLevel: 1,
             compressionTimeout: .seconds(60), verificationTimeout: .seconds(30)
-        )).archive(info, continuity: .sealed(bundle))
+        )).archive(info, continuity: .sealed(bundle, coverage: .complete))
     }
 
     func test_restoreBringsBackTheSessionsAndVerifiesTheirDigests() async throws {
@@ -524,7 +524,7 @@ extension SessionRestoreRoundTripTests {
         return try await ArchiveOrchestrator(configuration: .init(
             archiveDirectory: archiveDir, zstdLevel: 1,
             compressionTimeout: .seconds(60), verificationTimeout: .seconds(30)
-        )).archive(info, continuity: .sealed(bundle))
+        )).archive(info, continuity: .sealed(bundle, coverage: .complete))
     }
 
     private func sealedBundleForTamper() throws -> ContinuityBundle {

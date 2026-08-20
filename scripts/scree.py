@@ -686,8 +686,16 @@ def _under(path: str, root: str) -> bool:
     `<repo>/.claude/worktrees/*`, each a separate session store slug --
     bind to the repo being retired. Retiring the repo strands those
     conversations exactly as much as it strands the top-level ones.
+
+    Case-folded because macOS filesystems are case-insensitive by default
+    and providers record whatever casing the user typed: `build_lineage`
+    already found the same workspace written several ways on this machine
+    and folds them together. A case-sensitive binder misses exactly those
+    recordings, and a miss here reads as "no conversation was held in
+    this workspace".
     """
-    root = _canon_workspace(root)
+    root = _canon_workspace(root).casefold()
+    path = path.casefold()
     return path == root or path.startswith(root + "/")
 
 
@@ -727,7 +735,9 @@ def _scans_for_paths(source: Path, root: str,
     # default: a default is captured at definition and cannot be lowered
     # by a test, which would leave the truncation path unexercised.
     ceiling = BINDER_SCAN_CEILING_BYTES if ceiling is None else ceiling
-    needle = _canon_workspace(root)
+    # Folded for the same reason `_under` is: the transcript records the
+    # casing the user typed, which need not match the casing on disk.
+    needle = _canon_workspace(root).casefold()
     overlap = max(0, len(needle) - 1)
     try:
         with source.open("r", encoding="utf-8", errors="replace") as handle:
@@ -738,9 +748,10 @@ def _scans_for_paths(source: Path, root: str,
                 if not chunk:
                     return (False, True)
                 read += len(chunk)
-                if needle in carry + chunk:
+                folded = chunk.casefold()
+                if needle in carry + folded:
                     return (True, True)
-                carry = chunk[-overlap:] if overlap else ""
+                carry = folded[-overlap:] if overlap else ""
                 if read >= ceiling:
                     return (False, False)
     except OSError:

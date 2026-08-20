@@ -129,7 +129,7 @@ public struct ArchiveOrchestrator: Sendable {
         //    `bundle` describe these exact bytes, which is why the copy
         //    had to happen before the hash rather than after.
         var sealedBundle: ContinuityBundle?
-        if case .sealed(let bundle) = continuity, !bundle.sessions.isEmpty {
+        if case .sealed(let bundle, _) = continuity, !bundle.sessions.isEmpty {
             sealedBundle = bundle
             await progress?(.sealingSessions(count: bundle.sessions.count, bytes: bundle.totalBytes))
             try await runSessionTarCreate(plan: plan, bundle: bundle, env: env)

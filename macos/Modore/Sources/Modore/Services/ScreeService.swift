@@ -160,35 +160,32 @@ extension ScreeService {
                 return .failed("세션 바인더 출력에서 JSON을 찾지 못했습니다.")
             }
             let assessment = ContinuityAssessment.fromBindReport(data)
-            if case .notAssessed = assessment {
-                // A shallow pass that found nothing has not failed -- it
-                // has reached the limit of what matching recorded working
-                // directories can tell you. Sessions run from a parent
-                // directory record their cwd there, so the workspaces that
-                // look emptiest under a shallow pass are exactly the ones
-                // whose bindings only a content scan can see. Escalate
-                // that one repo rather than reporting an absence nobody
-                // established, or running the expensive pass over every
-                // candidate that already answered.
-                if Self.reportedNothingWithinShallowLimits(data) {
-                    guard !deep else {
-                        // Already the deepest pass available and it still
-                        // stopped early. Nothing was established, and
-                        // saying so beats reporting a parse failure that
-                        // did not happen -- the user can act on "the scan
-                        // was cut short", not on "unreadable output".
-                        return .failed(Self.incompleteScanReason(data))
-                    }
-                    return await bind(execution: execution, workspace: workspace,
-                                      repoURL: repoURL, deep: true,
-                                      homeOverride: homeOverride)
-                }
-                // Otherwise the binder printed JSON this build could not
-                // read as a completed assessment -- schema drift between
-                // the two languages, not a repo with unknown sessions.
-                return .failed("세션 바인더 출력을 해석하지 못했습니다.")
+
+            // Escalate on coverage, not on emptiness. A shallow pass that
+            // turned up one Codex session has still not looked for the
+            // Claude session that ran from a parent directory -- gating
+            // the retry on "found nothing" means the moment a scan finds
+            // anything it stops looking, which is the opposite of what a
+            // completeness check is for.
+            if !deep, assessment.coverage != .complete, Self.isWellFormed(data) {
+                return await bind(execution: execution, workspace: workspace,
+                                  repoURL: repoURL, deep: true,
+                                  homeOverride: homeOverride)
             }
-            return ScreeBindOutcome(assessment: assessment, diagnostic: nil)
+
+            if case .notAssessed = assessment {
+                guard Self.isWellFormed(data) else {
+                    // JSON this build could not read as a completed
+                    // assessment -- schema drift between the two
+                    // languages, not a repo with unknown sessions.
+                    return .failed("세션 바인더 출력을 해석하지 못했습니다.")
+                }
+                // Already the deepest pass available and it still stopped
+                // short. Saying which gap remains beats reporting a parse
+                // failure that did not happen.
+                return .failed(Self.incompleteScanReason(data))
+            }
+                        return ScreeBindOutcome(assessment: assessment, diagnostic: nil)
         }
     }
 
@@ -214,15 +211,14 @@ extension ScreeService {
         return "세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다."
     }
 
-    /// True when the payload is a well-formed shallow run that found
-    /// nothing — the one `notAssessed` worth spending a deep pass on.
-    static func reportedNothingWithinShallowLimits(_ data: Data) -> Bool {
+    /// True when the binder produced a payload this build understands as
+    /// a finished run. Separates "the scan was limited" from "the two
+    /// languages disagree about the format", which need different answers.
+    static func isWellFormed(_ data: Data) -> Bool {
         guard let report = try? BindReport.decoder().decode(BindReport.self, from: data) else {
             return false
         }
-        // A truncated run is worth retrying too -- it stopped early, so it
-        // established nothing either. Only a completed one is final.
-        return report.assessed && report.bindings.isEmpty && report.coverage != "complete"
+        return report.assessed
     }
 }
 

@@ -76,15 +76,21 @@ extension ContinuityAssessment {
         // has not established "no sessions" — it has produced something
         // this build cannot read, which is the `notAssessed` case again.
         guard bindings.count == report.bindings.count else { return .notAssessed }
+        let coverage = BindingCoverage(reported: report.coverage)
         if bindings.isEmpty {
             // Emptiness is only a finding when the pass could have seen
             // every session that might mention this workspace. Anything
             // less -- matched no directories, or read bodies and stopped
             // early -- reports what it is: nobody has established this
             // workspace is conversation-free, which blocks.
-            return report.coverage == "complete" ? .assessedNoSessions : .notAssessed
+            return coverage == .complete ? .assessedNoSessions : .notAssessed
         }
-        return .bindings(bindings)
+        // Coverage travels with the bindings rather than being consulted
+        // only when the list is empty. Finding one session says nothing
+        // about the ones a shallow pass could not see, and a model that
+        // drops the distinction here lets a partial scan seal what it
+        // found and call the workspace handled.
+        return .bindings(bindings, coverage: coverage)
     }
 }
 
