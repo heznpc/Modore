@@ -601,3 +601,97 @@ final class TranscriptNamingTests: XCTestCase {
         )
     }
 }
+
+/// The step that was missing: `.bindings` had no way to become
+/// `.sealed` outside a test, so a caller that did the binding work still
+/// hit the gate and the seal path had no product caller at all.
+final class ContinuityPreparationTests: XCTestCase {
+    var scratch: URL!
+
+    override func setUpWithError() throws {
+        scratch = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "Prepare-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let scratch { try? FileManager.default.removeItem(at: scratch) }
+    }
+
+    private func binding(_ id: String) throws -> SessionBinding {
+        let store = scratch.appending(path: "store", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        let transcript = store.appending(path: "\(id).jsonl")
+        try Data("{\"a\":1}\n".utf8).write(to: transcript)
+        return SessionBinding(
+            provider: .claude, sessionID: id, source: transcript,
+            evidence: [.workingDirectory], confidence: .medium, sizeBytes: 7
+        )
+    }
+
+    func test_sealingTurnsFoundSessionsIntoKeptOnes() throws {
+        let prepared = try ContinuityPreparation.seal(
+            .bindings([try binding("a")], coverage: .complete), stagingParent: scratch
+        )
+        defer { prepared.stagingRoot.map { try? FileManager.default.removeItem(at: $0) } }
+        guard case .sealed(let bundle, let coverage) = prepared.assessment else {
+            return XCTFail("expected sealed, got \(prepared.assessment)")
+        }
+        XCTAssertEqual(bundle.sessions.count, 1)
+        XCTAssertEqual(coverage, .complete)
+        XCTAssertNotNil(prepared.stagingRoot)
+        XCTAssertEqual(ContinuityGate.evaluate(prepared.assessment), .allow)
+    }
+
+    /// Copying bytes says nothing about the stores nobody read, so a
+    /// partial scan stays partial through sealing and the gate still
+    /// refuses.
+    func test_sealingDoesNotUpgradeCoverage() throws {
+        let prepared = try ContinuityPreparation.seal(
+            .bindings([try binding("b")], coverage: .shallow), stagingParent: scratch
+        )
+        defer { prepared.stagingRoot.map { try? FileManager.default.removeItem(at: $0) } }
+        XCTAssertEqual(prepared.assessment.coverage, .shallow)
+        XCTAssertEqual(
+            ContinuityGate.evaluate(prepared.assessment),
+            .block(.incompleteCoverage(.shallow))
+        )
+    }
+
+    /// A binder that found nothing should have said `assessedNoSessions`.
+    /// Sealing an empty list into `.sealed` would launder that caller bug
+    /// into a pass.
+    func test_emptyBindingsAreNotLaunderedIntoASeal() throws {
+        let prepared = try ContinuityPreparation.seal(
+            .bindings([], coverage: .complete), stagingParent: scratch
+        )
+        XCTAssertNil(prepared.stagingRoot)
+        XCTAssertEqual(
+            ContinuityGate.evaluate(prepared.assessment),
+            .block(.unsealedSessions(count: 0))
+        )
+    }
+
+    func test_statesWithNothingToPreservePassThroughUnchanged() throws {
+        for assessment in [ContinuityAssessment.notAssessed, .assessedNoSessions,
+                           .overriddenByUser(reason: "x")] {
+            let prepared = try ContinuityPreparation.seal(assessment, stagingParent: scratch)
+            XCTAssertNil(prepared.stagingRoot)
+            XCTAssertEqual(
+                ContinuityGate.evaluate(prepared.assessment),
+                ContinuityGate.evaluate(assessment)
+            )
+        }
+    }
+
+    /// The cost has to be showable before the copy, not discovered after:
+    /// one repo on this machine seals 387 MB.
+    func test_estimateReportsWhatSealingWouldCopy() throws {
+        let bindings = [try binding("c"), try binding("d")]
+        XCTAssertEqual(
+            ContinuityPreparation.estimatedBytes(.bindings(bindings, coverage: .complete)),
+            14
+        )
+        XCTAssertEqual(ContinuityPreparation.estimatedBytes(.notAssessed), 0)
+    }
+}

@@ -76,7 +76,22 @@ final class ArchiveRun: ObservableObject, Identifiable {
                 // manifest that no human made, and turns the fail-closed
                 // gate into a formality that always passes. Standalone
                 // Mothball has no binder, so it refuses and says why.
-                let assessment = continuity[repo.info.path] ?? .notAssessed
+                let requested = continuity[repo.info.path] ?? .notAssessed
+                // Seal before archiving, and clean the staging tree up
+                // afterwards whichever way the archive goes. Sealing is
+                // the step that makes `.bindings` archivable at all, so
+                // without it a caller that did the binding work still
+                // hits the gate.
+                let prepared = try ContinuityPreparation.seal(
+                    requested,
+                    stagingParent: orchestrator.configuration.archiveDirectory
+                )
+                defer {
+                    if let staging = prepared.stagingRoot {
+                        try? FileManager.default.removeItem(at: staging)
+                    }
+                }
+                let assessment = prepared.assessment
                 let result = try await orchestrator.archive(freshInfo, continuity: assessment) { [weak self] step in
                     let mapped = ArchiveStep(step)
                     await MainActor.run { [weak self] in
