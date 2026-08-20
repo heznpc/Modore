@@ -639,13 +639,18 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
         "scripts/_jsonutil.py",
         "scripts/rule_engine.py",
         "scripts/scanner_helper.py",
-        # CLI-and-MCP-only surfaces: the app has no view that runs either, so
-        # shipping them inside the signed bundle would add unreachable code to
-        # the sealed runtime. friction.py belongs here only while it has no
-        # Swift caller -- give it one and it must move into RUNTIME_FILES, the
-        # same way scree.py did. mcp_server.py is a stdio server that a separate
-        # MCP client launches from a checkout; the app never spawns it.
+        # CLI-and-MCP-only surfaces: the app has no view that runs any of them,
+        # so shipping them inside the signed bundle would add unreachable code
+        # to the sealed runtime. friction.py, hfscan.py, mcpaudit.py, and
+        # fileaccess.py belong here only while they have no Swift caller --
+        # give one a card and it must move into RUNTIME_FILES, the same way
+        # scree.py did.
+        # mcp_server.py is a stdio server that a separate MCP client launches
+        # from a checkout; the app never spawns it.
         "scripts/friction.py",
+        "scripts/hfscan.py",
+        "scripts/mcpaudit.py",
+        "scripts/fileaccess.py",
         "scripts/mcp_server.py",
     }
     non_shell_expected = {

@@ -80,9 +80,17 @@ UNTRUSTED_CLOSE = "⟦/UNTRUSTED⟧"
 
 SCREE = SCRIPT_DIR / "scree.py"
 FRICTION = SCRIPT_DIR / "friction.py"
+HFSCAN = SCRIPT_DIR / "hfscan.py"
+MCPAUDIT = SCRIPT_DIR / "mcpaudit.py"
+FILEACCESS = SCRIPT_DIR / "fileaccess.py"
 
 SCREE_TIMEOUT = 300
 FRICTION_TIMEOUT = 300
+# hfscan walks whole project trees; mcpaudit reads four small JSON files.
+HFSCAN_TIMEOUT = 600
+MCPAUDIT_TIMEOUT = 60
+# fileaccess streams whole transcripts rather than their leading lines.
+FILEACCESS_TIMEOUT = 600
 
 # scree's full report is large (hundreds of lineage paths on a working machine).
 # Sections are selectable and lists are truncated, but never silently: every
@@ -95,6 +103,14 @@ FRICTION_CATEGORIES = (
     "over-orchestration-token", "stale-repetition", "verbosity", "tone-attitude",
     "other-ai-friction",
 )
+
+
+MCP_HYGIENE_STATUSES = ("dead", "unknown", "duplicate", "manual-review")
+
+# hfscan's search roots are the one place a caller supplies a path. Bounded so
+# an agent cannot turn a read-only report into a whole-disk walk, and screened
+# so a value can never be read as an option by the script it is passed to.
+MAX_HF_ROOTS = 8
 
 
 class ToolFailure(Exception):
@@ -262,6 +278,112 @@ def _locate_scan_result() -> tuple[Optional[Path], list[str]]:
         if path.is_file():
             return path, checked
     return None, checked
+
+
+def _roots_arg(args: dict) -> list[str]:
+    """Optional search roots, or [] to let hfscan use its own default.
+
+    A root that does not exist is not rejected here -- hfscan withholds every
+    verdict when one is missing, which is a more useful answer than an argument
+    error, and is exactly the failure this port was written to fix.
+    """
+    value = args.get("roots")
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ToolFailure("roots must be a list of strings")
+    if len(value) > MAX_HF_ROOTS:
+        raise ToolFailure(f"roots accepts at most {MAX_HF_ROOTS} paths")
+    for root in value:
+        if not root.strip():
+            raise ToolFailure("roots must not contain an empty path")
+        if root.startswith("-"):
+            raise ToolFailure("a search root must be a path, not an option")
+    return value
+
+
+def tool_hf_orphans(args: dict) -> dict:
+    limit = _int_arg(args, "limit", default=20, minimum=1, maximum=200)
+    max_files = _int_arg(args, "max_files", default=200_000, minimum=1000, maximum=2_000_000)
+
+    arguments = ["--json", "--max-files", str(max_files)]
+    for root in _roots_arg(args):
+        arguments += ["--root", root]
+    report = _run_json(HFSCAN, arguments, HFSCAN_TIMEOUT)
+
+    search = report.get("search") or {}
+    models = report.get("models") or []
+    # Largest first, and never the whole hub: the answer an agent needs is
+    # which few models are worth a human look, not an inventory.
+    ordered = sorted(models, key=lambda m: -(m.get("size_bytes") or 0))
+    items, note = _truncate(ordered, limit)
+    return {
+        "evidence": report.get("evidence"),
+        "requires_revalidation": report.get("requires_revalidation"),
+        "hub": report.get("hub"),
+        "search": search,
+        "search_complete": search.get("complete"),
+        # Stated at the top level because it is the one thing a caller must not
+        # miss: an incomplete search returns `unknown`, never `unreferenced`.
+        "verdicts_withheld": not search.get("complete", False),
+        "summary": report.get("summary"),
+        "models": items,
+        **note,
+    }
+
+
+def tool_mcp_hygiene(args: dict) -> dict:
+    limit = _int_arg(args, "limit", default=25, minimum=1, maximum=200)
+    status = _enum_arg(args, "status", MCP_HYGIENE_STATUSES + (None,), None)
+    report = _run_json(MCPAUDIT, ["--json"], MCPAUDIT_TIMEOUT)
+
+    findings = report.get("findings") or []
+    if status:
+        findings = [f for f in findings if f.get("status") == status]
+    items, note = _truncate(findings, limit)
+    return {
+        "evidence": report.get("evidence"),
+        "requires_revalidation": report.get("requires_revalidation"),
+        "configs": report.get("configs"),
+        "config_errors": report.get("config_errors"),
+        "server_count": report.get("server_count"),
+        "path_available": report.get("path_available"),
+        "summary": report.get("summary"),
+        "filters": {"status": status},
+        "findings": items,
+        **note,
+    }
+
+
+def tool_file_access(args: dict) -> dict:
+    limit = _int_arg(args, "limit", default=30, minimum=1, maximum=500)
+    max_sessions = _int_arg(args, "max_sessions", default=400, minimum=1, maximum=4000)
+    include_all = bool(args.get("include_all", False))
+    query = args.get("query")
+    if query is not None and not isinstance(query, str):
+        raise ToolFailure("query must be a string")
+
+    arguments = ["--json", "--max-sessions", str(max_sessions)]
+    if include_all:
+        arguments.append("--all")
+    if query:
+        arguments += ["--query", query]
+    report = _run_json(FILEACCESS, arguments, FILEACCESS_TIMEOUT)
+
+    paths = report.get("paths") or []
+    items, note = _truncate(paths, limit)
+    return {
+        "evidence": report.get("evidence"),
+        "requires_revalidation": report.get("requires_revalidation"),
+        "stores": report.get("stores"),
+        "sessions_scanned": report.get("sessions_scanned"),
+        "sessions_skipped_by_cap": report.get("sessions_skipped_by_cap"),
+        "path_count": report.get("path_count"),
+        "rule_surface_count": report.get("rule_surface_count"),
+        "filters": {"query": query, "rule_surfaces_only": not include_all},
+        "paths": items,
+        **note,
+    }
 
 
 def tool_system_scan_summary(args: dict) -> dict:
@@ -433,6 +555,108 @@ TOOLS: list[dict] = [
         "handler": tool_friction_scan,
     },
     {
+        "name": "hf_orphans",
+        "title": "Hugging Face cache — models nothing here names",
+        "description": (
+            "Which models in this machine's Hugging Face hub cache are referenced by no "
+            "project file, and how many gigabytes those account for. Derives each cached "
+            "model's identifier from its hub directory name and searches the given roots "
+            "(default ~/IdeaProjects) for any occurrence, case-insensitively. Ask before "
+            "suggesting a model cache be cleared, or to find what an old experiment left "
+            "behind. Read the `search_complete` field before quoting any verdict: when "
+            "the search could not be exhaustive -- a root that does not exist, a file cap "
+            "reached, a subtree that could not be read -- every model is reported "
+            "`unknown` rather than `unreferenced`, because absence of evidence is only "
+            "evidence of absence if the search actually ran. `unreferenced` is preview "
+            "evidence, not authorization: a model can be named in a notebook output, a "
+            "container image, or a repository outside these roots. Read-only; deletes "
+            "nothing and downloads nothing."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "roots": {
+                    "type": "array", "items": {"type": "string"}, "maxItems": MAX_HF_ROOTS,
+                    "description": ("Directories to search for references. Omit for the "
+                                    "default. Naming a root that does not exist withholds "
+                                    "every verdict rather than producing false orphans."),
+                },
+                "max_files": {"type": "integer", "minimum": 1000, "maximum": 2000000,
+                              "default": 200000,
+                              "description": ("Stop after this many files. Hitting the cap "
+                                              "marks the search incomplete.")},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20,
+                          "description": "Max models returned, largest first. Truncation is always reported."},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {"title": "Hugging Face cache — models nothing here names", **READ_ONLY},
+        "handler": tool_hf_orphans,
+    },
+    {
+        "name": "mcp_hygiene",
+        "title": "MCP config hygiene — servers that cannot start",
+        "description": (
+            "Registered MCP servers on this machine that cannot run: `dead` (the command "
+            "does not resolve, or a script argument points at a path that is gone), "
+            "`duplicate` (same command and args as another entry), `manual-review` (an "
+            "`env` block is present), `unknown` (no command, or PATH was unusable so the "
+            "check could not be made). Reads ~/.claude.json, the Claude Desktop configs, "
+            "and ~/.mcp.json, including servers nested under per-project blocks. Useful "
+            "when a tool an agent expects is silently absent, or before pruning years of "
+            "accumulated entries. `env` is reported only as a key count -- values and key "
+            "names are never read into the output. Whether a server is actually *used* is "
+            "not judged. Read-only: this never edits a config, disables a server, or "
+            "starts one."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": list(MCP_HYGIENE_STATUSES),
+                           "description": "Only findings with this status."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 25,
+                          "description": "Max findings returned. Truncation is always reported."},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {"title": "MCP config hygiene — servers that cannot start", **READ_ONLY},
+        "handler": tool_mcp_hygiene,
+    },
+    {
+        "name": "file_access",
+        "title": "File access — which sessions touched which paths",
+        "description": (
+            "Reverse index over local Claude Code and Codex transcripts: for each path, "
+            "how many reads, writes, and shell references it received, from how many "
+            "sessions, and when last. Agent rule and config surfaces -- CLAUDE.md, "
+            "AGENTS.md, settings.json, anything under ~/.claude or ~/.codex -- are "
+            "returned first and by default, because a silently edited rule file is the "
+            "case this view exists for; pass include_all to see ordinary files too. Ask "
+            "when something changed and no one remembers doing it, or to find every "
+            "session that touched a file before editing it again. Only paths and tool "
+            "names are retained: the shell command a path came from is never emitted. "
+            "Shell paths are recovered heuristically and both over- and under-catch, and "
+            "absence from this index means no *indexed* session touched the file, not "
+            "that no agent did. Read-only."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "Substring filter over paths, case-insensitive."},
+                "include_all": {"type": "boolean", "default": False,
+                                "description": ("Include paths that are not agent rule "
+                                                "surfaces. Off by default.")},
+                "max_sessions": {"type": "integer", "minimum": 1, "maximum": 4000,
+                                 "default": 400,
+                                 "description": ("Newest-first cap on transcripts parsed. "
+                                                 "What the cap skipped is always reported.")},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 30,
+                          "description": "Max paths returned. Truncation is always reported."},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {"title": "File access — which sessions touched which paths", **READ_ONLY},
+        "handler": tool_file_access,
+    },
+    {
         "name": "system_scan_summary",
         "title": "System scan summary — storage & security",
         "description": (
@@ -465,7 +689,8 @@ TOOLS: list[dict] = [
 # refactor -- is unreachable rather than merely unlisted. Failing closed is the
 # point: "we simply never wrote a destructive tool" is an intention, and this
 # turns it into a mechanism.
-EXPOSED_TOOL_NAMES = frozenset({"scree_report", "friction_scan", "system_scan_summary"})
+EXPOSED_TOOL_NAMES = frozenset({"scree_report", "friction_scan", "hf_orphans",
+                                "mcp_hygiene", "file_access", "system_scan_summary"})
 
 
 def contract_allows(tool: dict) -> bool:
