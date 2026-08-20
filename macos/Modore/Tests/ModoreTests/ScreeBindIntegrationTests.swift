@@ -121,7 +121,7 @@ final class ScreeBindIntegrationTests: XCTestCase {
             homeOverride: home
         )
         XCTAssertNil(outcome.diagnostic)
-        guard case .bindings(let bindings) = outcome.assessment else {
+        guard case .bindings(let bindings, _) = outcome.assessment else {
             return XCTFail("expected the planted session to bind, got \(outcome.assessment)")
         }
         XCTAssertEqual(bindings.count, 1)
@@ -134,52 +134,68 @@ final class ScreeBindIntegrationTests: XCTestCase {
 
 /// The escalation rule, tested on payloads rather than through the
 /// subprocess so the policy is pinned independently of scree's runtime.
+///
+/// The rule is coverage, not emptiness. Gating the retry on "found
+/// nothing" means the moment a scan finds anything it stops looking,
+/// which is the opposite of what a completeness check is for.
 final class ShallowEscalationTests: XCTestCase {
     private func data(_ s: String) -> Data { Data(s.utf8) }
 
-    /// The case worth a deep pass: a clean shallow run that found nothing.
-    func test_emptyShallowRunIsWorthEscalating() {
-        XCTAssertTrue(ScreeService.reportedNothingWithinShallowLimits(data("""
-        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,
-         "coverage":"shallow","bindings":[]}
-        """)))
+    private func coverage(_ json: String) -> BindingCoverage? {
+        ContinuityAssessment.fromBindReport(data(json)).coverage
     }
 
-    /// A completed pass read every byte it could. Escalating again would
-    /// be an infinite regress, and its emptiness is a real finding.
-    func test_completeEmptyRunIsNotEscalated() {
-        XCTAssertFalse(ScreeService.reportedNothingWithinShallowLimits(data("""
-        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
-         "coverage":"complete","bindings":[]}
-        """)))
-    }
-
-    /// A scan that stopped early established nothing either, so it is
-    /// worth retrying — "tried deeply" is not "looked completely".
-    func test_truncatedEmptyRunIsStillEscalated() {
-        XCTAssertTrue(ScreeService.reportedNothingWithinShallowLimits(data("""
-        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
-         "coverage":"truncated","bindings":[]}
-        """)))
-    }
-
-    /// Sessions were found; there is nothing a content scan would add,
-    /// and it is the expensive pass over every candidate that already
-    /// answered.
-    func test_runThatFoundSessionsIsNotEscalated() {
-        XCTAssertFalse(ScreeService.reportedNothingWithinShallowLimits(data("""
+    /// The case the old rule missed entirely: a shallow pass that found a
+    /// session still has not looked where the others are.
+    func test_shallowRunThatFoundSessionsIsStillIncomplete() {
+        XCTAssertEqual(coverage("""
         {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,
          "coverage":"shallow",
          "bindings":[{"provider":"claude","sessionId":"a","source":"/s/a.jsonl",
                       "subtranscripts":[],"evidence":["working-directory"],
                       "confidence":"medium","sizeBytes":1}]}
-        """)))
+        """), .shallow)
+    }
+
+    func test_emptyShallowRunIsIncomplete() {
+        // Decodes to `notAssessed`, which reports no coverage at all --
+        // itself a reason to escalate.
+        XCTAssertNotEqual(coverage("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,
+         "coverage":"shallow","bindings":[]}
+        """), .complete)
+    }
+
+    func test_truncatedRunIsIncompleteEvenWithFindings() {
+        XCTAssertEqual(coverage("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"truncated",
+         "bindings":[{"provider":"codex","sessionId":"c","source":"/s/c.jsonl",
+                      "subtranscripts":[],"evidence":["remote-url"],
+                      "confidence":"high","sizeBytes":1}]}
+        """), .truncated)
+    }
+
+    /// A completed pass read every byte it could; escalating again would
+    /// be an infinite regress.
+    func test_completeRunNeedsNoEscalation() {
+        XCTAssertEqual(coverage("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"complete",
+         "bindings":[{"provider":"codex","sessionId":"c","source":"/s/c.jsonl",
+                      "subtranscripts":[],"evidence":["remote-url"],
+                      "confidence":"high","sizeBytes":1}]}
+        """), .complete)
     }
 
     /// Unreadable output is schema drift, not a scan-depth problem;
     /// rerunning it deeper would just fail again more slowly.
-    func test_unparseableOutputIsNotEscalated() {
-        XCTAssertFalse(ScreeService.reportedNothingWithinShallowLimits(data("not json")))
+    func test_unparseableOutputIsNotAFinishedRun() {
+        XCTAssertFalse(ScreeService.isWellFormed(data("not json")))
+        XCTAssertTrue(ScreeService.isWellFormed(data("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":false,
+         "coverage":"shallow","bindings":[]}
+        """)))
     }
 }
 

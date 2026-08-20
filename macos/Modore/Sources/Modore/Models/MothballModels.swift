@@ -67,13 +67,13 @@ struct ArchiveCandidate: Identifiable {
             return continuityDiagnostic.map { "AI 세션 확인 실패 · \($0)" } ?? "AI 세션 확인 안 됨"
         case .assessedNoSessions:
             return "연결된 AI 세션 없음"
-        case .bindings(let bindings):
+        case .bindings(let bindings, _):
             let bytes = ByteCountFormatter.string(
                 fromByteCount: bindings.reduce(0) { $0 + $1.sizeBytes },
                 countStyle: .file
             )
             return "연결된 AI 세션 \(bindings.count)개 · \(bytes)"
-        case .sealed(let bundle):
+        case .sealed(let bundle, _):
             return "AI 세션 \(bundle.sessions.count)개 봉인됨"
         case .overriddenByUser:
             return "AI 세션 확인 없이 진행함"
@@ -86,7 +86,7 @@ struct ArchiveCandidate: Identifiable {
     /// The sessions themselves, so the row can offer to open one. Empty
     /// unless a binder has run and found some.
     var boundSessions: [SessionBinding] {
-        if case .bindings(let bindings) = continuity { return bindings }
+        if case .bindings(let bindings, _) = continuity { return bindings }
         return []
     }
 
@@ -99,7 +99,7 @@ struct ArchiveCandidate: Identifiable {
     }
 
     var hasUnsealedSessions: Bool {
-        if case .bindings(let bindings) = continuity { return !bindings.isEmpty }
+        if case .bindings(let bindings, _) = continuity { return !bindings.isEmpty }
         return false
     }
 

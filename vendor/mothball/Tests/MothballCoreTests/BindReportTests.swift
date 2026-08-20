@@ -97,7 +97,7 @@ final class BindReportTests: XCTestCase {
             "evidence":["working-directory"],"confidence":"medium","sizeBytes":20}
          ]}
         """
-        guard case .bindings(let bindings) = ContinuityAssessment.fromBindReport(data(json)) else {
+        guard case .bindings(let bindings, _) = ContinuityAssessment.fromBindReport(data(json)) else {
             return XCTFail("expected bindings")
         }
         XCTAssertEqual(bindings.count, 2)
