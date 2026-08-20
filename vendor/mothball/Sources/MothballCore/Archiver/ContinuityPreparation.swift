@@ -71,7 +71,7 @@ public enum ContinuityPreparation {
             return bindings.reduce(0) { $0 + $1.sizeBytes }
         case .sealed(let bundle, _):
             return bundle.totalBytes
-        case .notAssessed, .assessedNoSessions, .overriddenByUser:
+        case .notAssessed, .assessedNoSessions:
             return 0
         }
     }

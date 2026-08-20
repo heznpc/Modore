@@ -4,16 +4,18 @@ import PackageDescription
 let package = Package(
     name: "Mothball",
     platforms: [.macOS(.v13)],
+    // Library only. Mothball shipped as a standalone app until its
+    // continuity work landed here; that app had no session binder, so
+    // every archive it attempted was refused by the gate it now contains.
+    // Modore builds this package for `MothballCore` alone -- the
+    // executable target was already dead weight in the only build that
+    // consumes it, and keeping a UI that cannot complete its one
+    // destructive action is worse than not shipping it.
     products: [
         .library(name: "MothballCore", targets: ["MothballCore"]),
-        .executable(name: "Mothball", targets: ["MothballApp"]),
     ],
     targets: [
         .target(name: "MothballCore"),
-        .executableTarget(
-            name: "MothballApp",
-            dependencies: ["MothballCore"]
-        ),
         .testTarget(
             name: "MothballCoreTests",
             dependencies: ["MothballCore"]

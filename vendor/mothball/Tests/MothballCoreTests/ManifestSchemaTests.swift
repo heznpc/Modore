@@ -21,7 +21,7 @@ final class ManifestSchemaTests: XCTestCase {
         "origin" : "https://github.com/heznpc/example.git",
         "wasDirty" : false
       },
-      "originalPath" : "/Users/someone/projects/example",
+      "originalPath" : "/Users/example/projects/example",
       "restoreHint" : "git clone https://github.com/heznpc/example.git",
       "schemaVersion" : 1,
       "sizeBytesArchive" : 1024,
@@ -34,7 +34,7 @@ final class ManifestSchemaTests: XCTestCase {
             ArchiveManifest.self, from: Data(v1JSON.utf8)
         )
         XCTAssertEqual(m.schemaVersion, 1)
-        XCTAssertEqual(m.originalPath, "/Users/someone/projects/example")
+        XCTAssertEqual(m.originalPath, "/Users/example/projects/example")
         XCTAssertEqual(m.git.headSHA, "abc123")
     }
 
@@ -43,7 +43,7 @@ final class ManifestSchemaTests: XCTestCase {
         let m = try ArchiveManifest.decoder().decode(
             ArchiveManifest.self, from: Data(v1JSON.utf8)
         )
-        XCTAssertEqual(m.historicalPaths, ["/Users/someone/projects/example"])
+        XCTAssertEqual(m.historicalPaths, ["/Users/example/projects/example"])
     }
 
     /// nil, not an empty assessment. "This archive predates the question"
@@ -95,10 +95,11 @@ final class ManifestSchemaTests: XCTestCase {
         XCTAssertEqual(decoded.continuity?.sessions.first?.artifact, "sessions/claude/3a4f")
     }
 
-    /// The override reason is the only thing separating an archive nobody
-    /// checked from one that was checked and came back empty, so it has
-    /// to survive the round trip.
-    func test_overrideReasonSurvivesEncoding() throws {
+    /// Standalone Mothball wrote an override here while it had no
+    /// session binder. Nothing writes one now, but those manifests exist,
+    /// and a build that cannot read its own older output is a worse
+    /// failure than the field being unused.
+    func test_legacyOverrideManifestsStillDecode() throws {
         let m = ArchiveManifest(
             schemaVersion: 2, archivedAt: Date(timeIntervalSince1970: 0),
             archivedBy: "t", originalPath: "/p", sizeBytesBefore: 1, sizeBytesArchive: 1,
