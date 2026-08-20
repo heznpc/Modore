@@ -264,6 +264,28 @@ extension ScreeService {
         )
     }
 
+    /// Digest of every bindable session store right now.
+    ///
+    /// Read again before a retire so a binding taken minutes ago is not
+    /// acted on as though the stores had stood still. A timestamp would
+    /// answer the wrong question -- the point is whether this is the same
+    /// set of candidates that was judged, which a rewritten or deleted
+    /// file changes as much as a new one.
+    static func storeFingerprint(
+        execution: RuntimeExecutionContext,
+        homeOverride: URL? = nil
+    ) async -> BindReport.Fingerprint? {
+        var arguments = ["fingerprint"]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        guard case .success(let output) = await invoke(
+            execution: execution, arguments: arguments, timeout: 60
+        ), let start = output.firstIndex(of: "{"),
+           let data = output[start...].data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(BindReport.Fingerprint.self, from: data)
+    }
+
     private struct TitlePayload: Decodable {
         let title: String
         let titleSource: String

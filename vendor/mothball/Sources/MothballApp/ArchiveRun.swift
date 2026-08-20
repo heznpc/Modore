@@ -92,7 +92,31 @@ final class ArchiveRun: ObservableObject, Identifiable {
                     }
                 }
                 let assessment = prepared.assessment
-                let result = try await orchestrator.archive(freshInfo, continuity: assessment) { [weak self] step in
+                // Re-read git after sealing. The preflight above ran
+                // before the copy, and a seal of hundreds of megabytes is
+                // long enough for the tree to move underneath it.
+                let scanner = preflightScanner
+                let repoPath = repo.info.path
+                let baseline = freshInfo.git
+                let result = try await orchestrator.archive(
+                    freshInfo,
+                    continuity: assessment,
+                    revalidate: {
+                        let rescanned = await scanner.scan(roots: [repoPath.deletingLastPathComponent()])
+                        guard let current = rescanned.first(where: {
+                            $0.path.standardizedFileURL == repoPath.standardizedFileURL
+                        }) else {
+                            throw ArchiveOrchestrator.ArchiveError.revalidationFailed(
+                                reason: "봉인 중 저장소를 다시 찾지 못했습니다."
+                            )
+                        }
+                        if let drift = ContinuityPreparation.gitDrift(
+                            from: baseline, to: current.git
+                        ) {
+                            throw ArchiveOrchestrator.ArchiveError.revalidationFailed(reason: drift)
+                        }
+                    }
+                ) { [weak self] step in
                     let mapped = ArchiveStep(step)
                     await MainActor.run { [weak self] in
                         // Same orchestrator step can fire repeatedly (e.g.

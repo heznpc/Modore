@@ -51,6 +51,17 @@ public struct BindReport: Codable, Sendable, Equatable {
     }
     public let bindings: [Entry]
 
+    /// The stores as they looked when this answer was true. Compared
+    /// again before anything is written: an assessment is a statement
+    /// about a moment, and sealing takes long enough for an agent to
+    /// finish a turn.
+    public let storeFingerprint: Fingerprint?
+
+    public struct Fingerprint: Codable, Sendable, Equatable {
+        public let digest: String
+        public let fileCount: Int
+    }
+
     public struct Entry: Codable, Sendable, Equatable {
         public let provider: String
         public let sessionId: String

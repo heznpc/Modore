@@ -32,6 +32,10 @@ public struct ArchiveOrchestrator: Sendable {
         /// error here that is a policy decision rather than a failure:
         /// nothing went wrong, the caller just has not done enough yet.
         case continuityRefused(ContinuityGate.Refusal)
+        /// The world moved between the assessment and the archive. Not a
+        /// failure of any step -- every step did its job, on a picture
+        /// that stopped being true partway through.
+        case revalidationFailed(reason: String)
         case sessionCompressionFailed(stderr: String, exitCode: Int32)
         case archiveDirectoryUnusable(URL, underlying: Error?)
         case sourcePathRefused(URL, reason: String)
@@ -84,9 +88,17 @@ public struct ArchiveOrchestrator: Sendable {
     ///   compile-time obligation into a runtime surprise — or something
     ///   permissive, which silently reintroduces the exact hazard this
     ///   parameter exists to close. Every call site states its answer.
+    /// - Parameter revalidate: run after the gate and before any bytes
+    ///   are written, to confirm the picture the assessment was built
+    ///   from still holds. Sealing hundreds of megabytes takes long
+    ///   enough for an agent to write a new session or for the working
+    ///   tree to change, and every check upstream of this ran on the
+    ///   older world. Throwing here costs a wasted seal; not checking
+    ///   costs the thing the seal was protecting.
     public func archive(
         _ repo: RepoInfo,
         continuity: ContinuityAssessment,
+        revalidate: (@Sendable () async throws -> Void)? = nil,
         progress: (@Sendable (Step) async -> Void)? = nil
     ) async throws -> ArchiveResult {
         let env = configuration
@@ -96,6 +108,18 @@ public struct ArchiveOrchestrator: Sendable {
         // must not leave a half-built archive behind to explain.
         if case .block(let refusal) = ContinuityGate.evaluate(continuity) {
             throw ArchiveError.continuityRefused(refusal)
+        }
+
+        // Before validation and before the first byte: a refusal here
+        // must cost nothing but the seal that already happened.
+        if let revalidate {
+            do {
+                try await revalidate()
+            } catch let error as ArchiveError {
+                throw error
+            } catch {
+                throw ArchiveError.revalidationFailed(reason: String(describing: error))
+            }
         }
 
         try Self.validateSource(repo.path, archiveDirectory: env.archiveDirectory)
