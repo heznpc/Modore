@@ -8,6 +8,37 @@ import Foundation
 public enum SessionProvider: String, Codable, Sendable, Hashable, CaseIterable {
     case claude
     case codex
+    case gemini
+    case vscode
+    case kiro
+    case cursor
+    case windsurf
+    case antigravity
+
+    /// Editors keep per-workspace state -- open tabs, an AI panel's
+    /// history, local settings -- rather than a transcript. Worth
+    /// preserving and worth labelling differently, because "three
+    /// conversations" and "three editor windows remembered this folder"
+    /// are not the same warning.
+    public var keepsTranscripts: Bool {
+        switch self {
+        case .claude, .codex, .gemini: return true
+        case .vscode, .kiro, .cursor, .windsurf, .antigravity: return false
+        }
+    }
+
+    public var displayName: String {
+        switch self {
+        case .claude: return "Claude"
+        case .codex: return "Codex"
+        case .gemini: return "Gemini"
+        case .vscode: return "VS Code"
+        case .kiro: return "Kiro"
+        case .cursor: return "Cursor"
+        case .windsurf: return "Windsurf"
+        case .antigravity: return "Antigravity"
+        }
+    }
 }
 
 /// Why a session is believed to belong to a repository.

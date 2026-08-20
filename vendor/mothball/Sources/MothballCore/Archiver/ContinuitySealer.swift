@@ -59,7 +59,12 @@ public struct ContinuitySealer: Sendable {
             } catch {
                 throw SealError.stagingUnusable(dir, underlying: error)
             }
-            try Self.copy(binding.source, to: dir.appending(path: "transcript.jsonl"))
+            // Stable stem, the provider's own extension. A fixed
+            // `transcript.jsonl` lets a reader find the top-level record
+            // without knowing which tool wrote it, but claiming `.jsonl`
+            // for Gemini's `.json` or an editor's `workspace.json`
+            // describes a format the bytes do not have.
+            try Self.copy(binding.source, to: dir.appending(path: Self.transcriptName(for: binding)))
             if !binding.subtranscripts.isEmpty {
                 // Destination root is the session directory, not
                 // `.../subagents`: the relative path computed below
@@ -131,6 +136,12 @@ public struct ContinuitySealer: Sendable {
         hasher.update(data: Data(full.utf8))
         let tag = hasher.finalize().prefix(4).map { String(format: "%02x", $0) }.joined()
         return "\(tag)-\(url.lastPathComponent)"
+    }
+
+    /// `transcript` plus whatever extension the source carried.
+    static func transcriptName(for binding: SessionBinding) -> String {
+        let ext = binding.source.pathExtension
+        return ext.isEmpty ? "transcript" : "transcript.\(ext)"
     }
 
     private static func copy(_ source: URL, to destination: URL) throws {
