@@ -1,9 +1,16 @@
 import AppKit
 import Foundation
+import MothballCore
 
-/// Runs the sealed `scree.py` and parses its report. Read-only: this never
-/// deletes anything and never retains session content — scree's own contract
-/// already guarantees that; this layer only decodes the JSON it prints.
+/// Runs the sealed `scree.py` and parses its output. Read-only: this never
+/// deletes anything.
+///
+/// A `report` retains no session content — scree's own contract
+/// guarantees that and this layer only decodes the JSON. Two commands
+/// deliberately read inside a conversation, both for one session the
+/// user named: `preserve`, which exports a masked transcript, and
+/// `title`, which returns one masked line to show beside a deletion
+/// decision. Neither runs during a scan.
 enum ScreeOutcome {
     case success(ScreeReport)
     case failure(String)
@@ -78,6 +85,292 @@ enum ScreeService {
             return cleaned.isEmpty ? "session" : cleaned
         }
         return "\(sanitize(tool))-\(sanitize(stem)).md"
+    }
+}
+
+/// A binder run's verdict plus, when it failed, why.
+///
+/// The assessment alone is not enough to act on. Every failure here
+/// collapses to `.notAssessed`, which is correct — a binder that could
+/// not run has established nothing — but it is also indistinguishable
+/// from a binder that ran and could not reach a conclusion. If the
+/// subprocess path ever breaks, every workspace reads "확인 안 됨" and
+/// every archive refuses, with nothing anywhere saying the tool is
+/// broken rather than the repos being unassessed. The diagnostic is what
+/// tells those apart.
+struct ScreeBindOutcome {
+    let assessment: ContinuityAssessment
+    /// nil when the binder ran and answered. Non-nil means the answer is
+    /// `.notAssessed` because something went wrong, not because the
+    /// binder said so.
+    let diagnostic: String?
+
+    static func failed(_ reason: String) -> ScreeBindOutcome {
+        ScreeBindOutcome(assessment: .notAssessed, diagnostic: reason)
+    }
+}
+
+extension ScreeService {
+    /// Runs `scree.py bind` for one workspace and decodes the result into
+    /// the assessment MothballCore's gate reads.
+    ///
+    /// Failure never becomes a permissive assessment: a timed-out or
+    /// unparseable binder run is, for deciding whether a workspace may be
+    /// retired, exactly the same as never having run one.
+    static func bind(
+        projectRoot: URL,
+        workspace: URL,
+        repoURL: String?,
+        deep: Bool = false
+    ) async -> ScreeBindOutcome {
+        guard let execution = await Task.detached(priority: .userInitiated, operation: {
+            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
+        }).value else {
+            return .failed("서명된 실행 런타임을 확인하지 못해 세션 바인더를 실행하지 않았습니다.")
+        }
+        return await bind(execution: execution, workspace: workspace,
+                          repoURL: repoURL, deep: deep)
+    }
+
+    /// Execution-injecting overload, mirroring `invoke`'s own split.
+    ///
+    /// It exists so the subprocess path can be tested. The two halves of
+    /// this feature are written in different languages and meet over a
+    /// pipe; unit tests on either side pass while the pipe is broken, and
+    /// a broken pipe fails closed and silent. Without an injection point
+    /// the only way to exercise it is to launch the app.
+    /// - Parameter homeOverride: session-store root, for tests that need
+    ///   a hermetic fake home instead of the machine's real history.
+    ///   scree's own `--home` flag is already suppressed from its help for
+    ///   the same reason.
+    static func bind(
+        execution: RuntimeExecutionContext,
+        workspace: URL,
+        repoURL: String?,
+        deep: Bool = false,
+        homeOverride: URL? = nil
+    ) async -> ScreeBindOutcome {
+        var arguments = ["bind", workspace.path]
+        if let repoURL, !repoURL.isEmpty { arguments += ["--repo-url", repoURL] }
+        if deep { arguments.append("--deep") }
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+
+        switch await invoke(execution: execution, arguments: arguments, timeout: 120) {
+        case .failure(let message):
+            return .failed(message)
+        case .timedOut:
+            return .failed("세션 바인딩이 2분 안에 끝나지 않았습니다.")
+        case .success(let output):
+            guard let start = output.firstIndex(of: "{"),
+                  let data = output[start...].data(using: .utf8) else {
+                return .failed("세션 바인더 출력에서 JSON을 찾지 못했습니다.")
+            }
+            let assessment = ContinuityAssessment.fromBindReport(data)
+
+            // Escalate on coverage, not on emptiness. A shallow pass that
+            // turned up one Codex session has still not looked for the
+            // Claude session that ran from a parent directory -- gating
+            // the retry on "found nothing" means the moment a scan finds
+            // anything it stops looking, which is the opposite of what a
+            // completeness check is for.
+            if !deep, assessment.coverage != .complete, Self.isWellFormed(data) {
+                return await bind(execution: execution, workspace: workspace,
+                                  repoURL: repoURL, deep: true,
+                                  homeOverride: homeOverride)
+            }
+
+            if case .notAssessed = assessment {
+                guard Self.isWellFormed(data) else {
+                    // JSON this build could not read as a completed
+                    // assessment -- schema drift between the two
+                    // languages, not a repo with unknown sessions.
+                    return .failed("세션 바인더 출력을 해석하지 못했습니다.")
+                }
+                // Already the deepest pass available and it still stopped
+                // short. Saying which gap remains beats reporting a parse
+                // failure that did not happen.
+                return .failed(Self.incompleteScanReason(data))
+            }
+                        return ScreeBindOutcome(assessment: assessment, diagnostic: nil)
+        }
+    }
+
+    /// Says which gap left the scan short, because the gaps close
+    /// differently: an unreadable transcript is a permissions problem, a
+    /// store with no binder is a missing feature, and "검사가 완전하지
+    /// 않았습니다" sends the user looking for neither.
+    static func incompleteScanReason(_ data: Data) -> String {
+        guard let report = try? BindReport.decoder().decode(BindReport.self, from: data),
+              let detail = report.coverageDetail else {
+            return "세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다."
+        }
+        if let unbound = detail.unboundStores, !unbound.isEmpty {
+            return "\(unbound.joined(separator: "·")) 세션 저장소는 아직 검사하지 않습니다. "
+                + "이 저장소에 연결된 대화가 없다고 단정할 수 없습니다."
+        }
+        let stalled = [("Claude", detail.claude), ("Codex", detail.codex)]
+            .filter { $0.1 != nil && $0.1 != "complete" }
+            .map(\.0)
+        if !stalled.isEmpty {
+            return "\(stalled.joined(separator: "·")) 세션 일부를 읽지 못해 연결 여부를 확정하지 못했습니다."
+        }
+        return "세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다."
+    }
+
+    /// True when the binder produced a payload this build understands as
+    /// a finished run. Separates "the scan was limited" from "the two
+    /// languages disagree about the format", which need different answers.
+    static func isWellFormed(_ data: Data) -> Bool {
+        guard let report = try? BindReport.decoder().decode(BindReport.self, from: data) else {
+            return false
+        }
+        return report.assessed
+    }
+}
+
+extension ScreeService {
+    /// Reads a one-line title for a session the caller names.
+    ///
+    /// Display only. The result never reaches `ContinuityAssessment` or
+    /// the gate: a title is a guess at what a conversation was about, and
+    /// nothing that decides whether a workspace may be deleted is allowed
+    /// to rest on a guess. It is also the first thing this app keeps from
+    /// the inside of a conversation, so it stays masked, one line, and
+    /// fetched for the handful of sessions actually shown.
+    static func title(
+        execution: RuntimeExecutionContext,
+        binding: SessionBinding,
+        homeOverride: URL? = nil
+    ) async -> SessionPresentation? {
+        var arguments = ["title", binding.source.path,
+                         "--label", binding.provider.displayName + " 작업"]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        guard case .success(let output) = await invoke(
+            execution: execution, arguments: arguments, timeout: 30
+        ), let start = output.firstIndex(of: "{"),
+           let data = output[start...].data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(TitlePayload.self, from: data) else {
+            return nil
+        }
+        let modified = (try? binding.source.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate
+        return SessionPresentation(
+            provider: binding.provider,
+            sessionID: binding.sessionID,
+            title: decoded.title,
+            titleSource: TitleSource(rawValue: decoded.titleSource) ?? .date,
+            lastActiveAt: modified,
+            sizeBytes: binding.sizeBytes
+        )
+    }
+
+    /// Binds many workspaces in one pass.
+    ///
+    /// A shallow pass never establishes completeness, so every candidate
+    /// on the screen needs a deep look -- and asking one repo at a time
+    /// re-reads the whole session store per repo. Measured here: 12.8
+    /// minutes across 53 candidates one by one, 2.8 minutes in a single
+    /// pass, with every candidate reaching complete coverage either way.
+    static func bindAll(
+        execution: RuntimeExecutionContext,
+        targets: [(workspace: URL, repoURL: String?)],
+        deep: Bool = true,
+        homeOverride: URL? = nil
+    ) async -> [String: ScreeBindOutcome] {
+        guard !targets.isEmpty else { return [:] }
+        let payload = targets.map { target in
+            ["workspace": target.workspace.path, "repoUrl": target.repoURL as Any]
+        }
+        // Written to a file rather than passed as arguments: a screen can
+        // carry fifty candidates and their absolute paths, which is past
+        // what a command line should be asked to hold.
+        let listing = execution.outputRoot.appending(path: "scree-bind-targets.json")
+        guard let input = try? JSONSerialization.data(withJSONObject: payload),
+              (try? input.write(to: listing, options: [.atomic])) != nil else {
+            return failAll(targets, "바인딩 대상 목록을 기록하지 못했습니다.")
+        }
+        defer { try? FileManager.default.removeItem(at: listing) }
+
+        // The answer goes to a file too. It grows with the machine's
+        // session count -- 8,424 bindings across 53 candidates here, past
+        // the runner's output ceiling -- and a limit that exists to stop a
+        // runaway subprocess is the wrong thing to raise for a result
+        // that is legitimately large.
+        let resultFile = execution.outputRoot.appending(path: "scree-bind-results.json")
+        try? FileManager.default.removeItem(at: resultFile)
+        defer { try? FileManager.default.removeItem(at: resultFile) }
+
+        var arguments = ["bind-all", "--targets", listing.path, "--out", resultFile.path]
+        if deep { arguments.append("--deep") }
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+
+        // A full content scan of every store; the per-repo timeout would
+        // be the wrong budget for one pass over all of them.
+        switch await invoke(execution: execution, arguments: arguments, timeout: 900) {
+        case .failure(let message):
+            return failAll(targets, message)
+        case .timedOut:
+            return failAll(targets, "세션 바인딩이 15분 안에 끝나지 않았습니다.")
+        case .success:
+            guard let data = try? Data(contentsOf: resultFile),
+                  let decoded = try? BindReport.decoder().decode(BatchPayload.self, from: data) else {
+                return failAll(targets, "세션 바인더 출력을 해석하지 못했습니다.")
+            }
+            var out: [String: ScreeBindOutcome] = [:]
+            for target in targets {
+                guard let report = decoded.results[target.workspace.path],
+                      let encoded = try? JSONEncoder().encode(report) else {
+                    out[target.workspace.path] = .failed("이 저장소에 대한 바인딩 결과가 없습니다.")
+                    continue
+                }
+                let assessment = ContinuityAssessment.fromBindReport(encoded)
+                if case .notAssessed = assessment {
+                    out[target.workspace.path] = .failed(Self.incompleteScanReason(encoded))
+                } else {
+                    out[target.workspace.path] = ScreeBindOutcome(
+                        assessment: assessment, diagnostic: nil
+                    )
+                }
+            }
+            return out
+        }
+    }
+
+    private struct BatchPayload: Decodable {
+        let results: [String: BindReport]
+    }
+
+    private static func failAll(
+        _ targets: [(workspace: URL, repoURL: String?)], _ reason: String
+    ) -> [String: ScreeBindOutcome] {
+        Dictionary(uniqueKeysWithValues: targets.map { ($0.workspace.path, .failed(reason)) })
+    }
+
+    /// Digest of every bindable session store right now.
+    ///
+    /// Read again before a retire so a binding taken minutes ago is not
+    /// acted on as though the stores had stood still. A timestamp would
+    /// answer the wrong question -- the point is whether this is the same
+    /// set of candidates that was judged, which a rewritten or deleted
+    /// file changes as much as a new one.
+    static func storeFingerprint(
+        execution: RuntimeExecutionContext,
+        homeOverride: URL? = nil
+    ) async -> BindReport.Fingerprint? {
+        var arguments = ["fingerprint"]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        guard case .success(let output) = await invoke(
+            execution: execution, arguments: arguments, timeout: 60
+        ), let start = output.firstIndex(of: "{"),
+           let data = output[start...].data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(BindReport.Fingerprint.self, from: data)
+    }
+
+    private struct TitlePayload: Decodable {
+        let title: String
+        let titleSource: String
     }
 
     private enum RawOutcome {
@@ -188,6 +481,37 @@ extension ScanModel {
         let root = projectRoot
         let tool = session.tool
         let source = session.source
+        Task {
+            defer { screePreserveInFlightSource = nil }
+            switch await ScreeService.preserve(projectRoot: root, tool: tool, source: source) {
+            case .success(let url):
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+                appendLog("세션 보존: \(url.lastPathComponent)")
+                AccessibilityAnnouncer.announce("세션을 보존했습니다")
+            case .failure(let message):
+                errorMessage = message
+            }
+        }
+    }
+
+    /// Exports one session bound to an archive candidate, through the same
+    /// masked single-session path the expiring-session list already uses.
+    ///
+    /// A count and a size say a delete would cost something; they do not
+    /// say what. Reading the conversation back is the only way to judge
+    /// whether it was worth keeping, and that judgement belongs to the
+    /// person about to approve the delete -- so the export is reachable
+    /// from the row where they decide, not only from the session page.
+    func preserveBoundSession(_ binding: SessionBinding) {
+        guard screePreserveInFlightSource == nil else { return }
+        let source = binding.source.path
+        screePreserveInFlightSource = source
+        errorMessage = nil
+        let root = projectRoot
+        // Every provider's own label. A binary Claude-or-Codex choice
+        // filed Gemini exports under "Codex", which is wrong in the one
+        // place a user later goes looking for them.
+        let tool = binding.provider.displayName
         Task {
             defer { screePreserveInFlightSource = nil }
             switch await ScreeService.preserve(projectRoot: root, tool: tool, source: source) {
