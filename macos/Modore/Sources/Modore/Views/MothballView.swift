@@ -233,7 +233,7 @@ struct MothballCandidateSection: View {
     /// when the title was inferred rather than quoted. A guessed label
     /// shown with the same confidence as a real request is how a person
     /// decides against a conversation they never actually saw.
-    static func subtitle(_ session: SessionPresentation) -> String {
+    nonisolated static func subtitle(_ session: SessionPresentation) -> String {
         var parts = ["\(session.provider.displayName) \(session.kindLabel)"]
         if let last = session.lastActiveAt {
             parts.append(Self.dayFormatter.string(from: last))
@@ -245,7 +245,7 @@ struct MothballCandidateSection: View {
         return parts.joined(separator: " · ")
     }
 
-    private static let dayFormatter: DateFormatter = {
+    nonisolated private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "M월 d일"
         return f
@@ -253,11 +253,16 @@ struct MothballCandidateSection: View {
 
     /// What the whole list amounts to, stated once at the top.
     ///
+    /// `nonisolated`, like the other formatters below it. These are pure
+    /// functions over value types; they live on the view only because
+    /// that is where they are read from, and inheriting its main-actor
+    /// isolation made them untestable from anywhere else.
+    ///
     /// Every row here already carries a tier label, and on a machine that
     /// uses agents heavily every row reads the same -- so the label sorts
     /// nothing and the reader has to scan 53 identical lines to learn the
     /// only fact that varies. This says it up front instead.
-    static func boundSummary(_ candidates: [ArchiveCandidate]) -> String {
+    nonisolated static func boundSummary(_ candidates: [ArchiveCandidate]) -> String {
         // "None" and "not checked yet" are the distinction this whole
         // feature exists to keep, and the summary was collapsing it: while
         // the binder ran, every row correctly read "확인 안 됨" and the
@@ -290,15 +295,15 @@ struct MothballCandidateSection: View {
 
     /// Long enough to browse, short enough that a 120-session repo does
     /// not turn one row into a page.
-    static let boundSessionDisplayLimit = 20
+    nonisolated static let boundSessionDisplayLimit = 20
 
-    static func evidenceText(_ binding: SessionBinding) -> String {
+    nonisolated static func evidenceText(_ binding: SessionBinding) -> String {
         let evidence = binding.evidence.map { evidenceLabel($0) }.joined(separator: " · ")
         let size = ByteCountFormatter.string(fromByteCount: binding.sizeBytes, countStyle: .file)
         return "\(evidence) · \(confidenceLabel(binding.confidence)) · \(size)"
     }
 
-    private static func evidenceLabel(_ evidence: BindingEvidence) -> String {
+    nonisolated private static func evidenceLabel(_ evidence: BindingEvidence) -> String {
         switch evidence {
         case .remoteURL: return "원격 URL 기록됨"
         case .workingDirectory: return "작업 디렉터리 일치"
@@ -306,7 +311,7 @@ struct MothballCandidateSection: View {
         }
     }
 
-    private static func confidenceLabel(_ confidence: BindingConfidence) -> String {
+    nonisolated private static func confidenceLabel(_ confidence: BindingConfidence) -> String {
         switch confidence {
         case .high: return "확실"
         case .medium: return "보통"

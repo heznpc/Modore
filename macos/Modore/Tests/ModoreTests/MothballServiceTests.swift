@@ -492,3 +492,22 @@ final class SummaryDuringLoadingTests: XCTestCase {
         )
     }
 }
+
+/// These formatters live on a SwiftUI view, which is `@MainActor`, so
+/// its static members inherit that isolation and become unreachable from
+/// a plain test. They are pure functions over value types and are marked
+/// `nonisolated` for that reason — this test exists so the annotation
+/// cannot be dropped as noise, because the compiler only objects under
+/// `-strict-concurrency=complete`, which is a CI flag and not the local
+/// default.
+final class FormatterIsolationTests: XCTestCase {
+    func test_formattersAreCallableWithoutTheMainActor() {
+        XCTAssertGreaterThan(MothballCandidateSection.boundSessionDisplayLimit, 0)
+        XCTAssertFalse(MothballCandidateSection.boundSummary([]).isEmpty)
+        XCTAssertFalse(MothballCandidateSection.evidenceText(
+            SessionBinding(provider: .claude, sessionID: "s",
+                           source: URL(fileURLWithPath: "/s/s.jsonl"),
+                           evidence: [.workingDirectory], confidence: .medium)
+        ).isEmpty)
+    }
+}
