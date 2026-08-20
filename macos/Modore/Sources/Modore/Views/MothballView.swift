@@ -133,9 +133,15 @@ struct MothballCandidateSection: View {
                 // bound conversations and one without are the same git
                 // tier, and until now the row said nothing that told
                 // them apart.
+                // Weight, not hue. This project reserves chromatic
+                // status colours for critical states, and on a machine
+                // that runs agents daily every candidate has bound
+                // conversations -- colouring all of them would spend the
+                // one signal that means "stop" on a line that is true of
+                // the whole list.
                 Text(candidate.continuityText)
-                    .font(.caption)
-                    .foregroundStyle(candidate.hasUnsealedSessions ? Color.orange : Color.secondary)
+                    .font(candidate.hasUnsealedSessions ? .caption.weight(.medium) : .caption)
+                    .foregroundStyle(candidate.hasUnsealedSessions ? Color.primary : Color.secondary)
             }
             Spacer()
             // The tier is already in the icon, and on a machine that uses
@@ -144,7 +150,7 @@ struct MothballCandidateSection: View {
             // The trailing slot goes to the number that actually differs.
             Text(candidate.trailingLabel)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(candidate.hasUnsealedSessions ? Color.orange : Color.secondary)
+                .foregroundStyle(candidate.hasUnsealedSessions ? Color.primary : Color.secondary)
         }
     }
 
