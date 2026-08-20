@@ -19,6 +19,10 @@ public struct ContinuitySealer: Sendable {
         case stagingUnusable(URL, underlying: Error)
         case sourceUnreadable(URL, underlying: Error)
         case hashFailed(URL, underlying: Error)
+        /// A session identifier that would place its copy outside the
+        /// staging tree. Refused rather than sanitised silently, because
+        /// reaching here means the derivation itself is wrong.
+        case unsafeArtifactPath(String)
     }
 
     public init() {}
@@ -54,12 +58,22 @@ public struct ContinuitySealer: Sendable {
 
         var sealed: [SealedSession] = []
         for binding in bindings {
-            // `provider/sessionID` rather than a flat name: two providers
-            // can and do mint the same-looking id, and the subagent tree
-            // needs a directory of its own anyway.
+            // `provider/key` rather than a flat name: two providers can
+            // and do mint the same-looking id, and the subagent tree
+            // needs a directory of its own anyway. The key is derived,
+            // not the raw id -- a provider's identifier is data, and
+            // `URL.appending(path:)` will happily walk out of the staging
+            // tree if that data says `../`.
+            let key = ArtifactKey.derive(provider: binding.provider, sessionID: binding.sessionID)
             let dir = sessionsRoot
                 .appending(path: binding.provider.rawValue, directoryHint: .isDirectory)
-                .appending(path: binding.sessionID, directoryHint: .isDirectory)
+                .appending(path: key, directoryHint: .isDirectory)
+            // Belt and braces. If a future change to the derivation ever
+            // lets something through, this catches it before any bytes
+            // are written rather than after they are outside.
+            guard Self.isContained(dir, within: sessionsRoot) else {
+                throw SealError.unsafeArtifactPath(binding.sessionID)
+            }
             // Directory creation and copying are reported apart on
             // purpose: a full disk under staging and an unreadable
             // transcript need different answers from the caller, and
@@ -93,6 +107,13 @@ public struct ContinuitySealer: Sendable {
                     let destination = dir.appending(
                         path: Self.relativePath(of: sub, under: origin)
                     )
+                    // The relative path comes from the provider's own
+                    // directory layout, so it is data too. A symlinked or
+                    // oddly-named entry must not write outside the
+                    // session directory it belongs to.
+                    guard Self.isContained(destination, within: dir) else {
+                        throw SealError.unsafeArtifactPath(sub.path)
+                    }
                     let parent = destination.deletingLastPathComponent()
                     do {
                         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -103,7 +124,7 @@ public struct ContinuitySealer: Sendable {
                 }
             }
 
-            let relative = "\(Self.rootDirectoryName)/\(binding.provider.rawValue)/\(binding.sessionID)"
+            let relative = "\(Self.rootDirectoryName)/\(binding.provider.rawValue)/\(key)"
             let tree = try Self.treeDigest(of: dir)
             sealed.append(SealedSession(
                 provider: binding.provider,
@@ -157,6 +178,12 @@ public struct ContinuitySealer: Sendable {
     static func transcriptName(for binding: SessionBinding) -> String {
         let ext = binding.source.pathExtension
         return ext.isEmpty ? "transcript" : "transcript.\(ext)"
+    }
+
+    static func isContained(_ url: URL, within root: URL) -> Bool {
+        let base = root.standardizedFileURL.path
+        let target = url.standardizedFileURL.path
+        return target == base || target.hasPrefix(base + "/")
     }
 
     private static func copy(_ source: URL, to destination: URL) throws {

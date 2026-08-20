@@ -1184,3 +1184,36 @@ def test_title_is_not_reachable_from_the_audit_path(bind_home):
     emitted = set(keys(report))
     assert "title" not in emitted
     assert "titleSource" not in emitted
+
+
+def test_gemini_without_a_registry_cannot_claim_completeness(bind_home):
+    """projects.json이 없으면 계산 가능한 해시는 워크스페이스 자기 것 하나뿐이라,
+    하위 worktree에서 열린 세션은 원리적으로 매칭할 수 없다. 본문 스캔도 구제하지
+    못한다 — 트랜스크립트는 보통 상대경로로 파일을 부르므로 끝까지 읽고 못 찾은
+    것이 아무것도 증명하지 않는다. 세션은 있는데 워크스페이스 정체성을 역산할
+    자료가 없는 상태가 곧 불완전한 확인이다."""
+    _gemini_session(bind_home["home"], bind_home["repo"], "g9",
+                    project_path=bind_home["worktree"])
+    registry = bind_home["home"] / ".gemini" / "projects.json"
+    assert not registry.exists()
+
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    assert "g9" not in {b["sessionId"] for b in out["bindings"]}
+    assert out["coverageDetail"]["gemini"] == "incomplete"
+    assert out["coverage"] != "complete"
+
+
+def test_gemini_with_a_registry_can_reach_completeness(bind_home):
+    _write(bind_home["home"] / ".gemini" / "projects.json",
+           json.dumps({"projects": {str(bind_home["worktree"]): "wt"}}))
+    _gemini_session(bind_home["home"], bind_home["repo"], "g10",
+                    project_path=bind_home["worktree"])
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    assert "g10" in {b["sessionId"] for b in out["bindings"]}
+    assert out["coverageDetail"]["gemini"] == "complete"
+
+
+def test_gemini_with_no_sessions_at_all_is_still_complete(bind_home):
+    """chats 자체가 없으면 확인할 후보가 없는 것이지 못 확인한 게 아니다."""
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    assert out["coverageDetail"]["gemini"] == "complete"

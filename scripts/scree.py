@@ -924,7 +924,14 @@ def bind_gemini(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
 
     remember(workspace)
     registry = home / ".gemini" / "projects.json"
-    complete = True
+    # Without the registry the only hash we can compute is the workspace's
+    # own, so a session held in a subdirectory or worktree is
+    # unmatchable -- its `projectHash` is over a path we cannot enumerate.
+    # A content scan does not rescue it either: transcripts routinely name
+    # files relatively, so reading every byte and finding nothing proves
+    # nothing here. Sessions exist and their workspace identity cannot be
+    # reconstructed, which is the definition of an incomplete look.
+    complete = not (chats and not registry.is_file())
     if registry.is_file():
         try:
             projects = json.loads(registry.read_text(encoding="utf-8-sig"))
@@ -1100,10 +1107,18 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
         #                empty result means "no session was *run* here",
         #                not "no session touched this repo". The common
         #                case for a repo worked on from `~`.
-        #   truncated -- a content scan started and stopped early. It tried
-        #                deeply; it did not look completely, and a repo
-        #                path can appear on the last line of a session.
-        #   complete  -- every byte of every candidate transcript was read.
+        #   truncated -- a look that started and could not finish: a
+        #                content scan that stopped early, a transcript
+        #                that would not open, a store whose identity data
+        #                is missing. It tried; it did not conclude.
+        #   complete  -- every candidate was conclusively classified.
+        #                Either its own metadata was authoritative enough
+        #                to decide -- a recorded remote, a matching cwd,
+        #                a workspace hash -- or it was read to EOF and
+        #                found not to mention the workspace. Not "every
+        #                byte was read": a session already bound by its
+        #                header gains nothing from being read again, and
+        #                editor entries have no transcript body at all.
         #                The only value from which emptiness is a finding.
         "coverage": ("complete" if scanned_fully else "truncated") if deep else "shallow",
         # Why a deep pass came back short of `complete`, so a consumer can

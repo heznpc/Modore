@@ -853,3 +853,90 @@ final class EditorArtifactRootTests: XCTestCase {
         ))
     }
 }
+
+/// A provider's session identifier is data it wrote, not a path this
+/// build chose. `URL.appending(path:)` does not confine it -- verified
+/// directly: appending `../../../escaped` to
+/// `/tmp/base/sessions/codex` resolves to `/tmp/escaped`. Copies landing
+/// there survive the sealer's failure cleanup, which removes only the
+/// staging root, so this reopens exactly the leak that cleanup closes.
+final class ArtifactKeyTests: XCTestCase {
+    var scratch: URL!
+
+    override func setUpWithError() throws {
+        scratch = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "ArtifactKey-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let scratch { try? FileManager.default.removeItem(at: scratch) }
+    }
+
+    /// Real ids stay readable: someone opening an archive years later
+    /// should still recognise `sessions/claude/3a4f0f71-…/`.
+    func test_ordinaryIdentifiersPassThroughUnchanged() {
+        for id in ["3a4f0f71-b5a7-7ce2-9b40-35efdee18d84",
+                   "019f5bf7-b5a7-7ce2", "session-2026-06-04T08-10-fd2c2ead", "abc123"] {
+            XCTAssertEqual(ArtifactKey.derive(provider: .claude, sessionID: id), id)
+        }
+    }
+
+    func test_traversalAndSeparatorsAreReplaced() {
+        for id in ["../../../escaped", "..", ".", "a/b", "", "with space", ".hidden"] {
+            let key = ArtifactKey.derive(provider: .codex, sessionID: id)
+            XCTAssertNotEqual(key, id, id)
+            XCTAssertTrue(ArtifactKey.isSafeComponent(key), "\(id) → \(key)")
+        }
+    }
+
+    /// Two stores must not collide on the same unsafe id.
+    func test_derivationIsProviderScopedAndDeterministic() {
+        let a = ArtifactKey.derive(provider: .claude, sessionID: "../x")
+        let b = ArtifactKey.derive(provider: .codex, sessionID: "../x")
+        XCTAssertNotEqual(a, b)
+        XCTAssertEqual(a, ArtifactKey.derive(provider: .claude, sessionID: "../x"))
+    }
+
+    /// The end-to-end property: nothing lands outside the staging tree,
+    /// and the manifest still records the real identifier.
+    func test_sealingAHostileIdentifierWritesNothingOutsideStaging() throws {
+        let store = scratch.appending(path: "store", directoryHint: .isDirectory)
+        let guardrail = scratch.appending(path: "outside", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: guardrail, withIntermediateDirectories: true)
+        let transcript = store.appending(path: "t.jsonl")
+        try Data("{\"secret\":\"transcript\"}\n".utf8).write(to: transcript)
+
+        let bundle = try ContinuitySealer().seal(
+            bindings: [SessionBinding(
+                provider: .codex, sessionID: "../../../outside/leaked",
+                source: transcript, evidence: [.remoteURL], confidence: .high
+            )],
+            stagingParent: scratch
+        )
+        defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
+
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: guardrail.path), [],
+            "a transcript copy must not land outside the staging tree"
+        )
+        let sealed = try XCTUnwrap(bundle.sessions.first)
+        XCTAssertTrue(sealed.artifact.hasPrefix("sessions/codex/"), sealed.artifact)
+        XCTAssertFalse(sealed.artifact.contains(".."), sealed.artifact)
+        // The provider's own identifier is still recorded; only the path
+        // refuses to trust it.
+        XCTAssertEqual(sealed.sessionID, "../../../outside/leaked")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: bundle.stagingRoot.appending(path: sealed.artifact).path
+        ))
+    }
+
+    func test_containmentCheckRejectsAnEscapingDestination() {
+        let root = URL(fileURLWithPath: "/tmp/base/sessions")
+        XCTAssertTrue(ContinuitySealer.isContained(
+            root.appending(path: "codex/ok"), within: root))
+        XCTAssertFalse(ContinuitySealer.isContained(
+            URL(fileURLWithPath: "/tmp/base/elsewhere"), within: root))
+    }
+}
