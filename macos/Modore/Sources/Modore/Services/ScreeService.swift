@@ -2,9 +2,15 @@ import AppKit
 import Foundation
 import MothballCore
 
-/// Runs the sealed `scree.py` and parses its report. Read-only: this never
-/// deletes anything and never retains session content — scree's own contract
-/// already guarantees that; this layer only decodes the JSON it prints.
+/// Runs the sealed `scree.py` and parses its output. Read-only: this never
+/// deletes anything.
+///
+/// A `report` retains no session content — scree's own contract
+/// guarantees that and this layer only decodes the JSON. Two commands
+/// deliberately read inside a conversation, both for one session the
+/// user named: `preserve`, which exports a masked transcript, and
+/// `title`, which returns one masked line to show beside a deletion
+/// decision. Neither runs during a scan.
 enum ScreeOutcome {
     case success(ScreeReport)
     case failure(String)
@@ -398,9 +404,10 @@ extension ScanModel {
         screePreserveInFlightSource = source
         errorMessage = nil
         let root = projectRoot
-        // scree's own fixed store labels, so the export filename matches
-        // what the session page produces for the same file.
-        let tool = binding.provider == .claude ? "Claude" : "Codex"
+        // Every provider's own label. A binary Claude-or-Codex choice
+        // filed Gemini exports under "Codex", which is wrong in the one
+        // place a user later goes looking for them.
+        let tool = binding.provider.displayName
         Task {
             defer { screePreserveInFlightSource = nil }
             switch await ScreeService.preserve(projectRoot: root, tool: tool, source: source) {

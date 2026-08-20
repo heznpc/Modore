@@ -1123,3 +1123,64 @@ def test_title_cli_emits_json(tmp_path, capsys):
     src = _session_with_turns(tmp_path / "s.jsonl", ("user", "빌드 스크립트를 정리해줘"))
     assert scree.main(["title", str(src), "--home", str(tmp_path)]) == 0
     assert json.loads(capsys.readouterr().out)["title"] == "빌드 스크립트를 정리해줘"
+
+
+def test_codex_rollout_that_names_the_repo_only_later_needs_a_deep_scan(bind_home):
+    """`complete`는 '모든 후보 트랜스크립트를 끝까지 읽었다'는 뜻이다. 헤더 한 줄만
+    보고 Codex 저장소를 다 읽었다고 판정하면, 다른 곳에서 시작해 나중에 이 레포
+    파일을 고친 롤아웃은 shallow에서도 deep에서도 안 잡히면서 coverage는
+    complete가 된다."""
+    target = str(bind_home["repo"])
+    _write(bind_home["home"] / ".codex" / "sessions" / "later.jsonl", _jsonl(
+        {"type": "session_meta",
+         "payload": {"id": "later", "cwd": str(bind_home["other"]), "git": {}}},
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text",
+                                  "text": f"{target}/foo.swift 를 수정했습니다"}]}},
+    ))
+    shallow = scree.build_bindings(bind_home["home"], target)
+    assert "later" not in {b["sessionId"] for b in shallow["bindings"]}
+
+    deep = scree.build_bindings(bind_home["home"], target, deep=True)
+    found = next(b for b in deep["bindings"] if b["sessionId"] == "later")
+    assert found["evidence"] == ["file-access"]
+    assert found["provider"] == "codex"
+
+
+def test_codex_deep_scan_does_not_rescan_headers_that_already_matched(bind_home):
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]),
+                               repo_url="https://github.com/heznpc/flowship", deep=True)
+    matched = next(b for b in out["bindings"] if b["sessionId"] == "codex-a")
+    assert matched["evidence"] == ["remote-url"]
+
+
+def test_content_reading_commands_are_all_declared_in_the_module_contract():
+    """본문을 읽는 명령이 늘어나면 문서가 먼저 뒤처진다. 계약을 코드가 아니라
+    사람의 기억에 맡기지 않도록, 세 명령이 모듈 docstring에 이름으로 남아
+    있는지 고정한다."""
+    doc = scree.__doc__ or ""
+    for command in ("preserve", "title", "bind"):
+        assert command in doc, f"{command}가 no-content 계약 설명에 없다"
+    assert "never" in doc and "names" in doc
+
+
+def test_title_is_not_reachable_from_the_audit_path(bind_home):
+    """감사(report)는 metadata-only여야 한다. 제목은 사용자가 지정한 세션
+    하나에 대해서만 만들어지고, 스캔 도중에 자동으로 불리지 않는다."""
+    report = scree.build_scree(bind_home["home"])
+
+    # 문자열 검사가 아니라 키 검사다. pytest의 tmp 경로에는 테스트 이름이
+    # 들어가므로 부분 문자열로 보면 자기 이름에 걸린다.
+    def keys(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                yield key
+                yield from keys(value)
+        elif isinstance(node, list):
+            for item in node:
+                yield from keys(item)
+
+    emitted = set(keys(report))
+    assert "title" not in emitted
+    assert "titleSource" not in emitted

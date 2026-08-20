@@ -94,6 +94,18 @@ public struct SessionBinding: Sendable, Hashable {
     /// silently drop the bulk of the record.
     public let subtranscripts: [URL]
 
+    /// Directory the `subtranscripts` paths are relative to.
+    ///
+    /// Stated by the binder rather than inferred from `source`. The
+    /// inference that worked for the agent stores -- transcript beside a
+    /// directory of the same stem -- is wrong for an editor, whose
+    /// `workspace.json` sits *inside* the entry alongside `chat/` and
+    /// `panels/`. Guessing there dropped every nested file outside the
+    /// computed root and flattened a meaningful tree into
+    /// digest-prefixed basenames, so two `a.json` from different folders
+    /// became two unrelated files.
+    public let artifactRoot: URL?
+
     public let evidence: [BindingEvidence]
     public let confidence: BindingConfidence
 
@@ -109,6 +121,7 @@ public struct SessionBinding: Sendable, Hashable {
         sessionID: String,
         source: URL,
         subtranscripts: [URL] = [],
+        artifactRoot: URL? = nil,
         evidence: [BindingEvidence],
         confidence: BindingConfidence,
         sizeBytes: Int64 = 0
@@ -117,6 +130,7 @@ public struct SessionBinding: Sendable, Hashable {
         self.sessionID = sessionID
         self.source = source
         self.subtranscripts = subtranscripts
+        self.artifactRoot = artifactRoot
         self.evidence = evidence
         self.confidence = confidence
         self.sizeBytes = sizeBytes

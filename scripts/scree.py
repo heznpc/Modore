@@ -22,11 +22,19 @@ Judgment limits (preview-grade evidence, not deletion authorization):
 - "rebuildable" trusts local remote-tracking refs, which can lag the live
   remote; any destructive consumer must revalidate before acting.
 
-Preservation export (the one deliberate exception to the no-content contract):
-`scree.py preserve <source>` reads one session file named by the caller — never
-discovered automatically — and writes a masked Markdown export. Single-session,
-explicit, mask-by-default: the same shape as hydroject's `export`. Everything
-above this line in the module never calls it.
+Content-reading commands (the deliberate exceptions to the no-content
+contract above). Both act on one session the caller names — never on
+anything discovered automatically — and both mask by default:
+- `scree.py preserve <source>` writes a masked Markdown export of one
+  transcript, the same shape as hydroject's `export`;
+- `scree.py title <source>` returns one masked line: the first user
+  request that says what the session was about, for display beside a
+  deletion decision. It is the smaller exception of the two and the only
+  one whose output is retained anywhere, so it is capped to one short
+  line and is never an input to a safety judgement.
+- `scree.py bind <workspace> --deep` reads transcript bodies to find
+  file-access evidence, and emits only whether such evidence exists.
+Everything above this line in the module never calls any of them.
 """
 from __future__ import annotations
 
@@ -769,11 +777,18 @@ def _scans_for_paths(source: Path, root: str,
         return (False, False)
 
 
-def bind_codex(home: Path, workspace: str, repo_url: Optional[str]) -> tuple[list[dict], bool]:
-    """Codex bindings are nearly free: the repository URL is already in
+def bind_codex(home: Path, workspace: str, repo_url: Optional[str], *,
+               deep: bool = False) -> tuple[list[dict], bool]:
+    """Codex bindings start nearly free: the repository URL is already in
     the rollout's own `session_meta` header, which `collect_codex` reads
-    and then discards into a group count. Nothing is inferred here that
-    the provider did not already state."""
+    and then discards into a group count.
+
+    The header is not the whole story, though, and `complete` means every
+    byte of every candidate transcript was read. A rollout that started
+    somewhere else and later edited files in this repo names it nowhere
+    in its first line -- so under `deep` the ones the header did not
+    match get the same content scan Claude's do. Without that, Codex
+    could be declared fully read on the strength of one line per file."""
     wanted = normalize_repo_url(repo_url) if repo_url else None
     out: list[dict] = []
     complete = True
@@ -805,6 +820,14 @@ def bind_codex(home: Path, workspace: str, repo_url: Optional[str]) -> tuple[lis
             cwd = payload.get("cwd")
             if isinstance(cwd, str) and _under(_canon_workspace(cwd), workspace):
                 evidence.append("working-directory")
+            if not evidence and deep:
+                # Only the rollouts the header did not match: one that is
+                # already bound gains nothing from being read again.
+                found, scanned_fully = _scans_for_paths(path, workspace)
+                if not scanned_fully:
+                    complete = False
+                if found:
+                    evidence.append("file-access")
             if not evidence:
                 continue
             session_id = payload.get("id") or path.stem
@@ -863,6 +886,11 @@ def bind_vscode_forks(home: Path, workspace: str) -> tuple[list[dict], bool]:
                 "subtranscripts": sorted(
                     str(f) for f in entry.rglob("*") if f.is_file() and f != meta_path
                 ),
+                # The entry directory, not `workspace.json` minus its
+                # extension. An editor keeps `chat/` and `panels/` beside
+                # the manifest, and letting the sealer guess flattens
+                # them into digest-prefixed basenames.
+                "artifactRoot": str(entry),
                 "evidence": ["working-directory"],
                 "confidence": "medium",
                 "sizeBytes": size,
@@ -1047,7 +1075,7 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
     """
     workspace = _canon_workspace(workspace)
     claude_bindings, claude_complete = bind_claude(home, workspace, deep=deep)
-    codex_bindings, codex_complete = bind_codex(home, workspace, repo_url)
+    codex_bindings, codex_complete = bind_codex(home, workspace, repo_url, deep=deep)
     gemini_bindings, gemini_complete = bind_gemini(home, workspace, deep=deep)
     fork_bindings, forks_complete = bind_vscode_forks(home, workspace)
     bindings = claude_bindings + codex_bindings + gemini_bindings + fork_bindings

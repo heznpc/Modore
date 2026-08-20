@@ -20,13 +20,15 @@ On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, the ma
 ```bash
 python3 scripts/scree.py                          # join · retention forecast · orphans · sole-copy verdicts · lineage
 python3 scripts/scree.py preserve <session-file>  # masked single-session export before it expires
+python3 scripts/scree.py bind <workspace> --deep  # which AI sessions a delete would strand
+python3 scripts/scree.py title <session-file>     # one masked line: what that session was about
 ```
 
 - **Cross-tool join** — which tools touched which workspace/repository, when, across Claude Code, Codex, Gemini CLI, and VS Code-fork stores.
 - **Retention forecast** — per-store rolling windows estimated from file ages, with D-day flags for sessions about to expire inside still-active projects.
 - **Sole-copy judgment** — agent worktrees *and* primary checkouts stranded off main: protected (dirty or unpushed commits) versus rebuildable, from read-only git evidence, every verdict preview-grade with an explicit revalidation duty.
 - **Orphans & lineage** — sessions pointing at vanished workspaces (`orphan_basis: path_missing`), and every remembered work path classified alive+git / alive+plain / vanished, with macOS case-variant ghosts merged.
-- **Contract** — leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by `stat()` without being opened; pinned by tests. `preserve` is the single deliberate exception: one caller-named file, mask-by-default (`--raw` opts out), no bulk export.
+- **Contract** — leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by `stat()` without being opened; pinned by tests. Three commands deliberately read inside a conversation, and all three act on one target the caller names — never on anything discovered automatically, never during a scan: `preserve` exports one masked transcript (mask-by-default, `--raw` opts out, no bulk export); `title` returns one masked line for display beside a deletion decision, capped short and never an input to a safety judgement; `bind --deep` reads transcript bodies to find file-access evidence and emits only whether such evidence exists.
 
 **friction**, scree's sibling, reads the same four session stores for the opposite question — not what the agents left behind, but where the operator stopped them:
 

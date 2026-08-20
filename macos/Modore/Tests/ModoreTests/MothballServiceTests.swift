@@ -382,7 +382,7 @@ final class SessionPresentationTests: XCTestCase {
     /// A consequence view, not a browser: a hundred and twenty rows
     /// answer "what would I lose" worse than the few that carry the
     /// weight -- and the ones left out have to be named.
-    func test_highlightsAreBoundedAndTheRemainderIsCounted() {
+    func test_highlightsAreBoundedAndTheRemainderIsCounted() throws {
         let repo = RepoInfo(
             path: URL(fileURLWithPath: "/tmp/x"), sizeBytes: 1,
             lastFileMTime: Date(timeIntervalSince1970: 0),
@@ -392,17 +392,35 @@ final class SessionPresentationTests: XCTestCase {
         var candidate = ArchiveCandidate(
             repo: repo, verdict: SafetyClassifier().classify(repo), dormancyDays: 400
         )
-        candidate.continuity = .bindings((0..<120).map { i in
-            SessionBinding(provider: .claude, sessionID: "s\(i)",
-                           source: URL(fileURLWithPath: "/s/\(i).jsonl"),
-                           evidence: [.workingDirectory], confidence: .medium,
-                           sizeBytes: Int64(i))
+        // Real files with real timestamps: selection reads mtime, and a
+        // fixture of nonexistent paths would silently fall back to the
+        // original order and prove nothing.
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "Highlights-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        candidate.continuity = .bindings(try (0..<120).map { i in
+            let file = dir.appending(path: "\(i).jsonl")
+            try Data("{}\n".utf8).write(to: file)
+            // Older as the index grows, and *larger* as it grows too --
+            // so a size-based selection would pick the opposite five.
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 1_800_000_000 - Double(i) * 60)],
+                ofItemAtPath: file.path
+            )
+            return SessionBinding(provider: .claude, sessionID: "s\(i)", source: file,
+                                  evidence: [.workingDirectory], confidence: .medium,
+                                  sizeBytes: Int64(i))
         }, coverage: .complete)
 
         XCTAssertEqual(candidate.topBindings().count, ArchiveCandidate.highlightLimit)
         XCTAssertEqual(candidate.remainingSessionCount, 120 - ArchiveCandidate.highlightLimit)
-        // Largest first, so the five shown are the ones worth most.
-        XCTAssertEqual(candidate.topBindings().first?.sessionID, "s119")
+        // The five most recently touched. Titles exist so someone
+        // recognises the work they were in the middle of, and selecting
+        // on bytes drops a small recent conversation for a large stale
+        // one before any later date sort can see it.
+        XCTAssertEqual(candidate.topBindings().map(\.sessionID), ["s0", "s1", "s2", "s3", "s4"])
     }
 
     /// The cache has to notice a transcript rewritten to the same length,

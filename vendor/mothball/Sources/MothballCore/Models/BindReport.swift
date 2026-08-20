@@ -50,6 +50,9 @@ public struct BindReport: Codable, Sendable, Equatable {
         public let sessionId: String
         public let source: String
         public let subtranscripts: [String]
+        /// Directory `subtranscripts` are relative to, when the binder
+        /// knows it. Absent for stores whose layout the fallback covers.
+        public let artifactRoot: String?
         public let evidence: [String]
         public let confidence: String
         public let sizeBytes: Int64
@@ -112,6 +115,7 @@ extension SessionBinding {
             sessionID: entry.sessionId,
             source: URL(fileURLWithPath: entry.source),
             subtranscripts: entry.subtranscripts.map { URL(fileURLWithPath: $0) },
+            artifactRoot: entry.artifactRoot.map { URL(fileURLWithPath: $0) },
             evidence: evidence,
             confidence: confidence,
             sizeBytes: entry.sizeBytes

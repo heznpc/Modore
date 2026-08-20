@@ -695,3 +695,161 @@ final class ContinuityPreparationTests: XCTestCase {
         XCTAssertEqual(ContinuityPreparation.estimatedBytes(.notAssessed), 0)
     }
 }
+
+/// What a failed seal leaves behind is not an ordinary temp file: it is
+/// a partial copy of the user's transcripts, in the archive directory,
+/// that nobody holds a reference to. The caller cannot clean up a path
+/// it was never handed, so the sealer owns it until it hands it back.
+final class SealFailureCleanupTests: XCTestCase {
+    var scratch: URL!
+
+    override func setUpWithError() throws {
+        scratch = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "SealFail-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let scratch { try? FileManager.default.removeItem(at: scratch) }
+    }
+
+    private func stagingLeftovers() throws -> [URL] {
+        try FileManager.default
+            .contentsOfDirectory(at: scratch, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".mothball-continuity-") }
+    }
+
+    private func readable(_ id: String) throws -> SessionBinding {
+        let store = scratch.appending(path: "store", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        let file = store.appending(path: "\(id).jsonl")
+        try Data("{\"ok\":1}\n".utf8).write(to: file)
+        return SessionBinding(provider: .claude, sessionID: id, source: file,
+                              evidence: [.workingDirectory], confidence: .medium)
+    }
+
+    /// The failure that matters: the first session copies fine, so a
+    /// partial tree exists by the time the second one throws.
+    func test_failureOnASecondSessionLeavesNoPartialCopy() throws {
+        let missing = SessionBinding(
+            provider: .claude, sessionID: "gone",
+            source: scratch.appending(path: "store/never-written.jsonl"),
+            evidence: [.workingDirectory], confidence: .medium
+        )
+        XCTAssertThrowsError(
+            try ContinuitySealer().seal(
+                bindings: [try readable("first"), missing], stagingParent: scratch
+            )
+        )
+        XCTAssertEqual(try stagingLeftovers(), [],
+                       "a failed seal must not leave transcript copies behind")
+    }
+
+    func test_successStillHandsTheStagingTreeToTheCaller() throws {
+        let bundle = try ContinuitySealer().seal(
+            bindings: [try readable("kept")], stagingParent: scratch
+        )
+        XCTAssertEqual(try stagingLeftovers().map(\.lastPathComponent),
+                       [bundle.stagingRoot.lastPathComponent],
+                       "a successful seal keeps the tree for the caller to compress")
+        try FileManager.default.removeItem(at: bundle.stagingRoot)
+    }
+}
+
+/// An editor keeps `workspace.json` *inside* the entry, beside `chat/`
+/// and `panels/`. Inferring the root from the filename put it at
+/// `<entry>/workspace`, so every sibling fell outside and flattened into
+/// digest-prefixed basenames -- two `a.json` from different folders
+/// became two unrelated files and the tree stopped meaning anything.
+final class EditorArtifactRootTests: XCTestCase {
+    var scratch: URL!
+
+    override func setUpWithError() throws {
+        scratch = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "EditorRoot-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let scratch { try? FileManager.default.removeItem(at: scratch) }
+    }
+
+    private func editorBinding(withRoot: Bool) throws -> SessionBinding {
+        let entry = scratch.appending(path: "workspaceStorage/abc", directoryHint: .isDirectory)
+        for folder in ["chat", "panels"] {
+            try FileManager.default.createDirectory(
+                at: entry.appending(path: folder, directoryHint: .isDirectory),
+                withIntermediateDirectories: true
+            )
+            try Data("{\"in\":\"\(folder)\"}\n".utf8)
+                .write(to: entry.appending(path: "\(folder)/a.json"))
+        }
+        let manifest = entry.appending(path: "workspace.json")
+        try Data("{\"folder\":\"file:///w\"}\n".utf8).write(to: manifest)
+        return SessionBinding(
+            provider: .vscode, sessionID: "abc", source: manifest,
+            subtranscripts: [entry.appending(path: "chat/a.json"),
+                             entry.appending(path: "panels/a.json")],
+            artifactRoot: withRoot ? entry : nil,
+            evidence: [.workingDirectory], confidence: .medium
+        )
+    }
+
+    func test_editorStateKeepsItsDirectoryStructure() throws {
+        let bundle = try ContinuitySealer().seal(
+            bindings: [try editorBinding(withRoot: true)], stagingParent: scratch
+        )
+        defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
+        let sealed = bundle.stagingRoot.appending(path: "sessions/vscode/abc")
+        for folder in ["chat", "panels"] {
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: sealed.appending(path: "\(folder)/a.json").path),
+                "\(folder)/a.json must keep its folder"
+            )
+        }
+    }
+
+    /// Same files, no stated root: the old inference, kept as a test so
+    /// the regression is visible rather than remembered.
+    func test_withoutAStatedRootTheTreeCollapses() throws {
+        let bundle = try ContinuitySealer().seal(
+            bindings: [try editorBinding(withRoot: false)], stagingParent: scratch
+        )
+        defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
+        let sealed = bundle.stagingRoot.appending(path: "sessions/vscode/abc")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: sealed.appending(path: "chat/a.json").path),
+            "this is the layout the binder must not leave to inference"
+        )
+        // Both survive as bytes, which is why the loss is quiet.
+        XCTAssertEqual(bundle.sessions.first?.fileCount, 3)
+    }
+
+    /// The agent stores keep working on the fallback: transcript beside a
+    /// directory of the same stem.
+    func test_agentStoresStillWorkWithoutAStatedRoot() throws {
+        let store = scratch.appending(path: "store", directoryHint: .isDirectory)
+        let dir = store.appending(path: "s", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: dir.appending(path: "subagents", directoryHint: .isDirectory),
+            withIntermediateDirectories: true
+        )
+        let transcript = store.appending(path: "s.jsonl")
+        try Data("{}\n".utf8).write(to: transcript)
+        let sub = dir.appending(path: "subagents/agent.jsonl")
+        try Data("{}\n".utf8).write(to: sub)
+
+        let bundle = try ContinuitySealer().seal(
+            bindings: [SessionBinding(
+                provider: .claude, sessionID: "s", source: transcript,
+                subtranscripts: [sub], evidence: [.workingDirectory], confidence: .medium
+            )],
+            stagingParent: scratch
+        )
+        defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: bundle.stagingRoot
+                .appending(path: "sessions/claude/s/subagents/agent.jsonl").path
+        ))
+    }
+}

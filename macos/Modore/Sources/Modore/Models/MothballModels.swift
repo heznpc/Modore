@@ -102,17 +102,27 @@ struct ArchiveCandidate: Identifiable {
         boundSessions.isEmpty ? tierLabel : "대화 \(boundSessions.count)개"
     }
 
-    /// The bindings worth putting a title on, most recent first.
+    /// The bindings worth putting a title on, most recently touched
+    /// first.
     ///
     /// A retirement screen is a consequence view, not a browser: the
     /// question is "what would I lose", and a list of a hundred and
     /// twenty answers it worse than the few that carry most of the
     /// weight. Full exploration belongs on the AI 세션 screen.
     func topBindings(_ limit: Int = ArchiveCandidate.highlightLimit) -> [SessionBinding] {
+        // By recency, not by size. The titles exist so someone recognises
+        // the work they were in the middle of, and selecting on bytes
+        // drops a small recent conversation for a large stale one before
+        // the date sort downstream ever sees it.
         boundSessions
-            .sorted { $0.sizeBytes > $1.sizeBytes }
+            .sorted { Self.lastActive($0) > Self.lastActive($1) }
             .prefix(limit)
             .map { $0 }
+    }
+
+    static func lastActive(_ binding: SessionBinding) -> Date {
+        (try? binding.source.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate ?? .distantPast
     }
 
     static let highlightLimit = 5
