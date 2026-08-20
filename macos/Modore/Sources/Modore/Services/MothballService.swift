@@ -102,17 +102,31 @@ enum MothballService {
         _ candidates: [ArchiveCandidate],
         projectRoot: URL
     ) async -> [ArchiveCandidate] {
+        guard !candidates.isEmpty else { return candidates }
+        guard let execution = await Task.detached(priority: .userInitiated, operation: {
+            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
+        }).value else {
+            // Every candidate keeps its `.notAssessed` default -- the
+            // honest answer, and the one the gate refuses to archive
+            // from. A binder that could not run must not leave a repo
+            // looking session-free.
+            return candidates
+        }
+
+        /// Use complete, bounded batch evidence and disclose scan limits before presenting retirement decisions.
+        let outcomes = await ScreeService.bindAll(
+            execution: execution,
+            targets: candidates.map { ($0.repo.path, $0.repo.git.originURL) }
+        )
+
         var out: [ArchiveCandidate] = []
         out.reserveCapacity(candidates.count)
         for candidate in candidates {
             var updated = candidate
-            let outcome = await ScreeService.bind(
-                projectRoot: projectRoot,
-                workspace: candidate.repo.path,
-                repoURL: candidate.repo.git.originURL
-            )
-            updated.continuity = outcome.assessment
-            updated.continuityDiagnostic = outcome.diagnostic
+            if let outcome = outcomes[candidate.repo.path.path] {
+                updated.continuity = outcome.assessment
+                updated.continuityDiagnostic = outcome.diagnostic
+            }
             out.append(updated)
         }
         // Re-sort once bindings are known. `rankCandidates` orders by repo
