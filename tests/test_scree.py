@@ -1217,3 +1217,65 @@ def test_gemini_with_no_sessions_at_all_is_still_complete(bind_home):
     """chats 자체가 없으면 확인할 후보가 없는 것이지 못 확인한 게 아니다."""
     out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
     assert out["coverageDetail"]["gemini"] == "complete"
+
+
+# --- 저장소 지문 (봉인 전후 재검증) ----------------------------------------
+
+
+def test_fingerprint_changes_when_a_session_is_added(bind_home):
+    """assessment는 어떤 순간에 대한 진술이다. 수백 MB를 봉인하는 동안
+    에이전트가 턴을 하나 끝내고 새 세션을 쓸 수 있다."""
+    before = scree.store_fingerprint(bind_home["home"])
+    _write(bind_home["home"] / ".claude" / "projects" / "-slug-new" / "fresh.jsonl",
+           _jsonl({"cwd": str(bind_home["repo"])}))
+    after = scree.store_fingerprint(bind_home["home"])
+    assert before["digest"] != after["digest"]
+    assert after["fileCount"] == before["fileCount"] + 1
+
+
+def test_fingerprint_changes_when_a_session_is_rewritten_to_the_same_size(bind_home):
+    """timestamp만 보면 '가장 새 파일이 더 새로운가'를 묻게 된다. 실제 질문은
+    '내가 판정한 그 후보 집합이 맞는가'이고, 덮어쓰기도 그 답을 바꾼다."""
+    target = bind_home["home"] / ".claude" / "projects" / "-slug-flowship" / "sess-main.jsonl"
+    before = scree.store_fingerprint(bind_home["home"])
+    original = target.read_text(encoding="utf-8")
+    target.write_text(original[:-1] + "\n", encoding="utf-8")
+    os.utime(target, (0, 0))
+    after = scree.store_fingerprint(bind_home["home"])
+    assert before["digest"] != after["digest"]
+    assert after["fileCount"] == before["fileCount"]
+
+
+def test_fingerprint_changes_when_a_session_disappears(bind_home):
+    before = scree.store_fingerprint(bind_home["home"])
+    (bind_home["home"] / ".claude" / "projects" / "-slug-flowship" / "sess-wt.jsonl").unlink()
+    after = scree.store_fingerprint(bind_home["home"])
+    assert before["digest"] != after["digest"]
+
+
+def test_fingerprint_is_stable_when_nothing_moves(bind_home):
+    assert (scree.store_fingerprint(bind_home["home"])
+            == scree.store_fingerprint(bind_home["home"]))
+
+
+def test_fingerprint_covers_every_bindable_store(bind_home):
+    """바인더가 읽는 저장소 중 지문에서 빠진 게 있으면, 그 저장소의 변화는
+    재검증을 그냥 통과한다."""
+    _gemini_session(bind_home["home"], bind_home["repo"], "gf")
+    entry = (bind_home["home"] / "Library" / "Application Support" / "Code"
+             / "User" / "workspaceStorage" / "wf")
+    baseline = scree.store_fingerprint(bind_home["home"])["digest"]
+
+    _write(entry / "workspace.json", json.dumps({"folder": f"file://{bind_home['repo']}"}))
+    assert scree.store_fingerprint(bind_home["home"])["digest"] != baseline
+
+
+def test_bind_carries_the_fingerprint_it_was_taken_with(bind_home):
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    assert out["storeFingerprint"] == scree.store_fingerprint(bind_home["home"])
+
+
+def test_fingerprint_cli_emits_json(bind_home, capsys):
+    assert scree.main(["fingerprint", "--home", str(bind_home["home"])]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"digest", "fileCount"}

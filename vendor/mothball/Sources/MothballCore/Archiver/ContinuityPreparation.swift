@@ -52,6 +52,28 @@ public enum ContinuityPreparation {
         )
     }
 
+    /// Whether a repo still looks the way it did when it was assessed.
+    ///
+    /// Compares the facts the safety judgement rested on, not everything
+    /// git knows: a new untracked scratch file is not a reason to refuse,
+    /// a moved HEAD or newly-dirty tree is. Kept here rather than in the
+    /// caller so both apps refuse on the same grounds.
+    public static func gitDrift(from before: GitMetadata, to after: GitMetadata) -> String? {
+        if before.headSHA != after.headSHA {
+            return "커밋이 변경됐습니다 (\(before.headSHA ?? "없음") → \(after.headSHA ?? "없음"))"
+        }
+        if before.isDirty != after.isDirty {
+            return after.isDirty ? "커밋되지 않은 변경이 새로 생겼습니다" : "작업 트리 상태가 바뀌었습니다"
+        }
+        if before.aheadOfOrigin != after.aheadOfOrigin {
+            return "푸시되지 않은 커밋 수가 바뀌었습니다"
+        }
+        if before.currentBranch != after.currentBranch {
+            return "브랜치가 바뀌었습니다"
+        }
+        return nil
+    }
+
     /// Uncompressed bytes `seal` would copy, so a caller can show the
     /// cost before agreeing to it rather than after.
     public static func estimatedBytes(_ assessment: ContinuityAssessment) -> Int64 {

@@ -1070,6 +1070,43 @@ def unbound_stores_present(home: Path) -> list[str]:
     return sorted(set(present))
 
 
+def store_fingerprint(home: Path) -> dict:
+    """Digest over every candidate file in every bindable store.
+
+    An assessment is a statement about a moment. Sealing hundreds of
+    megabytes takes long enough for an agent to finish a turn and write a
+    new session, and nothing about "these are the bound conversations"
+    stays true across that. A timestamp would not catch it either -- the
+    question is not "is the newest file newer" but "is this the same set
+    of candidates I judged", which a rewritten or removed file changes
+    just as much as an added one.
+
+    Metadata only: paths, sizes, mtimes. Nothing here opens a file.
+    """
+    hasher = hashlib.sha256()
+    count = 0
+    for path in sorted(
+        list((home / ".claude" / "projects").glob("*/*.jsonl"))
+        + list((home / ".codex" / "sessions").rglob("*.jsonl"))
+        + list((home / ".codex" / "archived_sessions").rglob("*.jsonl"))
+        + list((home / ".gemini" / "tmp").glob("*/chats/*.json"))
+        + [meta for _, folder in VSCODE_FORKS
+           for meta in (home / "Library" / "Application Support" / folder
+                        / "User" / "workspaceStorage").glob("*/workspace.json")]
+    ):
+        try:
+            stat = path.stat()
+        except OSError:
+            # A file that vanished between listing and stat is itself a
+            # change, and folding its path in keeps that visible.
+            hasher.update(f"{path}\0missing\n".encode("utf-8"))
+            count += 1
+            continue
+        hasher.update(f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode("utf-8"))
+        count += 1
+    return {"digest": hasher.hexdigest(), "fileCount": count}
+
+
 def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None,
                    deep: bool = False) -> dict:
     """The whole output of `bind`.
@@ -1131,6 +1168,9 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
             "unboundStores": unbound,
         },
         "assessed": True,
+        # Taken with the bindings so a later caller can ask whether the
+        # stores still look the way they did when this answer was true.
+        "storeFingerprint": store_fingerprint(home),
         "bindings": bindings,
         "summary": {
             "total": len(bindings),
@@ -1533,6 +1573,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                            "(slower; finds sessions that ran elsewhere but worked here)")
     bind.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    fingerprint = sub.add_parser(
+        "fingerprint", help="digest of every bindable session store, to detect drift")
+    fingerprint.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     title = sub.add_parser(
         "title", help="one-line title for ONE named session (display only, never gate input)")
     title.add_argument("source", type=Path, help="session file path from a bind result")
@@ -1564,6 +1608,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"wrote {args.out}")
         else:
             print(text)
+        return 0
+
+    if args.command == "fingerprint":
+        print(json.dumps(store_fingerprint(args.home), ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "title":

@@ -940,3 +940,121 @@ final class ArtifactKeyTests: XCTestCase {
             URL(fileURLWithPath: "/tmp/base/elsewhere"), within: root))
     }
 }
+
+/// Records whether a `@Sendable` closure ran, without the data race a
+/// captured `var` would be.
+actor RanFlag {
+    private(set) var value = false
+    func mark() { value = true }
+}
+
+/// An assessment is a statement about a moment. Sealing hundreds of
+/// megabytes takes long enough for the tree to move or an agent to write
+/// a new session, and every check upstream of the archive ran on the
+/// older world.
+final class RevalidationTests: XCTestCase {
+    var repo: TempGitRepo!
+    var archiveDir: URL!
+
+    override func setUp() async throws {
+        try XCTSkipUnless(
+            FileManager.default.isExecutableFile(atPath: "/usr/bin/git") &&
+            FileManager.default.isExecutableFile(atPath: "/usr/bin/tar"),
+            "git and tar both required at /usr/bin"
+        )
+        repo = try TempGitRepo()
+        archiveDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "Reval-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: archiveDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() async throws {
+        repo?.cleanup()
+        if let archiveDir { try? FileManager.default.removeItem(at: archiveDir) }
+    }
+
+    private func repoInfo() async throws -> RepoInfo {
+        try await repo.initialize()
+        try repo.writeFile("README.md")
+        try await repo.commit("initial")
+        try await repo.fakePushedOrigin()
+        let scanned = await RepoScanner().scan(roots: [repo.url.deletingLastPathComponent()])
+        return try XCTUnwrap(scanned.first { $0.path.standardizedFileURL == repo.url.standardizedFileURL })
+    }
+
+    private func orchestrator() -> ArchiveOrchestrator {
+        ArchiveOrchestrator(configuration: .init(
+            archiveDirectory: archiveDir, zstdLevel: 1,
+            compressionTimeout: .seconds(60), verificationTimeout: .seconds(30)
+        ))
+    }
+
+    /// A refusal here must cost nothing but the seal that already
+    /// happened -- no archive, no sidecar, and the original untouched.
+    func test_aFailedRevalidationWritesNothingAndKeepsTheOriginal() async throws {
+        let info = try await repoInfo()
+        do {
+            _ = try await orchestrator().archive(
+                info, continuity: .assessedNoSessions,
+                revalidate: {
+                    throw ArchiveOrchestrator.ArchiveError.revalidationFailed(
+                        reason: "봉인 중 새 세션이 생겼습니다"
+                    )
+                }
+            )
+            XCTFail("a failed revalidation must stop the archive")
+        } catch ArchiveOrchestrator.ArchiveError.revalidationFailed(let reason) {
+            XCTAssertEqual(reason, "봉인 중 새 세션이 생겼습니다")
+        }
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(at: archiveDir, includingPropertiesForKeys: nil),
+            []
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo.url.path))
+    }
+
+    /// It runs after the gate, so a workspace that was going to be
+    /// refused anyway is refused for the reason that came first.
+    func test_theGateStillDecidesBeforeRevalidationRuns() async throws {
+        let info = try await repoInfo()
+        let revalidated = RanFlag()
+        do {
+            _ = try await orchestrator().archive(
+                info, continuity: .notAssessed,
+                revalidate: { await revalidated.mark() }
+            )
+            XCTFail("expected the gate to refuse")
+        } catch ArchiveOrchestrator.ArchiveError.continuityRefused {
+            let ran = await revalidated.value
+            XCTAssertFalse(ran, "an ungated archive must not pay for a revalidation")
+        }
+    }
+
+    func test_apassingRevalidationLetsTheArchiveThrough() async throws {
+        let info = try await repoInfo()
+        let result = try await orchestrator().archive(
+            info, continuity: .assessedNoSessions, revalidate: {}
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.archive.path))
+    }
+
+    /// Git drift compares the facts the safety judgement rested on. A new
+    /// untracked scratch file is not a reason to refuse; a moved HEAD is.
+    func test_gitDriftNamesWhatChanged() {
+        let base = GitMetadata(lastCommitDate: nil, isDirty: false, aheadOfOrigin: 0,
+                               originURL: "o", currentBranch: "main", headSHA: "aaa")
+        XCTAssertNil(ContinuityPreparation.gitDrift(from: base, to: base))
+
+        let moved = GitMetadata(lastCommitDate: nil, isDirty: false, aheadOfOrigin: 0,
+                                originURL: "o", currentBranch: "main", headSHA: "bbb")
+        XCTAssertTrue(ContinuityPreparation.gitDrift(from: base, to: moved)?.contains("커밋") ?? false)
+
+        let dirty = GitMetadata(lastCommitDate: nil, isDirty: true, aheadOfOrigin: 0,
+                                originURL: "o", currentBranch: "main", headSHA: "aaa")
+        XCTAssertNotNil(ContinuityPreparation.gitDrift(from: base, to: dirty))
+
+        let branched = GitMetadata(lastCommitDate: nil, isDirty: false, aheadOfOrigin: 0,
+                                   originURL: "o", currentBranch: "other", headSHA: "aaa")
+        XCTAssertNotNil(ContinuityPreparation.gitDrift(from: base, to: branched))
+    }
+}
