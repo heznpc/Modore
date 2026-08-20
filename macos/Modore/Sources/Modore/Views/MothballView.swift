@@ -160,30 +160,40 @@ struct MothballCandidateSection: View {
     @ViewBuilder
     private func boundSessionList(_ candidate: ArchiveCandidate) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(candidate.boundSessions.prefix(Self.boundSessionDisplayLimit), id: \.sessionID) { binding in
+            ForEach(candidate.presentations) { session in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("\(binding.provider.rawValue) · \(binding.sessionID)")
-                            .font(.caption.monospaced())
-                        Text(Self.evidenceText(binding))
+                        Text(session.title)
+                            .font(.caption)
+                        Text(Self.subtitle(session))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if preserveInFlightSource == binding.source.path {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Button("내용 보기") { onPreserve(binding) }
-                            .buttonStyle(.link)
-                            .font(.caption)
-                            .disabled(preserveInFlightSource != nil)
+                    if let binding = candidate.boundSessions.first(where: {
+                        $0.sessionID == session.sessionID && $0.provider == session.provider
+                    }) {
+                        if preserveInFlightSource == binding.source.path {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("내용 보기") { onPreserve(binding) }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                                .disabled(preserveInFlightSource != nil)
+                        }
                     }
                 }
             }
-            if candidate.boundSessions.count > Self.boundSessionDisplayLimit {
-                // Say what was cut rather than ending the list silently:
-                // a truncated list reads as a complete one.
-                Text("외 \(candidate.boundSessions.count - Self.boundSessionDisplayLimit)개는 표시하지 않았습니다.")
+            if candidate.presentations.isEmpty && !candidate.boundSessions.isEmpty {
+                Text("제목을 읽는 중…")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if candidate.remainingSessionCount > 0 {
+                // Say what was left out rather than ending the list
+                // silently: a list that stops at five reads as a repo with
+                // five conversations rather than a hundred and twenty.
+                Text("외 \(candidate.remainingSessionCount)개는 AI 세션 화면에서 볼 수 있습니다.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -191,6 +201,28 @@ struct MothballCandidateSection: View {
         .padding(.leading, 32)
         .padding(.top, 4)
     }
+
+    /// Provider, when it was last touched, and how big -- plus a marker
+    /// when the title was inferred rather than quoted. A guessed label
+    /// shown with the same confidence as a real request is how a person
+    /// decides against a conversation they never actually saw.
+    static func subtitle(_ session: SessionPresentation) -> String {
+        var parts = ["\(session.provider.displayName) \(session.kindLabel)"]
+        if let last = session.lastActiveAt {
+            parts.append(Self.dayFormatter.string(from: last))
+        }
+        parts.append(ByteCountFormatter.string(fromByteCount: session.sizeBytes, countStyle: .file))
+        if session.titleSource.isWeak {
+            parts.append("제목 추정")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "M월 d일"
+        return f
+    }()
 
     /// What the whole list amounts to, stated once at the top.
     ///

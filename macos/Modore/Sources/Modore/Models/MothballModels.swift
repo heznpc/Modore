@@ -83,6 +83,10 @@ struct ArchiveCandidate: Identifiable {
     /// True while the repo still has conversations that only exist in the
     /// provider's own store — the state `ContinuityGate` refuses to
     /// archive from.
+    /// Titles for the few sessions this row actually shows. Empty until
+    /// they are fetched, and never consulted by the gate.
+    var presentations: [SessionPresentation] = []
+
     /// The sessions themselves, so the row can offer to open one. Empty
     /// unless a binder has run and found some.
     var boundSessions: [SessionBinding] {
@@ -96,6 +100,25 @@ struct ArchiveCandidate: Identifiable {
     /// on.
     var trailingLabel: String {
         boundSessions.isEmpty ? tierLabel : "대화 \(boundSessions.count)개"
+    }
+
+    /// The bindings worth putting a title on, most recent first.
+    ///
+    /// A retirement screen is a consequence view, not a browser: the
+    /// question is "what would I lose", and a list of a hundred and
+    /// twenty answers it worse than the few that carry most of the
+    /// weight. Full exploration belongs on the AI 세션 screen.
+    func topBindings(_ limit: Int = ArchiveCandidate.highlightLimit) -> [SessionBinding] {
+        boundSessions
+            .sorted { $0.sizeBytes > $1.sizeBytes }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    static let highlightLimit = 5
+
+    var remainingSessionCount: Int {
+        max(0, boundSessions.count - ArchiveCandidate.highlightLimit)
     }
 
     var hasUnsealedSessions: Bool {

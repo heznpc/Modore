@@ -223,6 +223,46 @@ extension ScreeService {
 }
 
 extension ScreeService {
+    /// Reads a one-line title for a session the caller names.
+    ///
+    /// Display only. The result never reaches `ContinuityAssessment` or
+    /// the gate: a title is a guess at what a conversation was about, and
+    /// nothing that decides whether a workspace may be deleted is allowed
+    /// to rest on a guess. It is also the first thing this app keeps from
+    /// the inside of a conversation, so it stays masked, one line, and
+    /// fetched for the handful of sessions actually shown.
+    static func title(
+        execution: RuntimeExecutionContext,
+        binding: SessionBinding,
+        homeOverride: URL? = nil
+    ) async -> SessionPresentation? {
+        var arguments = ["title", binding.source.path,
+                         "--label", binding.provider.displayName + " 작업"]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        guard case .success(let output) = await invoke(
+            execution: execution, arguments: arguments, timeout: 30
+        ), let start = output.firstIndex(of: "{"),
+           let data = output[start...].data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(TitlePayload.self, from: data) else {
+            return nil
+        }
+        let modified = (try? binding.source.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate
+        return SessionPresentation(
+            provider: binding.provider,
+            sessionID: binding.sessionID,
+            title: decoded.title,
+            titleSource: TitleSource(rawValue: decoded.titleSource) ?? .date,
+            lastActiveAt: modified,
+            sizeBytes: binding.sizeBytes
+        )
+    }
+
+    private struct TitlePayload: Decodable {
+        let title: String
+        let titleSource: String
+    }
+
     private enum RawOutcome {
         case success(String)
         case timedOut
