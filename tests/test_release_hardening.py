@@ -1325,6 +1325,83 @@ def test_release_ships_frictions_and_the_mcp_surfaces_dependencies(project_root)
         assert script in module.MACOS_FILES
 
 
+# MothballCore's destructive half. These are linked into Modore's binary by the
+# vendor dependency but must stay unreachable from Modore's own code until the
+# approval discipline below is satisfied.
+MOTHBALL_DESTRUCTIVE_SYMBOLS = (
+    "ArchiveOrchestrator",
+    "Restorer",
+    "ArchiveRun",
+    "trashItem",
+)
+
+
+def test_modore_cannot_reach_mothballs_destructive_api_without_the_approval_gate(project_root):
+    """Absorbing Mothball absorbed two different deletion disciplines, and only
+    one of them is Modore's.
+
+    Modore destroys nothing without a preview that issues a single-use 64-byte
+    approval token, a 15-minute owner-only manifest naming canonical paths and
+    measured sizes, a remeasure at the destructive boundary, and a receipt --
+    `create_approval_manifest` / `consume_approval_manifest` in cleanup.sh, the
+    token check in CleanupModels.swift, the staging in RuntimeWorkspace. That
+    chain is what README's "destruction is gated on an on-screen human
+    approval" actually refers to.
+
+    MothballCore's `ArchiveOrchestrator.archive()` is careful in its own right
+    -- it refuses `/` and `$HOME`, verifies the archive before touching the
+    original, and moves to Trash rather than unlinking -- but it is an
+    IN-PROCESS Swift call that takes no token and consumes no manifest. It is
+    already compiled into Modore's binary through the vendor dependency, so
+    nothing but this test stands between a future `try orchestrator.archive(…)`
+    in a view action and a second deletion path that the approval chain never
+    sees.
+
+    Wiring it is allowed. Wiring it *around* the token is not: any file that
+    reaches the destructive API must also carry the approval symbol, so the
+    reviewer of that diff is looking at both halves at once. Today no file
+    reaches it at all, and this test says so out loud rather than leaving it to
+    be rediscovered.
+    """
+    sources = sorted((project_root / "macos" / "Modore" / "Sources").rglob("*.swift"))
+    assert sources, "expected Modore Swift sources to exist"
+
+    unguarded: list[str] = []
+    for path in sources:
+        text = path.read_text(encoding="utf-8")
+        # Comments explain the boundary; only code may not cross it.
+        code = "\n".join(line for line in text.splitlines()
+                          if not line.lstrip().startswith(("//", "///", "*")))
+        touched = [sym for sym in MOTHBALL_DESTRUCTIVE_SYMBOLS if sym in code]
+        if not touched:
+            continue
+        if "approvalToken" not in code:
+            rel = path.relative_to(project_root)
+            unguarded.append(f"{rel}: {', '.join(touched)}")
+
+    assert not unguarded, (
+        "Mothball's destructive API is reachable from Modore without the "
+        "approval-token discipline. Route it through the preview/approve/"
+        "execute chain -- or, if this is deliberate, say why here:\n  "
+        + "\n  ".join(unguarded))
+
+
+def test_the_shipped_mothball_surface_is_scan_and_classify_only(project_root):
+    """The other half of the same boundary, stated positively: what Modore
+    actually uses from MothballCore today is its read-only git inspection.
+
+    Pinned because the import is what makes the destructive half available --
+    `import MothballCore` brings the whole module, not the two types
+    MothballService names -- so the harmless-looking line is the one worth
+    keeping under review."""
+    service = (project_root / "macos" / "Modore" / "Sources" / "Modore"
+               / "Services" / "MothballService.swift").read_text(encoding="utf-8")
+    assert "RepoScanner()" in service
+    assert "SafetyClassifier" in service
+    for destructive in MOTHBALL_DESTRUCTIVE_SYMBOLS:
+        assert destructive not in service
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="swift build is macOS-only")
 def test_release_extracted_swift_package_actually_builds(project_root, tmp_path):
     """Ground truth for the Package.swift -> vendor/mothball local dependency:
