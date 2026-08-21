@@ -45,6 +45,19 @@ final class ScanModel: ObservableObject {
     @Published var sessionIndexError: String?
     /// What the person typed into the browser's search field.
     @Published var sessionSearch = ""
+    /// Titles for sessions a screen has shown, keyed by source path.
+    /// Display only -- no judgment reads these.
+    @Published var sessionTitles: [String: SessionTitle] = [:]
+    /// Sources already asked for, so a scrolling list does not re-request
+    /// the same rows every time it redraws.
+    var titleRequests: Set<String> = []
+    /// Which project the Work screen has selected, and which session
+    /// inside it. Selection, not navigation: the panes are always there.
+    @Published var selectedProjectID: String?
+    @Published var selectedSessionSource: String?
+    /// The project whose retirement sheet is open. Retirement is an action
+    /// on a project, not a place in the sidebar.
+    @Published var retirementReview: WorkProject?
     @Published var archiveInspectionFailures = 0
     @Published var archiveLoading = false
     @Published var pendingLoginItemRemoval: PendingLoginItemRemoval?
