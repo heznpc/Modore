@@ -34,10 +34,17 @@ final class ScanModel: ObservableObject {
     @Published var screeError: String?
     @Published var screePreserveInFlightSource: String?
     @Published var archiveCandidates: [ArchiveCandidate]?
-    /// Conversations a person opened, keyed by transcript path.
-    /// Display-only cache; never consulted by any judgment.
-    @Published var sessionConversations: [String: SessionConversation] = [:]
-    var conversationLoading: Set<String> = []
+    /// Conversations a person opened, and how each fetch went, keyed by
+    /// the transcript's byte identity rather than its path -- see
+    /// `loadConversation`. Display-only cache; never consulted by any
+    /// judgment.
+    @Published var conversationLoads: [String: ConversationLoadState] = [:]
+    /// The session browser's index, and how fetching it went.
+    @Published var sessionIndex: SessionIndex?
+    @Published var sessionIndexLoading = false
+    @Published var sessionIndexError: String?
+    /// What the person typed into the browser's search field.
+    @Published var sessionSearch = ""
     @Published var archiveInspectionFailures = 0
     @Published var archiveLoading = false
     @Published var pendingLoginItemRemoval: PendingLoginItemRemoval?

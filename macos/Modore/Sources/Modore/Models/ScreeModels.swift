@@ -1,4 +1,5 @@
 import Foundation
+import MothballCore
 
 /// Decodes `python3 scripts/scree.py report --json`. scree is metadata-only and
 /// read-only: this model surfaces its judgment, it never triggers a delete.
@@ -208,3 +209,81 @@ struct ScreeLineagePath: Identifiable {
         caseVariants = (json["case_variants"] as? [String]) ?? []
     }
 }
+
+/// One session as the browser lists it: metadata only, no body.
+///
+/// Deliberately not a `SessionBinding`. A binding is an answer to "which
+/// repo does this belong to"; most of what the machine holds was never
+/// asked that question, and requiring a binding to appear in a listing is
+/// what kept the browser from existing.
+struct SessionIndexEntry: Identifiable, Equatable, Decodable {
+    let tool: String
+    let source: String
+    let workspace: String
+    let workspaceExists: Bool
+    /// `session` or `workspace_state`, straight from scree.
+    let kind: String
+    let sizeBytes: Int64
+    let lastActive: String
+
+    var id: String { source }
+    var sourceURL: URL { URL(fileURLWithPath: source) }
+
+    /// The workspace's last component, or the transcript's own name when
+    /// no workspace was recorded — never a blank row.
+    var displayLabel: String {
+        guard !workspace.isEmpty else { return sourceURL.lastPathComponent }
+        return URL(fileURLWithPath: workspace).lastPathComponent
+    }
+
+    var sizeText: String {
+        ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
+    }
+
+    /// Provider identity for the conversation cache key. The listing
+    /// speaks scree's display names; the cache speaks MothballCore's.
+    var provider: SessionProvider {
+        switch tool.lowercased() {
+        case "claude": return .claude
+        case "codex": return .codex
+        case "gemini": return .gemini
+        case "cursor": return .cursor
+        case "windsurf": return .windsurf
+        case "kiro": return .kiro
+        case "antigravity": return .antigravity
+        default: return .vscode
+        }
+    }
+
+    /// Only agent transcripts hold a conversation to open; an editor's
+    /// per-workspace state does not.
+    ///
+    /// Taken from the store's own kind rather than inferred from the
+    /// provider name, so a store scree classifies one way and this app
+    /// names another cannot drift into offering a conversation that is
+    /// not there.
+    var isReadable: Bool { kind == "session" && provider.keepsTranscripts }
+
+    var subtitle: String {
+        var parts = [tool, isReadable ? "대화" : "편집기 상태", lastActive, sizeText]
+        if !workspace.isEmpty && !workspaceExists {
+            parts.append("작업 경로 소멸")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// What a search matches against. Path included: people look for a
+    /// session by the project it ran in as often as by its name.
+    var searchHaystack: String {
+        "\(displayLabel)\n\(workspace)\n\(tool)\n\(source)".lowercased()
+    }
+}
+
+/// The index plus how much of it was returned.
+struct SessionIndex: Decodable, Equatable {
+    /// Sessions before the cap, so the view can say what it is not showing
+    /// rather than presenting a truncated list as the whole machine.
+    let total: Int
+    let sessions: [SessionIndexEntry]
+}
+

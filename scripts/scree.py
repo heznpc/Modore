@@ -23,8 +23,8 @@ Judgment limits (preview-grade evidence, not deletion authorization):
   remote; any destructive consumer must revalidate before acting.
 
 Content-reading commands (the deliberate exceptions to the no-content
-contract above). Both act on one session the caller names — never on
-anything discovered automatically — and both mask by default:
+contract above). All four act on one session the caller names — never on
+anything discovered automatically — and all four mask by default:
 - `scree.py preserve <source>` writes a masked Markdown export of one
   transcript, the same shape as hydroject's `export`;
 - `scree.py title <source>` returns one masked line: the first user
@@ -589,6 +589,64 @@ def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = N
         stores.append(entry)
     expiring.sort(key=lambda e: (e["days_left"], -e["size_bytes"]))
     return {"stores": stores, "expiring": expiring}
+
+
+SESSIONS_DEFAULT_LIMIT = 500
+
+
+def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
+    """Every session this build can see, as metadata, most recent first.
+
+    The index a browser needs, and nothing more. `report` groups sessions
+    by workspace to answer "what is piling up"; a person looking for one
+    conversation they had last Tuesday is asking a different question,
+    and answering it by scrolling a grouped summary is why that screen
+    had no way to find anything.
+
+    Metadata only, deliberately: this is a listing, so it runs over every
+    store on the machine, and a listing that opened thousands of
+    transcripts to describe them would be a content read of the whole
+    disk on every refresh. Bodies are read one at a time, by name,
+    through `inspect` -- when someone asks for that one.
+    """
+    records = (collect_codex(home)[0] + collect_claude(home)[0]
+               + collect_vscode_forks(home)[0] + collect_gemini(home)[0])
+    sessions = []
+    for item in records:
+        # Editor workspace state is listed alongside agent transcripts.
+        # Modore's boundary is durable local state that outlived whatever
+        # made it, not conversations specifically -- and a browser that
+        # hid the VS Code entry would hide something a person retiring a
+        # folder is about to lose. Whether an entry has a readable
+        # conversation is a separate question, answered by its store.
+        if item.get("kind") not in ("session", "workspace_state"):
+            continue
+        if not item.get("source"):
+            continue
+        workspace = item.get("workspace") or ""
+        sessions.append({
+            "tool": item["tool"],
+            "source": item["source"],
+            "workspace": workspace,
+            # Stated, not implied by an empty string: a session whose
+            # workspace is gone and one that never recorded a workspace
+            # are different things to a person deciding what to keep.
+            "workspaceExists": bool(workspace) and Path(workspace).exists(),
+            # Editors keep per-workspace state, not a transcript; saying
+            # "대화" for both overstates what a `workspace.json` is.
+            "kind": item["kind"],
+            "sizeBytes": item["size_bytes"],
+            "lastActive": time.strftime(
+                "%Y-%m-%d %H:%M", time.localtime(item["last_active"])),
+            "lastActiveEpoch": item["last_active"],
+        })
+    sessions.sort(key=lambda s: (-s["lastActiveEpoch"], s["source"]))
+    # `total` is the count before the cap, so a caller can say what it is
+    # not showing rather than presenting a truncated list as the whole.
+    return {
+        "total": len(sessions),
+        "sessions": sessions[:limit] if limit > 0 else sessions,
+    }
 
 
 def build_scree(home: Path) -> dict:
@@ -1566,21 +1624,32 @@ TITLE_BOILERPLATE = {
 }
 
 
-def _turns_from_session(source: Path) -> list[tuple[str, str]]:
-    """(role, text) for one session, whatever container the provider uses.
+def _read_session_turns(source: Path) -> tuple[list[tuple[str, str]], str]:
+    """`(turns, status)` for one session.
 
-    Shared with `preserve` at the decoder rather than by calling it: the
-    export writes an entire transcript to disk as Markdown, and a title
-    needs a handful of user turns. Reusing the whole flow to get a title
-    would read and render everything to throw nearly all of it away.
+    The status is the half that matters. A transcript that vanished
+    between binding and reading is the normal case here -- providers
+    sweep their own stores -- and "no conversation" and "the conversation
+    can no longer be read" are different facts to put in front of someone
+    deciding whether to delete something. Returning `[]` for both is the
+    same collapse the coverage work spent its length preventing, and it
+    reappeared the moment a new reader was written.
+
+    Status is one of `ok`, `missing`, `unreadable`, `unrecognized`.
     """
+    if not source.exists():
+        return ([], "missing")
     turns: list[tuple[str, str]] = []
     if source.suffix == ".json":
         try:
             payload = json.loads(source.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
-            return []
-        messages = payload.get("messages") if isinstance(payload, dict) else None
+        except OSError:
+            return ([], "unreadable")
+        except json.JSONDecodeError:
+            return ([], "unrecognized")
+        if not isinstance(payload, dict):
+            return ([], "unrecognized")
+        messages = payload.get("messages")
         for message in messages or []:
             if not isinstance(message, dict):
                 continue
@@ -1594,7 +1663,9 @@ def _turns_from_session(source: Path) -> list[tuple[str, str]]:
             turn = _extract_turn({"message": normalised})
             if turn:
                 turns.append(turn)
-        return turns
+        return (turns, "ok")
+
+    decoded_any = False
     try:
         with source.open("r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -1604,13 +1675,28 @@ def _turns_from_session(source: Path) -> list[tuple[str, str]]:
                     parsed = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                decoded_any = True
                 if isinstance(parsed, dict):
                     turn = _extract_turn(parsed)
                     if turn:
                         turns.append(turn)
     except OSError:
-        return []
-    return turns
+        return ([], "unreadable")
+    # A JSONL file none of whose lines parsed is not an empty
+    # conversation; it is a file this build cannot read.
+    if not decoded_any and source.stat().st_size > 0:
+        return ([], "unrecognized")
+    return (turns, "ok")
+
+
+def _turns_from_session(source: Path) -> list[tuple[str, str]]:
+    """Turns only, for callers that already treat absence as absence.
+
+    `title` is one: a session it cannot read gets a date-shaped fallback,
+    which is honest on its own terms. `inspect` needs the status and uses
+    `_read_session_turns` directly.
+    """
+    return _read_session_turns(source)[0]
 
 
 def _is_user_role(role: str) -> bool:
@@ -1756,7 +1842,7 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
     its own explicit act.
     """
     provider = _session_provider(source, home)
-    turns = _turns_from_session(source)
+    turns, status = _read_session_turns(source)
 
     def clip(text: str) -> str:
         cleaned = " ".join(text.split())
@@ -1788,6 +1874,10 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
                        if _is_user_role(role) and text.strip()), None)
     window = turns[-turn_limit:] if turn_limit > 0 else []
     return {
+        # `ok` / `missing` / `unreadable` / `unrecognized`. A caller that
+        # shows "no conversation" for anything but `ok` is telling
+        # someone about to delete this that there was nothing to lose.
+        "status": status,
         "provider": provider,
         "sessionId": _file_access_session_id(
             provider if provider in ("claude", "codex", "gemini") else "claude", source),
@@ -1795,8 +1885,13 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
         "messageCount": len(turns),
         "userTurnCount": sum(1 for role, _ in turns if _is_user_role(role)),
         "firstUserTurn": first_user,
-        "turns": [{"role": role, "text": clip(text)}
-                  for role, text in window if text.strip()],
+        # `index` is the turn's ordinal in the window, because a display
+        # needs stable identity and the obvious substitute -- role plus
+        # text -- collides on exactly the case the dedupe rule
+        # deliberately preserves: the same person saying the same thing
+        # twice with a reply in between.
+        "turns": [{"index": position, "role": role, "text": clip(text)}
+                  for position, (role, text) in enumerate(window) if text.strip()],
         "omittedTurns": max(0, len(turns) - len(window)),
         "masked": not raw,
     }
@@ -1892,6 +1987,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                          help="disable masking (explicit opt-out, off by default)")
     inspect.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    sessions = sub.add_parser(
+        "sessions", help="metadata index of every visible session, newest first (no bodies read)")
+    sessions.add_argument("--limit", type=int, default=SESSIONS_DEFAULT_LIMIT,
+                          help="sessions to return; 0 for all")
+    sessions.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     fingerprint = sub.add_parser(
         "fingerprint", help="digest of every bindable session store, to detect drift")
     fingerprint.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
@@ -1966,6 +2067,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"inspect: {exc}", file=sys.stderr)
             return 1
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "sessions":
+        print(json.dumps(build_sessions(args.home, limit=args.limit),
+                         ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "fingerprint":

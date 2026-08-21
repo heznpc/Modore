@@ -149,25 +149,130 @@ enum MothballService {
 }
 
 extension ScanModel {
-    /// Loads one session's conversation when a person opens it. Keyed by
-    /// source path; fetched once, kept only for this screen's lifetime.
-    func loadConversation(for binding: SessionBinding) {
-        let key = binding.source.path
-        guard sessionConversations[key] == nil,
-              !conversationLoading.contains(key) else { return }
-        conversationLoading.insert(key)
+    /// Loads one session's conversation when a person opens it.
+    ///
+    /// Keyed by the bytes, not the path. A live agent appends to its
+    /// transcript while this screen is open, so a path-keyed entry is
+    /// stale the moment the session it describes continues -- and the
+    /// staleness is invisible, because the path still resolves. The
+    /// title cache already answers this with `PresentationCacheKey`
+    /// (file identity + mtime + size); the same question gets the same
+    /// key rather than a second, weaker one.
+    ///
+    /// `retry` exists because a failure is cached like anything else:
+    /// without it, the one thing a person does after seeing an error is
+    /// the one thing that cannot re-run.
+    func loadConversation(for binding: SessionBinding, retry: Bool = false) {
+        let key = conversationKey(for: binding)
+        if retry {
+            conversationLoads[key] = nil
+        } else if conversationLoads[key] != nil {
+            return
+        }
+        conversationLoads[key] = .loading
         let root = projectRoot
         Task {
-            defer { conversationLoading.remove(key) }
             guard let execution = await Task.detached(priority: .userInitiated, operation: {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else { return }
-            if let conversation = await ScreeService.inspect(
-                execution: execution, binding: binding
-            ) {
-                sessionConversations[key] = conversation
+            }).value else {
+                conversationLoads[key] = .failed("서명된 실행 런타임을 확인하지 못했습니다.")
+                return
+            }
+            switch await ScreeService.inspect(execution: execution, binding: binding) {
+            case .success(let conversation):
+                conversationLoads[key] = .loaded(conversation)
+            case .failure(let error):
+                conversationLoads[key] = .failed(error.message)
             }
         }
+    }
+
+    /// Loads the session browser's index. Metadata only -- no transcript
+    /// body is opened to build it.
+    func refreshSessionIndex() {
+        guard !sessionIndexLoading else { return }
+        sessionIndexLoading = true
+        sessionIndexError = nil
+        let root = projectRoot
+        Task {
+            defer { sessionIndexLoading = false }
+            guard let execution = await Task.detached(priority: .userInitiated, operation: {
+                RuntimeWorkspace.prepareExecution(projectRoot: root)
+            }).value else {
+                sessionIndexError = "서명된 실행 런타임을 확인하지 못했습니다."
+                return
+            }
+            switch await ScreeService.sessions(execution: execution) {
+            case .success(let index):
+                sessionIndex = index
+            case .failure(let error):
+                sessionIndexError = error.message
+            }
+        }
+    }
+
+    /// Same fetch as `loadConversation(for:)`, for a browser row that has
+    /// a transcript but no binding to any repo.
+    func loadConversation(for entry: SessionIndexEntry, retry: Bool = false) {
+        let key = Self.conversationKey(
+            provider: entry.provider, sessionID: entry.source, source: entry.sourceURL
+        )
+        if retry {
+            conversationLoads[key] = nil
+        } else if conversationLoads[key] != nil {
+            return
+        }
+        conversationLoads[key] = .loading
+        let root = projectRoot
+        let source = entry.sourceURL
+        Task {
+            guard let execution = await Task.detached(priority: .userInitiated, operation: {
+                RuntimeWorkspace.prepareExecution(projectRoot: root)
+            }).value else {
+                conversationLoads[key] = .failed("서명된 실행 런타임을 확인하지 못했습니다.")
+                return
+            }
+            switch await ScreeService.inspect(execution: execution, source: source) {
+            case .success(let conversation):
+                conversationLoads[key] = .loaded(conversation)
+            case .failure(let error):
+                conversationLoads[key] = .failed(error.message)
+            }
+        }
+    }
+
+    func conversationState(for entry: SessionIndexEntry) -> ConversationLoadState? {
+        conversationLoads[Self.conversationKey(
+            provider: entry.provider, sessionID: entry.source, source: entry.sourceURL
+        )]
+    }
+
+    /// The cache identity for one binding's conversation.
+    ///
+    /// Falls back to the path only when the file cannot be stat'd at all
+    /// -- which is itself a state `inspect` will report on, so the fetch
+    /// still has to run rather than being skipped here.
+    nonisolated static func conversationKey(
+        provider: SessionProvider, sessionID: String, source: URL
+    ) -> String {
+        guard let key = PresentationCacheKey(
+            provider: provider, sessionID: sessionID, source: source
+        ) else {
+            return "unstattable:\(provider.rawValue)/\(sessionID)/\(source.path)"
+        }
+        return "\(key.provider.rawValue)/\(key.sessionID)/\(key.fileIdentity)"
+            + "/\(key.modifiedAt.timeIntervalSince1970)/\(key.sizeBytes)"
+    }
+
+    func conversationKey(for binding: SessionBinding) -> String {
+        Self.conversationKey(
+            provider: binding.provider, sessionID: binding.sessionID, source: binding.source
+        )
+    }
+
+    /// What the row should render for this binding right now.
+    func conversationState(for binding: SessionBinding) -> ConversationLoadState? {
+        conversationLoads[conversationKey(for: binding)]
     }
 
     /// Fills in one row's titles when it is opened. Idempotent: a row
