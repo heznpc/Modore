@@ -530,7 +530,7 @@ READ_ONLY = {"readOnlyHint": True, "destructiveHint": False,
 
 TOOLS: list[dict] = [
     {
-        "name": "scree_report",
+        "name": "agent_state_report",
         "title": "Scree — session & residue judgment",
         "description": (
             "What the AI agents on this Mac left behind, judged deterministically and "
@@ -564,7 +564,7 @@ TOOLS: list[dict] = [
         "handler": tool_scree_report,
     },
     {
-        "name": "friction_scan",
+        "name": "operator_friction_report",
         "title": "Friction — where the operator pushed back",
         "description": (
             "Turns in this machine's local AI session transcripts where the operator "
@@ -599,7 +599,7 @@ TOOLS: list[dict] = [
         "handler": tool_friction_scan,
     },
     {
-        "name": "hf_orphans",
+        "name": "model_residue_report",
         "title": "Hugging Face cache — models nothing here names",
         "description": (
             "Which models in this machine's Hugging Face hub cache are referenced by no "
@@ -665,7 +665,7 @@ TOOLS: list[dict] = [
         "handler": tool_mcp_hygiene,
     },
     {
-        "name": "file_access",
+        "name": "agent_file_access",
         "title": "File access — which sessions touched which paths",
         "description": (
             "Reverse index over local Claude Code and Codex transcripts: for each path, "
@@ -765,8 +765,8 @@ TOOLS: list[dict] = [
 # refactor -- is unreachable rather than merely unlisted. Failing closed is the
 # point: "we simply never wrote a destructive tool" is an intention, and this
 # turns it into a mechanism.
-EXPOSED_TOOL_NAMES = frozenset({"scree_report", "friction_scan", "hf_orphans",
-                                "mcp_hygiene", "file_access", "system_scan_summary",
+EXPOSED_TOOL_NAMES = frozenset({"agent_state_report", "operator_friction_report", "model_residue_report",
+                                "mcp_hygiene", "agent_file_access", "system_scan_summary",
                                 "uninstall_residue_report"})
 
 
