@@ -34,6 +34,14 @@ struct ArchiveCandidate: Identifiable {
     /// useless, and hides that the tool itself is what needs fixing.
     var continuityDiagnostic: String?
 
+    /// Whether this repo may be retired at all.
+    ///
+    /// `.unsafe` means active work or unrecoverable-if-archived. Kept as a
+    /// property of the assessment rather than as absence from a list, so
+    /// a screen can show the repo and its state without implying it is a
+    /// candidate.
+    var isRetirementEligible: Bool { verdict.tier != .unsafe }
+
     var pathText: String { repo.path.path }
     var pathLastComponent: String { repo.path.lastPathComponent }
 
