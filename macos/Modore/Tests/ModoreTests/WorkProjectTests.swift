@@ -24,7 +24,7 @@ final class WorkProjectRollupTests: XCTestCase {
                 session("\(repo)/.claude/worktrees/affectionate-cohen-f52bc6"),
                 session("\(repo)/.claude/worktrees/eager-noether-01ab"),
             ],
-            worktrees: [], candidates: [])
+            worktrees: [], assessments: [])
 
         XCTAssertEqual(projects.count, 1,
                        "three agent runs in one repo are one project, not three")
@@ -70,10 +70,14 @@ final class WorkProjectRollupTests: XCTestCase {
             "\(repo)-archive")
     }
 
-    func test_sessionsWithoutAWorkspaceAreNotInventedIntoAProject() {
+    /// Was: dropped entirely. A conversation whose workspace could not be
+    /// resolved still exists, and hiding it after finding it is the
+    /// opposite of what this app is for.
+    func test_sessionsWithoutAWorkspaceAreKeptAsUnassigned() {
         let projects = WorkProjectBuilder.build(
-            sessions: [session("")], worktrees: [], candidates: [])
-        XCTAssertTrue(projects.isEmpty)
+            sessions: [session("")], worktrees: [], assessments: [])
+        XCTAssertEqual(projects.count, 1)
+        XCTAssertTrue(projects[0].isUnassigned)
     }
 
     func test_projectsAreOrderedByMostRecentWork() {
@@ -81,7 +85,7 @@ final class WorkProjectRollupTests: XCTestCase {
             sessions: [
                 session("/Users/example/old", lastActive: "2026-01-01 10:00"),
                 session("/Users/example/new", lastActive: "2026-08-21 10:00"),
-            ], worktrees: [], candidates: [])
+            ], worktrees: [], assessments: [])
         XCTAssertEqual(projects.map(\.name), ["new", "old"])
     }
 
@@ -90,7 +94,7 @@ final class WorkProjectRollupTests: XCTestCase {
             sessions: [
                 session(repo, lastActive: "2026-01-01 10:00"),
                 session(repo, lastActive: "2026-08-21 10:00"),
-            ], worktrees: [], candidates: [])
+            ], worktrees: [], assessments: [])
         XCTAssertEqual(projects.first?.sessions.first?.lastActive, "2026-08-21 10:00")
     }
 
@@ -101,7 +105,7 @@ final class WorkProjectRollupTests: XCTestCase {
             sessions: [
                 session(repo, tool: "Claude"),
                 SessionInspectionFixtures.entry(tool: "VS Code", workspace: repo),
-            ], worktrees: [], candidates: [])
+            ], worktrees: [], assessments: [])
         XCTAssertEqual(projects.first?.sessions.count, 2)
         XCTAssertEqual(projects.first?.conversationCount, 1)
     }
@@ -111,7 +115,7 @@ final class WorkProjectRollupTests: XCTestCase {
             sessions: [session(repo, tool: "Claude"),
                        session(repo, tool: "Claude"),
                        session(repo, tool: "Codex")],
-            worktrees: [], candidates: [])
+            worktrees: [], assessments: [])
         XCTAssertEqual(projects.first?.tools.sorted(), ["Claude", "Codex"])
     }
 }

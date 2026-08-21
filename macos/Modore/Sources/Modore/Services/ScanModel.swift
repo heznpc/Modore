@@ -33,7 +33,10 @@ final class ScanModel: ObservableObject {
     @Published var screeLoading = false
     @Published var screeError: String?
     @Published var screePreserveInFlightSource: String?
-    @Published var archiveCandidates: [ArchiveCandidate]?
+    /// Every repo the scan judged, archivable or not. Named for what it
+    /// is: `rankCandidates` drops `.unsafe` repos, which is right for a
+    /// retirement list and wrong as a project's git state.
+    @Published var repoAssessments: [ArchiveCandidate]?
     /// Conversations a person opened, and how each fetch went, keyed by
     /// the transcript's byte identity rather than its path -- see
     /// `loadConversation`. Display-only cache; never consulted by any
