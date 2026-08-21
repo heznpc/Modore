@@ -4,8 +4,7 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
     case status
     case storage
     case security
-    case aiSessions
-    case archive
+    case work
     case activity
 
     var id: String { rawValue }
@@ -15,12 +14,11 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
         case .status: return "진단"
         case .storage: return "저장공간"
         case .security: return "보안"
-        case .aiSessions: return "AI 세션"
-        // Not "저장소 보관": it sits directly under "저장공간" in the same
-        // sidebar, both start with 저장, and one means disk space while the
-        // other means git repositories. The page is about retiring a repo
-        // and what that would strand, so it says so.
-        case .archive: return "레포 은퇴"
+        // Not "AI 세션": the object here is a project, and sessions are
+        // one of the things it has. The old name also stopped being true
+        // -- worktrees, git state and lineage arrived first on that
+        // screen long before any session did.
+        case .work: return "작업"
         case .activity: return "기록"
         }
     }
@@ -30,8 +28,7 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
         case .status: return "waveform.path.ecg"
         case .storage: return "internaldrive"
         case .security: return "lock.shield"
-        case .aiSessions: return "clock.badge.questionmark"
-        case .archive: return "archivebox"
+        case .work: return "folder.badge.gearshape"
         case .activity: return "clock.arrow.circlepath"
         }
     }
@@ -273,10 +270,8 @@ struct ModernDetailView: View {
             StorageWorkspacePage(section: $storageSection)
         case .security:
             SecurityPage()
-        case .aiSessions:
-            ScreePage()
-        case .archive:
-            MothballPage()
+        case .work:
+            WorkPage()
         case .activity:
             ActivityPage()
         }

@@ -207,7 +207,7 @@ final class BoundSessionRowTests: XCTestCase {
     }
 
     func test_evidenceTextNamesTheEvidenceConfidenceAndSize() {
-        let text = MothballCandidateSection.evidenceText(binding())
+        let text = RetirementPresentation.evidenceText(binding())
         XCTAssertTrue(text.contains("작업 디렉터리"), text)
         XCTAssertTrue(text.contains("보통"), text)
         XCTAssertTrue(text.contains("MB"), text)
@@ -216,17 +216,17 @@ final class BoundSessionRowTests: XCTestCase {
     /// Codex records the remote URL itself, and that is a stronger claim
     /// than a path match — the row has to say which one it is.
     func test_remoteURLEvidenceReadsDifferentlyFromAPathMatch() {
-        let recorded = MothballCandidateSection.evidenceText(
+        let recorded = RetirementPresentation.evidenceText(
             binding(provider: .codex, evidence: [.remoteURL], confidence: .high)
         )
-        let inferred = MothballCandidateSection.evidenceText(binding())
+        let inferred = RetirementPresentation.evidenceText(binding())
         XCTAssertNotEqual(recorded, inferred)
         XCTAssertTrue(recorded.contains("원격 URL"), recorded)
         XCTAssertTrue(recorded.contains("확실"), recorded)
     }
 
     func test_allEvidenceTypesAreLabelled() {
-        let text = MothballCandidateSection.evidenceText(
+        let text = RetirementPresentation.evidenceText(
             binding(evidence: [.remoteURL, .workingDirectory, .fileAccess])
         )
         for fragment in ["원격 URL", "작업 디렉터리", "파일 접근"] {
@@ -237,8 +237,8 @@ final class BoundSessionRowTests: XCTestCase {
     /// A truncated list that ends silently reads as a complete one, and a
     /// repo with 120 bound sessions would otherwise look like it had 20.
     func test_displayLimitIsBoundedSoOneRowCannotBecomeAPage() {
-        XCTAssertGreaterThan(MothballCandidateSection.boundSessionDisplayLimit, 0)
-        XCTAssertLessThanOrEqual(MothballCandidateSection.boundSessionDisplayLimit, 50)
+        XCTAssertGreaterThan(RetirementPresentation.boundSessionDisplayLimit, 0)
+        XCTAssertLessThanOrEqual(RetirementPresentation.boundSessionDisplayLimit, 50)
     }
 }
 
@@ -305,7 +305,7 @@ final class CandidateOrderingTests: XCTestCase {
     }
 
     func test_summaryStatesTheTotalAtRiskRatherThanWhereTheFeatureIsNot() {
-        let summary = MothballCandidateSection.boundSummary([
+        let summary = RetirementPresentation.boundSummary([
             candidate(sizeBytes: 1, sessions: 3, idPrefix: "a"),
             candidate(sizeBytes: 2, sessions: 5, idPrefix: "b"),
             candidate(sizeBytes: 3, sessions: 0),
@@ -320,7 +320,7 @@ final class CandidateOrderingTests: XCTestCase {
     /// candidates. Summing the rows would tell the user they are about to
     /// lose more than exists.
     func test_summaryCountsASessionBoundToTwoCandidatesOnce() {
-        let shared = MothballCandidateSection.boundSummary([
+        let shared = RetirementPresentation.boundSummary([
             candidate(sizeBytes: 1, sessions: 5, idPrefix: "same"),
             candidate(sizeBytes: 2, sessions: 5, idPrefix: "same"),
         ])
@@ -329,7 +329,7 @@ final class CandidateOrderingTests: XCTestCase {
     }
 
     func test_summarySaysSoWhenNothingIsAtRisk() {
-        let summary = MothballCandidateSection.boundSummary([candidate(sizeBytes: 1, sessions: 0)])
+        let summary = RetirementPresentation.boundSummary([candidate(sizeBytes: 1, sessions: 0)])
         XCTAssertTrue(summary.contains("없습니다"), summary)
     }
 }
@@ -360,9 +360,9 @@ final class SessionPresentationTests: XCTestCase {
     /// a quotation is how someone decides against a conversation they
     /// never actually saw.
     func test_inferredTitlesAreMarkedAndQuotedOnesAreNot() {
-        XCTAssertTrue(MothballCandidateSection.subtitle(session(source: .date)).contains("추정"))
-        XCTAssertTrue(MothballCandidateSection.subtitle(session(source: .recentTurn)).contains("추정"))
-        XCTAssertFalse(MothballCandidateSection.subtitle(session(source: .firstRequest)).contains("추정"))
+        XCTAssertTrue(RetirementPresentation.subtitle(session(source: .date)).contains("추정"))
+        XCTAssertTrue(RetirementPresentation.subtitle(session(source: .recentTurn)).contains("추정"))
+        XCTAssertFalse(RetirementPresentation.subtitle(session(source: .firstRequest)).contains("추정"))
     }
 
     /// Every continued session opens with a resumption marker, so a title
@@ -376,7 +376,7 @@ final class SessionPresentationTests: XCTestCase {
     func test_editorStateIsNotLabelledAsAConversation() {
         XCTAssertEqual(session(provider: .claude).kindLabel, "대화")
         XCTAssertEqual(session(provider: .vscode).kindLabel, "편집기 상태")
-        XCTAssertTrue(MothballCandidateSection.subtitle(session(provider: .kiro)).contains("편집기"))
+        XCTAssertTrue(RetirementPresentation.subtitle(session(provider: .kiro)).contains("편집기"))
     }
 
     /// A consequence view, not a browser: a hundred and twenty rows
@@ -497,7 +497,7 @@ final class SummaryDuringLoadingTests: XCTestCase {
     }
 
     func test_unassessedCandidatesAreNotReportedAsHavingNothing() {
-        let loading = MothballCandidateSection.boundSummary([candidate(.notAssessed)])
+        let loading = RetirementPresentation.boundSummary([candidate(.notAssessed)])
         XCTAssertFalse(loading.contains("없습니다"), loading)
         XCTAssertTrue(loading.contains("확인"), loading)
     }
@@ -505,14 +505,14 @@ final class SummaryDuringLoadingTests: XCTestCase {
     /// Once every candidate has actually been assessed, "none" is a
     /// finding and should be stated plainly.
     func test_assessedAndEmptyIsStatedAsAFinding() {
-        let done = MothballCandidateSection.boundSummary([candidate(.assessedNoSessions)])
+        let done = RetirementPresentation.boundSummary([candidate(.assessedNoSessions)])
         XCTAssertTrue(done.contains("없습니다"), done)
     }
 
     func test_theTwoStatesReadDifferently() {
         XCTAssertNotEqual(
-            MothballCandidateSection.boundSummary([candidate(.notAssessed)]),
-            MothballCandidateSection.boundSummary([candidate(.assessedNoSessions)])
+            RetirementPresentation.boundSummary([candidate(.notAssessed)]),
+            RetirementPresentation.boundSummary([candidate(.assessedNoSessions)])
         )
     }
 }
@@ -526,9 +526,9 @@ final class SummaryDuringLoadingTests: XCTestCase {
 /// default.
 final class FormatterIsolationTests: XCTestCase {
     func test_formattersAreCallableWithoutTheMainActor() {
-        XCTAssertGreaterThan(MothballCandidateSection.boundSessionDisplayLimit, 0)
-        XCTAssertFalse(MothballCandidateSection.boundSummary([]).isEmpty)
-        XCTAssertFalse(MothballCandidateSection.evidenceText(
+        XCTAssertGreaterThan(RetirementPresentation.boundSessionDisplayLimit, 0)
+        XCTAssertFalse(RetirementPresentation.boundSummary([]).isEmpty)
+        XCTAssertFalse(RetirementPresentation.evidenceText(
             SessionBinding(provider: .claude, sessionID: "s",
                            source: URL(fileURLWithPath: "/s/s.jsonl"),
                            evidence: [.workingDirectory], confidence: .medium)

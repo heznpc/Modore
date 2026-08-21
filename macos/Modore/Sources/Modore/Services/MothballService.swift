@@ -211,6 +211,66 @@ extension ScanModel {
         }
     }
 
+    /// Everything the Work screen shows, assembled from the three
+    /// scanners that used to own a screen each.
+    var workProjects: [WorkProject] {
+        WorkProjectBuilder.build(
+            sessions: sessionIndex?.sessions ?? [],
+            worktrees: screeReport?.worktreeItems ?? [],
+            candidates: archiveCandidates ?? []
+        )
+    }
+
+    /// Loads what the Work screen needs the moment someone opens it.
+    ///
+    /// Entering the screen *is* the explicit intent -- the privacy line
+    /// this project holds is metadata-only *judgment*, not a rule that a
+    /// listing must be asked for twice. Nothing here reads a transcript
+    /// body; titles are fetched separately, for rows that are actually on
+    /// screen, and are never an input to a verdict.
+    func prepareWorkScreen() {
+        if sessionIndex == nil && !sessionIndexLoading && sessionIndexError == nil {
+            refreshSessionIndex()
+        }
+        if screeReport == nil && !screeLoading && screeError == nil {
+            refreshScreeReport()
+        } else if screeReport != nil && archiveCandidates == nil
+                    && !archiveLoading && archiveError == nil {
+            // The git judgment needs the workspace list the audit
+            // produces, which is why the old page could not start without
+            // it -- the shape of a step in a workflow, not a peer screen.
+            refreshArchiveCandidates()
+        }
+    }
+
+    /// Fetches titles for the rows a screen is about to show, in one pass.
+    ///
+    /// Bounded to what is visible on purpose. Titling every session on the
+    /// machine would be a content read of 7,000 transcripts to label rows
+    /// nobody scrolled to.
+    func loadSessionTitles(for sources: [String]) {
+        let wanted = sources.filter { sessionTitles[$0] == nil && !titleRequests.contains($0) }
+        guard !wanted.isEmpty else { return }
+        titleRequests.formUnion(wanted)
+        let root = projectRoot
+        Task {
+            guard let execution = await Task.detached(priority: .userInitiated, operation: {
+                RuntimeWorkspace.prepareExecution(projectRoot: root)
+            }).value else {
+                titleRequests.subtract(wanted)
+                return
+            }
+            let fetched = await ScreeService.titles(execution: execution, sources: wanted)
+            guard !fetched.isEmpty else {
+                // Let a later pass try again rather than leaving these rows
+                // permanently unlabelled.
+                titleRequests.subtract(wanted)
+                return
+            }
+            sessionTitles.merge(fetched) { _, new in new }
+        }
+    }
+
     /// Same fetch as `loadConversation(for:)`, for a browser row that has
     /// a transcript but no binding to any repo.
     func loadConversation(for entry: SessionIndexEntry, retry: Bool = false) {
@@ -294,7 +354,7 @@ extension ScanModel {
     func refreshArchiveCandidates() {
         guard !archiveLoading else { return }
         guard let report = screeReport else {
-            archiveError = "먼저 AI 세션 감사를 실행하세요."
+            archiveError = "작업 감사를 먼저 실행해야 저장소를 판정할 수 있습니다."
             return
         }
         archiveLoading = true

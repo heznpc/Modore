@@ -23,8 +23,8 @@ Judgment limits (preview-grade evidence, not deletion authorization):
   remote; any destructive consumer must revalidate before acting.
 
 Content-reading commands (the deliberate exceptions to the no-content
-contract above). All four act on one session the caller names — never on
-anything discovered automatically — and all four mask by default:
+contract above). All five act only on sessions the caller names — never on
+anything discovered automatically — and all five mask by default:
 - `scree.py preserve <source>` writes a masked Markdown export of one
   transcript, the same shape as hydroject's `export`;
 - `scree.py title <source>` returns one masked line: the first user
@@ -32,6 +32,11 @@ anything discovered automatically — and all four mask by default:
   deletion decision. It is the smaller exception of the two and the only
   one whose output is retained anywhere, so it is capped to one short
   line and is never an input to a safety judgement.
+- `scree.py titles` returns the same one masked line for many named
+  sessions in one pass, because a screen showing thirty rows should not
+  pay thirty process spawns for their labels. A batch of explicit
+  targets is still not a bulk read of the disk: nothing is discovered
+  here, and the caller names every source.
 - `scree.py bind <workspace> --deep` reads transcript bodies to find
   file-access evidence, and emits only whether such evidence exists.
 - `scree.py inspect <source>` returns one session's conversation for
@@ -591,7 +596,97 @@ def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = N
     return {"stores": stores, "expiring": expiring}
 
 
-SESSIONS_DEFAULT_LIMIT = 500
+def collect_all(home: Path) -> tuple[list[dict], list[dict]]:
+    """Every store, walked once: `(records, statuses)`.
+
+    One definition of "all the stores", so a provider added here reaches
+    the judgment and the browser together. They previously each listed
+    the collectors themselves, which is how Gemini ended up visible to
+    one and invisible to the other.
+
+    Note what this does *not* do: `report` and `sessions` are still
+    separate commands and so still separate processes. Measured on this
+    machine that costs about 0.4s of a 5.6s report -- the report's time
+    is git and worktree inspection, not this traversal -- so collapsing
+    them into one invocation would buy little and couple two answers
+    that are wanted at different moments.
+    """
+    codex_records, codex_status = collect_codex(home)
+    claude_records, claude_status = collect_claude(home)
+    fork_records, fork_statuses = collect_vscode_forks(home)
+    gemini_records, gemini_status = collect_gemini(home)
+    return (
+        codex_records + claude_records + fork_records + gemini_records,
+        [codex_status, claude_status, gemini_status] + fork_statuses,
+    )
+
+
+def collect_gemini_chats(home: Path) -> list[dict]:
+    """Gemini's actual conversations, for the session browser.
+
+    `collect_gemini` deliberately reports the registry -- one
+    `project_state` record per registered project, which is what the
+    retention and lineage judgment wants. The conversations themselves
+    live in `~/.gemini/tmp/*/chats/*.json` and were invisible to every
+    listing, so a screen that named Gemini in its subtitle offered no way
+    to reach a single Gemini chat.
+
+    Workspace identity is `sha256(absolute path)`, recorded per chat as
+    `projectHash`; `projects.json` supplies the paths to hash back. Every
+    chat in one directory shares a workspace, so one file per directory
+    is read to resolve it rather than all of them -- 75 reads instead of
+    4,005 on this machine. A directory whose hash is not in the registry
+    keeps an empty workspace rather than a guessed one: the directory
+    name resembles the workspace's last component, but resembling is not
+    knowing, and this list is read by someone deciding what to delete.
+    """
+    chat_root = home / ".gemini" / "tmp"
+    if not chat_root.is_dir():
+        return []
+
+    known: dict[str, str] = {}
+    registry = home / ".gemini" / "projects.json"
+    if registry.is_file():
+        try:
+            payload = json.loads(registry.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        for path in (payload.get("projects") or {}):
+            if isinstance(path, str):
+                known[hashlib.sha256(path.encode("utf-8")).hexdigest()] = path
+
+    records: list[dict] = []
+    for chats_dir in sorted(chat_root.glob("*/chats")):
+        chats = sorted(chats_dir.glob("*.json"))
+        if not chats:
+            continue
+        workspace = ""
+        for probe in chats:
+            try:
+                head = json.loads(probe.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(head, dict):
+                workspace = known.get(str(head.get("projectHash")), "")
+                break
+        for chat in chats:
+            try:
+                size = chat.stat().st_size
+                mtime = chat.stat().st_mtime
+            except OSError:
+                continue
+            records.append({
+                "kind": "session",
+                "tool": "Gemini",
+                "source": str(chat),
+                "workspace": workspace,
+                "size_bytes": size,
+                "last_active": mtime,
+            })
+    return records
+
+
+SESSIONS_DEFAULT_LIMIT = 0
 
 
 def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
@@ -609,8 +704,13 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
     disk on every refresh. Bodies are read one at a time, by name,
     through `inspect` -- when someone asks for that one.
     """
-    records = (collect_codex(home)[0] + collect_claude(home)[0]
-               + collect_vscode_forks(home)[0] + collect_gemini(home)[0])
+    # `collect_gemini` reports the registry, which is what retention and
+    # lineage want; the browser wants the chats, which live elsewhere. So
+    # the shared walk supplies everything except Gemini, whose registry
+    # records are dropped in favour of the conversations themselves.
+    shared, _ = collect_all(home)
+    records = [item for item in shared if item["tool"] != "Gemini"]
+    records += collect_gemini_chats(home)
     sessions = []
     for item in records:
         # Editor workspace state is listed alongside agent transcripts.
@@ -650,12 +750,7 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
 
 
 def build_scree(home: Path) -> dict:
-    codex_records, codex_status = collect_codex(home)
-    claude_records, claude_status = collect_claude(home)
-    fork_records, fork_statuses = collect_vscode_forks(home)
-    gemini_records, gemini_status = collect_gemini(home)
-    records = codex_records + claude_records + fork_records + gemini_records
-    stores = [codex_status, claude_status, gemini_status] + fork_statuses
+    records, stores = collect_all(home)
 
     # Keyed by casefold, same as build_lineage: a case-insensitive filesystem
     # (macOS default) lets Codex/Claude/Gemini/VS Code each record the same
@@ -1933,6 +2028,33 @@ def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
     return "\n".join(lines)
 
 
+def build_titles_many(sources: list[str], home: Path, *,
+                      raw: bool = False) -> dict:
+    """Titles for the sessions a screen is about to show, in one pass.
+
+    The per-session command is right for one session and wrong for a
+    list: a screen showing thirty rows paid thirty process spawns for
+    them, serially, which is why rows sat on "제목을 읽는 중…" long
+    enough to look broken.
+
+    Still bounded the same way `title` is -- the caller names every
+    source, nothing is discovered here, and each answer is one masked
+    line. A batch of explicit targets is not a bulk read of the disk.
+    """
+    titles = {}
+    for source in sources:
+        if not isinstance(source, str) or not source:
+            continue
+        try:
+            titles[source] = build_title(Path(source), home, raw=raw)
+        except OSError as exc:
+            # One unreadable session must not cost the other twenty-nine
+            # their titles.
+            titles[source] = {"title": None, "titleSource": "error",
+                              "error": str(exc)}
+    return {"titles": titles}
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Judge what AI agents leave behind.")
     sub = parser.add_subparsers(dest="command")
@@ -1990,8 +2112,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     sessions = sub.add_parser(
         "sessions", help="metadata index of every visible session, newest first (no bodies read)")
     sessions.add_argument("--limit", type=int, default=SESSIONS_DEFAULT_LIMIT,
-                          help="sessions to return; 0 for all")
+                          help="sessions to return; 0 (the default) for all")
+    sessions.add_argument("--out", type=Path, default=None,
+                          help="write to this file instead of stdout")
     sessions.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
+    titles_many = sub.add_parser(
+        "titles", help="titles for MANY named sessions in one pass (display only)")
+    titles_many.add_argument("--sources", type=Path, default=None,
+                             help="file holding a JSON array of session paths; default stdin")
+    titles_many.add_argument("--raw", action="store_true",
+                             help="disable masking (explicit opt-out, off by default)")
+    titles_many.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
     fingerprint = sub.add_parser(
         "fingerprint", help="digest of every bindable session store, to detect drift")
@@ -2069,9 +2201,41 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    if args.command == "sessions":
-        print(json.dumps(build_sessions(args.home, limit=args.limit),
+    if args.command == "titles":
+        # stdin rather than argv, same as `bind-all`: a screen's worth of
+        # absolute paths is past what a command line should hold.
+        try:
+            raw_text = (args.sources.read_text(encoding="utf-8")
+                        if args.sources else sys.stdin.read())
+            sources = json.loads(raw_text)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"titles: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(sources, list):
+            print("titles: expected a JSON array of session paths", file=sys.stderr)
+            return 1
+        print(json.dumps(build_titles_many(sources, args.home, raw=args.raw),
                          ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "sessions":
+        payload = json.dumps(build_sessions(args.home, limit=args.limit),
+                             ensure_ascii=False, indent=2)
+        # The answer goes to a file when asked: a full index is 7,205
+        # entries and several megabytes here, past the runner's output
+        # ceiling -- and a limit that exists to stop a runaway subprocess
+        # is the wrong thing to raise for a result that is legitimately
+        # large.
+        if args.out:
+            try:
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                args.out.write_text(payload, encoding="utf-8")
+            except OSError as exc:
+                print(f"sessions: {exc}", file=sys.stderr)
+                return 1
+            print(f"wrote {args.out}")
+        else:
+            print(payload)
         return 0
 
     if args.command == "fingerprint":

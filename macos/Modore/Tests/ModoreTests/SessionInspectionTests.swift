@@ -227,44 +227,61 @@ enum SessionInspectionFixtures {
 /// They do not answer "where is the conversation I had last Tuesday" --
 /// the question that brought most people here, and the one the page had no
 /// way to ask.
-final class SessionBrowserFilterTests: XCTestCase {
-    private let sessions = [
-        SessionInspectionFixtures.entry(
-            tool: "Claude", workspace: "/Users/example/IdeaProjects/Modore",
-            source: "/Users/example/.claude/projects/modore/aaa.jsonl"),
-        SessionInspectionFixtures.entry(
-            tool: "Codex", workspace: "/Users/example/IdeaProjects/AirMCP",
-            source: "/Users/example/.codex/sessions/bbb.jsonl"),
-        SessionInspectionFixtures.entry(
-            tool: "VS Code", workspace: "/Users/example/IdeaProjects/Modore",
-            source: "/Users/example/Library/ws/ccc/workspace.json"),
-    ]
+final class WorkSearchTests: XCTestCase {
+    private func project(
+        _ name: String, tool: String = "Claude", sources: [String] = []
+    ) -> WorkProject {
+        let path = "/Users/example/IdeaProjects/\(name)"
+        return WorkProject(
+            path: path,
+            sessions: sources.map {
+                SessionInspectionFixtures.entry(tool: tool, workspace: path, source: $0)
+            }
+        )
+    }
+
+    private var projects: [WorkProject] {
+        [
+            project("Modore", tool: "Claude",
+                    sources: ["/Users/example/.claude/projects/modore/aaa.jsonl"]),
+            project("AirMCP", tool: "Codex",
+                    sources: ["/Users/example/.codex/sessions/bbb.jsonl"]),
+        ]
+    }
 
     func test_anEmptySearchReturnsEverything() {
-        XCTAssertEqual(
-            ScreeSessionBrowserSection.filter(sessions, search: "   ").count, sessions.count)
+        XCTAssertEqual(WorkListPane.filter(projects, search: "   ").count, 2)
     }
 
-    func test_searchMatchesTheWorkspaceName() {
-        let hits = ScreeSessionBrowserSection.filter(sessions, search: "modore")
-        XCTAssertEqual(hits.count, 2)
+    func test_searchMatchesTheProjectName() {
+        XCTAssertEqual(WorkListPane.filter(projects, search: "modore").map(\.name), ["Modore"])
     }
 
-    func test_searchMatchesTheToolAndIgnoresCase() {
-        XCTAssertEqual(ScreeSessionBrowserSection.filter(sessions, search: "CODEX").count, 1)
+    func test_searchIgnoresCase() {
+        XCTAssertEqual(WorkListPane.filter(projects, search: "AIRMCP").count, 1)
+    }
+
+    /// A search that only the conversations match still finds the project
+    /// -- narrowed to the conversations that matched, so the row shows why
+    /// it is in the list.
+    func test_matchingOnlyAConversationNarrowsTheProject() {
+        let hits = WorkListPane.filter(projects, search: "bbb.jsonl")
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertEqual(hits.first?.sessions.count, 1)
     }
 
     /// Adding a word has to narrow. Typing "claude modore" should not
     /// return everything Claude ever touched.
     func test_extraTermsNarrowRatherThanWiden() {
-        XCTAssertEqual(
-            ScreeSessionBrowserSection.filter(sessions, search: "claude modore").count, 1)
-        XCTAssertTrue(
-            ScreeSessionBrowserSection.filter(sessions, search: "claude airmcp").isEmpty)
+        XCTAssertEqual(WorkListPane.filter(projects, search: "claude modore").count, 1)
+        XCTAssertTrue(WorkListPane.filter(projects, search: "claude airmcp").isEmpty)
     }
 
-    func test_searchMatchesTheTranscriptPath() {
-        XCTAssertEqual(ScreeSessionBrowserSection.filter(sessions, search: "bbb.jsonl").count, 1)
+    func test_theSummaryCountsWhatTheListAmountsTo() {
+        let summary = WorkListPane.summary(projects)
+        XCTAssertNotNil(summary)
+        XCTAssertTrue(summary!.contains("작업 2개"))
+        XCTAssertNil(WorkListPane.summary([]))
     }
 
     /// A session with no recorded workspace still needs a name on the row.
@@ -284,30 +301,5 @@ final class SessionBrowserFilterTests: XCTestCase {
             .subtitle.contains("작업 경로 소멸"))
         XCTAssertFalse(SessionInspectionFixtures.entry(workspace: "", workspaceExists: false)
             .subtitle.contains("작업 경로 소멸"))
-    }
-}
-
-/// A list capped at both ends -- scree's own `--limit` and the view's --
-/// must say what it is not showing, or a truncated list reads as the whole
-/// machine.
-final class SessionBrowserTruncationTests: XCTestCase {
-    func test_nothingIsSaidWhenNothingWasHidden() {
-        XCTAssertNil(ScreeSessionBrowserSection.truncationText(
-            matched: 10, shown: 10, indexed: 10, total: 10))
-    }
-
-    func test_aCappedMatchListSaysSo() {
-        let text = ScreeSessionBrowserSection.truncationText(
-            matched: 200, shown: 50, indexed: 500, total: 500)
-        XCTAssertNotNil(text)
-        XCTAssertTrue(text!.contains("200"))
-        XCTAssertTrue(text!.contains("50"))
-    }
-
-    func test_aCappedIndexSaysSoEvenWhenEveryMatchIsShown() {
-        let text = ScreeSessionBrowserSection.truncationText(
-            matched: 12, shown: 12, indexed: 500, total: 3141)
-        XCTAssertNotNil(text)
-        XCTAssertTrue(text!.contains("3141"))
     }
 }

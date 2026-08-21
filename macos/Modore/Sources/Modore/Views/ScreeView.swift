@@ -1,93 +1,10 @@
 import SwiftUI
 
-/// Displays scree's judgment — read-only. This page never deletes anything;
-/// it is the "what did my AI agents leave behind" evidence scree.py already
-/// computes, brought into the app instead of requiring Terminal.
-struct ScreePage: View {
-    @EnvironmentObject private var model: ScanModel
-
-    var body: some View {
-        Form {
-            Section {
-                if model.screeLoading {
-                    HStack {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("scree 실행 중…")
-                            .foregroundStyle(.secondary)
-                    }
-                } else if let error = model.screeError {
-                    ScreeNoticeRow(
-                        symbol: "exclamationmark.triangle",
-                        title: "scree를 실행하지 못했습니다",
-                        detail: error,
-                        tint: Color.secondary
-                    )
-                } else if model.screeReport == nil {
-                    ScreeNoticeRow(
-                        symbol: "clock.badge.questionmark",
-                        title: "아직 실행하지 않았습니다",
-                        detail: "Claude Code·Codex·Gemini 세션과 워크트리를 메타데이터만으로 판정합니다. 대화 내용은 읽지도 저장하지도 않습니다.",
-                        tint: Color.secondary
-                    )
-                }
-                Button(model.screeReport == nil ? "지금 실행" : "다시 실행") {
-                    model.refreshScreeReport()
-                }
-                .disabled(model.screeLoading)
-            } header: {
-                NativeSectionHeader(
-                    title: "AI 세션 감사",
-                    subtitle: "Claude Code·Codex·Gemini·VS Code 계열 세션을 메타데이터로만 조인·판정합니다. LLM 없음, 삭제 없음.",
-                    value: model.screeReport != nil ? "완료" : ""
-                )
-            }
-
-            if let quota = model.timeQuotaSnapshot {
-                TimeQuotaSection(snapshot: quota)
-            }
-
-            if let report = model.screeReport {
-                // Verdict before inventory. The page opens with what the
-                // owner must not lose and what is about to vanish; how
-                // many sessions each store holds is coverage, not a
-                // finding, and "Codex 2,886개" answers no question anyone
-                // brought to this screen.
-                ScreeWorktreeSection(items: report.worktreeItems, protectedCount: report.protectedWorktreeCount)
-                ScreeExpiringSection(
-                    expiring: report.expiring,
-                    preserveInFlightSource: model.screePreserveInFlightSource,
-                    onPreserve: { model.preserveScreeSession($0) }
-                )
-                ScreeSessionBrowserSection(
-                    index: model.sessionIndex,
-                    loading: model.sessionIndexLoading,
-                    error: model.sessionIndexError,
-                    search: $model.sessionSearch,
-                    conversationStates: model.conversationLoads,
-                    conversationKey: { ScanModel.conversationKey(
-                        provider: $0.provider, sessionID: $0.source, source: $0.sourceURL
-                    ) },
-                    onLoad: { model.refreshSessionIndex() },
-                    onInspect: { model.loadConversation(for: $0) },
-                    onRetryInspect: { model.loadConversation(for: $0, retry: true) }
-                )
-                ScreeLineageSection(summary: report.lineageSummary, unresolvedSessions: report.unresolvedSessions)
-                ScreeStoresSection(stores: report.stores)
-            }
-        }
-        .macSettingsFormStyle()
-        .task {
-            model.refreshTimeQuotaCard()
-        }
-    }
-}
-
 /// TimeQuota's quota.json, read-only -- the deliberate boundary between the
 /// two products (see TimeQuotaCardService). The section only exists while
 /// the file is present, fresh, and parseable, so machines without TimeQuota
 /// never see a trace of it.
-private struct TimeQuotaSection: View {
+struct TimeQuotaSection: View {
     let snapshot: TimeQuotaSnapshot
 
     var body: some View {
@@ -186,7 +103,7 @@ private struct TimeQuotaSection: View {
     }
 }
 
-private struct ScreeNoticeRow: View {
+struct ScreeNoticeRow: View {
     let symbol: String
     let title: String
     let detail: String
@@ -209,7 +126,7 @@ private struct ScreeNoticeRow: View {
     }
 }
 
-private struct ScreeStoresSection: View {
+struct ScreeStoresSection: View {
     let stores: [ScreeStoreStatus]
 
     /// Coverage, demoted from headline to footer. What the verdicts above
@@ -258,7 +175,7 @@ private struct ScreeStoresSection: View {
     }
 }
 
-private struct ScreeExpiringSection: View {
+struct ScreeExpiringSection: View {
     let expiring: [ScreeExpiringSession]
     let preserveInFlightSource: String?
     let onPreserve: (ScreeExpiringSession) -> Void
@@ -309,7 +226,7 @@ private struct ScreeExpiringSection: View {
     }
 }
 
-private struct ScreeWorktreeSection: View {
+struct ScreeWorktreeSection: View {
     let items: [ScreeWorktreeItem]
     let protectedCount: Int
 
@@ -347,7 +264,7 @@ private struct ScreeWorktreeSection: View {
     }
 }
 
-private struct ScreeLineageSection: View {
+struct ScreeLineageSection: View {
     let summary: ScreeLineageSummary
     let unresolvedSessions: Int
 
@@ -364,189 +281,6 @@ private struct ScreeLineageSection: View {
                 subtitle: "세션 기록이 기억하는 모든 작업 경로를 현존·소멸로 분류한 집계입니다.",
                 value: "\(summary.total)곳"
             )
-        }
-    }
-}
-
-
-/// The screen's actual session browser: find one conversation, open it,
-/// read it.
-///
-/// This page opens with verdicts -- what is expiring, which worktrees are
-/// unsafe -- and those answer "what should I act on". They do not answer
-/// "where is the conversation I had last Tuesday", which is the question
-/// that brought most people here, and until now the only way to ask it
-/// was to scroll a grouped summary that named no sessions at all.
-///
-/// Reading a body is still one explicit act per session: the index is
-/// metadata, and nothing here is an input to any verdict.
-struct ScreeSessionBrowserSection: View {
-    let index: SessionIndex?
-    let loading: Bool
-    let error: String?
-    @Binding var search: String
-    let conversationStates: [String: ConversationLoadState]
-    let conversationKey: (SessionIndexEntry) -> String
-    let onLoad: () -> Void
-    let onInspect: (SessionIndexEntry) -> Void
-    let onRetryInspect: (SessionIndexEntry) -> Void
-
-    @State private var open: Set<String> = []
-
-    /// Enough to browse; past this the list is a scroll, not a search.
-    static let displayLimit = 50
-
-    /// Case-insensitive match over label, workspace, tool and path.
-    ///
-    /// `nonisolated static` for the same reason the formatters in
-    /// `MothballCandidateSection` are: it is a pure function over value
-    /// types, and inheriting the view's main-actor isolation would make
-    /// it untestable from anywhere else.
-    nonisolated static func filter(
-        _ sessions: [SessionIndexEntry], search: String
-    ) -> [SessionIndexEntry] {
-        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return sessions }
-        // Every term must match, so adding a word narrows rather than
-        // widens -- typing "claude modore" should not return everything
-        // Claude ever touched.
-        let terms = needle.split(separator: " ").map(String.init)
-        return sessions.filter { entry in
-            let haystack = entry.searchHaystack
-            return terms.allSatisfy { haystack.contains($0) }
-        }
-    }
-
-    /// What the footer has to admit, given a cap at both ends: scree's own
-    /// `--limit` and this view's.
-    nonisolated static func truncationText(
-        matched: Int, shown: Int, indexed: Int, total: Int
-    ) -> String? {
-        var notes: [String] = []
-        if matched > shown {
-            notes.append("일치 \(matched)개 중 \(shown)개만 표시했습니다. 검색어를 좁히세요.")
-        }
-        if total > indexed {
-            notes.append("이 기기의 세션 \(total)개 중 최근 \(indexed)개만 목록에 있습니다.")
-        }
-        return notes.isEmpty ? nil : notes.joined(separator: " ")
-    }
-
-    var body: some View {
-        Section {
-            if let error {
-                Text(error)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Button("다시 시도") { onLoad() }
-                    .buttonStyle(.link)
-            } else if loading {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("세션 목록을 읽는 중…")
-                        .foregroundStyle(.secondary)
-                }
-            } else if index == nil {
-                Text("이 기기의 세션을 찾아 열어봅니다. 목록은 메타데이터만 읽고, 대화 본문은 열어볼 때 하나씩만 읽습니다.")
-                    .foregroundStyle(.secondary)
-                Button("세션 불러오기") { onLoad() }
-            }
-
-            if let index {
-                TextField("세션 검색 (작업 경로·도구·파일명)", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                let matched = Self.filter(index.sessions, search: search)
-                let shown = Array(matched.prefix(Self.displayLimit))
-                if shown.isEmpty {
-                    Text(index.sessions.isEmpty
-                        ? "표시할 세션이 없습니다."
-                        : "검색어와 일치하는 세션이 없습니다.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(shown) { entry in
-                    sessionRow(entry)
-                }
-                if let note = Self.truncationText(
-                    matched: matched.count, shown: shown.count,
-                    indexed: index.sessions.count, total: index.total
-                ) {
-                    Text(note)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        } header: {
-            NativeSectionHeader(
-                title: "세션 찾아보기",
-                subtitle: "이 기기에 남아 있는 AI 세션을 최근 순으로 훑고, 하나를 골라 대화를 읽습니다. 목록은 메타데이터만 읽습니다.",
-                value: index.map { "\($0.total)개" } ?? ""
-            )
-        }
-    }
-
-    @ViewBuilder
-    private func sessionRow(_ entry: SessionIndexEntry) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(entry.displayLabel)
-                        .font(.body.weight(.medium))
-                        .lineLimit(1)
-                    Text(entry.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                // Only where there is a transcript to open. Editor state
-                // is listed -- it is durable local state too -- but it
-                // holds no conversation.
-                if entry.isReadable {
-                    Button(open.contains(entry.source) ? "접기" : "대화 보기") {
-                        if open.contains(entry.source) {
-                            open.remove(entry.source)
-                        } else {
-                            open.insert(entry.source)
-                            onInspect(entry)
-                        }
-                    }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                } else {
-                    Text("편집기 상태")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if entry.isReadable, open.contains(entry.source) {
-                conversationPanel(entry)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    @ViewBuilder
-    private func conversationPanel(_ entry: SessionIndexEntry) -> some View {
-        switch conversationStates[conversationKey(entry)] {
-        case .loaded(let conversation):
-            SessionConversationBody(conversation: conversation)
-        case .failed(let message):
-            VStack(alignment: .leading, spacing: 4) {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("다시 시도") { onRetryInspect(entry) }
-                    .buttonStyle(.link)
-                    .font(.caption)
-            }
-            .padding(8)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
-        case .loading, .none:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("대화를 읽는 중…")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 }

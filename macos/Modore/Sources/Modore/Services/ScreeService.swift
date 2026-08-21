@@ -418,26 +418,86 @@ extension ScreeService {
 
     /// The metadata index behind the session browser, via `scree.py
     /// sessions`. No transcript body is read to build this.
+    /// `limit` 0 means every session. It has to: a cap here is invisible
+    /// to the person searching, who is told the machine holds 7,205
+    /// sessions and then silently allowed to search only the newest few
+    /// hundred of them. Measured, the full walk costs about half a second
+    /// -- the cap was never buying the I/O it appeared to.
     static func sessions(
         execution: RuntimeExecutionContext,
-        limit: Int = 500,
+        limit: Int = 0,
         homeOverride: URL? = nil
     ) async -> Result<SessionIndex, ScreeInspectionError> {
-        var arguments = ["sessions", "--limit", String(limit)]
+        // The answer goes to a file, like `bind-all`'s: a full index runs
+        // to several megabytes, past the runner's output ceiling, and
+        // that ceiling exists to stop a runaway subprocess rather than to
+        // bound a result that is legitimately this large.
+        let resultFile = execution.outputRoot
+            .appending(path: "scree-sessions-\(UUID().uuidString).json")
+        try? FileManager.default.removeItem(at: resultFile)
+        defer { try? FileManager.default.removeItem(at: resultFile) }
+
+        var arguments = ["sessions", "--limit", String(limit), "--out", resultFile.path]
         if let homeOverride { arguments += ["--home", homeOverride.path] }
-        let outcome = await invoke(execution: execution, arguments: arguments, timeout: 120)
-        let output: String
-        switch outcome {
-        case .success(let value): output = value
-        case .timedOut: return .failure(.init(message: "세션 목록을 읽는 데 시간이 너무 걸려 중단했습니다."))
-        case .failure(let message): return .failure(.init(message: message))
+        switch await invoke(execution: execution, arguments: arguments, timeout: 180) {
+        case .timedOut:
+            return .failure(.init(message: "세션 목록을 읽는 데 시간이 너무 걸려 중단했습니다."))
+        case .failure(let message):
+            return .failure(.init(message: message))
+        case .success:
+            guard let data = try? Data(contentsOf: resultFile),
+                  let index = try? JSONDecoder().decode(SessionIndex.self, from: data) else {
+                return .failure(.init(message: "scree가 돌려준 세션 목록 형식을 읽지 못했습니다."))
+            }
+            return .success(index)
         }
-        guard let start = output.firstIndex(of: "{"),
-              let data = output[start...].data(using: .utf8),
-              let index = try? JSONDecoder().decode(SessionIndex.self, from: data) else {
-            return .failure(.init(message: "scree가 돌려준 세션 목록 형식을 읽지 못했습니다."))
+    }
+
+    /// Titles for many named sessions in one pass.
+    ///
+    /// The per-session call is right for one session and wrong for a
+    /// list: a screen showing thirty rows paid thirty process spawns,
+    /// serially, which is why rows sat on "제목을 읽는 중…" long enough
+    /// to look broken.
+    static func titles(
+        execution: RuntimeExecutionContext,
+        sources: [String],
+        homeOverride: URL? = nil
+    ) async -> [String: SessionTitle] {
+        guard !sources.isEmpty,
+              let payload = try? JSONSerialization.data(withJSONObject: sources) else {
+            return [:]
         }
-        return .success(index)
+        // A file, not arguments, for the same reason `bind-all` uses one:
+        // a screen's worth of absolute paths is past what a command line
+        // should be asked to hold.
+        //
+        // Unique per call, because these overlap. A list renders many rows
+        // at once and each asks for its own titles; a shared filename let
+        // one call overwrite another's input and then delete it out from
+        // under a subprocess that was still starting, so every row stayed
+        // on "제목을 읽는 중…" forever.
+        let listing = execution.outputRoot
+            .appending(path: "scree-title-sources-\(UUID().uuidString).json")
+        guard (try? payload.write(to: listing, options: [.atomic])) != nil else { return [:] }
+        defer { try? FileManager.default.removeItem(at: listing) }
+
+        var arguments = ["titles", "--sources", listing.path]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        guard case .success(let output) = await invoke(
+            execution: execution, arguments: arguments, timeout: 120
+        ), let start = output.firstIndex(of: "{"),
+           let data = output[start...].data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(
+            TitlesPayload.self, from: data
+           ) else {
+            return [:]
+        }
+        return decoded.titles
+    }
+
+    private struct TitlesPayload: Decodable {
+        let titles: [String: SessionTitle]
     }
 
     private struct TitlePayload: Decodable {
