@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """scree 계약 테스트: 교차 도구 조인, 고아·보존·워크트리 판정, 메타데이터 전용 보장."""
+import hashlib
+import io
 import json
 import os
 import shutil
@@ -1160,7 +1162,7 @@ def test_content_reading_commands_are_all_declared_in_the_module_contract():
     사람의 기억에 맡기지 않도록, 세 명령이 모듈 docstring에 이름으로 남아
     있는지 고정한다."""
     doc = scree.__doc__ or ""
-    for command in ("preserve", "title", "bind", "inspect"):
+    for command in ("preserve", "title", "titles", "bind", "inspect"):
         assert command in doc, f"{command}가 no-content 계약 설명에 없다"
     assert "never" in doc and "names" in doc
 
@@ -1661,3 +1663,118 @@ def test_sessions_cli_emits_json(bind_home, capsys):
     assert scree.main(["sessions", "--home", str(bind_home["home"]), "--limit", "2"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert "total" in payload and len(payload["sessions"]) <= 2
+
+
+def test_sessions_returns_everything_by_default(bind_home):
+    """500개 cap은 I/O를 아끼지도 않으면서(총계를 세려고 이미 전부 순회한다)
+    검색 능력만 없앴다. 501번째 세션을 찾는 사람에게 Modore는 그 파일을
+    알면서도 찾을 방법을 주지 않았다."""
+    out = scree.build_sessions(bind_home["home"])
+    assert len(out["sessions"]) == out["total"]
+
+
+def test_sessions_includes_gemini_conversations(tmp_path):
+    """collect_gemini는 registry(project_state)를 보고하고, 실제 대화는
+    ~/.gemini/tmp/*/chats/*.json에 있다. 화면이 부제에서 Gemini를 말하면서
+    Gemini 대화에 닿을 방법이 하나도 없었다."""
+    home = tmp_path
+    workspace = "/Users/example/IdeaProjects/demo"
+    digest = hashlib.sha256(workspace.encode("utf-8")).hexdigest()
+    (home / ".gemini").mkdir(parents=True)
+    (home / ".gemini" / "projects.json").write_text(
+        json.dumps({"projects": {workspace: {}}}), encoding="utf-8")
+    chats = home / ".gemini" / "tmp" / "demo" / "chats"
+    chats.mkdir(parents=True)
+    for name in ("a", "b"):
+        (chats / f"{name}.json").write_text(
+            json.dumps({"projectHash": digest, "sessionId": name,
+                        "messages": [{"role": "user", "content": "안녕"}]}),
+            encoding="utf-8")
+
+    out = scree.build_sessions(home)
+    gemini = [s for s in out["sessions"] if s["tool"] == "Gemini"]
+    assert len(gemini) == 2
+    assert {s["workspace"] for s in gemini} == {workspace}
+    assert all(s["kind"] == "session" for s in gemini)
+    # 그리고 그 경로는 실제로 inspect가 읽을 수 있어야 한다.
+    assert scree.build_inspect(Path(gemini[0]["source"]), home)["status"] == "ok"
+
+
+def test_gemini_chats_without_a_registry_entry_admit_they_have_no_workspace(tmp_path):
+    """디렉터리 이름이 워크스페이스 마지막 요소를 닮았다고 해서 아는 것은
+    아니다. 지울지 말지 정하는 사람에게 추측한 경로를 보여주면 안 된다."""
+    home = tmp_path
+    (home / ".gemini").mkdir(parents=True)
+    chats = home / ".gemini" / "tmp" / "looks-like-a-repo" / "chats"
+    chats.mkdir(parents=True)
+    (chats / "a.json").write_text(
+        json.dumps({"projectHash": "0" * 64, "messages": []}), encoding="utf-8")
+
+    gemini = [s for s in scree.build_sessions(home)["sessions"] if s["tool"] == "Gemini"]
+    assert len(gemini) == 1
+    assert gemini[0]["workspace"] == ""
+    assert gemini[0]["workspaceExists"] is False
+
+
+def test_titles_answers_many_named_sessions_in_one_pass(tmp_path):
+    """한 화면이 서른 개 행을 보여주려고 서른 번 프로세스를 띄우면
+    안 된다."""
+    first = _session_with_turns(tmp_path / "a.jsonl", ("user", "결제 오류를 재현해줘"))
+    second = _session_with_turns(tmp_path / "b.jsonl", ("user", "빌드가 깨졌어"))
+    out = scree.build_titles_many([str(first), str(second)], tmp_path)
+    assert set(out["titles"]) == {str(first), str(second)}
+    assert out["titles"][str(first)]["titleSource"] == "first-request"
+    assert "결제" in out["titles"][str(first)]["title"]
+
+
+def test_titles_masks_by_default(tmp_path):
+    src = _session_with_turns(tmp_path / "a.jsonl", ("user", "연락처는 someone@example.com 이야"))
+    out = scree.build_titles_many([str(src)], tmp_path)
+    assert "someone@example.com" not in json.dumps(out, ensure_ascii=False)
+
+
+def test_titles_survives_one_unreadable_session(tmp_path):
+    """한 세션을 못 읽었다고 나머지 스물아홉 개가 제목을 잃으면 안 된다."""
+    good = _session_with_turns(tmp_path / "a.jsonl", ("user", "빌드가 깨졌어"))
+    out = scree.build_titles_many([str(good), str(tmp_path / "gone.jsonl")], tmp_path)
+    assert out["titles"][str(good)]["title"]
+    assert len(out["titles"]) == 2
+
+
+def test_titles_cli_reads_stdin(tmp_path, capsys, monkeypatch):
+    src = _session_with_turns(tmp_path / "a.jsonl", ("user", "빌드가 깨졌어"))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps([str(src)])))
+    assert scree.main(["titles", "--home", str(tmp_path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["titles"][str(src)]["title"]
+
+
+def test_the_judgment_and_the_browser_walk_the_same_stores(bind_home):
+    """프로바이더를 한쪽에만 추가하는 실수를 막는다. Gemini가 정확히 그렇게
+    해서 판정에는 보이고 브라우저에는 안 보였다."""
+    records, statuses = scree.collect_all(bind_home["home"])
+    assert {s["store"] for s in statuses} >= {"Codex", "Claude", "Gemini"}
+    assert records, "픽스처 홈에 기록이 있어야 한다"
+
+
+def test_gemini_keeps_registry_semantics_in_the_report_and_chats_in_the_browser(tmp_path):
+    """report의 Gemini는 등록된 프로젝트(retention·lineage가 원하는 것)이고,
+    브라우저의 Gemini는 대화 자체다. 같은 이름이지만 다른 질문이다."""
+    home = tmp_path
+    workspace = "/Users/example/IdeaProjects/demo"
+    digest = hashlib.sha256(workspace.encode("utf-8")).hexdigest()
+    (home / ".gemini").mkdir(parents=True)
+    (home / ".gemini" / "projects.json").write_text(
+        json.dumps({"projects": {workspace: {}}}), encoding="utf-8")
+    chats = home / ".gemini" / "tmp" / "demo" / "chats"
+    chats.mkdir(parents=True)
+    for name in ("a", "b", "c"):
+        (chats / f"{name}.json").write_text(
+            json.dumps({"projectHash": digest, "messages": []}), encoding="utf-8")
+
+    report = scree.build_scree(home)
+    gemini_store = next(s for s in report["stores"] if s["store"] == "Gemini")
+    assert gemini_store["count"] == 1, "report는 등록된 프로젝트 수를 센다"
+
+    browser = [s for s in scree.build_sessions(home)["sessions"] if s["tool"] == "Gemini"]
+    assert len(browser) == 3, "브라우저는 대화 수를 센다"
