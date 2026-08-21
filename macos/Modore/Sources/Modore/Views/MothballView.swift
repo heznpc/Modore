@@ -62,8 +62,12 @@ struct MothballPage: View {
                     inspectionFailures: model.archiveInspectionFailures,
                     preserveInFlightSource: model.screePreserveInFlightSource,
                     onPreserve: { model.preserveBoundSession($0) },
-                    conversations: model.sessionConversations,
+                    conversationStates: model.conversationLoads,
+                    conversationKey: { ScanModel.conversationKey(
+                        provider: $0.provider, sessionID: $0.sessionID, source: $0.source
+                    ) },
                     onInspect: { model.loadConversation(for: $0) },
+                    onRetryInspect: { model.loadConversation(for: $0, retry: true) },
                     onExpand: { model.loadTitles(for: $0) }
                 )
             }
@@ -80,10 +84,17 @@ struct MothballCandidateSection: View {
     /// explicit at the call site keeps it that way.
     let preserveInFlightSource: String?
     let onPreserve: (SessionBinding) -> Void
-    /// Conversations already fetched, keyed by transcript path.
-    let conversations: [String: SessionConversation]
+    /// How each opened conversation's fetch went, keyed by the
+    /// transcript's byte identity -- so a session that has grown since it
+    /// was read is a cache miss rather than a silently stale panel.
+    let conversationStates: [String: ConversationLoadState]
+    /// Derives that key for a binding. Injected rather than computed here
+    /// so the view stays pure display data over a key the model owns.
+    let conversationKey: (SessionBinding) -> String
     /// Called when a person opens a session's conversation.
     let onInspect: (SessionBinding) -> Void
+    /// Called when a person asks to re-run a fetch that failed.
+    let onRetryInspect: (SessionBinding) -> Void
     /// Called when a row is opened. Titles are read then, not during a
     /// scan: an audit that titled everything would turn every refresh
     /// into a content read of every transcript on the machine.
@@ -209,17 +220,26 @@ struct MothballCandidateSection: View {
                         }
                         Spacer()
                         if let binding {
-                            Button(openConversations.contains(binding.source.path) ? "접기" : "대화 보기") {
-                                let key = binding.source.path
-                                if openConversations.contains(key) {
-                                    openConversations.remove(key)
-                                } else {
-                                    openConversations.insert(key)
-                                    onInspect(binding)
+                            // Only where there is a transcript to open.
+                            // An editor's per-workspace state -- VS Code's
+                            // `workspace.json` and its kin -- is worth
+                            // preserving and worth naming, but it holds no
+                            // conversation, so a "대화 보기" on it opens to
+                            // an empty panel and teaches the reader that
+                            // the button lies.
+                            if binding.provider.keepsTranscripts {
+                                Button(openConversations.contains(binding.source.path) ? "접기" : "대화 보기") {
+                                    let key = binding.source.path
+                                    if openConversations.contains(key) {
+                                        openConversations.remove(key)
+                                    } else {
+                                        openConversations.insert(key)
+                                        onInspect(binding)
+                                    }
                                 }
+                                .buttonStyle(.link)
+                                .font(.caption)
                             }
-                            .buttonStyle(.link)
-                            .font(.caption)
                             if preserveInFlightSource == binding.source.path {
                                 ProgressView().controlSize(.small)
                             } else {
@@ -230,7 +250,8 @@ struct MothballCandidateSection: View {
                             }
                         }
                     }
-                    if let binding, openConversations.contains(binding.source.path) {
+                    if let binding, binding.provider.keepsTranscripts,
+                       openConversations.contains(binding.source.path) {
                         conversationPreview(for: binding)
                     }
                 }
@@ -259,35 +280,12 @@ struct MothballCandidateSection: View {
     /// judgment -- the judgment plane simply never sees this.
     @ViewBuilder
     private func conversationPreview(for binding: SessionBinding) -> some View {
-        if let conversation = conversations[binding.source.path] {
-            VStack(alignment: .leading, spacing: 6) {
-                if let first = conversation.firstUserTurn,
-                   conversation.omittedTurns > 0 {
-                    Text("시작: \(first)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Divider()
-                }
-                ForEach(conversation.turns) { turn in
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(turn.speakerLabel)
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(turn.isUser ? Color.primary : Color.secondary)
-                        Text(turn.text)
-                            .font(.caption)
-                            .foregroundStyle(turn.isUser ? Color.primary : Color.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-                if conversation.omittedTurns > 0 {
-                    Text("이전 \(conversation.omittedTurns)개 턴은 생략됨 — 전체는 '보존'으로 내보내기")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(8)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
-        } else {
+        switch conversationStates[conversationKey(binding)] {
+        case .loaded(let conversation):
+            SessionConversationBody(conversation: conversation)
+        case .failed(let message):
+            inspectionFailure(message, binding: binding)
+        case .loading, .none:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text("대화를 읽는 중…")
@@ -295,6 +293,23 @@ struct MothballCandidateSection: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// A fetch that failed, said plainly, with the one action that can
+    /// answer it. Weight, not hue -- this project reserves chromatic
+    /// status colour for states that mean stop.
+    @ViewBuilder
+    private func inspectionFailure(_ message: String, binding: SessionBinding) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("다시 시도") { onRetryInspect(binding) }
+                .buttonStyle(.link)
+                .font(.caption)
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
     }
 
     /// Provider, when it was last touched, and how big -- plus a marker

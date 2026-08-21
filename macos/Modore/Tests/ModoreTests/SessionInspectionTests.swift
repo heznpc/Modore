@@ -1,0 +1,313 @@
+import XCTest
+import MothballCore
+@testable import Modore
+
+/// The display half of `inspect`. Everything here is a fact the Python
+/// side already pins from its end; these fix that the app does not undo it
+/// on the way to the screen.
+final class SessionConversationDecodingTests: XCTestCase {
+    private func decode(_ json: String) throws -> SessionConversation {
+        try JSONDecoder().decode(SessionConversation.self, from: Data(json.utf8))
+    }
+
+    private func payload(status: String?, turns: String) -> String {
+        let statusLine = status.map { "\"status\": \"\($0)\"," } ?? ""
+        return """
+        {
+          \(statusLine)
+          "provider": "claude",
+          "sessionId": "s1",
+          "workspace": "/Users/example/repo",
+          "messageCount": 3,
+          "userTurnCount": 2,
+          "firstUserTurn": "다시 확인해줘",
+          "turns": \(turns),
+          "omittedTurns": 0,
+          "masked": true
+        }
+        """
+    }
+
+    /// The case the dedupe rule deliberately preserves -- the same person
+    /// saying the same thing twice with a reply in between -- is exactly
+    /// where role-plus-text identity collides, and a `ForEach` given
+    /// duplicate ids silently drops a turn out of the conversation.
+    func test_repeatedTurnsKeepDistinctIdentities() throws {
+        let conversation = try decode(payload(status: "ok", turns: """
+        [
+          {"index": 0, "role": "user", "text": "다시 확인해줘"},
+          {"index": 1, "role": "assistant", "text": "확인했습니다"},
+          {"index": 2, "role": "user", "text": "다시 확인해줘"}
+        ]
+        """))
+        XCTAssertEqual(conversation.turns.count, 3)
+        XCTAssertEqual(Set(conversation.turns.map(\.id)).count, 3,
+                       "a genuine repeat must not collapse into one row")
+        XCTAssertEqual(conversation.turns.map(\.id), [0, 1, 2])
+    }
+
+    func test_everyFailureStatusDecodesToItsOwnCase() throws {
+        for (raw, expected) in [
+            ("ok", SessionConversation.Status.ok),
+            ("missing", .missing),
+            ("unreadable", .unreadable),
+            ("unrecognized", .unrecognized),
+        ] {
+            let conversation = try decode(payload(status: raw, turns: "[]"))
+            XCTAssertEqual(conversation.status, expected)
+        }
+    }
+
+    /// Three different reasons all produce zero turns. Showing them as an
+    /// empty conversation tells someone about to retire a repo that there
+    /// was nothing to lose, so each has to carry its own sentence.
+    func test_failureStatusesEachExplainThemselves() throws {
+        for raw in ["missing", "unreadable", "unrecognized"] {
+            let conversation = try decode(payload(status: raw, turns: "[]"))
+            XCTAssertTrue(conversation.turns.isEmpty)
+            let text = conversation.status.failureText
+            XCTAssertNotNil(text, "\(raw) must not render as an empty conversation")
+            XCTAssertFalse(text!.isEmpty)
+        }
+        let ok = try decode(payload(status: "ok", turns: "[]"))
+        XCTAssertNil(ok.status.failureText, "an empty session is not a failure")
+    }
+
+    /// A status this build has never heard of is still a session it cannot
+    /// show -- decoding must degrade, not throw away the whole payload.
+    func test_anUnknownStatusIsTreatedAsUnreadableRatherThanFailingTheDecode() throws {
+        let conversation = try decode(payload(status: "quarantined", turns: "[]"))
+        XCTAssertEqual(conversation.status, .unrecognized)
+    }
+
+    /// Payloads written before `inspect` reported status only ever came
+    /// from a file it had just read.
+    func test_anAbsentStatusDefaultsToOk() throws {
+        let conversation = try decode(payload(status: nil, turns: """
+        [{"index": 0, "role": "user", "text": "안녕"}]
+        """))
+        XCTAssertEqual(conversation.status, .ok)
+    }
+}
+
+/// A fetch that fails has to leave something behind. Storing only the
+/// success left the row spinning on "대화를 읽는 중…" forever, which reads
+/// as a slow machine rather than as a question that was answered and lost.
+final class ConversationLoadStateTests: XCTestCase {
+    func test_onlyTheLoadedCaseYieldsAConversation() throws {
+        let conversation = try JSONDecoder().decode(SessionConversation.self, from: Data("""
+        {"status": "ok", "provider": "claude", "sessionId": "s", "workspace": null,
+         "messageCount": 0, "userTurnCount": 0, "firstUserTurn": null,
+         "turns": [], "omittedTurns": 0, "masked": true}
+        """.utf8))
+        XCTAssertNotNil(ConversationLoadState.loaded(conversation).conversation)
+        XCTAssertNil(ConversationLoadState.loading.conversation)
+        XCTAssertNil(ConversationLoadState.failed("nope").conversation)
+    }
+}
+
+/// The conversation cache is keyed by the bytes, not the path. A live
+/// agent appends to its transcript while the screen is open, so a
+/// path-keyed entry goes stale invisibly -- the path still resolves.
+final class ConversationCacheKeyTests: XCTestCase {
+    private func makeDirectory() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "ConversationKey-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    func test_appendingToATranscriptChangesItsKey() throws {
+        let dir = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appending(path: "s.jsonl")
+        try Data("{\"a\":1}\n".utf8).write(to: source)
+
+        let before = ScanModel.conversationKey(provider: .claude, sessionID: "s", source: source)
+        try Data("{\"a\":1}\n{\"b\":2}\n".utf8).write(to: source)
+        let after = ScanModel.conversationKey(provider: .claude, sessionID: "s", source: source)
+
+        XCTAssertNotEqual(before, after,
+                          "a session that kept going must be a cache miss, not a stale panel")
+    }
+
+    func test_anUnchangedTranscriptKeepsItsKey() throws {
+        let dir = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appending(path: "s.jsonl")
+        try Data("{\"a\":1}\n".utf8).write(to: source)
+
+        XCTAssertEqual(
+            ScanModel.conversationKey(provider: .claude, sessionID: "s", source: source),
+            ScanModel.conversationKey(provider: .claude, sessionID: "s", source: source)
+        )
+    }
+
+    /// A file that cannot be stat'd still has to produce a key, so the
+    /// fetch runs and `inspect` gets to report on it -- rather than being
+    /// skipped here on a nil.
+    func test_anUnstattableSourceStillYieldsAKey() {
+        let missing = URL(fileURLWithPath: "/nope/\(UUID().uuidString).jsonl")
+        let key = ScanModel.conversationKey(provider: .claude, sessionID: "s", source: missing)
+        XCTAssertFalse(key.isEmpty)
+    }
+
+    /// Two stores that number their sessions alike must not share a key.
+    func test_providersDoNotShareAKey() throws {
+        let dir = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appending(path: "s.jsonl")
+        try Data("x".utf8).write(to: source)
+        XCTAssertNotEqual(
+            ScanModel.conversationKey(provider: .claude, sessionID: "s", source: source),
+            ScanModel.conversationKey(provider: .codex, sessionID: "s", source: source)
+        )
+    }
+}
+
+/// Editors keep per-workspace state, not a transcript. Offering "대화 보기"
+/// on a VS Code `workspace.json` opens an empty panel and teaches the
+/// reader that the button lies.
+final class EditorStateHasNoConversationTests: XCTestCase {
+    func test_onlyAgentProvidersOfferAConversation() {
+        for provider in [SessionProvider.claude, .codex, .gemini] {
+            XCTAssertTrue(provider.keepsTranscripts, "\(provider) holds a transcript")
+        }
+        for provider in [SessionProvider.vscode, .cursor, .windsurf, .kiro, .antigravity] {
+            XCTAssertFalse(provider.keepsTranscripts, "\(provider) holds editor state, not a conversation")
+        }
+    }
+
+    func test_theBrowserRowFollowsTheSameRule() {
+        XCTAssertTrue(SessionInspectionFixtures.entry(tool: "Claude").isReadable)
+        XCTAssertFalse(SessionInspectionFixtures.entry(tool: "VS Code").isReadable)
+        XCTAssertFalse(SessionInspectionFixtures.entry(tool: "Kiro").isReadable)
+    }
+
+    /// The store's own kind wins over the provider name, so a store scree
+    /// classifies one way and this app names another cannot drift into
+    /// offering a conversation that is not there.
+    func test_theStoreKindDecidesRatherThanTheProviderName() {
+        XCTAssertFalse(SessionInspectionFixtures
+            .entry(tool: "Claude", kind: "workspace_state").isReadable)
+    }
+
+    /// Editor state is listed -- it is durable local state too -- but the
+    /// row has to say which it is.
+    func test_theRowNamesWhatItIs() {
+        XCTAssertTrue(SessionInspectionFixtures.entry(tool: "Claude").subtitle.contains("대화"))
+        XCTAssertTrue(SessionInspectionFixtures.entry(tool: "VS Code").subtitle.contains("편집기 상태"))
+    }
+}
+
+enum SessionInspectionFixtures {
+    static func entry(
+        tool: String = "Claude",
+        workspace: String = "/Users/example/IdeaProjects/Modore",
+        workspaceExists: Bool = true,
+        source: String? = nil,
+        kind: String? = nil,
+        lastActive: String = "2026-08-20 10:00"
+    ) -> SessionIndexEntry {
+        let json: [String: Any] = [
+            "tool": tool,
+            "kind": kind ?? (tool == "VS Code" || tool == "Kiro" ? "workspace_state" : "session"),
+            "source": source ?? "/Users/example/.claude/projects/x/\(UUID().uuidString).jsonl",
+            "workspace": workspace,
+            "workspaceExists": workspaceExists,
+            "sizeBytes": 2048,
+            "lastActive": lastActive,
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        return try! JSONDecoder().decode(SessionIndexEntry.self, from: data)
+    }
+}
+
+/// The screen opens with verdicts, which answer "what should I act on".
+/// They do not answer "where is the conversation I had last Tuesday" --
+/// the question that brought most people here, and the one the page had no
+/// way to ask.
+final class SessionBrowserFilterTests: XCTestCase {
+    private let sessions = [
+        SessionInspectionFixtures.entry(
+            tool: "Claude", workspace: "/Users/example/IdeaProjects/Modore",
+            source: "/Users/example/.claude/projects/modore/aaa.jsonl"),
+        SessionInspectionFixtures.entry(
+            tool: "Codex", workspace: "/Users/example/IdeaProjects/AirMCP",
+            source: "/Users/example/.codex/sessions/bbb.jsonl"),
+        SessionInspectionFixtures.entry(
+            tool: "VS Code", workspace: "/Users/example/IdeaProjects/Modore",
+            source: "/Users/example/Library/ws/ccc/workspace.json"),
+    ]
+
+    func test_anEmptySearchReturnsEverything() {
+        XCTAssertEqual(
+            ScreeSessionBrowserSection.filter(sessions, search: "   ").count, sessions.count)
+    }
+
+    func test_searchMatchesTheWorkspaceName() {
+        let hits = ScreeSessionBrowserSection.filter(sessions, search: "modore")
+        XCTAssertEqual(hits.count, 2)
+    }
+
+    func test_searchMatchesTheToolAndIgnoresCase() {
+        XCTAssertEqual(ScreeSessionBrowserSection.filter(sessions, search: "CODEX").count, 1)
+    }
+
+    /// Adding a word has to narrow. Typing "claude modore" should not
+    /// return everything Claude ever touched.
+    func test_extraTermsNarrowRatherThanWiden() {
+        XCTAssertEqual(
+            ScreeSessionBrowserSection.filter(sessions, search: "claude modore").count, 1)
+        XCTAssertTrue(
+            ScreeSessionBrowserSection.filter(sessions, search: "claude airmcp").isEmpty)
+    }
+
+    func test_searchMatchesTheTranscriptPath() {
+        XCTAssertEqual(ScreeSessionBrowserSection.filter(sessions, search: "bbb.jsonl").count, 1)
+    }
+
+    /// A session with no recorded workspace still needs a name on the row.
+    func test_aWorkspacelessSessionFallsBackToItsFileName() {
+        let entry = SessionInspectionFixtures.entry(
+            workspace: "", workspaceExists: false,
+            source: "/Users/example/.claude/projects/x/orphan.jsonl")
+        XCTAssertEqual(entry.displayLabel, "orphan.jsonl")
+    }
+
+    /// "Its workspace is gone" is a fact about what you would lose, so it
+    /// belongs on the row -- but only when there was a workspace at all.
+    func test_aVanishedWorkspaceIsSaidOutLoud() {
+        XCTAssertTrue(SessionInspectionFixtures.entry(workspaceExists: false)
+            .subtitle.contains("작업 경로 소멸"))
+        XCTAssertFalse(SessionInspectionFixtures.entry(workspaceExists: true)
+            .subtitle.contains("작업 경로 소멸"))
+        XCTAssertFalse(SessionInspectionFixtures.entry(workspace: "", workspaceExists: false)
+            .subtitle.contains("작업 경로 소멸"))
+    }
+}
+
+/// A list capped at both ends -- scree's own `--limit` and the view's --
+/// must say what it is not showing, or a truncated list reads as the whole
+/// machine.
+final class SessionBrowserTruncationTests: XCTestCase {
+    func test_nothingIsSaidWhenNothingWasHidden() {
+        XCTAssertNil(ScreeSessionBrowserSection.truncationText(
+            matched: 10, shown: 10, indexed: 10, total: 10))
+    }
+
+    func test_aCappedMatchListSaysSo() {
+        let text = ScreeSessionBrowserSection.truncationText(
+            matched: 200, shown: 50, indexed: 500, total: 500)
+        XCTAssertNotNil(text)
+        XCTAssertTrue(text!.contains("200"))
+        XCTAssertTrue(text!.contains("50"))
+    }
+
+    func test_aCappedIndexSaysSoEvenWhenEveryMatchIsShown() {
+        let text = ScreeSessionBrowserSection.truncationText(
+            matched: 12, shown: 12, indexed: 500, total: 3141)
+        XCTAssertNotNil(text)
+        XCTAssertTrue(text!.contains("3141"))
+    }
+}
