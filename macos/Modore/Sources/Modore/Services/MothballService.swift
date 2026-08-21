@@ -33,12 +33,32 @@ enum MothballService {
         classifier: SafetyClassifier = SafetyClassifier(),
         now: Date = Date()
     ) -> [ArchiveCandidate] {
+        assessRepos(repos: repos, classifier: classifier, now: now)
+            .filter(\.isRetirementEligible)
+    }
+
+    /// Every repo that was scanned, judged, and kept -- including the ones
+    /// that must never be archived.
+    ///
+    /// `rankCandidates` answers "what could be retired", and dropping
+    /// `.unsafe` repos is right for that question. It is exactly wrong as
+    /// a source of a project's git state: dirty trees and unpushed
+    /// commits are what makes a repo `.unsafe`, so the repos carrying the
+    /// most important work were the ones that vanished, leaving the 작업
+    /// screen to mark them clean and put a warning on the dormant repos
+    /// that had nothing wrong with them.
+    static func assessRepos(
+        repos: [RepoInfo],
+        classifier: SafetyClassifier = SafetyClassifier(),
+        now: Date = Date()
+    ) -> [ArchiveCandidate] {
         repos
-            .compactMap { repo -> ArchiveCandidate? in
-                let verdict = classifier.classify(repo, now: now)
-                guard verdict.tier != .unsafe else { return nil }
-                let dormancyDays = max(0, Int(now.timeIntervalSince(repo.lastActivity) / 86_400))
-                return ArchiveCandidate(repo: repo, verdict: verdict, dormancyDays: dormancyDays)
+            .map { repo in
+                ArchiveCandidate(
+                    repo: repo,
+                    verdict: classifier.classify(repo, now: now),
+                    dormancyDays: max(0, Int(now.timeIntervalSince(repo.lastActivity) / 86_400))
+                )
             }
             .sorted { $0.repo.sizeBytes > $1.repo.sizeBytes }
     }
@@ -55,7 +75,10 @@ enum MothballService {
         let roots = candidateRoots(from: lineagePaths)
         guard !roots.isEmpty else { return ([], 0) }
         let report = await RepoScanner().scanReport(roots: roots)
-        return (rankCandidates(repos: report.repos), report.failures.count)
+        // Every assessment, not only the archivable ones. Which of them
+        // may be retired is a question `isRetirementEligible` answers per
+        // repo; the screen also has to say what state the others are in.
+        return (assessRepos(repos: report.repos), report.failures.count)
     }
 
     /// Reads titles for the handful of sessions one row will show, when
@@ -217,7 +240,12 @@ extension ScanModel {
         WorkProjectBuilder.build(
             sessions: sessionIndex?.sessions ?? [],
             worktrees: screeReport?.worktreeItems ?? [],
-            candidates: archiveCandidates ?? []
+            assessments: repoAssessments ?? [],
+            // Every git path the audit saw, so project identity does not
+            // depend on which repos survived the archive classifier or the
+            // scanner's own root limit.
+            gitRoots: (screeReport?.lineagePaths ?? [])
+                .filter(\.hasGit).map(\.path)
         )
     }
 
@@ -234,7 +262,7 @@ extension ScanModel {
         }
         if screeReport == nil && !screeLoading && screeError == nil {
             refreshScreeReport()
-        } else if screeReport != nil && archiveCandidates == nil
+        } else if screeReport != nil && repoAssessments == nil
                     && !archiveLoading && archiveError == nil {
             // The git judgment needs the workspace list the audit
             // produces, which is why the old page could not start without
@@ -338,16 +366,16 @@ extension ScanModel {
     /// Fills in one row's titles when it is opened. Idempotent: a row
     /// already titled is not read again.
     func loadTitles(for candidate: ArchiveCandidate) {
-        guard let index = archiveCandidates?.firstIndex(where: { $0.id == candidate.id }),
-              archiveCandidates?[index].presentations.isEmpty == true,
+        guard let index = repoAssessments?.firstIndex(where: { $0.id == candidate.id }),
+              repoAssessments?[index].presentations.isEmpty == true,
               !candidate.boundSessions.isEmpty else { return }
         let root = projectRoot
         let target = candidate
         Task {
             let titles = await MothballService.titles(for: target, projectRoot: root)
-            guard let current = archiveCandidates?.firstIndex(where: { $0.id == target.id })
+            guard let current = repoAssessments?.firstIndex(where: { $0.id == target.id })
             else { return }
-            archiveCandidates?[current].presentations = titles
+            repoAssessments?[current].presentations = titles
         }
     }
 
@@ -368,9 +396,9 @@ extension ScanModel {
             // it would otherwise hold back a list that is already useful.
             // Until it lands every row reads "AI 세션 확인 안 됨", which is
             // true rather than reassuring.
-            archiveCandidates = outcome.candidates
+            repoAssessments = outcome.candidates
             archiveInspectionFailures = outcome.failureCount
-            archiveCandidates = await MothballService.withContinuity(
+            repoAssessments = await MothballService.withContinuity(
                 outcome.candidates, projectRoot: projectRoot
             )
         }

@@ -20,7 +20,7 @@ struct RetirementReviewSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(project.name)을(를) 은퇴하시겠습니까?")
+                Text("\(project.name) 은퇴 가능성 검토")
                     .font(.title3.weight(.semibold))
                 Text(project.path)
                     .font(.caption)
@@ -38,6 +38,9 @@ struct RetirementReviewSheet: View {
                     if !project.protectedWorktrees.isEmpty {
                         section("보호할 워크트리", rows: worktreeRows)
                     }
+                    if !project.unverifiedWorktrees.isEmpty {
+                        section("확인 못 한 워크트리", rows: unverifiedRows)
+                    }
                     section("보존될 것", rows: preservationRows)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -46,14 +49,17 @@ struct RetirementReviewSheet: View {
 
             Divider()
 
+            // One button, because there is only one thing to do here. A
+            // disabled primary action under a "은퇴하시겠습니까?" title
+            // reads as a confirmation dialog that refuses to confirm; this
+            // screen reviews, and says so.
             HStack {
+                Text("이 검토는 읽기 전용입니다. 은퇴 실행은 아직 없습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Spacer()
-                Button("취소") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("은퇴 준비") { dismiss() }
+                Button("닫기") { dismiss() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(true)
-                    .help("은퇴 실행은 아직 준비되지 않았습니다. 이 검토는 읽기 전용입니다.")
             }
             .padding(20)
         }
@@ -83,7 +89,10 @@ struct RetirementReviewSheet: View {
     }
 
     private var gitRows: [(Bool, String)] {
-        guard let verdict = project.candidate?.verdict else {
+        // The assessment, not the candidate: they are the same object here
+        // (the sheet only opens for an eligible repo) but the git state is
+        // a fact about the repo rather than about its eligibility.
+        guard let verdict = project.assessment?.verdict else {
             return [(false, "이 저장소의 git 상태를 아직 확인하지 못했습니다.")]
         }
         return verdict.reasons.map { reason in
@@ -100,15 +109,65 @@ struct RetirementReviewSheet: View {
         }
     }
 
+    /// What the binder found, not what the index happened to group here.
+    ///
+    /// The index groups by recorded workspace, which is a good way to
+    /// browse and the wrong authority for a retirement decision. The
+    /// binder answers a different question -- which sessions are bound to
+    /// this repo, on what evidence, and whether it managed to look at
+    /// everything -- and that is the answer this screen exists to show.
     private var agentRows: [(Bool, String)] {
-        var rows: [(Bool, String)] = [
-            (true, "대화 \(project.conversationCount)개 · \(project.sizeText)")
-        ]
-        for tool in project.tools {
-            let count = project.sessions.filter { $0.tool == tool }.count
-            rows.append((true, "\(tool) \(count)개"))
+        guard let continuity = project.candidate?.continuity else {
+            return [(false, "이 저장소의 AI 대화 연결을 아직 확인하지 않았습니다.")]
         }
-        return rows
+        switch continuity {
+        case .notAssessed:
+            return [(false, project.candidate?.continuityDiagnostic
+                .map { "AI 대화 연결 확인 실패 · \($0)" } ?? "AI 대화 연결을 확인하지 못했습니다.")]
+        case .assessedNoSessions:
+            return [(true, "이 저장소에 연결된 AI 대화가 없습니다. (전체 확인됨)")]
+        case .bindings(let bindings, let coverage):
+            return bindingRows(bindings, coverage: coverage)
+        case .sealed(let bundle, let coverage):
+            return [(true, "AI 대화 \(bundle.sessions.count)개가 봉인되었습니다.")]
+                + coverageRows(coverage)
+        }
+    }
+
+    private func bindingRows(
+        _ bindings: [SessionBinding], coverage: BindingCoverage
+    ) -> [(Bool, String)] {
+        let bytes = ByteCountFormatter.string(
+            fromByteCount: bindings.reduce(0) { $0 + $1.sizeBytes }, countStyle: .file)
+        var rows: [(Bool, String)] = [(true, "연결된 대화 \(bindings.count)개 · \(bytes)")]
+        // Grouped by how firmly each is bound. "Bound because a path
+        // appeared in the transcript" and "bound because the provider
+        // recorded the remote" are not the same claim.
+        for confidence in [BindingConfidence.high, .medium, .low] {
+            let matching = bindings.filter { $0.confidence == confidence }
+            guard !matching.isEmpty else { continue }
+            rows.append((confidence != .low,
+                         "\(Self.confidenceLabel(confidence)) \(matching.count)개"))
+        }
+        return rows + coverageRows(coverage)
+    }
+
+    /// A partial pass must never round up to a conclusion. Sealing or
+    /// retiring on what an incomplete scan happened to find preserves
+    /// those and abandons the rest, which is worse than refusing because
+    /// it looks like success.
+    private func coverageRows(_ coverage: BindingCoverage) -> [(Bool, String)] {
+        coverage == .complete
+            ? [(true, "모든 세션 저장소를 확인했습니다.")]
+            : [(false, "일부 저장소를 확인하지 못했습니다. 이 숫자는 하한입니다.")]
+    }
+
+    private static func confidenceLabel(_ confidence: BindingConfidence) -> String {
+        switch confidence {
+        case .high: return "확실하게 연결됨"
+        case .medium: return "보통 확신"
+        case .low: return "약한 근거"
+        }
     }
 
     private var worktreeRows: [(Bool, String)] {
@@ -117,16 +176,36 @@ struct RetirementReviewSheet: View {
         }
     }
 
+    /// Unreadable is not safe, and it is not protected either -- calling
+    /// it protected claims knowledge nobody has.
+    private var unverifiedRows: [(Bool, String)] {
+        project.unverifiedWorktrees.map { worktree in
+            (false, "\(URL(fileURLWithPath: worktree.path).lastPathComponent) · \(worktree.branch) · 상태를 읽지 못했습니다")
+        }
+    }
+
     /// What survives the retirement, said plainly. The whole reason the
     /// continuity work exists is that a repo and its conversations are
     /// deleted by different hands, and only this screen knows both.
     private var preservationRows: [(Bool, String)] {
-        guard project.conversationCount > 0 else {
-            return [(true, "이 작업에 연결된 AI 대화가 없습니다.")]
+        guard let continuity = project.candidate?.continuity else {
+            return [(false, "무엇이 보존될지 판단할 근거가 아직 없습니다.")]
         }
-        return [
-            (true, "대화 \(project.conversationCount)개는 각 제공자 저장소에 그대로 남습니다."),
+        // "Nothing would be lost" is a conclusion, and only a complete
+        // pass is allowed to reach it.
+        if case .assessedNoSessions = continuity {
+            return [(true, "이 저장소에 연결된 AI 대화가 없습니다. 잃을 것이 없습니다.")]
+        }
+        guard case .bindings(let bindings, let coverage) = continuity else {
+            return [(true, "봉인된 대화는 아카이브와 함께 보존됩니다.")]
+        }
+        var rows: [(Bool, String)] = [
+            (true, "대화 \(bindings.count)개는 각 제공자 저장소에 그대로 남습니다."),
             (false, "제공자가 자체 보존 기한에 따라 지울 수 있습니다. 남기려면 '보존'으로 내보내세요."),
         ]
+        if coverage != .complete {
+            rows.append((false, "확인하지 못한 저장소가 있어 여기 없는 대화가 더 있을 수 있습니다."))
+        }
+        return rows
     }
 }
