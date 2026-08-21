@@ -26,7 +26,8 @@ def _payload(result: dict) -> dict:
 def test_only_the_read_only_judgment_tools_are_exposed():
     assert sorted(mcp_server.HANDLERS) == ["file_access", "friction_scan",
                                            "hf_orphans", "mcp_hygiene",
-                                           "scree_report", "system_scan_summary"]
+                                           "scree_report", "system_scan_summary",
+                                           "uninstall_residue_report"]
 
 
 def test_every_tool_is_annotated_read_only_and_non_destructive():
@@ -76,8 +77,8 @@ def test_no_tool_can_run_anything_but_the_judgment_scripts(monkeypatch, tmp_path
     assert spawned, "expected the judgment scripts to be invoked"
     for argv in spawned:
         script = Path(argv[3]).name
-        assert script in ("scree.py", "friction.py", "hfscan.py", "mcpaudit.py",
-                          "fileaccess.py"), argv
+        assert script in ("scree.py", "friction.py", "moraine.py", "hfscan.py",
+                          "mcpaudit.py", "fileaccess.py"), argv
         joined = " ".join(argv)
         for forbidden in ("cleanup", "scanner", "storage_watch", "schedule",
                           "preserve", "--raw"):
@@ -121,6 +122,7 @@ def test_a_tool_rejected_by_the_contract_is_unreachable_not_merely_unlisted(monk
 def test_the_judgment_scripts_are_the_declared_targets():
     assert mcp_server.SCREE.name == "scree.py"
     assert mcp_server.FRICTION.name == "friction.py"
+    assert mcp_server.MORAINE.name == "moraine.py"
     assert mcp_server.HFSCAN.name == "hfscan.py"
     assert mcp_server.MCPAUDIT.name == "mcpaudit.py"
     assert mcp_server.FILEACCESS.name == "fileaccess.py"
@@ -177,13 +179,29 @@ _FRICTION_FIXTURE = {
 }
 
 
+_MORAINE_FIXTURE = {
+    "contract": "read-only",
+    "evidence": "preview",
+    "prior_art": "AppCleaner covers the file-sweep half",
+    "sources": [{"source": "receipts", "status": "ok", "count": 2}],
+    "receipts": {"total": 2, "non_apple": 1, "vanished": 1, "sampled": 0,
+                 "vendors": [{"vendor": "com.innorix", "apple": False, "fully_removed": True},
+                             {"vendor": "com.apple", "apple": True, "fully_removed": False}]},
+    "trust_roots": {"total": 2, "orphaned": 1, "unattributed": 1, "unconditional": 1,
+                    "items": [{"name": "INNORIX.CA", "verdict": "orphaned"},
+                              {"name": "AirFRONT", "verdict": "unattributed"}]},
+    "removed_vendors": ["com.innorix"],
+}
+
+
 @pytest.fixture
 def stub_scripts(monkeypatch):
     calls = []
 
     def fake(script, arguments, timeout):
         calls.append((script.name, arguments))
-        return _SCREE_FIXTURE if script.name == "scree.py" else _FRICTION_FIXTURE
+        return {"scree.py": _SCREE_FIXTURE, "friction.py": _FRICTION_FIXTURE,
+                "moraine.py": _MORAINE_FIXTURE}[script.name]
 
     monkeypatch.setattr(mcp_server, "_run_json", fake)
     return calls
@@ -242,6 +260,22 @@ def test_truncation_is_always_accounted_for(stub_scripts):
     assert payload["omitted"] == 1
 
 
+def test_moraine_report_forwards_the_correlated_verdict(stub_scripts):
+    payload = _payload(_call("uninstall_residue_report", {"section": "all", "limit": 10}))
+    assert payload["summary"]["trust_roots_orphaned"] == 1
+    assert payload["summary"]["removed_vendors"] == ["com.innorix"]
+    assert payload["trust_roots"]["items"][0]["name"] == "INNORIX.CA"
+    # Apple 패키지는 벤더 롤업에서 빠진다 — 사람이 읽을 대상이 아니다.
+    assert [v["vendor"] for v in payload["receipts"]["non_apple_vendors"]] == ["com.innorix"]
+    assert stub_scripts == [("moraine.py", ["--json"])]
+
+
+def test_moraine_summary_section_is_counts_only(stub_scripts):
+    payload = _payload(_call("uninstall_residue_report", {"section": "summary"}))
+    assert "trust_roots" not in payload and "receipts" not in payload
+    assert payload["trust_roots_unconditional"] == 1
+
+
 # ---------------------------------------------------------------------------
 # 오염 방지 — 결과는 전부 데이터다
 # ---------------------------------------------------------------------------
@@ -251,7 +285,7 @@ def test_every_tool_result_is_fenced_as_untrusted(stub_scripts, tmp_path, monkey
     monkeypatch.setattr(mcp_server, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     for name, arguments in (("scree_report", {}), ("friction_scan", {}),
-                            ("system_scan_summary", {})):
+                            ("system_scan_summary", {}), ("uninstall_residue_report", {})):
         text = _call(name, arguments)["content"][0]["text"]
         assert text.startswith(mcp_server.UNTRUSTED_OPEN), name
         assert text.rstrip().endswith(mcp_server.UNTRUSTED_CLOSE), name
@@ -277,6 +311,8 @@ def test_server_instructions_state_the_read_only_contract():
     ("scree_report", {"section": "everything"}),
     ("scree_report", {"limit": 0}),
     ("system_scan_summary", {"limit": 101}),
+    ("uninstall_residue_report", {"section": "everything"}),
+    ("uninstall_residue_report", {"limit": 201}),
 ])
 def test_bad_arguments_are_tool_errors_not_crashes(tool, arguments, stub_scripts):
     result = _call(tool, arguments)
@@ -300,7 +336,8 @@ def test_tools_list_declares_closed_input_schemas():
     tools = mcp_server.handle_request("tools/list", {})["tools"]
     assert [t["name"] for t in tools] == ["scree_report", "friction_scan",
                                           "hf_orphans", "mcp_hygiene",
-                                          "file_access", "system_scan_summary"]
+                                          "file_access", "system_scan_summary",
+                                          "uninstall_residue_report"]
     for tool in tools:
         assert tool["inputSchema"]["additionalProperties"] is False
         assert tool["description"] and tool["title"]
@@ -350,7 +387,8 @@ def test_cli_tools_dump_is_the_registered_surface(capsys):
     dumped = json.loads(capsys.readouterr().out)
     assert [t["name"] for t in dumped["exposed"]] == ["scree_report", "friction_scan",
                                                       "hf_orphans", "mcp_hygiene",
-                                                      "file_access", "system_scan_summary"]
+                                                      "file_access", "system_scan_summary",
+                                                      "uninstall_residue_report"]
     assert dumped["rejected"] == []
 
 
