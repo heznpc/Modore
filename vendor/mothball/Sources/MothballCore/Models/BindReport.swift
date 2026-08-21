@@ -12,6 +12,12 @@ import Foundation
 /// cannot read as a completed assessment becomes `.notAssessed`, which
 /// blocks.
 public struct BindReport: Codable, Sendable, Equatable {
+    /// Contract identity, from `modore.agent-state-snapshot` v1. Absent
+    /// on output from a binder older than the contract; those decode as
+    /// version 1, which is what they are.
+    public let schema: String?
+    public let schemaVersion: Int?
+
     public let workspace: String
     public let repoUrl: String?
     public let assessed: Bool
@@ -89,6 +95,14 @@ extension ContinuityAssessment {
     public static func fromBindReport(_ data: Data) -> ContinuityAssessment {
         guard let report = try? BindReport.decoder().decode(BindReport.self, from: data),
               report.assessed else {
+            return .notAssessed
+        }
+        // The contract's own versioning rule: a consumer receiving a
+        // schemaVersion greater than it knows must treat the snapshot as
+        // unreadable, not best-effort parse it -- the fields it
+        // recognises may no longer mean what they meant. Absent means
+        // pre-contract output, which is version 1 in fact.
+        if let version = report.schemaVersion, version > 1 {
             return .notAssessed
         }
         let bindings = report.bindings.compactMap(SessionBinding.init(entry:))
