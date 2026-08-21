@@ -648,6 +648,7 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
         # mcp_server.py is a stdio server that a separate MCP client launches
         # from a checkout; the app never spawns it.
         "scripts/friction.py",
+        "scripts/moraine.py",
         "scripts/hfscan.py",
         "scripts/mcpaudit.py",
         "scripts/fileaccess.py",

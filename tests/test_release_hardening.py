@@ -1321,7 +1321,8 @@ def test_release_ships_frictions_and_the_mcp_surfaces_dependencies(project_root)
     release where the documented command fails at import or at first call — the
     exact failure mode the scree test above exists to prevent, one layer up."""
     module = load_release_smoke(project_root)
-    for script in ("scripts/scree.py", "scripts/friction.py", "scripts/mcp_server.py"):
+    for script in ("scripts/scree.py", "scripts/friction.py", "scripts/moraine.py",
+                   "scripts/mcp_server.py"):
         assert script in module.MACOS_FILES
 
 

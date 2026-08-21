@@ -80,12 +80,15 @@ UNTRUSTED_CLOSE = "⟦/UNTRUSTED⟧"
 
 SCREE = SCRIPT_DIR / "scree.py"
 FRICTION = SCRIPT_DIR / "friction.py"
+MORAINE = SCRIPT_DIR / "moraine.py"
 HFSCAN = SCRIPT_DIR / "hfscan.py"
 MCPAUDIT = SCRIPT_DIR / "mcpaudit.py"
 FILEACCESS = SCRIPT_DIR / "fileaccess.py"
 
 SCREE_TIMEOUT = 300
 FRICTION_TIMEOUT = 300
+# moraine shells out to pkgutil per receipt; hundreds of receipts is normal.
+MORAINE_TIMEOUT = 300
 # hfscan walks whole project trees; mcpaudit reads four small JSON files.
 HFSCAN_TIMEOUT = 600
 MCPAUDIT_TIMEOUT = 60
@@ -256,6 +259,47 @@ def tool_friction_scan(args: dict) -> dict:
         "findings": items,
         **note,
     }
+
+
+MORAINE_SECTIONS = ("summary", "trust_roots", "receipts", "all")
+
+
+def tool_moraine_report(args: dict) -> dict:
+    section = _enum_arg(args, "section", MORAINE_SECTIONS, "all")
+    limit = _int_arg(args, "limit", default=10, minimum=1, maximum=200)
+    report = _run_json(MORAINE, ["--json"], MORAINE_TIMEOUT)
+
+    roots = (report.get("trust_roots") or {}).get("items") or []
+    receipts = report.get("receipts") or {}
+    summary = {
+        "contract": report.get("contract"),
+        "evidence": report.get("evidence"),
+        "prior_art": report.get("prior_art"),
+        "sources": report.get("sources"),
+        "receipts_total": receipts.get("total"),
+        "receipts_non_apple": receipts.get("non_apple"),
+        "receipts_payload_gone": receipts.get("vanished"),
+        "trust_roots_total": (report.get("trust_roots") or {}).get("total"),
+        "trust_roots_orphaned": (report.get("trust_roots") or {}).get("orphaned"),
+        "trust_roots_unattributed": (report.get("trust_roots") or {}).get("unattributed"),
+        "trust_roots_unconditional": (report.get("trust_roots") or {}).get("unconditional"),
+        "removed_vendors": report.get("removed_vendors"),
+    }
+    if section == "summary":
+        return summary
+
+    payload: dict = {"summary": summary}
+    if section in ("all", "trust_roots"):
+        # moraine already orders worst-first; truncating a sorted list keeps the
+        # findings that matter rather than an arbitrary slice.
+        items, note = _truncate(roots, limit)
+        payload["trust_roots"] = {"items": items, **note}
+    if section in ("all", "receipts"):
+        vendors = [v for v in (receipts.get("vendors") or []) if not v.get("apple")]
+        items, note = _truncate(vendors, limit)
+        payload["receipts"] = {"non_apple_vendors": items, "sampled": receipts.get("sampled"),
+                               **note}
+    return payload
 
 
 SCAN_RESULT_CANDIDATES = (
@@ -679,6 +723,38 @@ TOOLS: list[dict] = [
         "annotations": {"title": "System scan summary — storage & security", **READ_ONLY},
         "handler": tool_system_scan_summary,
     },
+    {
+        "name": "uninstall_residue_report",
+        "title": "Moraine — what stayed after the installer left",
+        "description": (
+            "What software left behind on this Mac after it was removed, from two sources "
+            "that outlive the uninstall: macOS installer receipts (every package ever "
+            "installed, and whether its payload still exists) and the system/user trust "
+            "stores (root certificates and how broadly they are trusted). The verdict "
+            "worth asking for is the correlation: a trusted root whose installing package "
+            "has no payload left is a certificate still vouching for a vendor otherwise "
+            "gone from the machine. `unattributed` means no receipt claims the root -- MDM "
+            "profiles, enterprise Wi-Fi, and hand-imported roots are legitimately "
+            "unattributed, so it is a statement about attribution, not about legitimacy. "
+            "Read-only: it deletes nothing, and removing a trust root is an admin act that "
+            "stays a human decision. macOS only."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string", "enum": list(MORAINE_SECTIONS), "default": "all",
+                    "description": ("`summary` is counts only; `trust_roots` is the "
+                                    "certificate judgment, worst first; `receipts` is the "
+                                    "non-Apple vendor rollup."),
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 10,
+                          "description": "Max items per list. Truncation is always reported."},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {"title": "Moraine — what stayed after the installer left", **READ_ONLY},
+        "handler": tool_moraine_report,
+    },
 ]
 
 # Read-only contract, ported from AirMCP's iOS server (`IOSPreviewContract` in
@@ -690,7 +766,8 @@ TOOLS: list[dict] = [
 # point: "we simply never wrote a destructive tool" is an intention, and this
 # turns it into a mechanism.
 EXPOSED_TOOL_NAMES = frozenset({"scree_report", "friction_scan", "hf_orphans",
-                                "mcp_hygiene", "file_access", "system_scan_summary"})
+                                "mcp_hygiene", "file_access", "system_scan_summary",
+                                "uninstall_residue_report"})
 
 
 def contract_allows(tool: dict) -> bool:

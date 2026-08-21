@@ -1,6 +1,6 @@
 # Modore
 
-> **A local audit of what your AI agents left behind.** On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, Modore answers the questions no other tool asks: which sessions touched which projects, which transcripts silently expire in a few days, which agent worktrees hold the only copy of unpushed work, and which paths survive nowhere except in a session record — deterministically, metadata-only, with no LLM anywhere in the judgment path.
+> **A local audit of what your AI agents left behind.** On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, Modore answers the questions nothing else on that machine is asking: which sessions touched which projects, which transcripts silently expire in a few days, which agent worktrees hold the only copy of unpushed work — whichever tool you ran the agent from — and which paths survive nowhere except in a session record — deterministically, metadata-only, with no LLM anywhere in the judgment path.
 > The same evidence-first approach also covers the PC that feels busy for no reason: process, network, autorun, security, and storage signals turned into plain-language evidence before you stop or delete anything.
 
 [🌐 **Website**](https://heznpc.github.io/modore/) · [📦 Releases (when published)](https://github.com/heznpc/modore/releases) · [Architecture](./docs/ARCHITECTURE.md)
@@ -15,7 +15,7 @@
 
 ### 1. What did my AI tools leave behind? (Mac)
 
-On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, the machine fills with traces no other tool audits: session stores that silently expire on rolling windows, agent git worktrees holding the only copy of unpushed work, orphaned sessions pointing at deleted projects, gigabytes of rebuildable model and editor caches, and paths whose only surviving record is a session transcript. **scree**, Modore's session-and-residue audit, judges all of it — deterministically, metadata-only, with no LLM anywhere in the judgment path:
+On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, the machine fills with traces nothing audits end to end: session stores that silently expire on rolling windows, agent git worktrees holding the only copy of unpushed work, orphaned sessions pointing at deleted projects, gigabytes of rebuildable model and editor caches, and paths whose only surviving record is a session transcript. **scree**, Modore's session-and-residue audit, judges all of it — deterministically, metadata-only, with no LLM anywhere in the judgment path:
 
 ```bash
 python3 scripts/scree.py                          # join · retention forecast · orphans · sole-copy verdicts · lineage
@@ -28,6 +28,7 @@ python3 scripts/scree.py title <session-file>     # one masked line: what that s
 - **Retention forecast** — per-store rolling windows estimated from file ages, with D-day flags for sessions about to expire inside still-active projects.
 - **Sole-copy judgment** — agent worktrees *and* primary checkouts stranded off main: protected (dirty or unpushed commits) versus rebuildable, from read-only git evidence, every verdict preview-grade with an explicit revalidation duty.
 - **Orphans & lineage** — sessions pointing at vanished workspaces (`orphan_basis: path_missing`), and every remembered work path classified alive+git / alive+plain / vanished, with macOS case-variant ghosts merged.
+- **Not a uniqueness claim about the primitive** — an agent IDE that creates worktrees can and does compute the same unpushed-work verdict for the worktrees it manages (Orca's workspace cleanup runs the same `rev-list --not --remotes` check). scree's coverage is the difference: it sweeps every agent worktree on the machine regardless of which tool created it, plus primary checkouts stranded off main and registry entries whose directory is gone.
 - **Contract** — leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by `stat()` without being opened; pinned by tests. Three commands deliberately read inside a conversation, and all three act on one target the caller names — never on anything discovered automatically, never during a scan: `preserve` exports one masked transcript (mask-by-default, `--raw` opts out, no bulk export); `title` returns one masked line for display beside a deletion decision, capped short and never an input to a safety judgement; `bind --deep` reads transcript bodies to find file-access evidence and emits only whether such evidence exists.
 
 **friction**, scree's sibling, reads the same four session stores for the opposite question — not what the agents left behind, but where the operator stopped them:
@@ -41,6 +42,21 @@ python3 scripts/friction.py scan --json --source codex       # structured output
 - **Four stores** — Claude Code and Codex are discovered through scree's own collectors; Gemini CLI chats and Claude Desktop local-agent sessions are added on top, joined to a real workspace path where the store records one.
 - **Same judgment contract** — keyword and tone matching only, no model anywhere in the path; a review aid that both under- and over-catches, so every verdict is tagged `evidence: preview`.
 - **Content contract** — only turns authored by the user are examined; assistant text, tool calls, and nested subagent transcripts are never emitted. Quotes are capped at 200 characters and masked (email / JWT / API keys / private keys / home path) by default, with `--raw-quotes` as the explicit opt-out. Nothing is written.
+
+### What stayed after you uninstalled it
+
+Removing an app does not remove what it registered. `moraine` reads the two records that outlive the uninstall — macOS installer receipts and the system/user trust stores — and correlates them:
+
+```bash
+python3 scripts/moraine.py            # receipts · trusted roots · orphaned-root verdict
+python3 scripts/moraine.py --json
+```
+
+- **Receipts** — every package ever installed, with whether its payload still exists (`present` / `partial` / `vanished` / `no_payload`) and when it was installed. macOS never forgets a receipt, so it outlives the files.
+- **Trusted roots** — every root in the admin and user trust domains, with self-signed / CA / key size / validity, and whether its trust is *unconditional*. An empty usage-constraint array means "trust as root for every policy", which reads like "nothing configured" and is exactly the opposite.
+- **The correlated verdict** — a trusted root whose installing package has no payload left is a certificate still vouching for a vendor otherwise gone from the machine. Neither source produces that alone. `unattributed` means no receipt claims the root: MDM profiles, enterprise Wi-Fi, and hand-imported roots are legitimately unattributed, so it is a statement about attribution, not legitimacy.
+- **Prior art** — AppCleaner is the reference for moraine hunting and its location list is genuinely vetted, but it is target-driven (you drop an app on it) and its binary contains no `SecTrust`/`SecCertificate` symbols at all; mole reads `pkgutil` receipts too, but only to locate app bundles in `/usr/local` and `/opt`, never to judge whether a payload survived. The trust store is the half neither reaches.
+- **Deletes nothing.** Removing a trust root is an admin act and stays a human decision.
 
 ### Both questions, mid-session (MCP)
 
@@ -60,6 +76,7 @@ python3 scripts/mcp_server.py --tools    # inspect the surface without speaking 
 - `mcp_hygiene` — registered MCP servers that cannot start: dead command, missing script path, duplicate entry, or an `env` block worth a human look (reported as a key count, never as keys or values).
 - `file_access` — the reverse index: which sessions touched which paths, with reads/writes/shell counts. Agent rule surfaces first, because a silently edited `CLAUDE.md` is the case it exists for.
 - `system_scan_summary` — the storage and security scan result *already on disk*, with its age, because a stale result read as current is the failure mode here.
+- `uninstall_residue_report` — installer receipts, trusted roots, and the orphaned-root verdict above.
 - **A thin layer, not a second implementation** — each tool runs one judgment script with `--json` and forwards what it prints, so the CLI, the Mac app, and the MCP surface cannot disagree about what is true.
 - **Read-only by contract, enforced at registration** — a tool is reachable only if it is on an explicit allowlist and annotated read-only and non-destructive; one added without a deliberate edit fails closed. Cleanup, deletion, and scan execution are deliberately absent. Modore gates destruction on an approval a human grants on screen; an agent-reachable bypass would not be a feature, it would be the end of that guarantee. Every result is fenced as untrusted data.
 
@@ -73,6 +90,7 @@ A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange
 
 - **Two OS editions under one brand**: Modore for Windows and Modore for Mac share the same promise — explain local machine state in plain language without deleting anything automatically.
 - **Mac Edition — AI-agent session audit**: `scree` (above) is the flagship Mac capability — cross-tool join, retention forecast, orphan/sole-copy/lineage judgment, metadata-only.
+- **Mac Edition — leave-behind audit**: `moraine` judges what survived an uninstall from installer receipts and the macOS trust store, including root certificates left trusted by software that is no longer installed.
 - **Mac Edition — operator-friction scan**: `friction` classifies the turns where the operator pushed back on agent behaviour across Claude Code, Codex, Gemini CLI, and Claude Desktop transcripts — nine categories, severity 1-3, deterministic keyword/tone matching, user-authored turns only, quotes masked by default.
 - **Mac Edition — Hugging Face cache audit**: `hfscan` cross-references every cached model against the code on this machine and reports which ones nothing names. An incomplete search withholds the verdict instead of guessing.
 - **Mac Edition — MCP config hygiene**: `mcpaudit` reads the registered MCP servers and reports the entries that cannot start. It never edits a config, disables a server, or starts one.
@@ -246,10 +264,11 @@ modore/
 ├── scripts/
 │   ├── scree.py              AI-agent session & residue audit (metadata-only)
 │   ├── friction.py           operator-pushback scan over the same session stores
+│   ├── moraine.py            receipts + trust-store audit of what survived an uninstall
 │   ├── hfscan.py             Hugging Face hub cache: which models nothing here names
 │   ├── mcpaudit.py           MCP config hygiene: registered servers that cannot start
 │   ├── fileaccess.py         reverse index: which sessions touched which paths
-│   ├── mcp_server.py         read-only MCP surface (scree · friction · hfscan · mcpaudit · fileaccess · scan summary)
+│   ├── mcp_server.py         read-only MCP surface (scree · friction · moraine · hfscan · mcpaudit · fileaccess · scan summary)
 │   ├── menu.ps1              Windows interactive menu
 │   ├── scanner.ps1           Windows scanner
 │   ├── monitor.ps1           Windows 5-min idle monitor
