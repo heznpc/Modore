@@ -151,3 +151,115 @@ struct ArchiveCandidate: Identifiable {
         }
     }
 }
+
+/// What `scree.py inspect` returns: one conversation, masked and capped
+/// at the source, for a person to read.
+///
+/// Display-only by construction — nothing in the app routes this into a
+/// verdict, and the Python side pins the same fact from its end (its
+/// judgment outputs never carry these keys).
+struct SessionConversation: Decodable, Equatable {
+    struct Turn: Decodable, Equatable, Identifiable {
+        /// The turn's ordinal in the window, supplied by `inspect`.
+        ///
+        /// Identity has to come from position, not content. Role plus
+        /// text collides on exactly the case the dedupe rule
+        /// deliberately preserves -- the same person saying the same
+        /// thing twice with a reply in between -- and a `ForEach` given
+        /// duplicate ids drops rows out of the conversation it was asked
+        /// to show.
+        let index: Int
+        let role: String
+        let text: String
+        var id: Int { index }
+
+        var isUser: Bool {
+            ["user", "human", "user_message"].contains(role.lowercased())
+        }
+        var speakerLabel: String { isUser ? "나" : "에이전트" }
+    }
+
+    /// Whether the transcript could be read at all, and if not, why.
+    ///
+    /// `missing`, `unreadable` and `unrecognized` all yield zero turns,
+    /// and rendering them as an empty conversation tells someone about to
+    /// delete this repo that there was nothing to lose. Unknown strings
+    /// decode to `.unrecognized` rather than failing the whole payload:
+    /// a newer status is still a session this build could not show.
+    enum Status: String, Decodable, Equatable {
+        case ok
+        case missing
+        case unreadable
+        case unrecognized
+
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Status(rawValue: raw) ?? .unrecognized
+        }
+
+        /// What to put in front of the person, when there is nothing to show.
+        var failureText: String? {
+            switch self {
+            case .ok: return nil
+            case .missing: return "이 대화 파일은 더 이상 존재하지 않습니다. 제공자가 정리했을 수 있습니다."
+            case .unreadable: return "이 대화 파일을 읽을 권한이 없습니다."
+            case .unrecognized: return "이 대화 파일의 형식을 읽지 못했습니다."
+            }
+        }
+    }
+
+    /// Absent in payloads written before `inspect` reported status; those
+    /// only ever came from a file it had just read, so `ok` is right.
+    let status: Status
+    let provider: String
+    let sessionId: String
+    let workspace: String?
+    let messageCount: Int
+    let userTurnCount: Int
+    let firstUserTurn: String?
+    let turns: [Turn]
+    let omittedTurns: Int
+    let masked: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case status, provider, sessionId, workspace, messageCount
+        case userTurnCount, firstUserTurn, turns, omittedTurns, masked
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decodeIfPresent(Status.self, forKey: .status) ?? .ok
+        provider = try container.decode(String.self, forKey: .provider)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        workspace = try container.decodeIfPresent(String.self, forKey: .workspace)
+        messageCount = try container.decode(Int.self, forKey: .messageCount)
+        userTurnCount = try container.decode(Int.self, forKey: .userTurnCount)
+        firstUserTurn = try container.decodeIfPresent(String.self, forKey: .firstUserTurn)
+        turns = try container.decode([Turn].self, forKey: .turns)
+        omittedTurns = try container.decode(Int.self, forKey: .omittedTurns)
+        masked = try container.decode(Bool.self, forKey: .masked)
+    }
+}
+
+/// Where one conversation's fetch stands.
+///
+/// A fetch that fails has to leave something behind. Storing only the
+/// success meant a failed `inspect` left the row spinning on "대화를
+/// 읽는 중…" forever, which reads as a slow machine rather than as a
+/// question that was answered and lost.
+enum ConversationLoadState: Equatable {
+    case loading
+    case loaded(SessionConversation)
+    case failed(String)
+
+    var conversation: SessionConversation? {
+        if case .loaded(let conversation) = self { return conversation }
+        return nil
+    }
+}
+
+/// Why one conversation could not be fetched, in words meant for the
+/// person who asked to read it.
+struct ScreeInspectionError: Error, Equatable {
+    let message: String
+}
