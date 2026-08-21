@@ -1,4 +1,5 @@
 import SwiftUI
+import MothballCore
 
 /// Displays MothballCore's judgment about which of scree's already-known
 /// workspace paths are dormant, git-clean, mostly-pushed repos worth
@@ -49,8 +50,8 @@ struct MothballPage: View {
                 .disabled(model.archiveLoading || model.screeReport == nil)
             } header: {
                 NativeSectionHeader(
-                    title: "저장소 보관 후보",
-                    subtitle: "MothballCore가 git 메타데이터만으로 판정한 미리보기입니다. 실제 압축·보관 실행은 아직 지원하지 않습니다.",
+                    title: "레포 은퇴 후보",
+                    subtitle: "오래 안 쓴 저장소와, 그 저장소를 지우면 함께 끊기는 AI 대화를 함께 판정합니다.",
                     value: model.archiveCandidates != nil ? "완료" : ""
                 )
             }
@@ -58,7 +59,10 @@ struct MothballPage: View {
             if let candidates = model.archiveCandidates {
                 MothballCandidateSection(
                     candidates: candidates,
-                    inspectionFailures: model.archiveInspectionFailures
+                    inspectionFailures: model.archiveInspectionFailures,
+                    preserveInFlightSource: model.screePreserveInFlightSource,
+                    onPreserve: { model.preserveBoundSession($0) },
+                    onExpand: { model.loadTitles(for: $0) }
                 )
             }
         }
@@ -66,9 +70,20 @@ struct MothballPage: View {
     }
 }
 
-private struct MothballCandidateSection: View {
+struct MothballCandidateSection: View {
     let candidates: [ArchiveCandidate]
     let inspectionFailures: Int
+    /// Passed in rather than read from the environment: this section is
+    /// otherwise pure display data, and keeping the one mutating action
+    /// explicit at the call site keeps it that way.
+    let preserveInFlightSource: String?
+    let onPreserve: (SessionBinding) -> Void
+    /// Called when a row is opened. Titles are read then, not during a
+    /// scan: an audit that titled everything would turn every refresh
+    /// into a content read of every transcript on the machine.
+    let onExpand: (ArchiveCandidate) -> Void
+
+    @State private var expanded: Set<String> = []
 
     var body: some View {
         Section {
@@ -84,29 +99,223 @@ private struct MothballCandidateSection: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(candidates) { candidate in
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: candidate.tierSymbolName)
-                        .foregroundStyle(Color.secondary)
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(candidate.pathLastComponent)
-                            .font(.body.weight(.medium))
-                        Text("\(candidate.reasonText) · \(candidate.sizeText)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                if candidate.boundSessions.isEmpty {
+                    candidateSummary(candidate)
+                } else {
+                    // Expandable only when there is something to expand
+                    // into. A disclosure arrow on a row that opens to
+                    // nothing teaches the user to stop pressing them.
+                    DisclosureGroup(isExpanded: binding(for: candidate)) {
+                        boundSessionList(candidate)
+                    } label: {
+                        candidateSummary(candidate)
                     }
-                    Spacer()
-                    Text(candidate.tierLabel)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Color.secondary)
                 }
             }
         } header: {
             NativeSectionHeader(
-                title: "후보 목록",
-                subtitle: "압축 후 원본 삭제는 이 화면에서 지원하지 않습니다. 필요하면 Mothball 앱을 별도로 사용하세요.",
+                title: "후보",
+                // The one number that decides anything on this page. The
+                // previous subtitle said only where the feature *isn't*,
+                // which is not something the reader can act on.
+                subtitle: Self.boundSummary(candidates),
                 value: candidates.isEmpty ? "" : "\(candidates.count)개"
             )
+        }
+    }
+
+    private func binding(for candidate: ArchiveCandidate) -> Binding<Bool> {
+        Binding(
+            get: { expanded.contains(candidate.id) },
+            set: { isOpen in
+                if isOpen {
+                    expanded.insert(candidate.id)
+                    onExpand(candidate)
+                } else {
+                    expanded.remove(candidate.id)
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func candidateSummary(_ candidate: ArchiveCandidate) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: candidate.tierSymbolName)
+                .foregroundStyle(Color.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(candidate.pathLastComponent)
+                    .font(.body.weight(.medium))
+                Text("\(candidate.reasonText) · \(candidate.sizeText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                // The line this whole feature exists for. A repo with
+                // bound conversations and one without are the same git
+                // tier, and until now the row said nothing that told
+                // them apart.
+                // Weight, not hue. This project reserves chromatic
+                // status colours for critical states, and on a machine
+                // that runs agents daily every candidate has bound
+                // conversations -- colouring all of them would spend the
+                // one signal that means "stop" on a line that is true of
+                // the whole list.
+                Text(candidate.continuityText)
+                    .font(candidate.hasUnsealedSessions ? .caption.weight(.medium) : .caption)
+                    .foregroundStyle(candidate.hasUnsealedSessions ? Color.primary : Color.secondary)
+            }
+            Spacer()
+            // The tier is already in the icon, and on a machine that uses
+            // agents every candidate lands on the same tier -- fifty-three
+            // rows all reading "주의 필요" sort nothing and cost a scan.
+            // The trailing slot goes to the number that actually differs.
+            Text(candidate.trailingLabel)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(candidate.hasUnsealedSessions ? Color.primary : Color.secondary)
+        }
+    }
+
+    /// The bound conversations themselves.
+    ///
+    /// A count and a size establish that deleting costs something; they
+    /// do not say what. Only the transcript does, and the person about to
+    /// approve the delete is the one who has to judge it -- so the export
+    /// is reachable here rather than only from the session page. It goes
+    /// through scree's existing `preserve`: one explicitly named session,
+    /// masked by default, which is the only sanctioned way content leaves
+    /// a store.
+    @ViewBuilder
+    private func boundSessionList(_ candidate: ArchiveCandidate) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(candidate.presentations) { session in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(session.title)
+                            .font(.caption)
+                        Text(Self.subtitle(session))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if let binding = candidate.boundSessions.first(where: {
+                        $0.sessionID == session.sessionID && $0.provider == session.provider
+                    }) {
+                        if preserveInFlightSource == binding.source.path {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("내용 보기") { onPreserve(binding) }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                                .disabled(preserveInFlightSource != nil)
+                        }
+                    }
+                }
+            }
+            if candidate.presentations.isEmpty && !candidate.boundSessions.isEmpty {
+                Text("제목을 읽는 중…")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if candidate.remainingSessionCount > 0 {
+                // Say what was left out rather than ending the list
+                // silently: a list that stops at five reads as a repo with
+                // five conversations rather than a hundred and twenty.
+                Text("외 \(candidate.remainingSessionCount)개는 AI 세션 화면에서 볼 수 있습니다.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.leading, 32)
+        .padding(.top, 4)
+    }
+
+    /// Provider, when it was last touched, and how big -- plus a marker
+    /// when the title was inferred rather than quoted. A guessed label
+    /// shown with the same confidence as a real request is how a person
+    /// decides against a conversation they never actually saw.
+    nonisolated static func subtitle(_ session: SessionPresentation) -> String {
+        var parts = ["\(session.provider.displayName) \(session.kindLabel)"]
+        if let last = session.lastActiveAt {
+            parts.append(Self.dayFormatter.string(from: last))
+        }
+        parts.append(ByteCountFormatter.string(fromByteCount: session.sizeBytes, countStyle: .file))
+        if session.titleSource.isWeak {
+            parts.append("제목 추정")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    nonisolated private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "M월 d일"
+        return f
+    }()
+
+    /// What the whole list amounts to, stated once at the top.
+    ///
+    /// `nonisolated`, like the other formatters below it. These are pure
+    /// functions over value types; they live on the view only because
+    /// that is where they are read from, and inheriting its main-actor
+    /// isolation made them untestable from anywhere else.
+    ///
+    /// Every row here already carries a tier label, and on a machine that
+    /// uses agents heavily every row reads the same -- so the label sorts
+    /// nothing and the reader has to scan 53 identical lines to learn the
+    /// only fact that varies. This says it up front instead.
+    nonisolated static func boundSummary(_ candidates: [ArchiveCandidate]) -> String {
+        // "None" and "not checked yet" are the distinction this whole
+        // feature exists to keep, and the summary was collapsing it: while
+        // the binder ran, every row correctly read "확인 안 됨" and the
+        // line above them announced that nothing was connected.
+        let unassessed = candidates.filter { $0.continuity.coverage == nil }
+        let withSessions = candidates.filter { !$0.boundSessions.isEmpty }
+        guard !withSessions.isEmpty else {
+            return unassessed.isEmpty
+                ? "연결된 AI 대화가 있는 저장소는 없습니다."
+                : "AI 대화 연결을 확인하는 중입니다. 아직 아무것도 확정하지 않았습니다."
+        }
+        // Deduplicate across candidates. A repo and its own worktrees are
+        // separate rows, and binding matches by path prefix, so every
+        // worktree conversation is bound to both -- measured here, five of
+        // AirMCP's sessions appear under two candidates. Summing the rows
+        // would tell the user they are about to lose more than exists.
+        var seen: Set<String> = []
+        var bytes: Int64 = 0
+        for candidate in withSessions {
+            for binding in candidate.boundSessions {
+                let key = "\(binding.provider.rawValue)/\(binding.sessionID)"
+                guard seen.insert(key).inserted else { continue }
+                bytes += binding.sizeBytes
+            }
+        }
+        let sessions = seen.count
+        let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        return "\(withSessions.count)개 저장소에 AI 대화 \(sessions)개(\(size))가 묶여 있습니다. 지우면 함께 끊깁니다."
+    }
+
+    /// Long enough to browse, short enough that a 120-session repo does
+    /// not turn one row into a page.
+    nonisolated static let boundSessionDisplayLimit = 20
+
+    nonisolated static func evidenceText(_ binding: SessionBinding) -> String {
+        let evidence = binding.evidence.map { evidenceLabel($0) }.joined(separator: " · ")
+        let size = ByteCountFormatter.string(fromByteCount: binding.sizeBytes, countStyle: .file)
+        return "\(evidence) · \(confidenceLabel(binding.confidence)) · \(size)"
+    }
+
+    nonisolated private static func evidenceLabel(_ evidence: BindingEvidence) -> String {
+        switch evidence {
+        case .remoteURL: return "원격 URL 기록됨"
+        case .workingDirectory: return "작업 디렉터리 일치"
+        case .fileAccess: return "파일 접근 기록"
+        }
+    }
+
+    nonisolated private static func confidenceLabel(_ confidence: BindingConfidence) -> String {
+        switch confidence {
+        case .high: return "확실"
+        case .medium: return "보통"
+        case .low: return "약함"
         }
     }
 }

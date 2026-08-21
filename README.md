@@ -20,6 +20,8 @@ On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, the ma
 ```bash
 python3 scripts/scree.py                          # join · retention forecast · orphans · sole-copy verdicts · lineage
 python3 scripts/scree.py preserve <session-file>  # masked single-session export before it expires
+python3 scripts/scree.py bind <workspace> --deep  # which AI sessions a delete would strand
+python3 scripts/scree.py title <session-file>     # one masked line: what that session was about
 ```
 
 - **Cross-tool join** — which tools touched which workspace/repository, when, across Claude Code, Codex, Gemini CLI, and VS Code-fork stores.
@@ -27,7 +29,7 @@ python3 scripts/scree.py preserve <session-file>  # masked single-session export
 - **Sole-copy judgment** — agent worktrees *and* primary checkouts stranded off main: protected (dirty or unpushed commits) versus rebuildable, from read-only git evidence, every verdict preview-grade with an explicit revalidation duty.
 - **Orphans & lineage** — sessions pointing at vanished workspaces (`orphan_basis: path_missing`), and every remembered work path classified alive+git / alive+plain / vanished, with macOS case-variant ghosts merged.
 - **Not a uniqueness claim about the primitive** — an agent IDE that creates worktrees can and does compute the same unpushed-work verdict for the worktrees it manages (Orca's workspace cleanup runs the same `rev-list --not --remotes` check). scree's coverage is the difference: it sweeps every agent worktree on the machine regardless of which tool created it, plus primary checkouts stranded off main and registry entries whose directory is gone.
-- **Contract** — leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by `stat()` without being opened; pinned by tests. `preserve` is the single deliberate exception: one caller-named file, mask-by-default (`--raw` opts out), no bulk export.
+- **Contract** — leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by `stat()` without being opened; pinned by tests. Three commands deliberately read inside a conversation, and all three act on one target the caller names — never on anything discovered automatically, never during a scan: `preserve` exports one masked transcript (mask-by-default, `--raw` opts out, no bulk export); `title` returns one masked line for display beside a deletion decision, capped short and never an input to a safety judgement; `bind --deep` reads transcript bodies to find file-access evidence and emits only whether such evidence exists.
 
 **friction**, scree's sibling, reads the same four session stores for the opposite question — not what the agents left behind, but where the operator stopped them:
 
@@ -70,9 +72,12 @@ python3 scripts/mcp_server.py --tools    # inspect the surface without speaking 
 
 - `scree_report` — the join, retention forecast, orphan/sole-copy/lineage judgment, by section, with every truncation reported.
 - `friction_scan` — the pushback taxonomy, filterable by store, category, and minimum severity.
+- `hf_orphans` — which models in the Hugging Face hub cache no project file names, and how many gigabytes those account for. Reports `search_complete`; when the search could not be exhaustive every model is `unknown`, never `unreferenced`.
+- `mcp_hygiene` — registered MCP servers that cannot start: dead command, missing script path, duplicate entry, or an `env` block worth a human look (reported as a key count, never as keys or values).
+- `file_access` — the reverse index: which sessions touched which paths, with reads/writes/shell counts. Agent rule surfaces first, because a silently edited `CLAUDE.md` is the case it exists for.
 - `system_scan_summary` — the storage and security scan result *already on disk*, with its age, because a stale result read as current is the failure mode here.
-- `moraine_report` — installer receipts, trusted roots, and the orphaned-root verdict above.
-- **A thin layer, not a second implementation** — each tool runs `scree.py --json` or `friction.py --json` and forwards what it prints, so the CLI, the Mac app, and the MCP surface cannot disagree about what is true.
+- `uninstall_residue_report` — installer receipts, trusted roots, and the orphaned-root verdict above.
+- **A thin layer, not a second implementation** — each tool runs one judgment script with `--json` and forwards what it prints, so the CLI, the Mac app, and the MCP surface cannot disagree about what is true.
 - **Read-only by contract, enforced at registration** — a tool is reachable only if it is on an explicit allowlist and annotated read-only and non-destructive; one added without a deliberate edit fails closed. Cleanup, deletion, and scan execution are deliberately absent. Modore gates destruction on an approval a human grants on screen; an agent-reachable bypass would not be a feature, it would be the end of that guarantee. Every result is fenced as untrusted data.
 
 ### 2. Why is my PC this busy?
@@ -87,7 +92,10 @@ A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange
 - **Mac Edition — AI-agent session audit**: `scree` (above) is the flagship Mac capability — cross-tool join, retention forecast, orphan/sole-copy/lineage judgment, metadata-only.
 - **Mac Edition — leave-behind audit**: `moraine` judges what survived an uninstall from installer receipts and the macOS trust store, including root certificates left trusted by software that is no longer installed.
 - **Mac Edition — operator-friction scan**: `friction` classifies the turns where the operator pushed back on agent behaviour across Claude Code, Codex, Gemini CLI, and Claude Desktop transcripts — nine categories, severity 1-3, deterministic keyword/tone matching, user-authored turns only, quotes masked by default.
-- **Read-only MCP surface**: a zero-dependency stdio MCP server exposing scree, friction, and the existing storage/security scan summary to an agent mid-session. Judgment only — no cleanup, no deletion, no scan execution.
+- **Mac Edition — Hugging Face cache audit**: `hfscan` cross-references every cached model against the code on this machine and reports which ones nothing names. An incomplete search withholds the verdict instead of guessing.
+- **Mac Edition — MCP config hygiene**: `mcpaudit` reads the registered MCP servers and reports the entries that cannot start. It never edits a config, disables a server, or starts one.
+- **Mac Edition — file-access reverse index**: `fileaccess` answers "which sessions touched this file, how often, and when last", rule surfaces first. Only paths and tool names are kept — the command a path came from is never emitted.
+- **Read-only MCP surface**: a zero-dependency stdio MCP server exposing scree, friction, the two audits above, and the existing storage/security scan summary to an agent mid-session. Judgment only — no cleanup, no deletion, no scan execution.
 - **Mac Edition scanner**: Bash + JXA collectors for macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and developer-runtime incidents. Every collector reports `ok`, `permission_denied`, `unavailable`, `timed_out`, or `failed`; a missing required collector can never become a safe verdict.
 - **Mac Edition app**: the native SwiftUI app presents one incident judgment followed by evidence, likely impact, and approval-gated recovery; bounded local history keeps the judgment without storing raw commands or URLs. Browser automation is grouped into roots with PID, parent, elapsed time, channel, profile type, and a privacy-preserving controller label.
 - **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
@@ -256,8 +264,11 @@ modore/
 ├── scripts/
 │   ├── scree.py              AI-agent session & residue audit (metadata-only)
 │   ├── friction.py           operator-pushback scan over the same session stores
-│   ├── moraine.py           receipts + trust-store audit of what survived an uninstall
-│   ├── mcp_server.py         read-only MCP surface (scree · friction · scan summary)
+│   ├── moraine.py            receipts + trust-store audit of what survived an uninstall
+│   ├── hfscan.py             Hugging Face hub cache: which models nothing here names
+│   ├── mcpaudit.py           MCP config hygiene: registered servers that cannot start
+│   ├── fileaccess.py         reverse index: which sessions touched which paths
+│   ├── mcp_server.py         read-only MCP surface (scree · friction · moraine · hfscan · mcpaudit · fileaccess · scan summary)
 │   ├── menu.ps1              Windows interactive menu
 │   ├── scanner.ps1           Windows scanner
 │   ├── monitor.ps1           Windows 5-min idle monitor

@@ -22,15 +22,24 @@ Judgment limits (preview-grade evidence, not deletion authorization):
 - "rebuildable" trusts local remote-tracking refs, which can lag the live
   remote; any destructive consumer must revalidate before acting.
 
-Preservation export (the one deliberate exception to the no-content contract):
-`scree.py preserve <source>` reads one session file named by the caller — never
-discovered automatically — and writes a masked Markdown export. Single-session,
-explicit, mask-by-default: the same shape as hydroject's `export`. Everything
-above this line in the module never calls it.
+Content-reading commands (the deliberate exceptions to the no-content
+contract above). Both act on one session the caller names — never on
+anything discovered automatically — and both mask by default:
+- `scree.py preserve <source>` writes a masked Markdown export of one
+  transcript, the same shape as hydroject's `export`;
+- `scree.py title <source>` returns one masked line: the first user
+  request that says what the session was about, for display beside a
+  deletion decision. It is the smaller exception of the two and the only
+  one whose output is retained anywhere, so it is capped to one short
+  line and is never an input to a safety judgement.
+- `scree.py bind <workspace> --deep` reads transcript bodies to find
+  file-access evidence, and emits only whether such evidence exists.
+Everything above this line in the module never calls any of them.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -52,6 +61,16 @@ RETENTION_MIN_SESSIONS = 5      # below this a window cannot be inferred honestl
 ROLLING_WINDOW_DAYS = (20, 45)  # oldest-session age in this band suggests auto-cleanup
 EXPIRY_SOON_DAYS = 7            # sessions this close to the inferred window are flagged
 STALLED_STORE_DAYS = 21         # no new session for this long → store no longer written
+
+# Stable provider ids for the fork labels, so a display name change in
+# `VSCODE_FORKS` cannot silently invalidate manifests already on disk.
+VSCODE_PROVIDER_IDS = {
+    "VS Code": "vscode",
+    "Kiro": "kiro",
+    "Cursor": "cursor",
+    "Windsurf": "windsurf",
+    "Antigravity": "antigravity",
+}
 
 VSCODE_FORKS = (
     ("VS Code", "Code"),
@@ -646,6 +665,679 @@ def build_scree(home: Path) -> dict:
     }
 
 
+# --- Session binding (the second deliberate exception to the no-content
+# contract, alongside `preserve`) -------------------------------------------
+#
+# `report` answers "how much debris, and whose", and its metadata-only
+# contract is what makes it safe to run on a whim. Binding answers a
+# different question -- "which conversations would be stranded if this
+# workspace were deleted" -- and that answer has to be right, because a
+# consumer acts destructively on it. So binding is its own command:
+# invoked for one named workspace, never during a report, and emitting
+# evidence *types* and session ids rather than anything said in them.
+
+# Safety valve, not a scan depth. A content scan that stops early has not
+# established absence, so tripping this is recorded and downgrades the
+# run's coverage rather than passing silently as a completed look.
+BINDER_SCAN_CEILING_BYTES = 512 * 1024 * 1024
+
+
+def _binding_confidence(evidence: list[str]) -> str:
+    """Confidence follows the strongest evidence present, not a count.
+
+    `remote-url` is the only signal the provider itself recorded about
+    repository identity, and the only one that survives the workspace
+    being moved or deleted -- so it outranks any amount of weaker
+    corroboration. File access alone stays `low` on its own: reading a
+    path proves a visit, not ownership.
+    """
+    if "remote-url" in evidence:
+        return "high"
+    if "working-directory" in evidence:
+        return "medium"
+    return "low"
+
+
+def _under(path: str, root: str) -> bool:
+    """True when `path` is `root` or lives inside it.
+
+    Prefix matching rather than equality so a repo's own worktrees --
+    `<repo>/.claude/worktrees/*`, each a separate session store slug --
+    bind to the repo being retired. Retiring the repo strands those
+    conversations exactly as much as it strands the top-level ones.
+
+    Case-folded because macOS filesystems are case-insensitive by default
+    and providers record whatever casing the user typed: `build_lineage`
+    already found the same workspace written several ways on this machine
+    and folds them together. A case-sensitive binder misses exactly those
+    recordings, and a miss here reads as "no conversation was held in
+    this workspace".
+    """
+    root = _canon_workspace(root).casefold()
+    path = path.casefold()
+    return path == root or path.startswith(root + "/")
+
+
+def _claude_subtranscripts(project_dir: Path, session_id: str) -> list[Path]:
+    """Subagent/workflow transcripts for one session.
+
+    Kept separate from the top-level file because the provider's cleanup
+    deletes the parent and leaves these behind: on this machine 181 such
+    orphans exist. A bundle that copied only the parent would preserve
+    the smaller half of the record.
+    """
+    nested = project_dir / session_id
+    if not nested.is_dir():
+        return []
+    return sorted(p for p in nested.rglob("*.jsonl") if p.is_file())
+
+
+def _scans_for_paths(source: Path, root: str,
+                     ceiling: Optional[int] = None) -> tuple[bool, bool]:
+    """Single-workspace form, kept for callers with one question."""
+    matched, complete = _scan_for_any_path(source, [root], ceiling=ceiling)
+    return (bool(matched), complete)
+
+
+def _scan_for_any_path(source: Path, roots: list[str],
+                       ceiling: Optional[int] = None) -> tuple[set[str], bool]:
+    """Deep scan: does this transcript mention any path inside `root`?
+
+    Returns `(found, complete)`. Reads content and emits neither -- the
+    caller learns only that `file-access` evidence exists, which is why
+    this returns a boolean rather than the matches.
+
+    `complete` is the half that matters for the gate. A scan that stopped
+    before the end has not established absence, and a repo path can appear
+    anywhere in a transcript: the tool call that touched it may be the
+    last line of a fifty-megabyte session. Reporting a truncated look as a
+    finished one is how a workspace with bindings comes back empty.
+
+    Chunks overlap by the needle length so a path split across a chunk
+    boundary is still matched -- without that, a scan is silently
+    incomplete even when it reads every byte.
+    """
+    # Read the module constant at call time rather than binding it as a
+    # default: a default is captured at definition and cannot be lowered
+    # by a test, which would leave the truncation path unexercised.
+    ceiling = BINDER_SCAN_CEILING_BYTES if ceiling is None else ceiling
+    # Folded for the same reason `_under` is: the transcript records the
+    # casing the user typed, which need not match the casing on disk.
+    #
+    # Every workspace at once. One pass per candidate re-reads the same
+    # stores for each repo on the list -- measured here at 14.5s per repo
+    # across 53 candidates, thirteen minutes spent re-reading the same six
+    # gigabytes.
+    needles = {root: _canon_workspace(root).casefold() for root in roots}
+    if not needles:
+        return (set(), True)
+    overlap = max(len(n) for n in needles.values()) - 1
+    found: set[str] = set()
+    try:
+        with source.open("r", encoding="utf-8", errors="replace") as handle:
+            read = 0
+            carry = ""
+            while True:
+                chunk = handle.read(1 << 20)
+                if not chunk:
+                    return (found, True)
+                read += len(chunk)
+                window = carry + chunk.casefold()
+                for root, needle in needles.items():
+                    if root not in found and needle in window:
+                        found.add(root)
+                if len(found) == len(needles):
+                    # Nothing left to look for in this file.
+                    return (found, True)
+                carry = window[-overlap:] if overlap else ""
+                if read >= ceiling:
+                    return (found, False)
+    except OSError:
+        return (found, False)
+
+
+def bind_codex(home: Path, workspace: str, repo_url: Optional[str], *,
+               deep: bool = False) -> tuple[list[dict], bool]:
+    """Codex bindings start nearly free: the repository URL is already in
+    the rollout's own `session_meta` header, which `collect_codex` reads
+    and then discards into a group count.
+
+    The header is not the whole story, though, and `complete` means every
+    byte of every candidate transcript was read. A rollout that started
+    somewhere else and later edited files in this repo names it nowhere
+    in its first line -- so under `deep` the ones the header did not
+    match get the same content scan Claude's do. Without that, Codex
+    could be declared fully read on the strength of one line per file."""
+    wanted = normalize_repo_url(repo_url) if repo_url else None
+    out: list[dict] = []
+    complete = True
+    for root in (home / ".codex" / "sessions", home / ".codex" / "archived_sessions"):
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.jsonl")):
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    first = _read_json_line(handle)
+            except OSError:
+                # A rollout that could not be opened was not examined. It
+                # may name this workspace; nobody knows. Skipping it and
+                # still reporting a completed look is how "no sessions"
+                # gets asserted about a store that was never read.
+                complete = False
+                continue
+            payload = (first or {}).get("payload")
+            if (first or {}).get("type") != "session_meta" or not isinstance(payload, dict):
+                # Same reasoning: a rollout whose header this build cannot
+                # recognise is an unexamined candidate, not an absent one.
+                complete = False
+                continue
+            git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
+            evidence: list[str] = []
+            recorded = git.get("repository_url")
+            if wanted and recorded and normalize_repo_url(recorded) == wanted:
+                evidence.append("remote-url")
+            cwd = payload.get("cwd")
+            if isinstance(cwd, str) and _under(_canon_workspace(cwd), workspace):
+                evidence.append("working-directory")
+            if not evidence and deep:
+                # Only the rollouts the header did not match: one that is
+                # already bound gains nothing from being read again.
+                found, scanned_fully = _scans_for_paths(path, workspace)
+                if not scanned_fully:
+                    complete = False
+                if found:
+                    evidence.append("file-access")
+            if not evidence:
+                continue
+            session_id = payload.get("id") or path.stem
+            out.append({
+                "provider": "codex",
+                "sessionId": str(session_id),
+                "source": str(path),
+                "subtranscripts": [],
+                "evidence": evidence,
+                "confidence": _binding_confidence(evidence),
+                "sizeBytes": path.stat().st_size,
+            })
+    return (out, complete)
+
+
+def bind_vscode_forks(home: Path, workspace: str) -> tuple[list[dict], bool]:
+    """VS Code and its forks record the folder a window was opened on, as
+    a `file://` URI in each workspace-storage entry.
+
+    What they store is editor state -- open tabs, an AI panel's history,
+    per-workspace settings -- not a transcript, so a binding here says
+    "this tool held state about this workspace", which is still work that
+    a delete strands. Being unable to read one of these entries makes the
+    scan incomplete for the same reason it does everywhere else: an entry
+    that was not examined is not an entry that was absent.
+    """
+    out: list[dict] = []
+    complete = True
+    for tool, dir_name in VSCODE_FORKS:
+        root = home / "Library" / "Application Support" / dir_name / "User" / "workspaceStorage"
+        if not root.is_dir():
+            continue
+        for meta_path in sorted(root.glob("*/workspace.json")):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                complete = False
+                continue
+            target = meta.get("folder") or meta.get("workspace")
+            recorded = _uri_to_path(target) if isinstance(target, str) else None
+            if not recorded:
+                complete = False
+                continue
+            if not _under(recorded, workspace):
+                continue
+            entry = meta_path.parent
+            try:
+                size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+            except OSError:
+                complete = False
+                size = 0
+            out.append({
+                "provider": VSCODE_PROVIDER_IDS[tool],
+                "sessionId": entry.name,
+                "source": str(meta_path),
+                "subtranscripts": sorted(
+                    str(f) for f in entry.rglob("*") if f.is_file() and f != meta_path
+                ),
+                # The entry directory, not `workspace.json` minus its
+                # extension. An editor keeps `chat/` and `panels/` beside
+                # the manifest, and letting the sealer guess flattens
+                # them into digest-prefixed basenames.
+                "artifactRoot": str(entry),
+                "evidence": ["working-directory"],
+                "confidence": "medium",
+                "sizeBytes": size,
+            })
+    return (out, complete)
+
+
+def bind_gemini(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], bool]:
+    """Gemini records the workspace as `sha256(absolute path)` in every
+    session file, which is an exact identity rather than a prefix guess --
+    verified against this machine's own store before relying on it.
+
+    The hash is over the path string, so it cannot answer "is this under
+    the repo". `projects.json` supplies the registered paths and the ones
+    inside the workspace are hashed too, which is what makes a repo's
+    subdirectories and worktrees bind to the repo being retired.
+
+    Case folding cannot help here: the hash is of the exact bytes the
+    provider recorded. A workspace registered under different casing
+    hashes differently and is invisible to this binder, which is why a
+    content scan still runs when `deep` is set.
+    """
+    chats = sorted((home / ".gemini" / "tmp").glob("*/chats/*.json"))
+    if not chats:
+        return ([], True)
+
+    wanted: dict[str, str] = {}
+
+    def remember(path: str) -> None:
+        wanted[hashlib.sha256(path.encode("utf-8")).hexdigest()] = path
+
+    remember(workspace)
+    registry = home / ".gemini" / "projects.json"
+    # Without the registry the only hash we can compute is the workspace's
+    # own, so a session held in a subdirectory or worktree is
+    # unmatchable -- its `projectHash` is over a path we cannot enumerate.
+    # A content scan does not rescue it either: transcripts routinely name
+    # files relatively, so reading every byte and finding nothing proves
+    # nothing here. Sessions exist and their workspace identity cannot be
+    # reconstructed, which is the definition of an incomplete look.
+    complete = not (chats and not registry.is_file())
+    if registry.is_file():
+        try:
+            projects = json.loads(registry.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            # Without the registry only the workspace itself can be
+            # hashed, so its subdirectories and worktrees go unchecked.
+            complete = False
+            projects = {}
+        for path in (projects.get("projects") or {}):
+            if isinstance(path, str) and _under(_canon_workspace(path), workspace):
+                remember(_canon_workspace(path))
+
+    out: list[dict] = []
+    for path in chats:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            complete = False
+            continue
+        if not isinstance(payload, dict):
+            complete = False
+            continue
+        evidence: list[str] = []
+        if payload.get("projectHash") in wanted:
+            evidence.append("working-directory")
+        elif deep:
+            found, scanned_fully = _scans_for_paths(path, workspace)
+            if not scanned_fully:
+                complete = False
+            if found:
+                evidence.append("file-access")
+        if not evidence:
+            continue
+        session_id = payload.get("sessionId") or path.stem
+        out.append({
+            "provider": "gemini",
+            "sessionId": str(session_id),
+            "source": str(path),
+            "subtranscripts": [],
+            "evidence": evidence,
+            "confidence": _binding_confidence(evidence),
+            "sizeBytes": path.stat().st_size,
+        })
+    return (out, complete)
+
+
+def bind_claude(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], bool]:
+    """Claude records `gitBranch` but never a remote URL, so no Claude
+    session can ever reach `high` confidence from provider metadata
+    alone. That asymmetry is why binding is per-provider rather than one
+    generic scanner: the Codex path reads one line, this one may have to
+    read the file."""
+    root = home / ".claude" / "projects"
+    if not root.is_dir():
+        return ([], True)
+    out: list[dict] = []
+    complete = True
+    for project_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        for path in sorted(project_dir.glob("*.jsonl")):
+            cwd = None
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    for _ in range(CLAUDE_SCAN_LINES):
+                        line = _read_json_line(handle)
+                        if line is None:
+                            break
+                        if isinstance(line.get("cwd"), str):
+                            cwd = _canon_workspace(line["cwd"])
+                            break
+            except OSError:
+                # The metadata pre-read failed, so this transcript was
+                # never examined at all -- weaker than a scan that ran and
+                # found nothing.
+                complete = False
+                continue
+            evidence: list[str] = []
+            if cwd and _under(cwd, workspace):
+                evidence.append("working-directory")
+            elif deep:
+                # Only when the cheap signal missed. A session already
+                # bound by its cwd gains nothing from also having read
+                # files there, and scanning it would be pure cost.
+                found, scanned_fully = _scans_for_paths(path, workspace)
+                if not scanned_fully:
+                    complete = False
+                if found:
+                    evidence.append("file-access")
+            if not evidence:
+                continue
+            session_id = path.stem
+            subs = _claude_subtranscripts(project_dir, session_id)
+            out.append({
+                "provider": "claude",
+                "sessionId": session_id,
+                "source": str(path),
+                "subtranscripts": [str(p) for p in subs],
+                "evidence": evidence,
+                "confidence": _binding_confidence(evidence),
+                "sizeBytes": path.stat().st_size + sum(p.stat().st_size for p in subs),
+            })
+    return (out, complete)
+
+
+# Session stores this module knows how to *find* (see the `collect_*`
+# functions) paired with whether it can also *bind* them to a workspace.
+# A store present on disk with no binder is the loudest kind of
+# incompleteness: the scan never looked there at all, so "no sessions"
+# would be a claim about two stores made on behalf of five.
+BINDABLE_STORES = {"Claude", "Codex", "Gemini"} | set(VSCODE_PROVIDER_IDS)
+KNOWN_STORE_ROOTS = {
+    "Claude": (".claude/projects",),
+    "Codex": (".codex/sessions", ".codex/archived_sessions"),
+    "Gemini": (".gemini/tmp",),
+}
+
+
+def unbound_stores_present(home: Path) -> list[str]:
+    """Stores that exist on this machine but have no binder.
+
+    VS Code forks live under Application Support and are enumerated by
+    `collect_vscode_forks`; they are checked through the same table so a
+    future binder only has to be added in one place.
+    """
+    present: list[str] = []
+    for store, roots in KNOWN_STORE_ROOTS.items():
+        if store in BINDABLE_STORES:
+            continue
+        if any((home / root).is_dir() for root in roots):
+            present.append(store)
+    support = home / "Library" / "Application Support"
+    for label, folder in VSCODE_FORKS:
+        if label in BINDABLE_STORES:
+            continue
+        if (support / folder).is_dir():
+            present.append(label)
+    return sorted(set(present))
+
+
+def build_bindings_many(home: Path, targets: list[dict], *, deep: bool = False) -> dict:
+    """`build_bindings` for several workspaces, reading each store once.
+
+    Modore asks about every archive candidate on the screen, and a
+    shallow pass never establishes completeness -- so every candidate
+    needs a deep look, and doing that one repo at a time re-reads the
+    whole session store per repo. Measured on this machine that is 14.5s
+    across 53 candidates: thirteen minutes to answer a question the
+    stores could have answered in one pass.
+
+    Each `target` is `{"workspace": str, "repoUrl": str | None}`. The
+    result maps workspace to the same shape `build_bindings` returns, so
+    a caller can move between the two without reshaping anything.
+    """
+    workspaces = [_canon_workspace(t["workspace"]) for t in targets]
+    repo_urls = {_canon_workspace(t["workspace"]): t.get("repoUrl") for t in targets}
+    if not workspaces:
+        return {"results": {}}
+
+    per_workspace: dict[str, list[dict]] = {w: [] for w in workspaces}
+    claude_complete = codex_complete = gemini_complete = forks_complete = True
+
+    for workspace in workspaces:
+        # The cheap, per-workspace parts stay per-workspace: they are
+        # metadata comparisons, not file reads, and the shared cost is
+        # entirely in the content scan below.
+        claude, ok = bind_claude(home, workspace, deep=False)
+        claude_complete = claude_complete and ok
+        codex, ok = bind_codex(home, workspace, repo_urls[workspace], deep=False)
+        codex_complete = codex_complete and ok
+        gemini, ok = bind_gemini(home, workspace, deep=False)
+        gemini_complete = gemini_complete and ok
+        forks, ok = bind_vscode_forks(home, workspace)
+        forks_complete = forks_complete and ok
+        per_workspace[workspace] = claude + codex + gemini + forks
+
+    if deep:
+        bound_sources = {w: {b["source"] for b in per_workspace[w]} for w in workspaces}
+        for provider, path in _deep_scan_candidates(home):
+            # `str`, not `Path`: `bound_sources` holds the same strings the
+            # binders emit, and comparing the two types silently never
+            # matches -- which rescans every already-bound file and adds a
+            # second, differently-identified binding for it.
+            source = str(path)
+            unbound = [w for w in workspaces if source not in bound_sources[w]]
+            if not unbound:
+                continue
+            matched, scanned_fully = _scan_for_any_path(path, unbound)
+            if not scanned_fully:
+                if provider == "claude":
+                    claude_complete = False
+                elif provider == "codex":
+                    codex_complete = False
+                else:
+                    gemini_complete = False
+            for workspace in matched:
+                per_workspace[workspace].append(
+                    _file_access_binding(provider, path)
+                )
+
+    unbound_stores = unbound_stores_present(home)
+    scanned_fully = (claude_complete and codex_complete and gemini_complete
+                     and forks_complete and not unbound_stores)
+    fingerprint = store_fingerprint(home)
+    results = {}
+    for workspace in workspaces:
+        bindings = sorted(per_workspace[workspace],
+                          key=lambda b: (b["provider"], b["sessionId"]))
+        results[workspace] = _binding_result(
+            workspace, repo_urls[workspace], deep, bindings, fingerprint,
+            claude_complete, codex_complete, gemini_complete, forks_complete,
+            unbound_stores, scanned_fully,
+        )
+    return {"results": results}
+
+
+def _deep_scan_candidates(home: Path):
+    """Every file a content scan would consider, tagged by store."""
+    for path in sorted((home / ".claude" / "projects").glob("*/*.jsonl")):
+        yield ("claude", path)
+    for root in (home / ".codex" / "sessions", home / ".codex" / "archived_sessions"):
+        if root.is_dir():
+            for path in sorted(root.rglob("*.jsonl")):
+                yield ("codex", path)
+    for path in sorted((home / ".gemini" / "tmp").glob("*/chats/*.json")):
+        yield ("gemini", path)
+
+
+def _file_access_session_id(provider: str, path: Path) -> str:
+    """The id each store's own binder would have used.
+
+    Falling back to the filename would give the same session two
+    different identities depending on which evidence found it, and the
+    manifest would then record a session the provider cannot be asked
+    about.
+    """
+    if provider == "claude":
+        return path.stem
+    try:
+        if provider == "gemini":
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(payload, dict) and payload.get("sessionId"):
+                return str(payload["sessionId"])
+        else:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                first = _read_json_line(handle)
+            payload = (first or {}).get("payload")
+            if isinstance(payload, dict) and payload.get("id"):
+                return str(payload["id"])
+    except (OSError, json.JSONDecodeError):
+        pass
+    return path.stem
+
+
+def _file_access_binding(provider: str, path: Path) -> dict:
+    return {
+        "provider": provider,
+        "sessionId": _file_access_session_id(provider, path),
+        "source": str(path),
+        "subtranscripts": [],
+        "evidence": ["file-access"],
+        "confidence": _binding_confidence(["file-access"]),
+        "sizeBytes": path.stat().st_size,
+    }
+
+
+def store_fingerprint(home: Path) -> dict:
+    """Digest over every candidate file in every bindable store.
+
+    An assessment is a statement about a moment. Sealing hundreds of
+    megabytes takes long enough for an agent to finish a turn and write a
+    new session, and nothing about "these are the bound conversations"
+    stays true across that. A timestamp would not catch it either -- the
+    question is not "is the newest file newer" but "is this the same set
+    of candidates I judged", which a rewritten or removed file changes
+    just as much as an added one.
+
+    Metadata only: paths, sizes, mtimes. Nothing here opens a file.
+    """
+    hasher = hashlib.sha256()
+    count = 0
+    for path in sorted(
+        list((home / ".claude" / "projects").glob("*/*.jsonl"))
+        + list((home / ".codex" / "sessions").rglob("*.jsonl"))
+        + list((home / ".codex" / "archived_sessions").rglob("*.jsonl"))
+        + list((home / ".gemini" / "tmp").glob("*/chats/*.json"))
+        + [meta for _, folder in VSCODE_FORKS
+           for meta in (home / "Library" / "Application Support" / folder
+                        / "User" / "workspaceStorage").glob("*/workspace.json")]
+    ):
+        try:
+            stat = path.stat()
+        except OSError:
+            # A file that vanished between listing and stat is itself a
+            # change, and folding its path in keeps that visible.
+            hasher.update(f"{path}\0missing\n".encode("utf-8"))
+            count += 1
+            continue
+        hasher.update(f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode("utf-8"))
+        count += 1
+    return {"digest": hasher.hexdigest(), "fileCount": count}
+
+
+def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None,
+                   deep: bool = False) -> dict:
+    """The whole output of `bind`.
+
+    `assessed` is always true here, and that is the field the consumer
+    actually needs: it is what lets "a binder ran and found nothing" be
+    told apart from "no binder ran". An empty `bindings` list on its own
+    cannot make that distinction, and a consumer that treats the two the
+    same will delete a workspace whose conversations nobody checked for.
+    """
+    workspace = _canon_workspace(workspace)
+    claude_bindings, claude_complete = bind_claude(home, workspace, deep=deep)
+    codex_bindings, codex_complete = bind_codex(home, workspace, repo_url, deep=deep)
+    gemini_bindings, gemini_complete = bind_gemini(home, workspace, deep=deep)
+    fork_bindings, forks_complete = bind_vscode_forks(home, workspace)
+    bindings = claude_bindings + codex_bindings + gemini_bindings + fork_bindings
+    unbound = unbound_stores_present(home)
+    # Completeness is a property of the whole machine, not of the store
+    # that happened to be scanned last. One unreadable rollout, one
+    # unrecognised header, or one store with no binder is enough to make
+    # "this workspace has no conversations" an assertion nobody checked.
+    scanned_fully = (claude_complete and codex_complete and gemini_complete
+                     and forks_complete and not unbound)
+    bindings.sort(key=lambda b: (b["provider"], b["sessionId"]))
+    return _binding_result(
+        workspace, repo_url, deep, bindings, store_fingerprint(home),
+        claude_complete, codex_complete, gemini_complete, forks_complete,
+        unbound, scanned_fully,
+    )
+
+
+def _binding_result(workspace, repo_url, deep, bindings, fingerprint,
+                    claude_complete, codex_complete, gemini_complete,
+                    forks_complete, unbound, scanned_fully) -> dict:
+    """One workspace's answer, assembled the same way whichever path
+    produced it -- single or batch. Kept in one place so the two cannot
+    drift into reporting coverage differently."""
+    return {
+        "contract": ("session ids, evidence types, and sizes only; transcript "
+                     "content is read for file-access evidence but never retained"),
+        "workspace": workspace,
+        "repoUrl": normalize_repo_url(repo_url) if repo_url else None,
+        "deep": deep,
+        # How much of the store was actually examined, which is a
+        # different claim from whether the run finished.
+        #
+        #   shallow   -- matched recorded working directories only, so an
+        #                empty result means "no session was *run* here",
+        #                not "no session touched this repo".
+        #   truncated -- a look that started and could not finish: a
+        #                content scan that stopped early, a transcript
+        #                that would not open, a store whose identity data
+        #                is missing. It tried; it did not conclude.
+        #   complete  -- every candidate was conclusively classified.
+        #                Either its own metadata was authoritative enough
+        #                to decide, or it was read to EOF and found not to
+        #                mention the workspace. Not "every byte was read":
+        #                a session already bound by its header gains
+        #                nothing from being read again, and editor entries
+        #                have no transcript body at all.
+        "coverage": ("complete" if scanned_fully else "truncated") if deep else "shallow",
+        "coverageDetail": {
+            "claude": "complete" if claude_complete else "incomplete",
+            "codex": "complete" if codex_complete else "incomplete",
+            "gemini": "complete" if gemini_complete else "incomplete",
+            "editors": "complete" if forks_complete else "incomplete",
+            "unboundStores": unbound,
+        },
+        "assessed": True,
+        "storeFingerprint": fingerprint,
+        "bindings": bindings,
+        "summary": {
+            "total": len(bindings),
+            "byProvider": {
+                p: sum(1 for b in bindings if b["provider"] == p)
+                for p in ("claude", "codex", "gemini", *sorted(VSCODE_PROVIDER_IDS.values()))
+            },
+            "byConfidence": {
+                c: sum(1 for b in bindings if b["confidence"] == c)
+                for c in ("high", "medium", "low")
+            },
+            "sizeBytes": sum(b["sizeBytes"] for b in bindings),
+        },
+    }
+
+
 def _format_size(size_bytes: int) -> str:
     if size_bytes >= 1 << 30:
         return f"{size_bytes / (1 << 30):.1f}GB"
@@ -775,6 +1467,14 @@ def mask_text(text: str, home: Path) -> str:
     return text
 
 
+# Content-block kinds that carry prose across the stores seen so far.
+# Claude writes `text`; Codex splits the same thing by direction into
+# `input_text`/`output_text`. Matching only `text` silently produced empty
+# exports for every Codex session -- and Codex is the larger store on a
+# machine that uses both.
+TURN_TEXT_TYPES = ("text", "input_text", "output_text")
+
+
 def _extract_turn(line: dict) -> Optional[tuple[str, str]]:
     """Best-effort (role, text) from one Claude or Codex JSONL line."""
     message = line.get("message") if isinstance(line.get("message"), dict) else None
@@ -787,10 +1487,175 @@ def _extract_turn(line: dict) -> Optional[tuple[str, str]]:
     if isinstance(content, str):
         return (str(role or "?"), content)
     if isinstance(content, list):
-        parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+        # Gemini's items carry `text` with no `type` at all, so an item
+        # that is nothing but text counts as text.
+        parts = [c.get("text", "") for c in content
+                 if isinstance(c, dict)
+                 and (c.get("type") in TURN_TEXT_TYPES or ("text" in c and "type" not in c))]
         joined = "\n".join(p for p in parts if p)
         return (str(role or "?"), joined) if joined else None
+    # Codex also emits a plain `agent_message` payload whose text is not
+    # wrapped in a content list at all.
+    if isinstance(container.get("message"), str) and container.get("type") == "agent_message":
+        return ("assistant", container["message"])
     return None
+
+
+# --- Session titles (display only, never gate input) -----------------------
+#
+# Binding evidence is a fact about deletion safety. A title is a fact
+# about a person's memory, and the two must not be mixed: a title is
+# lossy, guessed, and sometimes wrong, and nothing that decides whether a
+# workspace may be deleted is allowed to rest on it.
+#
+# Extracting one is the first time this module retains any part of a
+# conversation, so the terms are narrow: local only, masked by default,
+# one line, length-capped, and produced for a session the caller names --
+# never swept.
+
+TITLE_MAX_CHARS = 80
+# Above this a user turn is pasted context -- a stack trace, a file, a
+# transcript -- not a request. Such a turn describes what was handed to
+# the agent, not what the person wanted.
+TITLE_PASTE_CHARS = 600
+# Below this it is an acknowledgement: "네", "ok", "continue".
+TITLE_MIN_CHARS = 8
+# Turns that are structurally not requests, however long they are.
+TITLE_SKIP_PREFIXES = ("/", "<", "#", "```")
+# Phrases that resume or acknowledge rather than ask. They are real user
+# turns of a reasonable length, so no length or shape rule catches them,
+# and as a title they describe the mechanics of the session instead of
+# its subject. Matched against the whole first line, folded -- a request
+# that merely contains "continue" is still a request.
+TITLE_BOILERPLATE = {
+    "continue", "continue.", "go on", "go ahead", "proceed", "keep going",
+    "continue from where you left off", "continue from where you left off.",
+    "resume", "이어서", "계속", "계속해", "계속해줘", "진행", "진행해", "ㄱㄱ",
+}
+
+
+def _turns_from_session(source: Path) -> list[tuple[str, str]]:
+    """(role, text) for one session, whatever container the provider uses.
+
+    Shared with `preserve` at the decoder rather than by calling it: the
+    export writes an entire transcript to disk as Markdown, and a title
+    needs a handful of user turns. Reusing the whole flow to get a title
+    would read and render everything to throw nearly all of it away.
+    """
+    turns: list[tuple[str, str]] = []
+    if source.suffix == ".json":
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        messages = payload.get("messages") if isinstance(payload, dict) else None
+        for message in messages or []:
+            if not isinstance(message, dict):
+                continue
+            # Gemini names the speaker `type`, where the JSONL stores use
+            # `role`. Without normalising it every Gemini turn arrives
+            # with an unknown speaker and no user request is ever found,
+            # so the title silently degrades to the weakest fallback.
+            normalised = dict(message)
+            if "role" not in normalised and isinstance(normalised.get("type"), str):
+                normalised["role"] = normalised["type"]
+            turn = _extract_turn({"message": normalised})
+            if turn:
+                turns.append(turn)
+        return turns
+    try:
+        with source.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if len(line) > MAX_LINE_BYTES:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    turn = _extract_turn(parsed)
+                    if turn:
+                        turns.append(turn)
+    except OSError:
+        return []
+    return turns
+
+
+def _is_user_role(role: str) -> bool:
+    return role.lower() in {"user", "human", "user_message"}
+
+
+def _meaningful_request(text: str) -> Optional[str]:
+    """The one line of a user turn worth showing, or None.
+
+    Without this the title becomes an attachment notice, a slash command,
+    a wrapped system block, or the first line of a pasted file -- all of
+    which are the first user turn and none of which is what the person
+    was trying to do.
+    """
+    stripped = text.strip()
+    if not stripped or len(stripped) > TITLE_PASTE_CHARS:
+        return None
+    if stripped.startswith(TITLE_SKIP_PREFIXES):
+        return None
+    first = next((line.strip() for line in stripped.splitlines() if line.strip()), "")
+    if len(first) < TITLE_MIN_CHARS or first.startswith(TITLE_SKIP_PREFIXES):
+        return None
+    return first
+
+
+def _clip(text: str) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= TITLE_MAX_CHARS:
+        return collapsed
+    return collapsed[: TITLE_MAX_CHARS - 1].rstrip() + "\u2026"
+
+
+def build_title(source: Path, home: Path, *, raw: bool = False,
+                fallback_label: Optional[str] = None) -> dict:
+    """Title, and where it came from.
+
+    `titleSource` is not decoration. A first-request title and a
+    date-shaped fallback look alike in a list and mean very different
+    things, and only the caller showing them can decide whether to admit
+    the difference.
+    """
+    turns = _turns_from_session(source)
+    requests = [candidate for role, text in turns if _is_user_role(role)
+                for candidate in [_meaningful_request(text)] if candidate]
+
+    def is_boilerplate(candidate: str) -> bool:
+        return candidate.strip().casefold().rstrip(".!~ ") in {
+            phrase.rstrip(".!~ ") for phrase in TITLE_BOILERPLATE
+        }
+
+    title = None
+    origin = "date"
+    if requests:
+        # Prefer the first request that says what the session was about.
+        # A resumption marker is the first user turn of every continued
+        # session, and taking it verbatim titles them all identically.
+        subject = next((r for r in requests if not is_boilerplate(r)), None)
+        title, origin = (subject, "first-request") if subject else (requests[0], "resumption")
+    elif turns:
+        # Nothing recognisable as a request, but the session had content:
+        # the last thing said is a better anchor than the file's mtime.
+        for role, text in reversed(turns):
+            candidate = _meaningful_request(text)
+            if candidate:
+                title, origin = candidate, "recent-turn"
+                break
+
+    if title is None:
+        try:
+            stamp = time.strftime("%Y-%m-%d", time.localtime(source.stat().st_mtime))
+        except OSError:
+            stamp = "날짜 미상"
+        title = f"{stamp} {fallback_label or '작업'}"
+
+    if not raw:
+        title = mask_text(title, home)
+    return {"title": _clip(title), "titleSource": origin}
 
 
 def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
@@ -847,6 +1712,46 @@ def main(argv: Optional[list[str]] = None) -> int:
                           help="disable masking (explicit opt-out, off by default)")
     preserve.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    bind = sub.add_parser(
+        "bind", help="list the AI sessions bound to ONE named workspace (explicit, never automatic)")
+    bind.add_argument("workspace", type=Path,
+                      help="workspace path to bind against; need not still exist")
+    bind.add_argument("--repo-url", default=None,
+                      help="remote URL, so Codex sessions can bind by the repository "
+                           "identity they recorded rather than by path alone")
+    bind.add_argument("--deep", action="store_true",
+                      help="also scan transcript bodies for file access under the workspace "
+                           "(slower; finds sessions that ran elsewhere but worked here)")
+    bind.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
+    bind_all = sub.add_parser(
+        "bind-all",
+        help="bind MANY workspaces in one pass; reads a JSON array on stdin")
+    bind_all.add_argument("--targets", type=Path, default=None,
+                          help="read the JSON array from this file instead of stdin; "
+                               "a screen's worth of absolute paths is past what a "
+                               "command line should be asked to hold")
+    bind_all.add_argument("--out", type=Path, default=None,
+                          help="write the result here instead of stdout; the answer "
+                               "grows with the machine's session count and is not "
+                               "something a pipe should be asked to carry")
+    bind_all.add_argument("--deep", action="store_true",
+                          help="also scan transcript bodies for file access")
+    bind_all.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
+    fingerprint = sub.add_parser(
+        "fingerprint", help="digest of every bindable session store, to detect drift")
+    fingerprint.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
+    title = sub.add_parser(
+        "title", help="one-line title for ONE named session (display only, never gate input)")
+    title.add_argument("source", type=Path, help="session file path from a bind result")
+    title.add_argument("--label", default=None,
+                       help="fallback label when the session has no recognisable request")
+    title.add_argument("--raw", action="store_true",
+                       help="disable masking (explicit opt-out, off by default)")
+    title.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--limit", type=int, default=12, help=argparse.SUPPRESS)
     parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
@@ -869,6 +1774,59 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"wrote {args.out}")
         else:
             print(text)
+        return 0
+
+    if args.command == "bind-all":
+        # stdin rather than argv: a screen can carry fifty candidates and
+        # their absolute paths, which is past what a command line should
+        # be asked to hold.
+        try:
+            raw = (args.targets.read_text(encoding="utf-8")
+                   if args.targets else sys.stdin.read())
+            targets = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"bind-all: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(targets, list):
+            print("bind-all: expected a JSON array of {workspace, repoUrl}", file=sys.stderr)
+            return 1
+        payload = json.dumps(
+            build_bindings_many(args.home, targets, deep=args.deep),
+            ensure_ascii=False, indent=2)
+        if args.out:
+            try:
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                args.out.write_text(payload, encoding="utf-8")
+            except OSError as exc:
+                print(f"bind-all: {exc}", file=sys.stderr)
+                return 1
+            print(f"wrote {args.out}")
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "fingerprint":
+        print(json.dumps(store_fingerprint(args.home), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "title":
+        try:
+            payload = build_title(args.source, args.home, raw=args.raw,
+                                  fallback_label=args.label)
+        except OSError as exc:
+            print(f"title: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "bind":
+        # Always JSON: the only consumer is a program deciding whether a
+        # workspace may be retired, and that decision must not be parsed
+        # out of a human-readable table.
+        print(json.dumps(
+            build_bindings(args.home, str(args.workspace),
+                           repo_url=args.repo_url, deep=args.deep),
+            ensure_ascii=False, indent=2))
         return 0
 
     scree = build_scree(args.home)

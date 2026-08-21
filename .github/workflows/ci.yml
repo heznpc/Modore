@@ -123,6 +123,17 @@ jobs:
             -Xswiftc -warnings-as-errors \
             -Xswiftc -strict-concurrency=complete
 
+      # MothballCore is built transitively by the Modore build above, so a
+      # compile error would surface -- but its tests never ran anywhere.
+      # It holds the archive, seal, gate and restore logic, which is the
+      # code most able to lose a user's work, and it was the least
+      # exercised in CI of anything in this repo.
+      - name: Test MothballCore (archive, seal, gate, restore)
+        run: |
+          swift test --package-path vendor/mothball \
+            -Xswiftc -warnings-as-errors \
+            -Xswiftc -strict-concurrency=complete
+
       - name: Validate all shell entrypoints and packaging prerequisites
         run: |
           while IFS= read -r -d '' script; do
