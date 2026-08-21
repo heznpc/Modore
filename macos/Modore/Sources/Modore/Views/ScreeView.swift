@@ -48,14 +48,19 @@ struct ScreePage: View {
             }
 
             if let report = model.screeReport {
-                ScreeStoresSection(stores: report.stores)
+                // Verdict before inventory. The page opens with what the
+                // owner must not lose and what is about to vanish; how
+                // many sessions each store holds is coverage, not a
+                // finding, and "Codex 2,886개" answers no question anyone
+                // brought to this screen.
+                ScreeWorktreeSection(items: report.worktreeItems, protectedCount: report.protectedWorktreeCount)
                 ScreeExpiringSection(
                     expiring: report.expiring,
                     preserveInFlightSource: model.screePreserveInFlightSource,
                     onPreserve: { model.preserveScreeSession($0) }
                 )
-                ScreeWorktreeSection(items: report.worktreeItems, protectedCount: report.protectedWorktreeCount)
                 ScreeLineageSection(summary: report.lineageSummary, unresolvedSessions: report.unresolvedSessions)
+                ScreeStoresSection(stores: report.stores)
             }
         }
         .macSettingsFormStyle()
@@ -194,25 +199,49 @@ private struct ScreeNoticeRow: View {
 private struct ScreeStoresSection: View {
     let stores: [ScreeStoreStatus]
 
+    /// Coverage, demoted from headline to footer. What the verdicts above
+    /// rest on -- which stores were read and how much was in them -- in
+    /// one line, with the per-store table behind a disclosure for the
+    /// reader who wants it.
     var body: some View {
-        Section("도구별 세션 저장소") {
+        Section {
             if stores.isEmpty {
                 Text("인식된 세션 저장소가 없습니다.")
                     .foregroundStyle(.secondary)
-            }
-            ForEach(stores) { store in
-                HStack {
-                    Image(systemName: store.status == "ok" ? "checkmark.circle" : "questionmark.circle")
-                        .foregroundStyle(Color.secondary)
-                    Text(store.store)
-                    Spacer()
-                    Text("\(store.count)개 세션")
-                        .foregroundStyle(.secondary)
+            } else {
+                DisclosureGroup {
+                    ForEach(stores) { store in
+                        HStack {
+                            Image(systemName: store.status == "ok" ? "checkmark.circle" : "questionmark.circle")
+                                .foregroundStyle(Color.secondary)
+                            Text(store.store)
+                            Spacer()
+                            Text("\(store.count)개 세션")
+                                .foregroundStyle(.secondary)
+                                .font(.callout)
+                                .monospacedDigit()
+                        }
+                    }
+                } label: {
+                    Text(Self.summaryLine(stores))
                         .font(.callout)
-                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
                 }
             }
+        } header: {
+            NativeSectionHeader(
+                title: "검사 범위",
+                subtitle: "위 판정이 근거한 저장소들입니다.",
+                value: ""
+            )
         }
+    }
+
+    static func summaryLine(_ stores: [ScreeStoreStatus]) -> String {
+        let read = stores.filter { $0.status == "ok" }
+        let total = read.reduce(0) { $0 + $1.count }
+        let names = read.map(\.store).joined(separator: " · ")
+        return "\(names) — \(read.count)개 저장소 · \(total)개 기록 확인"
     }
 }
 

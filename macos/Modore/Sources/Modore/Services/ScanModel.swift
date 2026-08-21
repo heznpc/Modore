@@ -34,6 +34,10 @@ final class ScanModel: ObservableObject {
     @Published var screeError: String?
     @Published var screePreserveInFlightSource: String?
     @Published var archiveCandidates: [ArchiveCandidate]?
+    /// Conversations a person opened, keyed by transcript path.
+    /// Display-only cache; never consulted by any judgment.
+    @Published var sessionConversations: [String: SessionConversation] = [:]
+    var conversationLoading: Set<String> = []
     @Published var archiveInspectionFailures = 0
     @Published var archiveLoading = false
     @Published var pendingLoginItemRemoval: PendingLoginItemRemoval?
