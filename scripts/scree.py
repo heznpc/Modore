@@ -1283,6 +1283,30 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
     )
 
 
+# The frozen wire contract for one workspace's snapshot. Version 1.
+#
+# Everything a consumer outside this repository (Zoint first) may rely
+# on. Three semantic limits are part of the contract, not commentary:
+#
+# 1. `coverage: "complete"` means every candidate binding was
+#    conclusively classified -- decided by authoritative metadata or
+#    read to EOF and found not to mention the workspace. It does NOT
+#    mean the machine was completely observed.
+# 2. `storeFingerprint` identifies the session-store state that was
+#    observed at snapshot time, for same-or-changed comparison. It is
+#    not a provenance proof of anything inside the stores.
+# 3. A snapshot is historical evidence, never destructive authorization.
+#    Anything acting on it must have Modore revalidate at the moment of
+#    action -- the `revalidate` hook on the archive path exists for
+#    exactly this.
+#
+# Additive changes (new optional keys) do not bump the version;
+# renaming, removing, or changing the meaning of any key listed here
+# does.
+SNAPSHOT_SCHEMA = "modore.agent-state-snapshot"
+SNAPSHOT_SCHEMA_VERSION = 1
+
+
 def _binding_result(workspace, repo_url, deep, bindings, fingerprint,
                     claude_complete, codex_complete, gemini_complete,
                     forks_complete, unbound, scanned_fully) -> dict:
@@ -1290,6 +1314,9 @@ def _binding_result(workspace, repo_url, deep, bindings, fingerprint,
     produced it -- single or batch. Kept in one place so the two cannot
     drift into reporting coverage differently."""
     return {
+        "schema": SNAPSHOT_SCHEMA,
+        "schemaVersion": SNAPSHOT_SCHEMA_VERSION,
+        "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "contract": ("session ids, evidence types, and sizes only; transcript "
                      "content is read for file-access evidence but never retained"),
         "workspace": workspace,

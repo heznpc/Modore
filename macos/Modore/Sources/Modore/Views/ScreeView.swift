@@ -43,6 +43,10 @@ struct ScreePage: View {
                 )
             }
 
+            if let quota = model.timeQuotaSnapshot {
+                TimeQuotaSection(snapshot: quota)
+            }
+
             if let report = model.screeReport {
                 ScreeStoresSection(stores: report.stores)
                 ScreeExpiringSection(
@@ -55,6 +59,112 @@ struct ScreePage: View {
             }
         }
         .macSettingsFormStyle()
+        .task {
+            model.refreshTimeQuotaCard()
+        }
+    }
+}
+
+/// TimeQuota's quota.json, read-only -- the deliberate boundary between the
+/// two products (see TimeQuotaCardService). The section only exists while
+/// the file is present, fresh, and parseable, so machines without TimeQuota
+/// never see a trace of it.
+private struct TimeQuotaSection: View {
+    let snapshot: TimeQuotaSnapshot
+
+    var body: some View {
+        Section {
+            if !snapshot.collectionHealthy {
+                ScreeNoticeRow(
+                    symbol: "exclamationmark.triangle",
+                    title: "TimeQuota 수집이 끊겼습니다",
+                    detail: "마지막 기록이 신선하지 않아 수치를 표시하지 않습니다. TimeQuota 쪽 수집 상태를 확인하세요.",
+                    tint: Color.secondary
+                )
+            } else {
+                if let window = snapshot.window {
+                    HStack(spacing: 12) {
+                        Image(systemName: "gauge.with.needle")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(window.provider) 주간 사용량")
+                                .font(.body.weight(.medium))
+                            if let resetsAt = window.resetsAt {
+                                Text("리셋 \(resetsAt.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Text(Self.percentText(window.usedPercent))
+                            .font(.callout.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                    .padding(.vertical, 2)
+                }
+                ForEach(snapshot.topBurn.prefix(3)) { row in
+                    HStack(spacing: 12) {
+                        Image(systemName: "flame")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.remote)
+                                .font(.body.weight(.medium))
+                                .lineLimit(1)
+                            if let lastActiveAt = row.lastActiveAt {
+                                Text("마지막 활동 \(lastActiveAt.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Text(Self.percentText(row.percent))
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    .padding(.vertical, 2)
+                }
+                ForEach(inactiveProviders) { provider in
+                    ScreeNoticeRow(
+                        symbol: "clock.badge.questionmark",
+                        title: "\(provider.name): \(Self.stateText(provider.state))",
+                        detail: "이 공급자의 사용량은 아직 수집되지 않고 있습니다.",
+                        tint: Color.secondary
+                    )
+                }
+            }
+        } header: {
+            NativeSectionHeader(
+                title: "AI 사용량 (TimeQuota)",
+                subtitle: "TimeQuota가 로컬에 기록한 quota.json을 읽기만 합니다. 소진 상위는 세션 메타데이터 집계이며 대화 내용은 관여하지 않습니다.",
+                value: snapshot.window.map { "\($0.provider) \(Self.percentText($0.usedPercent))" } ?? ""
+            )
+        }
+    }
+
+    /// Providers whose collection is not currently succeeding -- the healthy
+    /// ones are already represented by the numbers above.
+    private var inactiveProviders: [TimeQuotaSnapshot.ProviderState] {
+        snapshot.providerStates.filter { $0.state != "recent-success" }
+    }
+
+    private static func percentText(_ value: Double) -> String {
+        value == value.rounded()
+            ? String(format: "%.0f%%", value)
+            : String(format: "%.1f%%", value)
+    }
+
+    private static func stateText(_ state: String) -> String {
+        switch state {
+        case "never-attempted": return "수집 시작 전"
+        case "attempted-then-failed": return "수집 실패"
+        case "stale-success": return "마지막 성공이 오래됨"
+        default: return state
+        }
     }
 }
 

@@ -1354,3 +1354,59 @@ def test_bind_all_writes_to_a_file_when_asked(bind_home, tmp_path, capsys):
 
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert str(bind_home["repo"]) in payload["results"]
+
+
+# --- v1 스냅샷 계약 (외부 소비자 표면) ---------------------------------------
+
+
+def _fixture_snapshot():
+    fixture = Path(__file__).resolve().parent / "fixtures" / "agent-state-snapshot-v1.json"
+    return json.loads(fixture.read_text(encoding="utf-8"))
+
+
+def test_snapshot_carries_its_schema_identity(bind_home):
+    """소비자는 이 두 필드로 무엇을 받았는지 판별한다. 없으면 '어떤 버전인지
+    모른 채 best-effort 파싱'이 되고, 그게 계약을 두는 이유의 정반대다."""
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
+    assert out["schema"] == "modore.agent-state-snapshot"
+    assert out["schemaVersion"] == 1
+    assert out["generatedAt"]
+
+
+def test_snapshot_v1_frozen_keys_are_all_present(bind_home):
+    """v1이 약속한 키의 부재는 소비자 쪽에서 조용한 오독으로 나타난다.
+    여기서 깨지는 편이 낫다."""
+    out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    frozen = {"schema", "schemaVersion", "generatedAt", "workspace", "repoUrl",
+              "deep", "coverage", "coverageDetail", "assessed",
+              "storeFingerprint", "bindings", "summary"}
+    assert frozen <= set(out)
+    assert out["coverage"] in ("shallow", "truncated", "complete")
+    assert set(out["storeFingerprint"]) == {"digest", "fileCount"}
+
+
+def test_snapshot_fixture_matches_what_the_code_emits(bind_home):
+    """픽스처는 실행 결과에서 생성했고 소비자 레포가 복사해 간다. 코드가 내는
+    모양과 픽스처가 갈라지면 소비자 테스트는 존재하지 않는 형식을 통과한다."""
+    fixture = _fixture_snapshot()
+    live = scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)
+    assert set(fixture) == set(live), "top-level keys must not drift from the fixture"
+    assert fixture["schema"] == live["schema"]
+    assert fixture["schemaVersion"] == live["schemaVersion"]
+    required = {"provider", "sessionId", "source", "subtranscripts",
+                "evidence", "confidence", "sizeBytes"}
+    for binding in fixture["bindings"]:
+        # `artifactRoot` is optional by contract: only a binder that knows
+        # its store's layout states one (editors do; the agent stores rely
+        # on the sealer's beside-the-transcript fallback).
+        assert required <= set(binding)
+        assert set(binding) - required <= {"artifactRoot"}
+
+
+def test_fixture_contains_no_real_local_paths():
+    """release_smoke의 local-user-path 감사와 같은 이유: 픽스처는 배포 소스다."""
+    raw = (Path(__file__).resolve().parent / "fixtures"
+           / "agent-state-snapshot-v1.json").read_text(encoding="utf-8")
+    assert "/Users/example/" in raw
+    assert "/Users/ren" not in raw
+    assert "/var/folders" not in raw and "/tmp/" not in raw
