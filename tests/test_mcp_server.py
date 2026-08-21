@@ -23,9 +23,11 @@ def _payload(result: dict) -> dict:
 # 읽기 전용 경계 — 이 표면의 존재 이유
 # ---------------------------------------------------------------------------
 
-def test_only_the_declared_read_only_tools_are_exposed():
-    assert sorted(mcp_server.HANDLERS) == ["friction_scan", "moraine_report",
-                                           "scree_report", "system_scan_summary"]
+def test_only_the_read_only_judgment_tools_are_exposed():
+    assert sorted(mcp_server.HANDLERS) == ["file_access", "friction_scan",
+                                           "hf_orphans", "mcp_hygiene",
+                                           "scree_report", "system_scan_summary",
+                                           "uninstall_residue_report"]
 
 
 def test_every_tool_is_annotated_read_only_and_non_destructive():
@@ -50,7 +52,7 @@ def test_the_module_has_exactly_one_way_to_start_a_process():
         assert forbidden not in source, f"MCP surface must not use {forbidden}"
 
 
-def test_no_tool_can_run_anything_but_the_two_judgment_scripts(monkeypatch, tmp_path):
+def test_no_tool_can_run_anything_but_the_judgment_scripts(monkeypatch, tmp_path):
     """Exercised, not inspected: every tool is called and the real spawn point is
     recorded. cleanup.sh, scanner.sh, and scree's content-reading `preserve`
     subcommand must never appear in an argument vector."""
@@ -75,7 +77,8 @@ def test_no_tool_can_run_anything_but_the_two_judgment_scripts(monkeypatch, tmp_
     assert spawned, "expected the judgment scripts to be invoked"
     for argv in spawned:
         script = Path(argv[3]).name
-        assert script in ("scree.py", "friction.py", "moraine.py"), argv
+        assert script in ("scree.py", "friction.py", "moraine.py", "hfscan.py",
+                          "mcpaudit.py", "fileaccess.py"), argv
         joined = " ".join(argv)
         for forbidden in ("cleanup", "scanner", "storage_watch", "schedule",
                           "preserve", "--raw"):
@@ -120,6 +123,9 @@ def test_the_judgment_scripts_are_the_declared_targets():
     assert mcp_server.SCREE.name == "scree.py"
     assert mcp_server.FRICTION.name == "friction.py"
     assert mcp_server.MORAINE.name == "moraine.py"
+    assert mcp_server.HFSCAN.name == "hfscan.py"
+    assert mcp_server.MCPAUDIT.name == "mcpaudit.py"
+    assert mcp_server.FILEACCESS.name == "fileaccess.py"
 
 
 def test_scan_summary_states_that_it_cannot_start_a_scan(tmp_path, monkeypatch):
@@ -255,7 +261,7 @@ def test_truncation_is_always_accounted_for(stub_scripts):
 
 
 def test_moraine_report_forwards_the_correlated_verdict(stub_scripts):
-    payload = _payload(_call("moraine_report", {"section": "all", "limit": 10}))
+    payload = _payload(_call("uninstall_residue_report", {"section": "all", "limit": 10}))
     assert payload["summary"]["trust_roots_orphaned"] == 1
     assert payload["summary"]["removed_vendors"] == ["com.innorix"]
     assert payload["trust_roots"]["items"][0]["name"] == "INNORIX.CA"
@@ -265,7 +271,7 @@ def test_moraine_report_forwards_the_correlated_verdict(stub_scripts):
 
 
 def test_moraine_summary_section_is_counts_only(stub_scripts):
-    payload = _payload(_call("moraine_report", {"section": "summary"}))
+    payload = _payload(_call("uninstall_residue_report", {"section": "summary"}))
     assert "trust_roots" not in payload and "receipts" not in payload
     assert payload["trust_roots_unconditional"] == 1
 
@@ -279,7 +285,7 @@ def test_every_tool_result_is_fenced_as_untrusted(stub_scripts, tmp_path, monkey
     monkeypatch.setattr(mcp_server, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     for name, arguments in (("scree_report", {}), ("friction_scan", {}),
-                            ("system_scan_summary", {}), ("moraine_report", {})):
+                            ("system_scan_summary", {}), ("uninstall_residue_report", {})):
         text = _call(name, arguments)["content"][0]["text"]
         assert text.startswith(mcp_server.UNTRUSTED_OPEN), name
         assert text.rstrip().endswith(mcp_server.UNTRUSTED_CLOSE), name
@@ -305,8 +311,8 @@ def test_server_instructions_state_the_read_only_contract():
     ("scree_report", {"section": "everything"}),
     ("scree_report", {"limit": 0}),
     ("system_scan_summary", {"limit": 101}),
-    ("moraine_report", {"section": "everything"}),
-    ("moraine_report", {"limit": 201}),
+    ("uninstall_residue_report", {"section": "everything"}),
+    ("uninstall_residue_report", {"limit": 201}),
 ])
 def test_bad_arguments_are_tool_errors_not_crashes(tool, arguments, stub_scripts):
     result = _call(tool, arguments)
@@ -329,7 +335,9 @@ def test_initialize_echoes_a_supported_version_and_falls_back_otherwise():
 def test_tools_list_declares_closed_input_schemas():
     tools = mcp_server.handle_request("tools/list", {})["tools"]
     assert [t["name"] for t in tools] == ["scree_report", "friction_scan",
-                                          "system_scan_summary", "moraine_report"]
+                                          "hf_orphans", "mcp_hygiene",
+                                          "file_access", "system_scan_summary",
+                                          "uninstall_residue_report"]
     for tool in tools:
         assert tool["inputSchema"]["additionalProperties"] is False
         assert tool["description"] and tool["title"]
@@ -378,9 +386,105 @@ def test_cli_tools_dump_is_the_registered_surface(capsys):
     assert mcp_server.main(["--tools"]) == 0
     dumped = json.loads(capsys.readouterr().out)
     assert [t["name"] for t in dumped["exposed"]] == ["scree_report", "friction_scan",
-                                                      "system_scan_summary", "moraine_report"]
+                                                      "hf_orphans", "mcp_hygiene",
+                                                      "file_access", "system_scan_summary",
+                                                      "uninstall_residue_report"]
     assert dumped["rejected"] == []
 
 
 def test_cli_rejects_unknown_arguments(capsys):
     assert mcp_server.main(["--run-cleanup"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# 흡수한 판정 두 개 (decant → hfscan / mcpaudit)
+# ---------------------------------------------------------------------------
+
+def test_a_search_root_cannot_be_smuggled_in_as_an_option():
+    """`roots`는 이 표면에서 호출자가 경로를 넘기는 유일한 자리다."""
+    for bad in (["--home"], ["-x"], [""], "not-a-list", [1]):
+        result = _call("hf_orphans", {"roots": bad})
+        assert result.get("isError"), bad
+
+    too_many = [f"/tmp/r{i}" for i in range(mcp_server.MAX_HF_ROOTS + 1)]
+    assert _call("hf_orphans", {"roots": too_many}).get("isError")
+
+
+def test_hf_orphans_surfaces_a_withheld_verdict_at_the_top_level(monkeypatch):
+    """불완전한 검색은 조용히 '미참조 0건'으로 보이면 안 된다."""
+    incomplete = {
+        "evidence": "preview", "requires_revalidation": True,
+        "hub": {"path": "~/.cache/huggingface/hub", "exists": True,
+                "model_count": 1, "total_bytes": 10},
+        "search": {"complete": False, "incomplete_reasons": ["search-root-missing"]},
+        "summary": {"referenced": 0, "unreferenced": 0, "unknown": 1,
+                    "unreferenced_bytes": 0},
+        "models": [{"name": "models--a--b", "verdict": "unknown", "size_bytes": 10}],
+    }
+    monkeypatch.setattr(mcp_server, "_run_json",
+                        lambda script, arguments, timeout: incomplete)
+    payload = _payload(_call("hf_orphans", {}))
+    assert payload["search_complete"] is False
+    assert payload["verdicts_withheld"] is True
+    assert payload["models"][0]["verdict"] == "unknown"
+
+
+def test_mcp_hygiene_filters_by_status_and_never_forwards_env(monkeypatch):
+    report = {
+        "evidence": "preview", "requires_revalidation": True,
+        "configs": ["~/.claude.json"], "config_errors": [], "server_count": 2,
+        "path_available": True,
+        "summary": {"dead": 1, "unknown": 0, "duplicate": 0,
+                    "manual-review": 1, "healthy": 0},
+        "findings": [
+            {"server": "gone", "status": "dead", "reasons": ["command-not-found"],
+             "config": "~/.claude.json", "command_kind": "node", "env_key_count": 0},
+            {"server": "keyed", "status": "manual-review",
+             "reasons": ["env-present-not-read"], "config": "~/.claude.json",
+             "command_kind": "node", "env_key_count": 3},
+        ],
+    }
+    monkeypatch.setattr(mcp_server, "_run_json",
+                        lambda script, arguments, timeout: report)
+
+    payload = _payload(_call("mcp_hygiene", {"status": "dead"}))
+    assert [f["server"] for f in payload["findings"]] == ["gone"]
+
+    everything = json.dumps(_payload(_call("mcp_hygiene", {})), ensure_ascii=False)
+    assert "env_key_count" in everything
+    for leaked in ("ANTHROPIC_API_KEY", "sk-ant", "env_values"):
+        assert leaked not in everything
+
+
+def test_file_access_defaults_to_rule_surfaces_and_never_forwards_a_command(monkeypatch):
+    """canary는 행마다 명령문 200자 발췌를 실었다. 이 표면은 경로만 넘긴다."""
+    captured = {}
+
+    def fake_run(script, arguments, timeout):
+        captured["argv"] = arguments
+        return {
+            "evidence": "preview", "requires_revalidation": True,
+            "stores": [], "sessions_scanned": 3, "sessions_skipped_by_cap": 0,
+            "path_count": 1, "rule_surface_count": 1,
+            "paths": [{"path": "~/.claude/settings.json", "rule_surface": True,
+                       "reads": 1, "writes": 2, "shell": 0, "tools": ["Edit"],
+                       "session_count": 2, "session_ids": ["a", "b"],
+                       "last_ts": "2026-08-01T00:00:00Z"}],
+        }
+
+    monkeypatch.setattr(mcp_server, "_run_json", fake_run)
+
+    payload = _payload(_call("file_access", {}))
+    assert payload["filters"]["rule_surfaces_only"] is True
+    assert "--all" not in captured["argv"]
+    assert payload["paths"][0]["path"] == "~/.claude/settings.json"
+    for key in ("detail", "command", "cmd"):
+        assert key not in payload["paths"][0]
+
+    _call("file_access", {"include_all": True, "query": "settings"})
+    assert "--all" in captured["argv"]
+    assert "--query" in captured["argv"] and "settings" in captured["argv"]
+
+
+def test_file_access_rejects_a_non_string_query():
+    assert _call("file_access", {"query": 5}).get("isError")

@@ -36,12 +36,17 @@ public struct Restorer: Sendable {
     public enum RestoreError: Error, Sendable {
         case manifestUnreadable(URL, underlying: Error?)
         case manifestDecodeFailed(URL, underlying: Error)
-        case unsupportedSchema(found: Int, supported: Int)
+        case unsupportedSchema(found: Int, supported: ClosedRange<Int>)
         case archiveMissing(URL)
         case destinationRefused(URL, reason: String)
         case destinationNotEmpty(URL)
         case extractionFailed(stderr: String, exitCode: Int32)
         case verificationFailed(reason: String)
+        /// The manifest names a session archive that is not beside it.
+        case sessionArchiveMissing(URL)
+        /// A restored session's bytes do not match the digest the manifest
+        /// recorded for them.
+        case sessionDigestMismatch(sessionID: String, expected: String, found: String)
         case finalMoveFailed(underlying: Error)
         case process(ProcessError)
     }
@@ -50,6 +55,7 @@ public struct Restorer: Sendable {
         case starting(manifest: URL)
         case extracting(archive: URL)
         case verifying
+        case restoringSessions(count: Int)
         case completed(restoredTo: URL, fileCount: Int)
     }
 
@@ -60,7 +66,34 @@ public struct Restorer: Sendable {
         public let archive: URL
         /// The decoded sidecar that drove the restore.
         public let manifest: ArchiveManifest
+        /// Where the sealed conversations were put back, when the archive
+        /// had any. Restoring the working tree without them would put the
+        /// user back exactly where the gate exists to stop them getting:
+        /// the code returns, the reasoning behind it does not.
+        public let restoredSessions: URL?
+        /// Sessions whose staged bytes were re-hashed and matched.
+        public let verifiedSessionCount: Int
+
+        /// The conversations came back and can be read.
+        public var sessionsReadable: Bool { restoredSessions != nil }
+
+        /// Whether the provider can pick these conversations back up.
+        ///
+        /// Always false, and stated rather than left to be inferred from
+        /// `restoredSessions` being non-nil. Restoring puts the
+        /// transcripts inside the repo; Claude and Codex resume from their
+        /// own stores keyed by the original working directory, so a
+        /// restored archive gives back a readable record and not a
+        /// resumable session. Conflating the two is how a user learns the
+        /// difference at the moment they needed the session, which is the
+        /// failure this whole feature exists to prevent -- just moved to
+        /// the far end.
+        public var providerResumable: Bool { false }
     }
+
+    /// Where a restored archive's conversations land inside the repo.
+    /// Named once because the restorer writes it and the UI reads it.
+    public static let sessionsDirectoryName = ".mothball-sessions"
 
     public let configuration: Configuration
 
@@ -88,10 +121,15 @@ public struct Restorer: Sendable {
         // 1. Decode the sidecar. This is the source of truth for where the
         //    repo came from and what schema we're dealing with.
         let manifest = try Self.decodeManifest(at: manifestURL)
-        guard manifest.schemaVersion == ArchiveManifest.currentSchemaVersion else {
+        // Membership, not equality. Every archive this tool ever wrote is
+        // the only remaining copy of a workspace it also trashed, so a
+        // writer-side schema bump must never be what makes one
+        // unrestorable. `ArchiveManifest`'s decoder already fills the
+        // fields a v1 sidecar predates.
+        guard ArchiveManifest.supportedSchemaVersions.contains(manifest.schemaVersion) else {
             throw RestoreError.unsupportedSchema(
                 found: manifest.schemaVersion,
-                supported: ArchiveManifest.currentSchemaVersion
+                supported: ArchiveManifest.supportedSchemaVersions
             )
         }
 
@@ -147,8 +185,58 @@ public struct Restorer: Sendable {
         progress?(.verifying)
         let extractedRoot = try Self.verifyExtractedStructure(in: staging)
 
-        // 7. Promote. If `dest` exists it was validated empty above, so
+        // 7. Sessions, still inside staging. Everything that can refuse
+        //    has to refuse before anything moves: a digest mismatch found
+        //    after the working tree is in place leaves a half-restored
+        //    repo and a partial session tree behind, and the caller sees
+        //    only a thrown error. Extract, verify, then promote once.
+        var sessionsStaged: URL?
+        var verified = 0
+        if let continuity = manifest.continuity,
+           let archiveName = continuity.sessionArchive,
+           !continuity.sessions.isEmpty {
+            progress?(.restoringSessions(count: continuity.sessions.count))
+            let sessionArchive = manifestURL
+                .deletingLastPathComponent()
+                .appending(path: archiveName)
+            guard FileManager.default.fileExists(atPath: sessionArchive.path) else {
+                throw RestoreError.sessionArchiveMissing(sessionArchive)
+            }
+            // Inside `extractedRoot`, so the single promotion below carries
+            // the conversations with the working tree.
+            let staged = extractedRoot.appending(
+                path: Self.sessionsDirectoryName, directoryHint: .isDirectory
+            )
+            do {
+                try FileManager.default.createDirectory(
+                    at: staged, withIntermediateDirectories: true
+                )
+            } catch {
+                throw RestoreError.destinationRefused(
+                    staged, reason: "세션 복원 위치를 만들 수 없음: \(error.localizedDescription)"
+                )
+            }
+            try await runTarExtract(archive: sessionArchive, into: staged)
+            for session in continuity.sessions {
+                let dir = staged.appending(path: session.artifact)
+                let digest = try ContinuitySealer.treeDigest(of: dir)
+                guard digest.digest == session.sha256 else {
+                    throw RestoreError.sessionDigestMismatch(
+                        sessionID: session.sessionID,
+                        expected: session.sha256,
+                        found: digest.digest
+                    )
+                }
+                verified += 1
+            }
+            sessionsStaged = staged
+        }
+
+        // 8. Promote. If `dest` exists it was validated empty above, so
         //    removing it is safe and lets the rename land on a clean name.
+        //    One rename moves the working tree and its conversations
+        //    together; there is no window in which one exists without the
+        //    other.
         if FileManager.default.fileExists(atPath: dest.path) {
             Self.removeIfExists(dest)
         }
@@ -157,10 +245,19 @@ public struct Restorer: Sendable {
         } catch {
             throw RestoreError.finalMoveFailed(underlying: error)
         }
+        let restoredSessions = sessionsStaged.map {
+            dest.appending(path: $0.lastPathComponent, directoryHint: .isDirectory)
+        }
 
         let fileCount = Self.countRegularFiles(in: dest)
         progress?(.completed(restoredTo: dest, fileCount: fileCount))
-        return RestoreResult(restoredPath: dest, archive: archiveURL, manifest: manifest)
+        return RestoreResult(
+            restoredPath: dest,
+            archive: archiveURL,
+            manifest: manifest,
+            restoredSessions: restoredSessions,
+            verifiedSessionCount: verified
+        )
     }
 
     // MARK: - Manifest / archive pairing

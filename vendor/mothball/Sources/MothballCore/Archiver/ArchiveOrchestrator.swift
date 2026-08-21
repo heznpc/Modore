@@ -28,6 +28,15 @@ public struct ArchiveOrchestrator: Sendable {
     }
 
     public enum ArchiveError: Error, Sendable {
+        /// The session gate refused. Listed first because it is the only
+        /// error here that is a policy decision rather than a failure:
+        /// nothing went wrong, the caller just has not done enough yet.
+        case continuityRefused(ContinuityGate.Refusal)
+        /// The world moved between the assessment and the archive. Not a
+        /// failure of any step -- every step did its job, on a picture
+        /// that stopped being true partway through.
+        case revalidationFailed(reason: String)
+        case sessionCompressionFailed(stderr: String, exitCode: Int32)
         case archiveDirectoryUnusable(URL, underlying: Error?)
         case sourcePathRefused(URL, reason: String)
         case archiveAlreadyExists(URL)
@@ -41,6 +50,7 @@ public struct ArchiveOrchestrator: Sendable {
 
     public enum Step: Sendable {
         case starting(repo: URL)
+        case sealingSessions(count: Int, bytes: Int64)
         case compressing(estimatedSourceBytes: Int64)
         case verifying
         case writingManifest
@@ -54,6 +64,9 @@ public struct ArchiveOrchestrator: Sendable {
         public let archiveBytes: Int64
         public let originalBytes: Int64
         public let trashedItemURL: URL?
+        /// The sibling `.sessions.tar.zst`, when this workspace had
+        /// sessions to seal.
+        public let sessionArchive: URL?
     }
 
     public let configuration: Configuration
@@ -69,12 +82,45 @@ public struct ArchiveOrchestrator: Sendable {
     /// On failure, partial files (`.tmp`) are always cleaned up. The
     /// original is only moved to trash after the archive AND manifest
     /// are both at their final paths and verified.
+    /// - Parameter continuity: what a binder found out about this
+    ///   workspace's agent sessions. There is deliberately no default.
+    ///   A default would be `.notAssessed` — which blocks, turning a
+    ///   compile-time obligation into a runtime surprise — or something
+    ///   permissive, which silently reintroduces the exact hazard this
+    ///   parameter exists to close. Every call site states its answer.
+    /// - Parameter revalidate: run after the gate and before any bytes
+    ///   are written, to confirm the picture the assessment was built
+    ///   from still holds. Sealing hundreds of megabytes takes long
+    ///   enough for an agent to write a new session or for the working
+    ///   tree to change, and every check upstream of this ran on the
+    ///   older world. Throwing here costs a wasted seal; not checking
+    ///   costs the thing the seal was protecting.
     public func archive(
         _ repo: RepoInfo,
+        continuity: ContinuityAssessment,
+        revalidate: (@Sendable () async throws -> Void)? = nil,
         progress: (@Sendable (Step) async -> Void)? = nil
     ) async throws -> ArchiveResult {
         let env = configuration
         await progress?(.starting(repo: repo.path))
+
+        // Gate first, before any work: a refusal must cost nothing and
+        // must not leave a half-built archive behind to explain.
+        if case .block(let refusal) = ContinuityGate.evaluate(continuity) {
+            throw ArchiveError.continuityRefused(refusal)
+        }
+
+        // Before validation and before the first byte: a refusal here
+        // must cost nothing but the seal that already happened.
+        if let revalidate {
+            do {
+                try await revalidate()
+            } catch let error as ArchiveError {
+                throw error
+            } catch {
+                throw ArchiveError.revalidationFailed(reason: String(describing: error))
+            }
+        }
 
         try Self.validateSource(repo.path, archiveDirectory: env.archiveDirectory)
         try Self.validateArchiveDirectory(env.archiveDirectory)
@@ -82,13 +128,15 @@ public struct ArchiveOrchestrator: Sendable {
         let plan = ArchivePlan(repo: repo, archiveDirectory: env.archiveDirectory)
 
         if FileManager.default.fileExists(atPath: plan.archiveFinal.path) ||
-           FileManager.default.fileExists(atPath: plan.manifestFinal.path) {
+           FileManager.default.fileExists(atPath: plan.manifestFinal.path) ||
+           FileManager.default.fileExists(atPath: plan.sessionsFinal.path) {
             throw ArchiveError.archiveAlreadyExists(plan.archiveFinal)
         }
 
         // Ensure no leftover tmp from a previous crashed run blocks us.
         Self.removeIfExists(plan.archiveTmp)
         Self.removeIfExists(plan.manifestTmp)
+        Self.removeIfExists(plan.sessionsTmp)
 
         // Defer cleanup of tmp files. If a rename promoted a tmp to
         // final, the path no longer exists at the .tmp location and
@@ -96,26 +144,44 @@ public struct ArchiveOrchestrator: Sendable {
         defer {
             Self.removeIfExists(plan.archiveTmp)
             Self.removeIfExists(plan.manifestTmp)
+            Self.removeIfExists(plan.sessionsTmp)
         }
 
-        // 1. Compress.
+        // 1. Sessions, if any were sealed. Done before the workspace tar
+        //    so a failure here costs the cheaper of the two compressions.
+        //    The staging tree is the sealer's copy; the digests already in
+        //    `bundle` describe these exact bytes, which is why the copy
+        //    had to happen before the hash rather than after.
+        var sealedBundle: ContinuityBundle?
+        if case .sealed(let bundle, _) = continuity, !bundle.sessions.isEmpty {
+            sealedBundle = bundle
+            await progress?(.sealingSessions(count: bundle.sessions.count, bytes: bundle.totalBytes))
+            try await runSessionTarCreate(plan: plan, bundle: bundle, env: env)
+        }
+
+        // 2. Compress the workspace.
         await progress?(.compressing(estimatedSourceBytes: repo.sizeBytes))
         try await runTarCreate(plan: plan, env: env)
 
-        // 2. Verify the archive is structurally readable. Catches truncation
-        //    or zstd corruption before we trust it enough to delete the
-        //    original.
+        // 3. Verify the archives are structurally readable. Catches
+        //    truncation or zstd corruption before we trust them enough to
+        //    delete the original.
         await progress?(.verifying)
         try await runTarVerify(archive: plan.archiveTmp, env: env)
+        if sealedBundle != nil {
+            try await runTarVerify(archive: plan.sessionsTmp, env: env)
+        }
 
-        // 3. Manifest.
+        // 4. Manifest.
         await progress?(.writingManifest)
         let archiveBytes = Self.fileSize(at: plan.archiveTmp) ?? 0
         let manifest = makeManifest(
             repo: repo,
             archiveBytes: archiveBytes,
             appVersion: env.appVersion,
-            archivedAt: Date()
+            archivedAt: Date(),
+            continuity: continuity,
+            sessionArchiveName: sealedBundle == nil ? nil : plan.sessionsFinal.lastPathComponent
         )
         do {
             let data = try ArchiveManifest.encoder().encode(manifest)
@@ -124,25 +190,40 @@ public struct ArchiveOrchestrator: Sendable {
             throw ArchiveError.manifestWriteFailed(underlying: error)
         }
 
-        // 4. Promote both to final names. Same-directory rename on the
-        //    same filesystem is effectively atomic. Manifest goes second —
-        //    if it fails, we roll the archive back so we never have an
-        //    orphan archive without identifying metadata.
+        // 5. Promote to final names. Same-directory rename on the same
+        //    filesystem is effectively atomic. The manifest goes last and
+        //    a failure rolls the others back, because the manifest is what
+        //    makes the other files identifiable — an orphan `.tar.zst`
+        //    with no sidecar is exactly the opaque blob this whole design
+        //    exists to avoid producing.
+        var promoted: [URL] = []
+        func rollBackPromoted() { for url in promoted { Self.removeIfExists(url) } }
+
+        if sealedBundle != nil {
+            do {
+                try FileManager.default.moveItem(at: plan.sessionsTmp, to: plan.sessionsFinal)
+                promoted.append(plan.sessionsFinal)
+            } catch {
+                throw ArchiveError.finalRenameFailed(underlying: error)
+            }
+        }
         do {
             try FileManager.default.moveItem(at: plan.archiveTmp, to: plan.archiveFinal)
+            promoted.append(plan.archiveFinal)
         } catch {
+            rollBackPromoted()
             throw ArchiveError.finalRenameFailed(underlying: error)
         }
         do {
             try FileManager.default.moveItem(at: plan.manifestTmp, to: plan.manifestFinal)
         } catch {
-            // Roll back: delete the now-orphaned archive. Original is
+            // Roll back: delete the now-orphaned archives. The original is
             // untouched, so the user loses nothing.
-            Self.removeIfExists(plan.archiveFinal)
+            rollBackPromoted()
             throw ArchiveError.finalRenameFailed(underlying: error)
         }
 
-        // 5. Trash the original. If THIS fails, we still have a valid
+        // 6. Trash the original. If THIS fails, we still have a valid
         //    archive + manifest — leave the original in place and let
         //    the caller decide. Don't roll back the archive.
         await progress?(.movingOriginalToTrash)
@@ -166,7 +247,8 @@ public struct ArchiveOrchestrator: Sendable {
             manifest: plan.manifestFinal,
             archiveBytes: archiveBytes,
             originalBytes: repo.sizeBytes,
-            trashedItemURL: trashedURL
+            trashedItemURL: trashedURL,
+            sessionArchive: sealedBundle == nil ? nil : plan.sessionsFinal
         )
     }
 
@@ -243,6 +325,33 @@ public struct ArchiveOrchestrator: Sendable {
         }
     }
 
+    /// Tars the sealer's staging tree. `-C stagingRoot` with the single
+    /// entry `sessions` keeps this archive to one top-level directory,
+    /// the same shape the workspace archive has, so one extraction check
+    /// covers both.
+    private func runSessionTarCreate(
+        plan: ArchivePlan,
+        bundle: ContinuityBundle,
+        env: Configuration
+    ) async throws {
+        let result = try await ProcessRunner.run(
+            executable: env.tarExecutable,
+            arguments: [
+                "--zstd",
+                "--options", "zstd:compression-level=\(env.zstdLevel)",
+                "-cf", plan.sessionsTmp.path,
+                "-C", bundle.stagingRoot.path,
+                "--",
+                ContinuitySealer.rootDirectoryName,
+            ],
+            timeout: env.compressionTimeout,
+            wrapping: ArchiveError.process
+        )
+        guard result.isSuccess else {
+            throw ArchiveError.sessionCompressionFailed(stderr: result.stderr, exitCode: result.exitCode)
+        }
+    }
+
     private func runTarVerify(archive: URL, env: Configuration) async throws {
         let result = try await ProcessRunner.run(
             executable: env.tarExecutable,
@@ -261,9 +370,11 @@ public struct ArchiveOrchestrator: Sendable {
         repo: RepoInfo,
         archiveBytes: Int64,
         appVersion: String,
-        archivedAt: Date
+        archivedAt: Date,
+        continuity: ContinuityAssessment,
+        sessionArchiveName: String?
     ) -> ArchiveManifest {
-        ArchiveManifest(
+        return ArchiveManifest(
             schemaVersion: ArchiveManifest.currentSchemaVersion,
             archivedAt: archivedAt,
             archivedBy: appVersion,
@@ -271,7 +382,20 @@ public struct ArchiveOrchestrator: Sendable {
             sizeBytesBefore: repo.sizeBytes,
             sizeBytesArchive: archiveBytes,
             git: ArchiveManifest.Git(from: repo.git),
-            restoreHint: repo.git.originURL.map { "git clone \($0)" }
+            restoreHint: repo.git.originURL.map { "git clone \($0)" },
+            // The scanner sees a repo where it is now. Earlier locations
+            // come from session bindings, which this type does not have —
+            // so a single-entry list, honestly, rather than a fabricated
+            // history.
+            historicalPaths: [repo.path.path],
+            continuity: ArchiveManifest.Continuity(
+                assessment: continuity.manifestTag,
+                sessionArchive: sessionArchiveName,
+                sessions: continuity.sealedSessions,
+                // Nothing writes an override any more; the field stays so
+                // manifests from the standalone era still decode.
+                overrideReason: nil
+            )
         )
     }
 

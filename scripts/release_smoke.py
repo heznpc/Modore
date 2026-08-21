@@ -356,6 +356,9 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/scree.py",
     "scripts/friction.py",
     "scripts/moraine.py",
+    "scripts/hfscan.py",
+    "scripts/mcpaudit.py",
+    "scripts/fileaccess.py",
     "scripts/mcp_server.py",
     "scripts/idle_cpu.sh",
     "scripts/network_watch.sh",
@@ -377,8 +380,10 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/modules/macos/privacy.sh",
     "scripts/modules/macos/devtool_updates.sh",
     "macos/Modore/Package.swift",
+    # No `vendor/mothball/LICENSE`: the subtree is Modore's own code
+    # under Modore's own terms, and a second LICENSE file there implied
+    # separate ones. The repo-root LICENSE covers it.
     "vendor/mothball/Package.swift",
-    "vendor/mothball/LICENSE",
     "assets/macos/AppIcon.svg",
 ]
 MACOS_FILES = MACOS_BASE_FILES + SWIFT_FILES

@@ -74,7 +74,7 @@ final class RestoreRoundTripTests: XCTestCase {
         )
 
         // Archive: this moves the original to Trash.
-        let archiveResult = try await makeOrchestrator().archive(info)
+        let archiveResult = try await makeOrchestrator().archive(info, continuity: .assessedNoSessions)
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: repo.url.path),
             "precondition: archive must have removed the original from its location"
@@ -125,7 +125,7 @@ final class RestoreRoundTripTests: XCTestCase {
 
     func test_restore_refusesNonEmptyDestination_withoutTouchingIt() async throws {
         let info = try await smallRepoInfo()
-        let archiveResult = try await makeOrchestrator().archive(info)
+        let archiveResult = try await makeOrchestrator().archive(info, continuity: .assessedNoSessions)
 
         let dest = restoreParent.appending(path: "occupied", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
@@ -257,6 +257,49 @@ final class RestoreRoundTripTests: XCTestCase {
             map[relative] = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         }
         return map
+    }
+
+    /// A v1 archive is not a hypothetical: every archive written before
+    /// the session gate landed has a v1 sidecar, and its `.tar.zst` is
+    /// the only remaining copy of a workspace this tool already trashed.
+    /// So restore is exercised against a genuine v1 sidecar — produced by
+    /// stripping the schema-2 keys back out of a real archive — rather
+    /// than trusted to the decoder unit test alone.
+    func test_restoreWorksAgainstAV1Sidecar() async throws {
+        try await repo.initialize()
+        try repo.writeFile("README.md", contents: "v1 era\n")
+        try await repo.commit("initial")
+        try await repo.fakePushedOrigin()
+        let infos = await RepoScanner().scan(roots: [repo.url.deletingLastPathComponent()])
+        let info = try XCTUnwrap(
+            infos.first { $0.path.standardizedFileURL == repo.url.standardizedFileURL }
+        )
+        let result = try await makeOrchestrator().archive(info, continuity: .assessedNoSessions)
+
+        // Downgrade the sidecar in place: drop the schema-2 keys and set
+        // the version back, leaving the untouched `.tar.zst` beside it.
+        var json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: result.manifest)) as? [String: Any]
+        )
+        json.removeValue(forKey: "historicalPaths")
+        json.removeValue(forKey: "continuity")
+        json["schemaVersion"] = 1
+        try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+            .write(to: result.manifest)
+
+        let dest = restoreParent.appending(path: "restored-v1", directoryHint: .isDirectory)
+        let restored = try await makeRestorer().restore(manifestURL: result.manifest, to: dest)
+
+        XCTAssertEqual(restored.manifest.schemaVersion, 1)
+        XCTAssertEqual(restored.manifest.historicalPaths, [info.path.path],
+                       "a v1 manifest knows exactly one location")
+        XCTAssertNil(restored.manifest.continuity,
+                     "a v1 archive predates the question and must not claim to answer it")
+        XCTAssertTrue(Self.isDirectory(dest.appending(path: ".git")))
+        XCTAssertEqual(
+            try String(contentsOf: dest.appending(path: "README.md"), encoding: .utf8),
+            "v1 era\n"
+        )
     }
 
     private static func isDirectory(_ url: URL) -> Bool {

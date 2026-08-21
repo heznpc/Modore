@@ -49,7 +49,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
 
     func test_archive_producesArchiveAndManifestAtFinalPaths() async throws {
         let info = try await singleRepoInfo()
-        let result = try await makeOrchestrator().archive(info)
+        let result = try await makeOrchestrator().archive(info, continuity: .assessedNoSessions)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.archive.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.manifest.path))
@@ -62,7 +62,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
         let info = try await singleRepoInfo()
         let originalPath = info.path
 
-        let result = try await makeOrchestrator().archive(info)
+        let result = try await makeOrchestrator().archive(info, continuity: .assessedNoSessions)
 
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: originalPath.path),
@@ -73,7 +73,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
 
     func test_archive_manifestRoundTrips() async throws {
         let info = try await singleRepoInfo()
-        let result = try await makeOrchestrator().archive(info)
+        let result = try await makeOrchestrator().archive(info, continuity: .assessedNoSessions)
 
         let data = try Data(contentsOf: result.manifest)
         let manifest = try ArchiveManifest.decoder().decode(ArchiveManifest.self, from: data)
@@ -96,7 +96,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
         try Data().write(to: plan.archiveFinal)
 
         do {
-            _ = try await makeOrchestrator().archive(info)
+            _ = try await makeOrchestrator().archive(info, continuity: .assessedNoSessions)
             // Acceptable: a different timestamp could theoretically save
             // us, but in practice second-resolution + same `now()` means
             // a guaranteed collision. We treat success as still passing
@@ -122,7 +122,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
             )
         )
         do {
-            _ = try await makeOrchestrator().archive(fake)
+            _ = try await makeOrchestrator().archive(fake, continuity: .assessedNoSessions)
             XCTFail("expected sourcePathRefused")
         } catch ArchiveOrchestrator.ArchiveError.sourcePathRefused {
             // expected
@@ -151,7 +151,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
             )
         )
         do {
-            _ = try await makeOrchestrator().archive(fake)
+            _ = try await makeOrchestrator().archive(fake, continuity: .assessedNoSessions)
             XCTFail("expected sourcePathRefused for source inside archive dir")
         } catch ArchiveOrchestrator.ArchiveError.sourcePathRefused {
             // expected
@@ -184,7 +184,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
                 originURL: nil, currentBranch: nil, headSHA: nil
             )
         )
-        let result = try await makeOrchestrator().archive(fake)
+        let result = try await makeOrchestrator().archive(fake, continuity: .assessedNoSessions)
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.archive.path),
                       "tar must produce the archive even when basename starts with `-`")
         XCTAssertGreaterThan(result.archiveBytes, 0,
@@ -193,7 +193,7 @@ final class ArchiveOrchestratorIntegrationTests: XCTestCase {
 
     func test_archive_originalSizeIsRecordedInResult() async throws {
         let info = try await singleRepoInfo()
-        let result = try await makeOrchestrator().archive(info)
+        let result = try await makeOrchestrator().archive(info, continuity: .assessedNoSessions)
         XCTAssertEqual(result.originalBytes, info.sizeBytes)
     }
 
