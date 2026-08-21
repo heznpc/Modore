@@ -368,6 +368,28 @@ extension ScreeService {
         return try? JSONDecoder().decode(BindReport.Fingerprint.self, from: data)
     }
 
+    /// One session's conversation for display, via `scree.py inspect`.
+    ///
+    /// The judgment plane never sees this: it is fetched when a person
+    /// opens a session, rendered, and discarded. Masked by default at
+    /// the source; nothing here re-requests raw.
+    static func inspect(
+        execution: RuntimeExecutionContext,
+        binding: SessionBinding,
+        turns: Int = 20,
+        homeOverride: URL? = nil
+    ) async -> SessionConversation? {
+        var arguments = ["inspect", binding.source.path, "--turns", String(turns)]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        guard case .success(let output) = await invoke(
+            execution: execution, arguments: arguments, timeout: 60
+        ), let start = output.firstIndex(of: "{"),
+           let data = output[start...].data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(SessionConversation.self, from: data)
+    }
+
     private struct TitlePayload: Decodable {
         let title: String
         let titleSource: String

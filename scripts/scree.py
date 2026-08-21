@@ -34,6 +34,11 @@ anything discovered automatically — and both mask by default:
   line and is never an input to a safety judgement.
 - `scree.py bind <workspace> --deep` reads transcript bodies to find
   file-access evidence, and emits only whether such evidence exists.
+- `scree.py inspect <source>` returns one session's conversation for
+  display -- masked, per-turn capped, recent-window only. The viewer the
+  other three imply: judgment stays metadata-only, but the owner can
+  always look at what the machine already holds. Never an input to any
+  verdict.
 Everything above this line in the module never calls any of them.
 """
 from __future__ import annotations
@@ -1685,6 +1690,118 @@ def build_title(source: Path, home: Path, *, raw: bool = False,
     return {"title": _clip(title), "titleSource": origin}
 
 
+# --- Session inspection (display only, never gate input) --------------------
+#
+# The fourth deliberate content exception, and the one that makes the
+# other three make sense to a person: `bind --deep` proves a session
+# touched a workspace, `title` names it, `preserve` exports it -- and
+# none of them lets the owner simply *look at* a conversation the
+# machine already holds. Modore's judgment stays metadata-only;
+# inspection is what the judgment plane is deliberately blind to,
+# surfaced on explicit request. Nothing returned here is an input to
+# any verdict -- structurally: no judgment path calls it.
+
+INSPECT_TURN_CHARS = 400
+INSPECT_DEFAULT_TURNS = 20
+
+
+def _session_provider(source: Path, home: Path) -> str:
+    """Which store a transcript lives in, from its path alone."""
+    text = str(source)
+    if "/.claude/" in text or text.startswith(str(home / ".claude")):
+        return "claude"
+    if "/.codex/" in text:
+        return "codex"
+    if "/.gemini/" in text:
+        return "gemini"
+    if "workspaceStorage" in text:
+        return "editor"
+    return "unknown"
+
+
+def _session_workspace(provider: str, source: Path) -> Optional[str]:
+    """The workspace the session itself recorded, when the store keeps one."""
+    try:
+        if provider == "claude":
+            with source.open("r", encoding="utf-8", errors="replace") as handle:
+                for _ in range(CLAUDE_SCAN_LINES):
+                    line = _read_json_line(handle)
+                    if line is None:
+                        break
+                    if isinstance(line.get("cwd"), str):
+                        return _canon_workspace(line["cwd"])
+        elif provider == "codex":
+            with source.open("r", encoding="utf-8", errors="replace") as handle:
+                first = _read_json_line(handle)
+            payload = (first or {}).get("payload")
+            if isinstance(payload, dict) and isinstance(payload.get("cwd"), str):
+                return _canon_workspace(payload["cwd"])
+    except OSError:
+        return None
+    # Gemini records only a path hash; there is no workspace string to read.
+    return None
+
+
+def build_inspect(source: Path, home: Path, *, raw: bool = False,
+                  turn_limit: int = INSPECT_DEFAULT_TURNS) -> dict:
+    """One session's conversation, prepared for display.
+
+    The rules that make this safe to expose are the point, not the
+    plumbing: one caller-named session per invocation, never swept;
+    masked by default; every turn capped, because a pasted stack trace is
+    context the agent was handed, not something a preview should replay;
+    and the recent window plus the opening request, because a person
+    recognising a session needs how it started and where it ended, not
+    the middle. Subagent transcripts are not opened -- expanding those is
+    its own explicit act.
+    """
+    provider = _session_provider(source, home)
+    turns = _turns_from_session(source)
+
+    def clip(text: str) -> str:
+        cleaned = " ".join(text.split())
+        if not raw:
+            cleaned = mask_text(cleaned, home)
+        if len(cleaned) > INSPECT_TURN_CHARS:
+            cleaned = cleaned[: INSPECT_TURN_CHARS - 1].rstrip() + "\u2026"
+        return cleaned
+
+    # Codex records one reply twice -- as `response_item/message` and
+    # again as `event_msg/agent_message` -- so a straight read shows
+    # every agent turn doubled. Measured on a live rollout: 16 of 41
+    # turns were a repeat of the line before. Collapsing consecutive
+    # identical turns is provider-agnostic and cannot merge two things a
+    # person actually said twice in a row into one, because those are
+    # separated by a reply.
+    deduped: list[tuple[str, str]] = []
+    for turn in turns:
+        if deduped and deduped[-1] == turn:
+            continue
+        deduped.append(turn)
+    # `developer` and `system` turns are the harness talking to the
+    # agent, not the conversation. They are the longest thing in a Codex
+    # rollout and push the actual exchange off the screen.
+    turns = [(role, text) for role, text in deduped
+             if role.lower() not in ("developer", "system")]
+
+    first_user = next((clip(text) for role, text in turns
+                       if _is_user_role(role) and text.strip()), None)
+    window = turns[-turn_limit:] if turn_limit > 0 else []
+    return {
+        "provider": provider,
+        "sessionId": _file_access_session_id(
+            provider if provider in ("claude", "codex", "gemini") else "claude", source),
+        "workspace": _session_workspace(provider, source),
+        "messageCount": len(turns),
+        "userTurnCount": sum(1 for role, _ in turns if _is_user_role(role)),
+        "firstUserTurn": first_user,
+        "turns": [{"role": role, "text": clip(text)}
+                  for role, text in window if text.strip()],
+        "omittedTurns": max(0, len(turns) - len(window)),
+        "masked": not raw,
+    }
+
+
 def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
     if not source.is_file():
         raise FileNotFoundError(f"no such session file: {source}")
@@ -1766,6 +1883,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                           help="also scan transcript bodies for file access")
     bind_all.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    inspect = sub.add_parser(
+        "inspect", help="one session's conversation for display (masked; never gate input)")
+    inspect.add_argument("source", type=Path, help="session file path from a bind result")
+    inspect.add_argument("--turns", type=int, default=INSPECT_DEFAULT_TURNS,
+                         help="recent turns to include")
+    inspect.add_argument("--raw", action="store_true",
+                         help="disable masking (explicit opt-out, off by default)")
+    inspect.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     fingerprint = sub.add_parser(
         "fingerprint", help="digest of every bindable session store, to detect drift")
     fingerprint.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
@@ -1830,6 +1956,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"wrote {args.out}")
         else:
             print(payload)
+        return 0
+
+    if args.command == "inspect":
+        try:
+            payload = build_inspect(args.source, args.home, raw=args.raw,
+                                    turn_limit=args.turns)
+        except OSError as exc:
+            print(f"inspect: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "fingerprint":

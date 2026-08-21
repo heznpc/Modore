@@ -151,3 +151,32 @@ struct ArchiveCandidate: Identifiable {
         }
     }
 }
+
+/// What `scree.py inspect` returns: one conversation, masked and capped
+/// at the source, for a person to read.
+///
+/// Display-only by construction — nothing in the app routes this into a
+/// verdict, and the Python side pins the same fact from its end (its
+/// judgment outputs never carry these keys).
+struct SessionConversation: Decodable, Equatable {
+    struct Turn: Decodable, Equatable, Identifiable {
+        let role: String
+        let text: String
+        var id: String { "\(role)-\(text.hashValue)" }
+
+        var isUser: Bool {
+            ["user", "human", "user_message"].contains(role.lowercased())
+        }
+        var speakerLabel: String { isUser ? "나" : "에이전트" }
+    }
+
+    let provider: String
+    let sessionId: String
+    let workspace: String?
+    let messageCount: Int
+    let userTurnCount: Int
+    let firstUserTurn: String?
+    let turns: [Turn]
+    let omittedTurns: Int
+    let masked: Bool
+}

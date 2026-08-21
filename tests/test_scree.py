@@ -1160,7 +1160,7 @@ def test_content_reading_commands_are_all_declared_in_the_module_contract():
     사람의 기억에 맡기지 않도록, 세 명령이 모듈 docstring에 이름으로 남아
     있는지 고정한다."""
     doc = scree.__doc__ or ""
-    for command in ("preserve", "title", "bind"):
+    for command in ("preserve", "title", "bind", "inspect"):
         assert command in doc, f"{command}가 no-content 계약 설명에 없다"
     assert "never" in doc and "names" in doc
 
@@ -1410,3 +1410,137 @@ def test_fixture_contains_no_real_local_paths():
     assert "/Users/example/" in raw
     assert "/Users/ren" not in raw
     assert "/var/folders" not in raw and "/tmp/" not in raw
+
+
+# --- inspect: 표시용 대화 열람 (판단 입력 아님) ------------------------------
+
+
+def test_inspect_returns_the_conversation_masked_and_capped(tmp_path):
+    src = _session_with_turns(
+        tmp_path / "s.jsonl",
+        ("user", "결제 오류를 재현해줘. 연락처는 someone@example.com"),
+        ("assistant", "재현했습니다. " + "긴설명 " * 200),
+    )
+    out = scree.build_inspect(src, tmp_path)
+    assert out["masked"] is True
+    assert out["messageCount"] == 2 and out["userTurnCount"] == 1
+    joined = json.dumps(out, ensure_ascii=False)
+    assert "someone@example.com" not in joined
+    for turn in out["turns"]:
+        assert len(turn["text"]) <= scree.INSPECT_TURN_CHARS
+
+
+def test_inspect_keeps_the_opening_request_and_the_recent_window(tmp_path):
+    """사람이 세션을 알아보는 데 필요한 건 시작과 끝이지 중간이 아니다."""
+    turns = [("user", f"턴 {i}번째 내용입니다") for i in range(50)]
+    src = _session_with_turns(tmp_path / "s.jsonl", *turns)
+    out = scree.build_inspect(src, tmp_path, turn_limit=5)
+    assert out["firstUserTurn"].startswith("턴 0번째")
+    assert len(out["turns"]) == 5
+    assert out["turns"][-1]["text"].startswith("턴 49번째")
+    assert out["omittedTurns"] == 45
+
+
+def test_inspect_infers_the_provider_from_the_store_path(tmp_path):
+    claude = tmp_path / ".claude" / "projects" / "-slug" / "a.jsonl"
+    _write(claude, _jsonl({"cwd": str(tmp_path)},
+                          {"message": {"role": "user",
+                                       "content": [{"type": "text", "text": "질문입니다"}]}}))
+    out = scree.build_inspect(claude, tmp_path)
+    assert out["provider"] == "claude"
+    assert out["workspace"] == str(tmp_path)
+
+
+def test_inspect_reads_gemini_single_json(tmp_path):
+    src = tmp_path / ".gemini" / "tmp" / "x" / "chats" / "g.json"
+    _write(src, json.dumps({
+        "sessionId": "g1",
+        "messages": [{"type": "user", "content": [{"text": "그래프를 다시 그려줘"}]},
+                     {"type": "gemini", "content": [{"text": "그렸습니다"}]}],
+    }))
+    out = scree.build_inspect(src, tmp_path)
+    assert out["provider"] == "gemini"
+    assert out["sessionId"] == "g1"
+    assert out["firstUserTurn"] == "그래프를 다시 그려줘"
+
+
+def test_inspect_raw_is_an_explicit_opt_out(tmp_path):
+    src = _session_with_turns(tmp_path / "s.jsonl",
+                              ("user", "키는 someone@example.com 로 보내줘"))
+    assert "someone@example.com" in scree.build_inspect(src, tmp_path, raw=True)["firstUserTurn"]
+
+
+def test_inspect_is_not_reachable_from_the_judgment_path(bind_home):
+    """대화 내용이 안전 판정에 새어드는 경로가 없어야 한다. report와 bind의
+    출력 어디에도 inspect가 내는 키가 나타나지 않는 것으로 고정한다."""
+    def keys(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield k
+                yield from keys(v)
+        elif isinstance(node, list):
+            for item in node:
+                yield from keys(item)
+
+    for payload in (scree.build_scree(bind_home["home"]),
+                    scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)):
+        emitted = set(keys(payload))
+        assert "turns" not in emitted
+        assert "firstUserTurn" not in emitted
+
+
+def test_inspect_cli_emits_json(tmp_path, capsys):
+    src = _session_with_turns(tmp_path / "s.jsonl", ("user", "빌드를 정리해줘"))
+    assert scree.main(["inspect", str(src), "--home", str(tmp_path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["firstUserTurn"] == "빌드를 정리해줘"
+
+
+def test_inspect_collapses_the_duplicate_codex_emits_for_one_reply(tmp_path):
+    """Codex는 응답 하나를 `response_item/message`와 `event_msg/agent_message`
+    두 레코드로 낸다. 실제 롤아웃에서 41턴 중 16턴이 바로 앞 줄의 반복이었고,
+    화면에서는 모든 에이전트 응답이 두 번씩 보였다."""
+    src = tmp_path / "rollout.jsonl"
+    _write(src, _jsonl(
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "이 버그를 고쳐줘"}]}},
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "고쳤습니다"}]}},
+        {"type": "event_msg",
+         "payload": {"type": "agent_message", "message": "고쳤습니다"}},
+    ))
+    out = scree.build_inspect(src, tmp_path)
+    texts = [t["text"] for t in out["turns"]]
+    assert texts == ["이 버그를 고쳐줘", "고쳤습니다"]
+
+
+def test_inspect_drops_harness_instructions_from_the_conversation(tmp_path):
+    """`developer`/`system` 턴은 하네스가 에이전트에게 하는 말이지 대화가 아니다.
+    Codex 롤아웃에서 가장 긴 내용이라 실제 대화를 화면 밖으로 밀어낸다."""
+    src = tmp_path / "rollout.jsonl"
+    _write(src, _jsonl(
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "developer",
+                     "content": [{"type": "input_text", "text": "<app-context>...</app-context>"}]}},
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "테스트를 돌려줘"}]}},
+    ))
+    out = scree.build_inspect(src, tmp_path)
+    assert [t["role"] for t in out["turns"]] == ["user"]
+    assert out["firstUserTurn"] == "테스트를 돌려줘"
+
+
+def test_inspect_keeps_a_genuine_repeat_that_is_separated_by_a_reply(tmp_path):
+    """연속 중복만 접는다. 사람이 같은 말을 두 번 한 경우는 사이에 응답이
+    끼어 있으므로 살아남는다."""
+    src = _session_with_turns(
+        tmp_path / "s.jsonl",
+        ("user", "다시 확인해줘"),
+        ("assistant", "확인했습니다"),
+        ("user", "다시 확인해줘"),
+    )
+    out = scree.build_inspect(src, tmp_path)
+    assert [t["text"] for t in out["turns"]] == ["다시 확인해줘", "확인했습니다", "다시 확인해줘"]

@@ -149,6 +149,27 @@ enum MothballService {
 }
 
 extension ScanModel {
+    /// Loads one session's conversation when a person opens it. Keyed by
+    /// source path; fetched once, kept only for this screen's lifetime.
+    func loadConversation(for binding: SessionBinding) {
+        let key = binding.source.path
+        guard sessionConversations[key] == nil,
+              !conversationLoading.contains(key) else { return }
+        conversationLoading.insert(key)
+        let root = projectRoot
+        Task {
+            defer { conversationLoading.remove(key) }
+            guard let execution = await Task.detached(priority: .userInitiated, operation: {
+                RuntimeWorkspace.prepareExecution(projectRoot: root)
+            }).value else { return }
+            if let conversation = await ScreeService.inspect(
+                execution: execution, binding: binding
+            ) {
+                sessionConversations[key] = conversation
+            }
+        }
+    }
+
     /// Fills in one row's titles when it is opened. Idempotent: a row
     /// already titled is not read again.
     func loadTitles(for candidate: ArchiveCandidate) {

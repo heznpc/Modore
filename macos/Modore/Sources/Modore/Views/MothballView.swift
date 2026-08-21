@@ -62,6 +62,8 @@ struct MothballPage: View {
                     inspectionFailures: model.archiveInspectionFailures,
                     preserveInFlightSource: model.screePreserveInFlightSource,
                     onPreserve: { model.preserveBoundSession($0) },
+                    conversations: model.sessionConversations,
+                    onInspect: { model.loadConversation(for: $0) },
                     onExpand: { model.loadTitles(for: $0) }
                 )
             }
@@ -78,12 +80,17 @@ struct MothballCandidateSection: View {
     /// explicit at the call site keeps it that way.
     let preserveInFlightSource: String?
     let onPreserve: (SessionBinding) -> Void
+    /// Conversations already fetched, keyed by transcript path.
+    let conversations: [String: SessionConversation]
+    /// Called when a person opens a session's conversation.
+    let onInspect: (SessionBinding) -> Void
     /// Called when a row is opened. Titles are read then, not during a
     /// scan: an audit that titled everything would turn every refresh
     /// into a content read of every transcript on the machine.
     let onExpand: (ArchiveCandidate) -> Void
 
     @State private var expanded: Set<String> = []
+    @State private var openConversations: Set<String> = []
 
     var body: some View {
         Section {
@@ -188,26 +195,43 @@ struct MothballCandidateSection: View {
     private func boundSessionList(_ candidate: ArchiveCandidate) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(candidate.presentations) { session in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(session.title)
-                            .font(.caption)
-                        Text(Self.subtitle(session))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if let binding = candidate.boundSessions.first(where: {
-                        $0.sessionID == session.sessionID && $0.provider == session.provider
-                    }) {
-                        if preserveInFlightSource == binding.source.path {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Button("내용 보기") { onPreserve(binding) }
-                                .buttonStyle(.link)
+                let binding = candidate.boundSessions.first(where: {
+                    $0.sessionID == session.sessionID && $0.provider == session.provider
+                })
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(session.title)
                                 .font(.caption)
-                                .disabled(preserveInFlightSource != nil)
+                            Text(Self.subtitle(session))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
+                        Spacer()
+                        if let binding {
+                            Button(openConversations.contains(binding.source.path) ? "접기" : "대화 보기") {
+                                let key = binding.source.path
+                                if openConversations.contains(key) {
+                                    openConversations.remove(key)
+                                } else {
+                                    openConversations.insert(key)
+                                    onInspect(binding)
+                                }
+                            }
+                            .buttonStyle(.link)
+                            .font(.caption)
+                            if preserveInFlightSource == binding.source.path {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button("보존") { onPreserve(binding) }
+                                    .buttonStyle(.link)
+                                    .font(.caption)
+                                    .disabled(preserveInFlightSource != nil)
+                            }
+                        }
+                    }
+                    if let binding, openConversations.contains(binding.source.path) {
+                        conversationPreview(for: binding)
                     }
                 }
             }
@@ -227,6 +251,50 @@ struct MothballCandidateSection: View {
         }
         .padding(.leading, 32)
         .padding(.top, 4)
+    }
+
+    /// The conversation itself, once a person asks for it. Masked and
+    /// capped at the source; this view only lays it out. Reading what the
+    /// machine already holds was never in tension with metadata-only
+    /// judgment -- the judgment plane simply never sees this.
+    @ViewBuilder
+    private func conversationPreview(for binding: SessionBinding) -> some View {
+        if let conversation = conversations[binding.source.path] {
+            VStack(alignment: .leading, spacing: 6) {
+                if let first = conversation.firstUserTurn,
+                   conversation.omittedTurns > 0 {
+                    Text("시작: \(first)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Divider()
+                }
+                ForEach(conversation.turns) { turn in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(turn.speakerLabel)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(turn.isUser ? Color.primary : Color.secondary)
+                        Text(turn.text)
+                            .font(.caption)
+                            .foregroundStyle(turn.isUser ? Color.primary : Color.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                if conversation.omittedTurns > 0 {
+                    Text("이전 \(conversation.omittedTurns)개 턴은 생략됨 — 전체는 '보존'으로 내보내기")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(8)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+        } else {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("대화를 읽는 중…")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     /// Provider, when it was last touched, and how big -- plus a marker
