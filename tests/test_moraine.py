@@ -9,6 +9,7 @@ import json
 import plistlib
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -185,7 +186,14 @@ def test_receipt_with_no_surviving_payload_is_vanished(system):
     innorix = [r for r in receipts if r["vendor"] == "com.innorix"]
     assert len(innorix) == 2
     assert all(r["state"] == "vanished" for r in innorix)
-    assert all(r["installed_on"] == "2026-05-01 13:35" for r in innorix)
+    # Computed, not literal: `installed_on` renders through `localtime` on
+    # purpose (a receipt is a fact about this machine, so the operator's
+    # wall clock is the honest display -- certificates, which are UTC
+    # facts, go through `gmtime` in the same module). A literal here is a
+    # fact about the timezone of whoever wrote the test: "13:35" was true
+    # on a KST machine and false on the UTC CI runner.
+    expected = time.strftime("%Y-%m-%d %H:%M", time.localtime(1777610110))
+    assert all(r["installed_on"] == expected for r in innorix)
 
 
 def test_receipt_with_surviving_payload_is_present(system):
