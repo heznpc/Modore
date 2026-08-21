@@ -368,6 +368,78 @@ extension ScreeService {
         return try? JSONDecoder().decode(BindReport.Fingerprint.self, from: data)
     }
 
+    /// One session's conversation for display, via `scree.py inspect`.
+    ///
+    /// The judgment plane never sees this: it is fetched when a person
+    /// opens a session, rendered, and discarded. Masked by default at
+    /// the source; nothing here re-requests raw.
+    /// Returns the failure as a sentence rather than `nil`. A caller that
+    /// only learns "no conversation" has nothing to show and nothing to
+    /// retry from, and the screen it drives sits on a spinner forever.
+    static func inspect(
+        execution: RuntimeExecutionContext,
+        binding: SessionBinding,
+        turns: Int = 20,
+        homeOverride: URL? = nil
+    ) async -> Result<SessionConversation, ScreeInspectionError> {
+        await inspect(
+            execution: execution, source: binding.source,
+            turns: turns, homeOverride: homeOverride
+        )
+    }
+
+    /// Takes the transcript itself rather than a binding: the session
+    /// browser lists what the machine holds, which is not always bound to
+    /// any repo, and `inspect` never needed more than the path.
+    static func inspect(
+        execution: RuntimeExecutionContext,
+        source: URL,
+        turns: Int = 20,
+        homeOverride: URL? = nil
+    ) async -> Result<SessionConversation, ScreeInspectionError> {
+        var arguments = ["inspect", source.path, "--turns", String(turns)]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        let outcome = await invoke(execution: execution, arguments: arguments, timeout: 60)
+        let output: String
+        switch outcome {
+        case .success(let value): output = value
+        case .timedOut: return .failure(.init(message: "대화를 읽는 데 시간이 너무 걸려 중단했습니다."))
+        case .failure(let message): return .failure(.init(message: message))
+        }
+        guard let start = output.firstIndex(of: "{"),
+              let data = output[start...].data(using: .utf8),
+              let conversation = try? JSONDecoder().decode(
+                SessionConversation.self, from: data
+              ) else {
+            return .failure(.init(message: "scree가 돌려준 대화 형식을 읽지 못했습니다."))
+        }
+        return .success(conversation)
+    }
+
+    /// The metadata index behind the session browser, via `scree.py
+    /// sessions`. No transcript body is read to build this.
+    static func sessions(
+        execution: RuntimeExecutionContext,
+        limit: Int = 500,
+        homeOverride: URL? = nil
+    ) async -> Result<SessionIndex, ScreeInspectionError> {
+        var arguments = ["sessions", "--limit", String(limit)]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        let outcome = await invoke(execution: execution, arguments: arguments, timeout: 120)
+        let output: String
+        switch outcome {
+        case .success(let value): output = value
+        case .timedOut: return .failure(.init(message: "세션 목록을 읽는 데 시간이 너무 걸려 중단했습니다."))
+        case .failure(let message): return .failure(.init(message: message))
+        }
+        guard let start = output.firstIndex(of: "{"),
+              let data = output[start...].data(using: .utf8),
+              let index = try? JSONDecoder().decode(SessionIndex.self, from: data) else {
+            return .failure(.init(message: "scree가 돌려준 세션 목록 형식을 읽지 못했습니다."))
+        }
+        return .success(index)
+    }
+
     private struct TitlePayload: Decodable {
         let title: String
         let titleSource: String

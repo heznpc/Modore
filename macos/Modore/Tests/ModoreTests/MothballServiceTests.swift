@@ -448,6 +448,30 @@ final class SessionPresentationTests: XCTestCase {
             source: URL(fileURLWithPath: "/nope/\(UUID().uuidString).jsonl")
         ))
     }
+
+    /// `URL` memoises resource values per instance, and a screen holds one
+    /// binding URL for its whole lifetime -- so reading through the
+    /// caller's URL made this key answer with the size and mtime the file
+    /// had when it was first looked at, and a transcript an agent was
+    /// still appending to kept its original key forever.
+    func test_cacheKeyFollowsAFileTheCallerAlreadyLookedAt() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "PresentationKeyCache-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let source = dir.appending(path: "s.jsonl")
+        try Data("{\"a\":1}\n".utf8).write(to: source)
+        // Prime the instance's cache exactly the way the app does.
+        _ = try? source.resourceValues(forKeys: [.fileSizeKey])
+        let before = PresentationCacheKey(provider: .claude, sessionID: "s", source: source)
+
+        try Data("{\"a\":1}\n{\"b\":2}\n".utf8).write(to: source)
+        let after = PresentationCacheKey(provider: .claude, sessionID: "s", source: source)
+
+        XCTAssertNotNil(before)
+        XCTAssertNotEqual(before, after, "a grown transcript must not keep its old key")
+    }
 }
 
 /// The summary was collapsing the one distinction this feature exists to

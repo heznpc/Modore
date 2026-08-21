@@ -1160,7 +1160,7 @@ def test_content_reading_commands_are_all_declared_in_the_module_contract():
     사람의 기억에 맡기지 않도록, 세 명령이 모듈 docstring에 이름으로 남아
     있는지 고정한다."""
     doc = scree.__doc__ or ""
-    for command in ("preserve", "title", "bind"):
+    for command in ("preserve", "title", "bind", "inspect"):
         assert command in doc, f"{command}가 no-content 계약 설명에 없다"
     assert "never" in doc and "names" in doc
 
@@ -1410,3 +1410,254 @@ def test_fixture_contains_no_real_local_paths():
     assert "/Users/example/" in raw
     assert "/Users/ren" not in raw
     assert "/var/folders" not in raw and "/tmp/" not in raw
+
+
+# --- inspect: 표시용 대화 열람 (판단 입력 아님) ------------------------------
+
+
+def test_inspect_returns_the_conversation_masked_and_capped(tmp_path):
+    src = _session_with_turns(
+        tmp_path / "s.jsonl",
+        ("user", "결제 오류를 재현해줘. 연락처는 someone@example.com"),
+        ("assistant", "재현했습니다. " + "긴설명 " * 200),
+    )
+    out = scree.build_inspect(src, tmp_path)
+    assert out["masked"] is True
+    assert out["messageCount"] == 2 and out["userTurnCount"] == 1
+    joined = json.dumps(out, ensure_ascii=False)
+    assert "someone@example.com" not in joined
+    for turn in out["turns"]:
+        assert len(turn["text"]) <= scree.INSPECT_TURN_CHARS
+
+
+def test_inspect_keeps_the_opening_request_and_the_recent_window(tmp_path):
+    """사람이 세션을 알아보는 데 필요한 건 시작과 끝이지 중간이 아니다."""
+    turns = [("user", f"턴 {i}번째 내용입니다") for i in range(50)]
+    src = _session_with_turns(tmp_path / "s.jsonl", *turns)
+    out = scree.build_inspect(src, tmp_path, turn_limit=5)
+    assert out["firstUserTurn"].startswith("턴 0번째")
+    assert len(out["turns"]) == 5
+    assert out["turns"][-1]["text"].startswith("턴 49번째")
+    assert out["omittedTurns"] == 45
+
+
+def test_inspect_infers_the_provider_from_the_store_path(tmp_path):
+    claude = tmp_path / ".claude" / "projects" / "-slug" / "a.jsonl"
+    _write(claude, _jsonl({"cwd": str(tmp_path)},
+                          {"message": {"role": "user",
+                                       "content": [{"type": "text", "text": "질문입니다"}]}}))
+    out = scree.build_inspect(claude, tmp_path)
+    assert out["provider"] == "claude"
+    assert out["workspace"] == str(tmp_path)
+
+
+def test_inspect_reads_gemini_single_json(tmp_path):
+    src = tmp_path / ".gemini" / "tmp" / "x" / "chats" / "g.json"
+    _write(src, json.dumps({
+        "sessionId": "g1",
+        "messages": [{"type": "user", "content": [{"text": "그래프를 다시 그려줘"}]},
+                     {"type": "gemini", "content": [{"text": "그렸습니다"}]}],
+    }))
+    out = scree.build_inspect(src, tmp_path)
+    assert out["provider"] == "gemini"
+    assert out["sessionId"] == "g1"
+    assert out["firstUserTurn"] == "그래프를 다시 그려줘"
+
+
+def test_inspect_raw_is_an_explicit_opt_out(tmp_path):
+    src = _session_with_turns(tmp_path / "s.jsonl",
+                              ("user", "키는 someone@example.com 로 보내줘"))
+    assert "someone@example.com" in scree.build_inspect(src, tmp_path, raw=True)["firstUserTurn"]
+
+
+def test_inspect_is_not_reachable_from_the_judgment_path(bind_home):
+    """대화 내용이 안전 판정에 새어드는 경로가 없어야 한다. report와 bind의
+    출력 어디에도 inspect가 내는 키가 나타나지 않는 것으로 고정한다."""
+    def keys(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield k
+                yield from keys(v)
+        elif isinstance(node, list):
+            for item in node:
+                yield from keys(item)
+
+    for payload in (scree.build_scree(bind_home["home"]),
+                    scree.build_bindings(bind_home["home"], str(bind_home["repo"]), deep=True)):
+        emitted = set(keys(payload))
+        assert "turns" not in emitted
+        assert "firstUserTurn" not in emitted
+
+
+def test_inspect_cli_emits_json(tmp_path, capsys):
+    src = _session_with_turns(tmp_path / "s.jsonl", ("user", "빌드를 정리해줘"))
+    assert scree.main(["inspect", str(src), "--home", str(tmp_path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["firstUserTurn"] == "빌드를 정리해줘"
+
+
+def test_inspect_collapses_the_duplicate_codex_emits_for_one_reply(tmp_path):
+    """Codex는 응답 하나를 `response_item/message`와 `event_msg/agent_message`
+    두 레코드로 낸다. 실제 롤아웃에서 41턴 중 16턴이 바로 앞 줄의 반복이었고,
+    화면에서는 모든 에이전트 응답이 두 번씩 보였다."""
+    src = tmp_path / "rollout.jsonl"
+    _write(src, _jsonl(
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "이 버그를 고쳐줘"}]}},
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "고쳤습니다"}]}},
+        {"type": "event_msg",
+         "payload": {"type": "agent_message", "message": "고쳤습니다"}},
+    ))
+    out = scree.build_inspect(src, tmp_path)
+    texts = [t["text"] for t in out["turns"]]
+    assert texts == ["이 버그를 고쳐줘", "고쳤습니다"]
+
+
+def test_inspect_drops_harness_instructions_from_the_conversation(tmp_path):
+    """`developer`/`system` 턴은 하네스가 에이전트에게 하는 말이지 대화가 아니다.
+    Codex 롤아웃에서 가장 긴 내용이라 실제 대화를 화면 밖으로 밀어낸다."""
+    src = tmp_path / "rollout.jsonl"
+    _write(src, _jsonl(
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "developer",
+                     "content": [{"type": "input_text", "text": "<app-context>...</app-context>"}]}},
+        {"type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "테스트를 돌려줘"}]}},
+    ))
+    out = scree.build_inspect(src, tmp_path)
+    assert [t["role"] for t in out["turns"]] == ["user"]
+    assert out["firstUserTurn"] == "테스트를 돌려줘"
+
+
+def test_inspect_keeps_a_genuine_repeat_that_is_separated_by_a_reply(tmp_path):
+    """연속 중복만 접는다. 사람이 같은 말을 두 번 한 경우는 사이에 응답이
+    끼어 있으므로 살아남는다."""
+    src = _session_with_turns(
+        tmp_path / "s.jsonl",
+        ("user", "다시 확인해줘"),
+        ("assistant", "확인했습니다"),
+        ("user", "다시 확인해줘"),
+    )
+    out = scree.build_inspect(src, tmp_path)
+    assert [t["text"] for t in out["turns"]] == ["다시 확인해줘", "확인했습니다", "다시 확인해줘"]
+
+
+def test_inspect_reports_a_missing_transcript_as_missing(tmp_path):
+    """사라진 대화와 빈 대화는 다른 사실이다.
+
+    둘 다 `[]`로 접으면, 지우기 직전의 사람에게 '잃을 게 없었다'고
+    말하는 것이 된다. 프로바이더가 자기 저장소를 스스로 쓸어내는 건
+    정상 경로라서 이 상태는 드물지 않다."""
+    out = scree.build_inspect(tmp_path / "gone.jsonl", tmp_path)
+    assert out["status"] == "missing"
+    assert out["turns"] == [] and out["messageCount"] == 0
+
+
+def test_inspect_reports_an_unreadable_transcript_as_unreadable(tmp_path):
+    """읽을 권한이 없는 것은 내용이 없는 것이 아니다."""
+    src = _session_with_turns(tmp_path / "s.jsonl", ("user", "내용은 있다"))
+    src.chmod(0o000)
+    try:
+        out = scree.build_inspect(src, tmp_path)
+    finally:
+        src.chmod(0o600)
+    assert out["status"] == "unreadable"
+    assert out["turns"] == []
+
+
+def test_inspect_reports_an_undecodable_transcript_as_unrecognized(tmp_path):
+    """한 줄도 파싱되지 않은 JSONL은 빈 대화가 아니라 이 빌드가 못 읽는
+    파일이다. 정상적으로 비어 있는 파일과는 구분되어야 한다."""
+    broken = tmp_path / "broken.jsonl"
+    broken.write_text("{ not json at all\n<<<>>>\n", encoding="utf-8")
+    assert scree.build_inspect(broken, tmp_path)["status"] == "unrecognized"
+
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    out = scree.build_inspect(empty, tmp_path)
+    assert out["status"] == "ok" and out["turns"] == []
+
+
+def test_inspect_reports_undecodable_json_sessions_as_unrecognized(tmp_path):
+    """Gemini 쪽 단일 JSON 경로도 같은 구분을 지킨다."""
+    broken = tmp_path / "s.json"
+    broken.write_text("{ truncated", encoding="utf-8")
+    assert scree.build_inspect(broken, tmp_path)["status"] == "unrecognized"
+
+    not_a_mapping = tmp_path / "list.json"
+    not_a_mapping.write_text("[1, 2, 3]", encoding="utf-8")
+    assert scree.build_inspect(not_a_mapping, tmp_path)["status"] == "unrecognized"
+
+
+def test_inspect_turns_carry_a_stable_ordinal(tmp_path):
+    """표시 쪽 identity는 역할+본문이 아니라 순번이어야 한다. 역할과
+    본문은 dedupe가 일부러 살려두는 경우(사이에 응답이 낀 같은 발화)에
+    정확히 충돌한다."""
+    src = _session_with_turns(
+        tmp_path / "s.jsonl",
+        ("user", "다시 확인해줘"),
+        ("assistant", "확인했습니다"),
+        ("user", "다시 확인해줘"),
+    )
+    out = scree.build_inspect(src, tmp_path)
+    indices = [turn["index"] for turn in out["turns"]]
+    assert indices == [0, 1, 2]
+    assert len(set(indices)) == len(out["turns"])
+
+
+# --- sessions: 메타데이터 전용 세션 색인 (브라우저용) ------------------------
+
+
+def test_sessions_lists_sessions_newest_first(bind_home):
+    out = scree.build_sessions(bind_home["home"])
+    assert out["total"] == len(out["sessions"])
+    assert out["sessions"], "픽스처 홈에 세션이 있어야 한다"
+    epochs = [s["lastActiveEpoch"] for s in out["sessions"]]
+    assert epochs == sorted(epochs, reverse=True)
+    for session in out["sessions"]:
+        assert session["source"] and session["tool"]
+        assert isinstance(session["workspaceExists"], bool)
+
+
+def test_sessions_limit_caps_the_list_but_not_the_total(bind_home):
+    """잘린 목록을 전체인 것처럼 보여주면 안 되므로 total은 자르기 전 수다."""
+    full = scree.build_sessions(bind_home["home"], limit=0)
+    assert len(full["sessions"]) == full["total"]
+    capped = scree.build_sessions(bind_home["home"], limit=1)
+    assert len(capped["sessions"]) == 1
+    assert capped["total"] == full["total"]
+
+
+def test_sessions_is_metadata_only(bind_home):
+    """목록은 기기 전체를 훑는다. 설명을 위해 본문을 열면 새로고침마다
+    디스크 전체를 내용 읽기 하는 것이 된다. 본문은 inspect가 하나씩만
+    읽는다."""
+    out = scree.build_sessions(bind_home["home"])
+    allowed = {"tool", "source", "workspace", "workspaceExists", "kind",
+               "sizeBytes", "lastActive", "lastActiveEpoch"}
+    for session in out["sessions"]:
+        assert set(session) == allowed
+    # inspect가 내는 본문 키는 어디에도 없어야 한다.
+    blob = json.dumps(out, ensure_ascii=False)
+    for key in ("turns", "firstUserTurn", "messageCount", "title"):
+        assert f'"{key}"' not in blob
+
+
+def test_sessions_lists_editor_state_alongside_transcripts(bind_home):
+    """Modore의 경계는 대화가 아니라 주체보다 오래 남은 로컬 상태다.
+    편집기 workspace state를 목록에서 빼면, 폴더를 은퇴시키려는 사람이
+    잃게 될 것을 숨기는 셈이 된다. 대신 무엇인지는 kind로 구분한다."""
+    out = scree.build_sessions(bind_home["home"], limit=0)
+    kinds = {s["kind"] for s in out["sessions"]}
+    assert kinds <= {"session", "workspace_state"}
+    assert "session" in kinds
+
+
+def test_sessions_cli_emits_json(bind_home, capsys):
+    assert scree.main(["sessions", "--home", str(bind_home["home"]), "--limit", "2"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "total" in payload and len(payload["sessions"]) <= 2

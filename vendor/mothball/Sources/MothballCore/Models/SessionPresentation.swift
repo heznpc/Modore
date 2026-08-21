@@ -89,7 +89,16 @@ public struct PresentationCacheKey: Hashable, Sendable {
         let keys: Set<URLResourceKey> = [
             .fileResourceIdentifierKey, .contentModificationDateKey, .fileSizeKey,
         ]
-        guard let values = try? source.resourceValues(forKeys: keys),
+        // Read through a fresh URL, never the caller's. `URL` memoises
+        // resource values per instance after the first fetch, so a
+        // long-lived URL -- which is the normal case here, since a screen
+        // holds its bindings for its whole lifetime -- keeps answering
+        // with the size and mtime the file had when it was first looked
+        // at. That silently defeats this type's entire purpose: a
+        // transcript an agent is still appending to would keep its
+        // original key and read as unchanged forever.
+        let uncached = URL(fileURLWithPath: source.path)
+        guard let values = try? uncached.resourceValues(forKeys: keys),
               let identifier = values.fileResourceIdentifier,
               let modified = values.contentModificationDate,
               let size = values.fileSize else {

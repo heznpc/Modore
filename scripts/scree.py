@@ -23,8 +23,8 @@ Judgment limits (preview-grade evidence, not deletion authorization):
   remote; any destructive consumer must revalidate before acting.
 
 Content-reading commands (the deliberate exceptions to the no-content
-contract above). Both act on one session the caller names — never on
-anything discovered automatically — and both mask by default:
+contract above). All four act on one session the caller names — never on
+anything discovered automatically — and all four mask by default:
 - `scree.py preserve <source>` writes a masked Markdown export of one
   transcript, the same shape as hydroject's `export`;
 - `scree.py title <source>` returns one masked line: the first user
@@ -34,6 +34,11 @@ anything discovered automatically — and both mask by default:
   line and is never an input to a safety judgement.
 - `scree.py bind <workspace> --deep` reads transcript bodies to find
   file-access evidence, and emits only whether such evidence exists.
+- `scree.py inspect <source>` returns one session's conversation for
+  display -- masked, per-turn capped, recent-window only. The viewer the
+  other three imply: judgment stays metadata-only, but the owner can
+  always look at what the machine already holds. Never an input to any
+  verdict.
 Everything above this line in the module never calls any of them.
 """
 from __future__ import annotations
@@ -584,6 +589,64 @@ def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = N
         stores.append(entry)
     expiring.sort(key=lambda e: (e["days_left"], -e["size_bytes"]))
     return {"stores": stores, "expiring": expiring}
+
+
+SESSIONS_DEFAULT_LIMIT = 500
+
+
+def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
+    """Every session this build can see, as metadata, most recent first.
+
+    The index a browser needs, and nothing more. `report` groups sessions
+    by workspace to answer "what is piling up"; a person looking for one
+    conversation they had last Tuesday is asking a different question,
+    and answering it by scrolling a grouped summary is why that screen
+    had no way to find anything.
+
+    Metadata only, deliberately: this is a listing, so it runs over every
+    store on the machine, and a listing that opened thousands of
+    transcripts to describe them would be a content read of the whole
+    disk on every refresh. Bodies are read one at a time, by name,
+    through `inspect` -- when someone asks for that one.
+    """
+    records = (collect_codex(home)[0] + collect_claude(home)[0]
+               + collect_vscode_forks(home)[0] + collect_gemini(home)[0])
+    sessions = []
+    for item in records:
+        # Editor workspace state is listed alongside agent transcripts.
+        # Modore's boundary is durable local state that outlived whatever
+        # made it, not conversations specifically -- and a browser that
+        # hid the VS Code entry would hide something a person retiring a
+        # folder is about to lose. Whether an entry has a readable
+        # conversation is a separate question, answered by its store.
+        if item.get("kind") not in ("session", "workspace_state"):
+            continue
+        if not item.get("source"):
+            continue
+        workspace = item.get("workspace") or ""
+        sessions.append({
+            "tool": item["tool"],
+            "source": item["source"],
+            "workspace": workspace,
+            # Stated, not implied by an empty string: a session whose
+            # workspace is gone and one that never recorded a workspace
+            # are different things to a person deciding what to keep.
+            "workspaceExists": bool(workspace) and Path(workspace).exists(),
+            # Editors keep per-workspace state, not a transcript; saying
+            # "대화" for both overstates what a `workspace.json` is.
+            "kind": item["kind"],
+            "sizeBytes": item["size_bytes"],
+            "lastActive": time.strftime(
+                "%Y-%m-%d %H:%M", time.localtime(item["last_active"])),
+            "lastActiveEpoch": item["last_active"],
+        })
+    sessions.sort(key=lambda s: (-s["lastActiveEpoch"], s["source"]))
+    # `total` is the count before the cap, so a caller can say what it is
+    # not showing rather than presenting a truncated list as the whole.
+    return {
+        "total": len(sessions),
+        "sessions": sessions[:limit] if limit > 0 else sessions,
+    }
 
 
 def build_scree(home: Path) -> dict:
@@ -1561,21 +1624,32 @@ TITLE_BOILERPLATE = {
 }
 
 
-def _turns_from_session(source: Path) -> list[tuple[str, str]]:
-    """(role, text) for one session, whatever container the provider uses.
+def _read_session_turns(source: Path) -> tuple[list[tuple[str, str]], str]:
+    """`(turns, status)` for one session.
 
-    Shared with `preserve` at the decoder rather than by calling it: the
-    export writes an entire transcript to disk as Markdown, and a title
-    needs a handful of user turns. Reusing the whole flow to get a title
-    would read and render everything to throw nearly all of it away.
+    The status is the half that matters. A transcript that vanished
+    between binding and reading is the normal case here -- providers
+    sweep their own stores -- and "no conversation" and "the conversation
+    can no longer be read" are different facts to put in front of someone
+    deciding whether to delete something. Returning `[]` for both is the
+    same collapse the coverage work spent its length preventing, and it
+    reappeared the moment a new reader was written.
+
+    Status is one of `ok`, `missing`, `unreadable`, `unrecognized`.
     """
+    if not source.exists():
+        return ([], "missing")
     turns: list[tuple[str, str]] = []
     if source.suffix == ".json":
         try:
             payload = json.loads(source.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
-            return []
-        messages = payload.get("messages") if isinstance(payload, dict) else None
+        except OSError:
+            return ([], "unreadable")
+        except json.JSONDecodeError:
+            return ([], "unrecognized")
+        if not isinstance(payload, dict):
+            return ([], "unrecognized")
+        messages = payload.get("messages")
         for message in messages or []:
             if not isinstance(message, dict):
                 continue
@@ -1589,7 +1663,9 @@ def _turns_from_session(source: Path) -> list[tuple[str, str]]:
             turn = _extract_turn({"message": normalised})
             if turn:
                 turns.append(turn)
-        return turns
+        return (turns, "ok")
+
+    decoded_any = False
     try:
         with source.open("r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -1599,13 +1675,28 @@ def _turns_from_session(source: Path) -> list[tuple[str, str]]:
                     parsed = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                decoded_any = True
                 if isinstance(parsed, dict):
                     turn = _extract_turn(parsed)
                     if turn:
                         turns.append(turn)
     except OSError:
-        return []
-    return turns
+        return ([], "unreadable")
+    # A JSONL file none of whose lines parsed is not an empty
+    # conversation; it is a file this build cannot read.
+    if not decoded_any and source.stat().st_size > 0:
+        return ([], "unrecognized")
+    return (turns, "ok")
+
+
+def _turns_from_session(source: Path) -> list[tuple[str, str]]:
+    """Turns only, for callers that already treat absence as absence.
+
+    `title` is one: a session it cannot read gets a date-shaped fallback,
+    which is honest on its own terms. `inspect` needs the status and uses
+    `_read_session_turns` directly.
+    """
+    return _read_session_turns(source)[0]
 
 
 def _is_user_role(role: str) -> bool:
@@ -1683,6 +1774,127 @@ def build_title(source: Path, home: Path, *, raw: bool = False,
     if not raw:
         title = mask_text(title, home)
     return {"title": _clip(title), "titleSource": origin}
+
+
+# --- Session inspection (display only, never gate input) --------------------
+#
+# The fourth deliberate content exception, and the one that makes the
+# other three make sense to a person: `bind --deep` proves a session
+# touched a workspace, `title` names it, `preserve` exports it -- and
+# none of them lets the owner simply *look at* a conversation the
+# machine already holds. Modore's judgment stays metadata-only;
+# inspection is what the judgment plane is deliberately blind to,
+# surfaced on explicit request. Nothing returned here is an input to
+# any verdict -- structurally: no judgment path calls it.
+
+INSPECT_TURN_CHARS = 400
+INSPECT_DEFAULT_TURNS = 20
+
+
+def _session_provider(source: Path, home: Path) -> str:
+    """Which store a transcript lives in, from its path alone."""
+    text = str(source)
+    if "/.claude/" in text or text.startswith(str(home / ".claude")):
+        return "claude"
+    if "/.codex/" in text:
+        return "codex"
+    if "/.gemini/" in text:
+        return "gemini"
+    if "workspaceStorage" in text:
+        return "editor"
+    return "unknown"
+
+
+def _session_workspace(provider: str, source: Path) -> Optional[str]:
+    """The workspace the session itself recorded, when the store keeps one."""
+    try:
+        if provider == "claude":
+            with source.open("r", encoding="utf-8", errors="replace") as handle:
+                for _ in range(CLAUDE_SCAN_LINES):
+                    line = _read_json_line(handle)
+                    if line is None:
+                        break
+                    if isinstance(line.get("cwd"), str):
+                        return _canon_workspace(line["cwd"])
+        elif provider == "codex":
+            with source.open("r", encoding="utf-8", errors="replace") as handle:
+                first = _read_json_line(handle)
+            payload = (first or {}).get("payload")
+            if isinstance(payload, dict) and isinstance(payload.get("cwd"), str):
+                return _canon_workspace(payload["cwd"])
+    except OSError:
+        return None
+    # Gemini records only a path hash; there is no workspace string to read.
+    return None
+
+
+def build_inspect(source: Path, home: Path, *, raw: bool = False,
+                  turn_limit: int = INSPECT_DEFAULT_TURNS) -> dict:
+    """One session's conversation, prepared for display.
+
+    The rules that make this safe to expose are the point, not the
+    plumbing: one caller-named session per invocation, never swept;
+    masked by default; every turn capped, because a pasted stack trace is
+    context the agent was handed, not something a preview should replay;
+    and the recent window plus the opening request, because a person
+    recognising a session needs how it started and where it ended, not
+    the middle. Subagent transcripts are not opened -- expanding those is
+    its own explicit act.
+    """
+    provider = _session_provider(source, home)
+    turns, status = _read_session_turns(source)
+
+    def clip(text: str) -> str:
+        cleaned = " ".join(text.split())
+        if not raw:
+            cleaned = mask_text(cleaned, home)
+        if len(cleaned) > INSPECT_TURN_CHARS:
+            cleaned = cleaned[: INSPECT_TURN_CHARS - 1].rstrip() + "\u2026"
+        return cleaned
+
+    # Codex records one reply twice -- as `response_item/message` and
+    # again as `event_msg/agent_message` -- so a straight read shows
+    # every agent turn doubled. Measured on a live rollout: 16 of 41
+    # turns were a repeat of the line before. Collapsing consecutive
+    # identical turns is provider-agnostic and cannot merge two things a
+    # person actually said twice in a row into one, because those are
+    # separated by a reply.
+    deduped: list[tuple[str, str]] = []
+    for turn in turns:
+        if deduped and deduped[-1] == turn:
+            continue
+        deduped.append(turn)
+    # `developer` and `system` turns are the harness talking to the
+    # agent, not the conversation. They are the longest thing in a Codex
+    # rollout and push the actual exchange off the screen.
+    turns = [(role, text) for role, text in deduped
+             if role.lower() not in ("developer", "system")]
+
+    first_user = next((clip(text) for role, text in turns
+                       if _is_user_role(role) and text.strip()), None)
+    window = turns[-turn_limit:] if turn_limit > 0 else []
+    return {
+        # `ok` / `missing` / `unreadable` / `unrecognized`. A caller that
+        # shows "no conversation" for anything but `ok` is telling
+        # someone about to delete this that there was nothing to lose.
+        "status": status,
+        "provider": provider,
+        "sessionId": _file_access_session_id(
+            provider if provider in ("claude", "codex", "gemini") else "claude", source),
+        "workspace": _session_workspace(provider, source),
+        "messageCount": len(turns),
+        "userTurnCount": sum(1 for role, _ in turns if _is_user_role(role)),
+        "firstUserTurn": first_user,
+        # `index` is the turn's ordinal in the window, because a display
+        # needs stable identity and the obvious substitute -- role plus
+        # text -- collides on exactly the case the dedupe rule
+        # deliberately preserves: the same person saying the same thing
+        # twice with a reply in between.
+        "turns": [{"index": position, "role": role, "text": clip(text)}
+                  for position, (role, text) in enumerate(window) if text.strip()],
+        "omittedTurns": max(0, len(turns) - len(window)),
+        "masked": not raw,
+    }
 
 
 def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
@@ -1766,6 +1978,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                           help="also scan transcript bodies for file access")
     bind_all.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    inspect = sub.add_parser(
+        "inspect", help="one session's conversation for display (masked; never gate input)")
+    inspect.add_argument("source", type=Path, help="session file path from a bind result")
+    inspect.add_argument("--turns", type=int, default=INSPECT_DEFAULT_TURNS,
+                         help="recent turns to include")
+    inspect.add_argument("--raw", action="store_true",
+                         help="disable masking (explicit opt-out, off by default)")
+    inspect.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
+    sessions = sub.add_parser(
+        "sessions", help="metadata index of every visible session, newest first (no bodies read)")
+    sessions.add_argument("--limit", type=int, default=SESSIONS_DEFAULT_LIMIT,
+                          help="sessions to return; 0 for all")
+    sessions.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     fingerprint = sub.add_parser(
         "fingerprint", help="digest of every bindable session store, to detect drift")
     fingerprint.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
@@ -1830,6 +2057,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"wrote {args.out}")
         else:
             print(payload)
+        return 0
+
+    if args.command == "inspect":
+        try:
+            payload = build_inspect(args.source, args.home, raw=args.raw,
+                                    turn_limit=args.turns)
+        except OSError as exc:
+            print(f"inspect: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "sessions":
+        print(json.dumps(build_sessions(args.home, limit=args.limit),
+                         ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "fingerprint":
