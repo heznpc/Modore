@@ -155,4 +155,29 @@ final class BindReportTests: XCTestCase {
             .block(.unsealedSessions(count: 1))
         )
     }
+    /// The contract's versioning rule, enforced on the consumer side: a
+    /// snapshot from a future schema is unreadable, not best-effort
+    /// parseable -- the fields this build recognises may no longer mean
+    /// what they meant when it was written.
+    func test_aFutureSchemaVersionIsUnreadableNotBestEffort() {
+        let json = """
+        {"schema":"modore.agent-state-snapshot","schemaVersion":2,
+         "workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"complete","bindings":[]}
+        """
+        guard case .notAssessed = ContinuityAssessment.fromBindReport(data(json)) else {
+            return XCTFail("a v2 snapshot must not be parsed by v1 rules")
+        }
+    }
+
+    /// Pre-contract output has no schema fields and is version 1 in fact.
+    func test_absentSchemaFieldsDecodeAsVersionOne() {
+        let json = """
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"complete","bindings":[]}
+        """
+        guard case .assessedNoSessions = ContinuityAssessment.fromBindReport(data(json)) else {
+            return XCTFail("pre-contract output must keep decoding")
+        }
+    }
 }

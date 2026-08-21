@@ -24,9 +24,9 @@ def _payload(result: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_only_the_read_only_judgment_tools_are_exposed():
-    assert sorted(mcp_server.HANDLERS) == ["file_access", "friction_scan",
-                                           "hf_orphans", "mcp_hygiene",
-                                           "scree_report", "system_scan_summary",
+    assert sorted(mcp_server.HANDLERS) == ["agent_file_access", "agent_state_report",
+                                           "mcp_hygiene", "model_residue_report",
+                                           "operator_friction_report", "system_scan_summary",
                                            "uninstall_residue_report"]
 
 
@@ -92,11 +92,11 @@ def test_the_read_only_contract_is_enforced_where_tools_are_registered():
     assert mcp_server.REJECTED_TOOLS == []
     assert {t["name"] for t in mcp_server.REGISTERED_TOOLS} == mcp_server.EXPOSED_TOOL_NAMES
 
-    forgot_annotation = {"name": "scree_report",
+    forgot_annotation = {"name": "agent_state_report",
                          "annotations": {"destructiveHint": False}}
     assert not mcp_server.contract_allows(forgot_annotation)
 
-    destructive = {"name": "scree_report",
+    destructive = {"name": "agent_state_report",
                    "annotations": {"readOnlyHint": True, "destructiveHint": True}}
     assert not mcp_server.contract_allows(destructive)
 
@@ -208,7 +208,7 @@ def stub_scripts(monkeypatch):
 
 
 def test_scree_report_forwards_the_scripts_own_verdicts(stub_scripts):
-    payload = _payload(_call("scree_report", {"section": "all", "limit": 10}))
+    payload = _payload(_call("agent_state_report", {"section": "all", "limit": 10}))
     assert payload["summary"]["contract"] == _SCREE_FIXTURE["contract"]
     assert payload["summary"]["groups_orphan"] == 1
     assert payload["summary"]["worktrees_protected"] == 2
@@ -217,20 +217,20 @@ def test_scree_report_forwards_the_scripts_own_verdicts(stub_scripts):
 
 
 def test_scree_report_orders_sole_copy_worktrees_first(stub_scripts):
-    payload = _payload(_call("scree_report", {"section": "worktrees", "limit": 1}))
+    payload = _payload(_call("agent_state_report", {"section": "worktrees", "limit": 1}))
     assert payload["worktrees"]["items"][0]["verdict"] == "protected"
     assert payload["worktrees"]["truncated"] is True
     assert payload["worktrees"]["omitted"] == 2
 
 
 def test_scree_summary_section_is_counts_only(stub_scripts):
-    payload = _payload(_call("scree_report", {"section": "summary"}))
+    payload = _payload(_call("agent_state_report", {"section": "summary"}))
     assert "groups" not in payload and "worktrees" not in payload
     assert payload["groups_total"] == 2
 
 
 def test_friction_scan_passes_filters_through_and_applies_the_rest_locally(stub_scripts):
-    payload = _payload(_call("friction_scan", {
+    payload = _payload(_call("operator_friction_report", {
         "since_days": 14, "source": "codex", "max_sessions": 50,
         "min_severity": 3, "limit": 10}))
     assert stub_scripts == [("friction.py", [
@@ -242,18 +242,18 @@ def test_friction_scan_passes_filters_through_and_applies_the_rest_locally(stub_
 
 
 def test_friction_findings_come_back_newest_first(stub_scripts):
-    payload = _payload(_call("friction_scan", {"min_severity": 1}))
+    payload = _payload(_call("operator_friction_report", {"min_severity": 1}))
     assert [f["quote"] for f in payload["findings"]] == ["new nudge", "old rage"]
 
 
 def test_category_filter_is_applied(stub_scripts):
-    payload = _payload(_call("friction_scan", {"category": "verbosity"}))
+    payload = _payload(_call("operator_friction_report", {"category": "verbosity"}))
     assert payload["matched_findings"] == 1
     assert payload["findings"][0]["category"] == "verbosity"
 
 
 def test_truncation_is_always_accounted_for(stub_scripts):
-    payload = _payload(_call("friction_scan", {"limit": 1, "min_severity": 1}))
+    payload = _payload(_call("operator_friction_report", {"limit": 1, "min_severity": 1}))
     assert payload["returned"] == 1
     assert payload["total"] == 2
     assert payload["truncated"] is True
@@ -284,7 +284,7 @@ def test_every_tool_result_is_fenced_as_untrusted(stub_scripts, tmp_path, monkey
     monkeypatch.setenv("PCH_SCAN", str(tmp_path / "absent.json"))
     monkeypatch.setattr(mcp_server, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    for name, arguments in (("scree_report", {}), ("friction_scan", {}),
+    for name, arguments in (("agent_state_report", {}), ("operator_friction_report", {}),
                             ("system_scan_summary", {}), ("uninstall_residue_report", {})):
         text = _call(name, arguments)["content"][0]["text"]
         assert text.startswith(mcp_server.UNTRUSTED_OPEN), name
@@ -302,14 +302,14 @@ def test_server_instructions_state_the_read_only_contract():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("tool,arguments", [
-    ("friction_scan", {"since_days": 0}),
-    ("friction_scan", {"since_days": 9000}),
-    ("friction_scan", {"min_severity": 4}),
-    ("friction_scan", {"source": "notascan"}),
-    ("friction_scan", {"limit": 1.5}),
-    ("friction_scan", {"limit": True}),
-    ("scree_report", {"section": "everything"}),
-    ("scree_report", {"limit": 0}),
+    ("operator_friction_report", {"since_days": 0}),
+    ("operator_friction_report", {"since_days": 9000}),
+    ("operator_friction_report", {"min_severity": 4}),
+    ("operator_friction_report", {"source": "notascan"}),
+    ("operator_friction_report", {"limit": 1.5}),
+    ("operator_friction_report", {"limit": True}),
+    ("agent_state_report", {"section": "everything"}),
+    ("agent_state_report", {"limit": 0}),
     ("system_scan_summary", {"limit": 101}),
     ("uninstall_residue_report", {"section": "everything"}),
     ("uninstall_residue_report", {"limit": 201}),
@@ -334,9 +334,9 @@ def test_initialize_echoes_a_supported_version_and_falls_back_otherwise():
 
 def test_tools_list_declares_closed_input_schemas():
     tools = mcp_server.handle_request("tools/list", {})["tools"]
-    assert [t["name"] for t in tools] == ["scree_report", "friction_scan",
-                                          "hf_orphans", "mcp_hygiene",
-                                          "file_access", "system_scan_summary",
+    assert [t["name"] for t in tools] == ["agent_state_report", "operator_friction_report",
+                                          "model_residue_report", "mcp_hygiene",
+                                          "agent_file_access", "system_scan_summary",
                                           "uninstall_residue_report"]
     for tool in tools:
         assert tool["inputSchema"]["additionalProperties"] is False
@@ -357,10 +357,10 @@ def test_unknown_method_and_unknown_tool_are_protocol_errors():
 
 
 def test_a_handler_crash_becomes_an_internal_error_not_a_dead_server(monkeypatch):
-    monkeypatch.setitem(mcp_server.HANDLERS, "scree_report",
+    monkeypatch.setitem(mcp_server.HANDLERS, "agent_state_report",
                         lambda args: (_ for _ in ()).throw(RuntimeError("boom")))
     response = mcp_server.dispatch({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                                    "params": {"name": "scree_report", "arguments": {}}})
+                                    "params": {"name": "agent_state_report", "arguments": {}}})
     assert response["error"]["code"] == mcp_server.INTERNAL_ERROR
     assert "boom" in response["error"]["message"]
 
@@ -385,9 +385,9 @@ def test_serve_handles_a_full_session_including_malformed_input():
 def test_cli_tools_dump_is_the_registered_surface(capsys):
     assert mcp_server.main(["--tools"]) == 0
     dumped = json.loads(capsys.readouterr().out)
-    assert [t["name"] for t in dumped["exposed"]] == ["scree_report", "friction_scan",
-                                                      "hf_orphans", "mcp_hygiene",
-                                                      "file_access", "system_scan_summary",
+    assert [t["name"] for t in dumped["exposed"]] == ["agent_state_report", "operator_friction_report",
+                                                      "model_residue_report", "mcp_hygiene",
+                                                      "agent_file_access", "system_scan_summary",
                                                       "uninstall_residue_report"]
     assert dumped["rejected"] == []
 
@@ -403,11 +403,11 @@ def test_cli_rejects_unknown_arguments(capsys):
 def test_a_search_root_cannot_be_smuggled_in_as_an_option():
     """`roots`는 이 표면에서 호출자가 경로를 넘기는 유일한 자리다."""
     for bad in (["--home"], ["-x"], [""], "not-a-list", [1]):
-        result = _call("hf_orphans", {"roots": bad})
+        result = _call("model_residue_report", {"roots": bad})
         assert result.get("isError"), bad
 
     too_many = [f"/tmp/r{i}" for i in range(mcp_server.MAX_HF_ROOTS + 1)]
-    assert _call("hf_orphans", {"roots": too_many}).get("isError")
+    assert _call("model_residue_report", {"roots": too_many}).get("isError")
 
 
 def test_hf_orphans_surfaces_a_withheld_verdict_at_the_top_level(monkeypatch):
@@ -423,7 +423,7 @@ def test_hf_orphans_surfaces_a_withheld_verdict_at_the_top_level(monkeypatch):
     }
     monkeypatch.setattr(mcp_server, "_run_json",
                         lambda script, arguments, timeout: incomplete)
-    payload = _payload(_call("hf_orphans", {}))
+    payload = _payload(_call("model_residue_report", {}))
     assert payload["search_complete"] is False
     assert payload["verdicts_withheld"] is True
     assert payload["models"][0]["verdict"] == "unknown"
@@ -474,17 +474,17 @@ def test_file_access_defaults_to_rule_surfaces_and_never_forwards_a_command(monk
 
     monkeypatch.setattr(mcp_server, "_run_json", fake_run)
 
-    payload = _payload(_call("file_access", {}))
+    payload = _payload(_call("agent_file_access", {}))
     assert payload["filters"]["rule_surfaces_only"] is True
     assert "--all" not in captured["argv"]
     assert payload["paths"][0]["path"] == "~/.claude/settings.json"
     for key in ("detail", "command", "cmd"):
         assert key not in payload["paths"][0]
 
-    _call("file_access", {"include_all": True, "query": "settings"})
+    _call("agent_file_access", {"include_all": True, "query": "settings"})
     assert "--all" in captured["argv"]
     assert "--query" in captured["argv"] and "settings" in captured["argv"]
 
 
 def test_file_access_rejects_a_non_string_query():
-    assert _call("file_access", {"query": 5}).get("isError")
+    assert _call("agent_file_access", {"query": 5}).get("isError")

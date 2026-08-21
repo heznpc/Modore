@@ -1,7 +1,8 @@
 # Modore
 
-> **A local audit of what your AI agents left behind.** On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, Modore answers the questions nothing else on that machine is asking: which sessions touched which projects, which transcripts silently expire in a few days, which agent worktrees hold the only copy of unpushed work — whichever tool you ran the agent from — and which paths survive nowhere except in a session record — deterministically, metadata-only, with no LLM anywhere in the judgment path.
-> The same evidence-first approach also covers the PC that feels busy for no reason: process, network, autorun, security, and storage signals turned into plain-language evidence before you stop or delete anything.
+> **Modore audits durable local state that outlives the work, tool, or software that created it** — so you can see what still matters, what no longer has an owner, and what is safe to reclaim. Agent sessions whose workspace is gone, worktrees holding the only copy of unpushed work, trust roots installed by software you removed months ago, model caches nothing references: state that survived its creator, judged by provenance and survival — deterministically, metadata-only, with no LLM anywhere in the judgment path.
+>
+> Built for Macs shaped by AI-assisted development.
 
 [🌐 **Website**](https://heznpc.github.io/modore/) · [📦 Releases (when published)](https://github.com/heznpc/modore/releases) · [Architecture](./docs/ARCHITECTURE.md)
 
@@ -11,9 +12,11 @@
 
 ---
 
-## The two questions it answers
+## What it answers
 
-### 1. What did my AI tools leave behind? (Mac)
+Everything below is one question asked of different stores: **what survived, what still matters, and what can be reclaimed.** A session outlives its workspace; a worktree outlives its branch; a trust root outlives its installer; a model cache outlives the experiment. Each audit connects a survivor to its origin and judges whether it is protected, orphaned, or rebuildable — and none of them deletes anything.
+
+### What your AI tools left behind (Mac)
 
 On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, the machine fills with traces nothing audits end to end: session stores that silently expire on rolling windows, agent git worktrees holding the only copy of unpushed work, orphaned sessions pointing at deleted projects, gigabytes of rebuildable model and editor caches, and paths whose only surviving record is a session transcript. **scree**, Modore's session-and-residue audit, judges all of it — deterministically, metadata-only, with no LLM anywhere in the judgment path:
 
@@ -70,19 +73,21 @@ python3 scripts/mcp_server.py --tools    # inspect the surface without speaking 
 {"mcpServers": {"modore": {"command": "python3", "args": ["<repo>/scripts/mcp_server.py"]}}}
 ```
 
-- `scree_report` — the join, retention forecast, orphan/sole-copy/lineage judgment, by section, with every truncation reported.
-- `friction_scan` — the pushback taxonomy, filterable by store, category, and minimum severity.
-- `hf_orphans` — which models in the Hugging Face hub cache no project file names, and how many gigabytes those account for. Reports `search_complete`; when the search could not be exhaustive every model is `unknown`, never `unreferenced`.
+- `agent_state_report` — the join, retention forecast, orphan/sole-copy/lineage judgment, by section, with every truncation reported.
+- `operator_friction_report` — the pushback taxonomy, filterable by store, category, and minimum severity.
+- `model_residue_report` — which models in the Hugging Face hub cache no project file names, and how many gigabytes those account for. Reports `search_complete`; when the search could not be exhaustive every model is `unknown`, never `unreferenced`.
 - `mcp_hygiene` — registered MCP servers that cannot start: dead command, missing script path, duplicate entry, or an `env` block worth a human look (reported as a key count, never as keys or values).
-- `file_access` — the reverse index: which sessions touched which paths, with reads/writes/shell counts. Agent rule surfaces first, because a silently edited `CLAUDE.md` is the case it exists for.
+- `agent_file_access` — the reverse index: which sessions touched which paths, with reads/writes/shell counts. Agent rule surfaces first, because a silently edited `CLAUDE.md` is the case it exists for.
 - `system_scan_summary` — the storage and security scan result *already on disk*, with its age, because a stale result read as current is the failure mode here.
 - `uninstall_residue_report` — installer receipts, trusted roots, and the orphaned-root verdict above.
 - **A thin layer, not a second implementation** — each tool runs one judgment script with `--json` and forwards what it prints, so the CLI, the Mac app, and the MCP surface cannot disagree about what is true.
 - **Read-only by contract, enforced at registration** — a tool is reachable only if it is on an explicit allowlist and annotated read-only and non-destructive; one added without a deliberate edit fails closed. Cleanup, deletion, and scan execution are deliberately absent. Modore gates destruction on an approval a human grants on screen; an agent-reachable bypass would not be a feature, it would be the end of that guarantee. Every result is fenced as untrusted data.
 
-### 2. Why is my PC this busy?
+### Why is this machine busy? (maintained diagnostics)
 
 A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange network connection, disk space vanishing overnight. Generic scanners detect but do not explain — and on a Korean banking/government PC they cry wolf over IPinside, nProtect, MagicLine and the rest of the mandated plugin set until users either panic-uninstall critical software or learn to ignore every warning. Modore is the second opinion: it joins process, network, autorun, security, and storage signals, checks miner-like runtime patterns, recognizes the Korean plugin set with a locale-aware whitelist, and explains every finding in plain Korean, English, or Japanese with a 🟢🟡🔴 verdict. Nothing is ever deleted automatically.
+
+This diagnostic surface is **maintained, not growing**: bug and security fixes continue, but new Modore capability lands on the durable-state side above. Live monitoring that does not contribute to provenance, residue attribution, or a bounded cleanup decision is out of scope.
 
 ---
 
@@ -127,6 +132,16 @@ Modore is the brand. The OS editions are separate products under that brand, not
 | Windows Edition | `modore-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
 
 Shared rules, whitelist data, i18n strings, and report vocabulary can be reused where they genuinely match. OS-specific collectors stay separate.
+
+## Scope
+
+The boundary every new capability is judged against:
+
+**In scope** — durable local state whose creator, owner, workspace, package, or original purpose may no longer be present or obvious, when Modore can establish useful provenance, survival, protection, or reclaimability evidence. Sessions, worktrees, uninstall residue, model and build caches, trust roots, agent environment registrations.
+
+**Out of scope** — generic live system monitoring or threat detection that does not materially contribute to provenance, residue attribution, recovery, or a bounded cleanup decision. The existing diagnostic surface stays maintained; it does not grow.
+
+"AI-builder Mac" is the audience this is built for, not a filter on what qualifies: an orphaned trust root from a removed banking plugin and an orphaned worktree from a removed agent workspace are the same problem, and both are in.
 
 ## Design intent
 

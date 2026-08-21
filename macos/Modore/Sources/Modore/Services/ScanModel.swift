@@ -42,6 +42,7 @@ final class ScanModel: ObservableObject {
     @Published var observationResult: ObservationResult?
     @Published var observationInFlight = false
     @Published var observationErrorMessage: String?
+    @Published var timeQuotaSnapshot: TimeQuotaSnapshot?
 
     let logStore = ScanLogStore()
     let projectRoot: URL
