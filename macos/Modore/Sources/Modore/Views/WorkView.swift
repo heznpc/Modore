@@ -124,14 +124,33 @@ struct WorkListPane: View {
     }
 }
 
-private struct WorkProjectRow: View {
+struct WorkProjectRow: View {
     @EnvironmentObject private var model: ScanModel
     let project: WorkProject
     let expanded: Bool
     let previewCount: Int
 
+    /// How many conversations an expanded project shows before asking.
+    ///
+    /// Expanding is not "show me everything": a repo here holds 2,767
+    /// conversations, and rendering all of them also read all of their
+    /// titles -- thousands of transcript reads and thousands of rows from
+    /// one click. A page at a time keeps the two-click path and keeps the
+    /// title read bounded to what is actually on screen.
+    nonisolated static let pageSize = 50
+
+    @State private var page = 1
+
+    private var limit: Int {
+        expanded ? Self.pageSize * page : previewCount
+    }
+
     private var shown: [SessionIndexEntry] {
-        expanded ? project.conversations : Array(project.conversations.prefix(previewCount))
+        Array(project.conversations.prefix(limit))
+    }
+
+    private var remaining: Int {
+        max(0, project.conversationCount - shown.count)
     }
 
     var body: some View {
@@ -170,6 +189,14 @@ private struct WorkProjectRow: View {
                 .font(.caption)
                 .padding(.leading, 8)
             }
+            if expanded, remaining > 0 {
+                Button("\(min(remaining, Self.pageSize))개 더 보기 (남은 \(remaining)개)") {
+                    page += 1
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+                .padding(.leading, 8)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -179,8 +206,13 @@ private struct WorkProjectRow: View {
         // rows it already had while the newly revealed ones sat on
         // "제목을 읽는 중…" forever. One batch, however many rows -- the
         // fetch is a single pass by design.
-        .task(id: expanded) {
+        .task(id: limit) {
             model.loadSessionTitles(for: shown.map(\.source))
+        }
+        .onChange(of: expanded) { isOpen in
+            // Collapsing resets the window, so reopening does not silently
+            // re-render and re-title a thousand rows.
+            if !isOpen { page = 1 }
         }
     }
 
@@ -190,11 +222,12 @@ private struct WorkProjectRow: View {
                 Text(project.name)
                     .font(.body.weight(.semibold))
                     .lineLimit(1)
+                    .foregroundStyle(project.isUnassigned ? Color.secondary : Color.primary)
                 Text(Self.subtitle(project))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if !project.gitFlags.isEmpty {
-                    Text(project.gitFlags.joined(separator: " · "))
+                if !project.gitRisks.isEmpty {
+                    Text(project.gitRisks.joined(separator: " · "))
                         .font(.caption)
                         // Weight, not hue: this project reserves chromatic
                         // status colour for states that mean stop, and on a
@@ -222,6 +255,10 @@ private struct WorkProjectRow: View {
         parts.append(project.sizeText)
         if !project.protectedWorktrees.isEmpty {
             parts.append("보호할 워크트리 \(project.protectedWorktrees.count)개")
+        }
+        if !project.unverifiedWorktrees.isEmpty {
+            // Not "protected": nobody knows what is in these.
+            parts.append("확인 못 한 워크트리 \(project.unverifiedWorktrees.count)개")
         }
         return parts.joined(separator: " · ")
     }

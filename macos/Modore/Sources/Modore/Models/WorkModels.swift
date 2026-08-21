@@ -30,12 +30,27 @@ struct WorkProject: Identifiable {
     let path: String
     var sessions: [SessionIndexEntry] = []
     var worktrees: [ScreeWorktreeItem] = []
-    /// Present only when the retirement judgment has run for this project.
-    /// Its absence is why `[은퇴 검토]` is offered rather than assumed.
-    var candidate: ArchiveCandidate?
+    /// This project's git state, for every repo the scan could judge --
+    /// not only the archivable ones. Absent when no scan has reached it.
+    var assessment: ArchiveCandidate?
 
-    var id: String { path }
-    var name: String { URL(fileURLWithPath: path).lastPathComponent }
+    /// The same assessment, when it says the repo may be retired at all.
+    /// `[은퇴 검토]` is offered from this, never from `assessment`: a repo
+    /// with uncommitted work has a git state worth showing and no
+    /// retirement to review.
+    var candidate: ArchiveCandidate? {
+        guard let assessment, assessment.isRetirementEligible else { return nil }
+        return assessment
+    }
+
+    var id: String { WorkProjectBuilder.canonical(path) }
+
+    /// Conversations that exist but could not be placed in a project.
+    var isUnassigned: Bool { path == WorkProjectBuilder.unassignedID }
+
+    var name: String {
+        isUnassigned ? "연결되지 않은 대화" : URL(fileURLWithPath: path).lastPathComponent
+    }
 
     /// Sessions that hold a readable conversation, newest first.
     var conversations: [SessionIndexEntry] {
@@ -61,34 +76,60 @@ struct WorkProject: Identifiable {
 
     var lastActive: String? { sessions.first?.lastActive }
 
-    /// Git facts worth a glance on the row itself, not buried in a sheet.
-    var gitFlags: [String] {
-        guard let verdict = candidate?.verdict else { return [] }
-        var flags: [String] = []
-        for reason in verdict.reasons {
+    /// Git facts that mean work here could be lost.
+    ///
+    /// Only the risks. "Dormant for 400 days" is information -- it is the
+    /// *reason* a repo is a good retirement candidate -- and listing it
+    /// beside uncommitted work put a warning triangle on exactly the
+    /// repos that were fine.
+    var gitRisks: [String] {
+        guard let verdict = assessment?.verdict else { return [] }
+        return verdict.reasons.compactMap { reason in
             switch reason {
-            case .dirtyWorkingTree: flags.append("커밋 안 된 변경")
-            case .unpushedCommits(let count): flags.append("미푸시 \(count)개")
-            case .noRemoteConfigured: flags.append("원격 없음")
-            case .noUpstreamConfigured: flags.append("업스트림 미설정")
-            case .noCommitsYet: flags.append("커밋 없음")
-            case .dormant(let days): flags.append("\(days)일간 미사용")
-            case .recentActivity, .fullyPushed: continue
+            case .dirtyWorkingTree: return "커밋 안 된 변경"
+            case .unpushedCommits(let count): return "미푸시 \(count)개"
+            case .noRemoteConfigured: return "원격 없음"
+            case .noUpstreamConfigured: return "업스트림 미설정"
+            case .noCommitsYet: return "커밋 없음"
+            case .dormant, .recentActivity, .fullyPushed: return nil
             }
         }
-        return flags
     }
 
-    /// Worktrees this project must not lose, by the worktree judgment's own
-    /// verdict.
+    /// Git facts that describe the project without warning about it.
+    var gitNotes: [String] {
+        guard let verdict = assessment?.verdict else { return [] }
+        return verdict.reasons.compactMap { reason in
+            switch reason {
+            case .dormant(let days): return "\(days)일간 미사용"
+            case .recentActivity(let days): return "최근 활동 \(days)일 전"
+            case .fullyPushed: return "원격에 모두 반영됨"
+            default: return nil
+            }
+        }
+    }
+
+    /// Worktrees holding work that exists nowhere else.
+    ///
+    /// scree's vocabulary is `protected` / `rebuildable` / `unreadable`;
+    /// there is no `reclaimable`, so a filter written against that name
+    /// matched everything and reported every rebuildable worktree as
+    /// something to protect.
     var protectedWorktrees: [ScreeWorktreeItem] {
-        worktrees.filter { $0.verdict != "reclaimable" }
+        worktrees.filter { $0.verdict == "protected" }
+    }
+
+    /// Worktrees the judgment could not read. Worth flagging -- an
+    /// unreadable worktree is not a safe one -- but not worth calling
+    /// protected, which claims knowledge nobody has.
+    var unverifiedWorktrees: [ScreeWorktreeItem] {
+        worktrees.filter { $0.verdict == "unreadable" }
     }
 
     /// True when something here would be stranded by a deletion. Drives the
     /// row's marker, and nothing else -- it is not a retirement verdict.
     var needsAttention: Bool {
-        !protectedWorktrees.isEmpty || !gitFlags.isEmpty
+        !protectedWorktrees.isEmpty || !unverifiedWorktrees.isEmpty || !gitRisks.isEmpty
     }
 
     /// What a search matches. Worktree branch names included: they are poor
@@ -107,50 +148,73 @@ extension WorkProject: Equatable {
         lhs.path == rhs.path
             && lhs.sessions == rhs.sessions
             && lhs.worktrees.map(\.id) == rhs.worktrees.map(\.id)
-            && lhs.candidate?.id == rhs.candidate?.id
+            && lhs.assessment?.id == rhs.assessment?.id
     }
 }
 
 enum WorkProjectBuilder {
-    /// Groups every session, worktree and retirement candidate under the
+    /// The group holding conversations whose workspace could not be
+    /// resolved. Its path is not a real path, and `isUnassigned` is how
+    /// the UI knows not to treat it as one.
+    static let unassignedID = "\u{0}unassigned"
+
+    /// Groups every session, worktree and repo assessment under the
     /// project it belongs to.
     ///
     /// The roll-up is the whole point. An agent worktree records its own
     /// directory as the workspace, so a repo with twenty agent runs
-    /// produced twenty unrelated-looking entries -- which is exactly the
-    /// low-level artifact view that made the old screens hard to read.
-    /// Longest known root wins, so a worktree lands under its repo and a
-    /// subdirectory lands under the project that contains it.
+    /// produced twenty unrelated-looking entries -- exactly the low-level
+    /// artifact view that made the old screens hard to read.
+    ///
+    /// `roots` comes from every git path the audit saw, not from the
+    /// retirement candidates: whether `/repo/subdir` belongs to `/repo`
+    /// is a fact about the filesystem, and letting it depend on whether
+    /// `/repo` survived the archive classifier made project identity a
+    /// function of retirement eligibility.
     static func build(
         sessions: [SessionIndexEntry],
         worktrees: [ScreeWorktreeItem],
-        candidates: [ArchiveCandidate]
+        assessments: [ArchiveCandidate],
+        gitRoots: [String] = []
     ) -> [WorkProject] {
         var roots: Set<String> = []
-        for candidate in candidates { roots.insert(candidate.pathText) }
-        for worktree in worktrees { roots.insert(worktree.repo) }
+        for assessment in assessments { roots.insert(canonical(assessment.pathText)) }
+        for worktree in worktrees { roots.insert(canonical(worktree.repo)) }
+        for root in gitRoots { roots.insert(canonical(root)) }
 
         var projects: [String: WorkProject] = [:]
-        func project(_ path: String) -> WorkProject {
-            projects[path] ?? WorkProject(path: path)
+        // Case-folded key, real spelling for display. macOS filesystems are
+        // case-insensitive by default and the providers each record their
+        // own casing of the same directory, which is why scree's lineage
+        // folds case too -- without it `/Users/example/Ploidy` and
+        // `/Users/example/ploidy` split into two projects that are one
+        // folder.
+        func upsert(_ path: String, _ mutate: (inout WorkProject) -> Void) {
+            let key = canonical(path)
+            var entry = projects[key] ?? WorkProject(path: path)
+            mutate(&entry)
+            projects[key] = entry
         }
 
         for session in sessions {
-            guard !session.workspace.isEmpty else { continue }
-            let key = projectRoot(for: session.workspace, roots: roots)
-            var entry = project(key)
-            entry.sessions.append(session)
-            projects[key] = entry
+            guard !session.workspace.isEmpty else {
+                // Discovered but unplaceable. Dropping these would mean
+                // finding a conversation and then hiding it, which is the
+                // opposite of what this app is for -- and the Gemini
+                // collector deliberately leaves the workspace empty rather
+                // than guessing, so real conversations land here.
+                upsert(unassignedID) { $0.sessions.append(session) }
+                continue
+            }
+            upsert(projectRoot(for: session.workspace, roots: roots)) {
+                $0.sessions.append(session)
+            }
         }
         for worktree in worktrees {
-            var entry = project(worktree.repo)
-            entry.worktrees.append(worktree)
-            projects[worktree.repo] = entry
+            upsert(worktree.repo) { $0.worktrees.append(worktree) }
         }
-        for candidate in candidates {
-            var entry = project(candidate.pathText)
-            entry.candidate = candidate
-            projects[candidate.pathText] = entry
+        for assessment in assessments {
+            upsert(assessment.pathText) { $0.assessment = assessment }
         }
 
         return projects.values
@@ -162,7 +226,10 @@ enum WorkProjectBuilder {
                 return copy
             }
             .sorted { lhs, rhs in
-                (lhs.lastActive ?? "") == (rhs.lastActive ?? "")
+                // Unplaceable conversations last: they are real, and they
+                // are not what someone opening this screen is looking for.
+                if lhs.isUnassigned != rhs.isUnassigned { return rhs.isUnassigned }
+                return (lhs.lastActive ?? "") == (rhs.lastActive ?? "")
                     ? lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
                     : (lhs.lastActive ?? "") > (rhs.lastActive ?? "")
             }
@@ -177,19 +244,33 @@ enum WorkProjectBuilder {
     /// and surnames.
     static func projectRoot(for workspace: String, roots: Set<String>) -> String {
         let normalized = normalize(workspace)
+        let folded = canonical(workspace)
         var best: String?
-        for root in roots {
-            let candidate = normalize(root)
-            guard normalized == candidate || normalized.hasPrefix(candidate + "/") else { continue }
-            if best == nil || candidate.count > best!.count { best = candidate }
+        // Fold the roots here rather than trusting the caller to. This is
+        // the function every grouping decision goes through, and a caller
+        // that passed real spellings would otherwise get case-sensitive
+        // matching back without any sign that it had.
+        for root in roots.map(canonical) {
+            guard folded == root || folded.hasPrefix(root + "/") else { continue }
+            if best == nil || root.count > best!.count { best = root }
         }
-        if let best { return best }
+        if let best {
+            // Return the caller's own spelling when the match is the whole
+            // path, so a project keeps the casing it was recorded with.
+            return folded == best ? normalized : String(normalized.prefix(best.count))
+        }
         for marker in ["/.claude/worktrees/", "/.git/worktrees/"] {
-            if let range = normalized.range(of: marker) {
-                return String(normalized[normalized.startIndex..<range.lowerBound])
+            if let range = folded.range(of: marker) {
+                return String(normalized.prefix(folded.distance(
+                    from: folded.startIndex, to: range.lowerBound)))
             }
         }
         return normalized
+    }
+
+    /// The comparison key: trailing slash removed, case folded.
+    static func canonical(_ path: String) -> String {
+        normalize(path).lowercased()
     }
 
     private static func normalize(_ path: String) -> String {
