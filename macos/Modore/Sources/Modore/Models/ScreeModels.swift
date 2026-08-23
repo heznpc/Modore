@@ -287,3 +287,59 @@ struct SessionIndex: Decodable, Equatable {
     let sessions: [SessionIndexEntry]
 }
 
+
+/// One matching turn from `scree.py search`.
+struct SessionSearchMatch: Decodable, Identifiable, Equatable {
+    let source: String
+    let tool: String
+    let workspace: String
+    let lastActive: String
+    let index: Int
+    let role: String
+    let isUser: Bool
+    let snippet: String
+
+    var id: String { "\(source)#\(index)" }
+    var sourceURL: URL { URL(fileURLWithPath: source) }
+
+    var displayLabel: String {
+        workspace.isEmpty
+            ? sourceURL.lastPathComponent
+            : URL(fileURLWithPath: workspace).lastPathComponent
+    }
+
+    var subtitle: String {
+        [displayLabel, tool, lastActive, isUser ? "나" : "에이전트"].joined(separator: " · ")
+    }
+}
+
+/// A whole search, including how much of the machine it managed to read.
+///
+/// Coverage is part of the answer. "Nothing matched" and "I could not
+/// finish looking" are different facts, and a search that quietly stops
+/// at a budget while reporting nothing found is a lie by omission.
+struct SessionSearchResult: Decodable, Equatable {
+    let query: String
+    let matches: [SessionSearchMatch]
+    let scannedSessions: Int
+    let totalSessions: Int
+    let unreadableSessions: Int
+    let coverage: String
+    let truncatedReason: String?
+
+    var isComplete: Bool { coverage == "complete" }
+
+    /// What the screen must admit under the results.
+    var caveat: String? {
+        var notes: [String] = []
+        if !isComplete {
+            notes.append(truncatedReason == "time"
+                ? "시간이 오래 걸려 \(scannedSessions)/\(totalSessions)개까지만 훑었습니다."
+                : "결과가 많아 일부만 표시했습니다. 검색어를 좁히세요.")
+        }
+        if unreadableSessions > 0 {
+            notes.append("세션 \(unreadableSessions)개는 읽지 못했습니다.")
+        }
+        return notes.isEmpty ? nil : notes.joined(separator: " ")
+    }
+}

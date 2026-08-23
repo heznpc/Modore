@@ -877,3 +877,57 @@ def test_schedule_rejects_an_app_bundle_path_without_the_app_suffix(project_root
     )
     assert result.returncode != 0
     assert not (launch_agents / "me.heznpc.modore.storage-watch.plist").exists()
+
+
+def test_storage_watch_captures_evidence_when_space_is_low_without_a_sudden_drop(
+    project_root, tmp_path
+):
+    """빠른 감소에만 스냅샷을 찍고 절대 임계값 진입에는 안 찍으면, 며칠에
+    걸쳐 25→19→14→8로 내려간 디스크는 매시간 경고만 받고 '그때 뭐가
+    컸는지'라는 증거를 하나도 남기지 못한다. 경고가 제기하는 바로 그
+    질문이다."""
+    state_dir = tmp_path / "state"
+    snapshot_root = tmp_path / "snapshot-roots"
+    (snapshot_root / "codex-cache").mkdir(parents=True)
+    (snapshot_root / "codex-cache" / "payload.bin").write_bytes(b"a" * (1024 * 1024))
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_WATCH_NOTIFY": "0",
+            "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
+            "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "2",
+            "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "1",
+            "PCH_WATCH_SNAPSHOT_EVENT_LIMIT": "2",
+            # 한 번에 8GB 이상 떨어지지 않도록 작은 폭으로만 내려간다.
+            "PCH_WATCH_DROP_GB": "8",
+            "PCH_WATCH_FREE_GB": "20",
+        }
+    )
+    script = project_root / "scripts" / "storage_watch.sh"
+
+    def run(free_gb):
+        env["PCH_TEST_FREE_KB"] = str(free_gb * 1024 * 1024)
+        result = subprocess.run(
+            [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+        )
+        assert result.returncode == 0, result.stderr
+        return parse_protocol(result.stdout)
+
+    assert run(25)["status"] == "normal"
+
+    # 5GB만 줄었으므로 급감 임계값에는 못 미치지만 20GB 아래로 들어간다.
+    entered = run(20 - 0)
+    entered = run(19)
+    assert entered["status"] == "warning"
+    assert entered["snapshotReason"] == "entered-low-free"
+    assert int(entered["snapshotRows"]) >= 1
+    assert (state_dir / "storage-watch-paths.tsv").is_file()
+
+    # 계속 경고 상태로 남아 있다고 매시간 같은 루트를 다시 재지는 않는다.
+    staying = run(18)
+    assert staying["status"] == "warning"
+    assert staying["snapshotReason"] == ""
+    assert staying["snapshotRows"] == "0"
