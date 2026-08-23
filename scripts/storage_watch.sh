@@ -178,13 +178,16 @@ case "$FREE_KB" in ''|*[!0-9]*) /usr/bin/printf 'ERROR: free space unavailable.\
 PREVIOUS_KB=0
 PREVIOUS_STATUS="normal"
 LAST_NOTIFY=0
+LAST_SNAPSHOT=0
 if [[ -f "$STATE_FILE" ]]; then
     PREVIOUS_KB="$(/usr/bin/awk -F '\t' '$1 == "freeKB" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     PREVIOUS_STATUS="$(/usr/bin/awk -F '\t' '$1 == "status" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_NOTIFY="$(/usr/bin/awk -F '\t' '$1 == "lastNotify" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
+    LAST_SNAPSHOT="$(/usr/bin/awk -F '\t' '$1 == "lastSnapshot" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
 fi
 case "$PREVIOUS_KB" in ''|*[!0-9]*) PREVIOUS_KB=0 ;; esac
 case "$LAST_NOTIFY" in ''|*[!0-9]*) LAST_NOTIFY=0 ;; esac
+case "$LAST_SNAPSHOT" in ''|*[!0-9]*) LAST_SNAPSHOT=0 ;; esac
 
 DROP_KB=0
 if [[ "$PREVIOUS_KB" -gt "$FREE_KB" ]]; then
@@ -332,8 +335,22 @@ capture_drop_snapshot() {
     return 0
 }
 
+# Keep bounded attribution for gradual storage pressure as well as sudden drops.
+SNAPSHOT_COOLDOWN_SECONDS=21600
+SNAPSHOT_REASON=""
 if [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
-    capture_drop_snapshot || true
+    SNAPSHOT_REASON="rapid-drop"
+elif [[ "$STATUS" == "warning" ]]; then
+    if [[ "$PREVIOUS_STATUS" != "warning" ]]; then
+        SNAPSHOT_REASON="entered-low-free"
+    elif [[ $((NOW_EPOCH - LAST_SNAPSHOT)) -ge "$SNAPSHOT_COOLDOWN_SECONDS" ]]; then
+        SNAPSHOT_REASON="still-low-free"
+    fi
+fi
+if [[ -n "$SNAPSHOT_REASON" ]]; then
+    if capture_drop_snapshot; then
+        LAST_SNAPSHOT="$NOW_EPOCH"
+    fi
 fi
 # osascript's "display notification" can only ever post as com.apple.ScriptEditor2
 # (an Apple-binary entitlement Modore cannot acquire), so the one alert this
@@ -404,6 +421,8 @@ trap cleanup EXIT
     /usr/bin/printf 'dropKB\t%s\n' "$DROP_KB"
     /usr/bin/printf 'snapshotRows\t%s\n' "$SNAPSHOT_CAPTURED"
     /usr/bin/printf 'lastNotify\t%s\n' "$LAST_NOTIFY"
+    /usr/bin/printf 'lastSnapshot\t%s\n' "$LAST_SNAPSHOT"
+    /usr/bin/printf 'snapshotReason\t%s\n' "$SNAPSHOT_REASON"
     /usr/bin/printf 'message\t%s\n' "$MESSAGE"
 } > "$TMP_FILE" || exit 1
 /bin/chmod 600 "$TMP_FILE" 2>/dev/null || true
@@ -425,4 +444,5 @@ emit "status" "$STATUS"
 emit "freeKB" "$FREE_KB"
 emit "dropKB" "$DROP_KB"
 emit "snapshotRows" "$SNAPSHOT_CAPTURED"
+emit "snapshotReason" "$SNAPSHOT_REASON"
 emit "message" "$MESSAGE"
