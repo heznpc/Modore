@@ -647,6 +647,75 @@ enum RuntimeWorkspace {
 
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: destination.path)
+        pruneSupersededRuntimeBackups(in: parent, keeping: backup, against: destination)
+    }
+
+    /// Deletes runtime backups that hold nothing the current runtime does
+    /// not already have.
+    ///
+    /// The backup exists so a refresh can never destroy a file the owner
+    /// put in the runtime directory, and the two tests around that are
+    /// right. What was missing is the other half: on the success path the
+    /// backup was simply left behind, so every install since the app was
+    /// first built had added one and none had ever been removed -- 33 of
+    /// them on this machine, from an app whose subject is state that
+    /// outlived whatever made it.
+    ///
+    /// The newest backup always stays; it is the rollback for the install
+    /// that just happened. An older one is removed only when every file
+    /// in it also exists in the new runtime, which makes it a stale copy
+    /// of a previous version and nothing else. A backup holding anything
+    /// unrecognised is kept, exactly as before -- deleting it is the one
+    /// outcome this whole mechanism exists to prevent, and a tidier
+    /// directory is not worth it.
+    static func pruneSupersededRuntimeBackups(
+        in parent: URL,
+        keeping newest: URL?,
+        against runtime: URL,
+        fileManager: FileManager = .default
+    ) {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: parent, includingPropertiesForKeys: nil
+        ) else { return }
+        let current = relativeFilePaths(under: runtime, fileManager: fileManager)
+        for entry in entries {
+            let name = entry.lastPathComponent
+            // Staging directories are pure leftovers from an install that
+            // died between copy and move; they never held owner data.
+            let isStaging = name.hasPrefix("runtime-staging-")
+            guard isStaging || name.hasPrefix("runtime-backup-") else { continue }
+            if let newest, entry.standardizedFileURL == newest.standardizedFileURL { continue }
+            guard isDirectoryWithoutSymlink(at: entry) else { continue }
+            if !isStaging {
+                let held = relativeFilePaths(under: entry, fileManager: fileManager)
+                guard held.isSubset(of: current) else { continue }
+            }
+            try? fileManager.removeItem(at: entry)
+        }
+    }
+
+    /// Every regular file under `root`, by path relative to it. Symlinks
+    /// are reported by name and never followed, so a link cannot make a
+    /// directory look like it holds only known files.
+    private static func relativeFilePaths(
+        under root: URL, fileManager: FileManager
+    ) -> Set<String> {
+        guard isDirectoryWithoutSymlink(at: root),
+              let walker = fileManager.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: []
+              ) else { return [] }
+        let prefix = root.standardizedFileURL.path + "/"
+        var found: Set<String> = []
+        for case let url as URL in walker {
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values?.isSymbolicLink == true || values?.isRegularFile == true else { continue }
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(prefix) else { continue }
+            found.insert(String(path.dropFirst(prefix.count)))
+        }
+        return found
     }
 
     private static func workspacePathsAreSafe(
