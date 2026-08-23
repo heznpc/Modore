@@ -93,6 +93,59 @@ def test_subtranscripts_counted_by_size_without_opening(scree_home):
     assert group["size_bytes"] > 0
 
 
+# ---------------------------------------------------------------------------
+# 프로젝트 디렉터리 이름 해석 (Claude 버킷)
+# ---------------------------------------------------------------------------
+
+def test_bucket_name_resolves_a_non_ascii_directory(tmp_path):
+    """비ASCII 이름은 하이픈만 남지만, 실디렉터리와 대조하면 특정된다."""
+    target = tmp_path / "Projects" / "집필"
+    target.mkdir(parents=True)
+    bucket = scree._encode_claude_project_dir(str(target))
+    assert bucket.endswith("---")          # 'Projects' + '/' + 2글자 -> 하이픈 3개
+    assert scree._decode_claude_project_dir(bucket) == str(target)
+
+
+def test_a_vanished_non_ascii_directory_is_unresolved_not_its_parent(tmp_path):
+    """빈 세그먼트를 존재 검사에 넘기면 `Path(x) / ""` 가 x 라서 조상이 답으로 나온다.
+
+    조상은 살아있는 다른 워크스페이스이므로, 사라진 경로의 세션과 중첩
+    트랜스크립트가 그쪽으로 조용히 귀속된다 — 미해결로 두는 편이 옳다.
+    """
+    parent = tmp_path / "Projects"
+    parent.mkdir(parents=True)
+    bucket = scree._encode_claude_project_dir(str(parent / "집필"))
+    assert scree._decode_claude_project_dir(bucket) is None
+    assert scree._decode_claude_project_dir(bucket) != str(parent)
+
+
+def test_an_ambiguous_bucket_name_is_left_unresolved(tmp_path):
+    """같은 이름으로 인코딩되는 디렉터리가 둘이면 증거가 하나를 고르지 못한다."""
+    root = tmp_path / "Projects"
+    (root / "집필").mkdir(parents=True)
+    (root / "작업").mkdir(parents=True)
+    bucket = scree._encode_claude_project_dir(str(root / "집필"))
+    assert bucket == scree._encode_claude_project_dir(str(root / "작업"))
+    assert scree._decode_claude_project_dir(bucket) is None
+
+
+@pytest.mark.parametrize("leaf", ["chatgpt-to-cli", "my.proj", "with space", "-Users-x"])
+def test_names_that_already_contain_the_separator_round_trip(tmp_path, leaf):
+    """이름 자체에 하이픈·점·공백이 있어도 인코딩 대조는 흔들리지 않는다."""
+    target = tmp_path / "Projects" / leaf
+    target.mkdir(parents=True)
+    bucket = scree._encode_claude_project_dir(str(target))
+    resolved = scree._decode_claude_project_dir(bucket)
+    assert resolved == str(target)
+    assert scree._encode_claude_project_dir(resolved) == bucket
+
+
+def test_bucket_resolution_never_leaves_the_real_tree(tmp_path):
+    assert scree._decode_claude_project_dir("no-leading-hyphen") is None
+    assert scree._decode_claude_project_dir(
+        scree._encode_claude_project_dir(str(tmp_path / "nope" / "gone"))) is None
+
+
 def test_orphan_workspace_is_flagged(scree_home):
     home, _, ws2 = scree_home
     result = scree.build_scree(home)

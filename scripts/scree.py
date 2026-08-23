@@ -185,24 +185,99 @@ def collect_codex(home: Path) -> tuple[list[dict], dict]:
     return records, status
 
 
+# Claude derives a project directory name from the session's cwd by replacing
+# every non-alphanumeric character -- not only the separators -- with a hyphen,
+# then capping the result. '.', '_', spaces and every non-ASCII character all
+# collapse to the same '-', so the encoding is lossy and cannot be inverted by
+# string surgery.
+CLAUDE_BUCKET_CAP = 200
+_CLAUDE_BUCKET_UNSAFE = re.compile(r"[^a-zA-Z0-9]")
+# Directories examined while resolving one bucket name. A bucket that needs
+# more than this is left unresolved rather than resolved slowly.
+_CLAUDE_BUCKET_BUDGET = 4096
+
+
+def _encode_claude_project_dir(path: str) -> str:
+    """The name Claude would file a session at this cwd under."""
+    return _CLAUDE_BUCKET_UNSAFE.sub("-", path)[:CLAUDE_BUCKET_CAP]
+
+
 def _decode_claude_project_dir(name: str) -> Optional[str]:
-    """Best-effort decode of '-Users-ren-my-proj' by existence-guided segmentation."""
+    """Resolve '-Users-ren-my-proj' back to the directory it was encoded from.
+
+    Segmenting the name on hyphens and testing each candidate for existence is
+    not enough, because a path component made only of non-alphanumeric
+    characters encodes to hyphens and nothing else: a home directory and a
+    two-character subdirectory of it differ by three hyphens and nothing more.
+    And `Path(x) / ""` is `x`, so an
+    empty segment tested as a directory reports that it exists and the walk
+    stops early -- returning an *ancestor* of the real path, confidently and
+    silently, exactly where the name is hardest to read. The ancestor is
+    usually another live workspace, so every session and nested transcript
+    filed under the bucket is misattributed to it.
+
+    A component that encodes to itself -- every plain ASCII one -- is still
+    tried by name, which costs one stat() and covers the ordinary case. Only
+    when no name at a level matches is that one directory enumerated and its
+    children matched on their encoded form, the way the app resolves it. A
+    bucket that resolves to more than one directory is ambiguous by
+    construction and is left unresolved: scree reports an unresolved workspace
+    as unresolved, and that is the honest answer here.
+    """
     if not name.startswith("-"):
         return None
-    parts = name.lstrip("-").split("-")
-    current = Path("/")
-    index = 0
-    while index < len(parts):
-        segment = parts[index]
-        cursor = index + 1
-        while not (current / segment).exists() and cursor < len(parts):
-            segment = f"{segment}-{parts[cursor]}"
-            cursor += 1
-        if not (current / segment).exists():
-            return None
-        current = current / segment
-        index = cursor
-    return str(current)
+    truncated = len(name) >= CLAUDE_BUCKET_CAP
+    budget = {"nodes": 4096, "listings": 64}
+
+    def spend(kind: str) -> bool:
+        budget[kind] -= 1
+        return budget[kind] >= 0
+
+    def enumerate_matches(current: Path, rest: str) -> list[Path]:
+        if not spend("listings"):
+            return []
+        try:
+            children = sorted(c for c in current.iterdir() if c.is_dir())
+        except OSError:
+            return []
+        found: list[Path] = []
+        for child in children:
+            if not spend("nodes"):
+                return found[:2]
+            token = _encode_claude_project_dir(child.name)
+            if rest == token or (truncated and token.startswith(rest)):
+                found.append(child)
+            elif rest.startswith(f"{token}-"):
+                found.extend(resolve(child, rest[len(token) + 1:]))
+            if len(found) > 1:
+                return found[:2]
+        return found
+
+    def resolve(current: Path, rest: str) -> list[Path]:
+        if not rest:
+            return [current]
+        found: list[Path] = []
+        for cut in [i for i, ch in enumerate(rest) if ch == "-"] + [len(rest)]:
+            head = rest[:cut]
+            if not head or not spend("nodes"):
+                continue
+            child = current / head
+            if not child.is_dir():
+                continue
+            found.extend(resolve(child, rest[cut + 1:]))
+            if len(found) > 1:
+                return found[:2]
+        # Every name at this level failed, so the component here encodes to
+        # something other than itself. Widen to this directory only.
+        return found or enumerate_matches(current, rest)
+
+    matches = resolve(Path("/"), name[1:])
+    if len(matches) != 1:
+        return None
+    resolved = str(matches[0])
+    # The walk may take a symlinked route ('/var' -> '/private/var'); only a
+    # path that re-encodes to this bucket can be the one it names.
+    return resolved if _encode_claude_project_dir(resolved) == name else None
 
 
 def collect_claude(home: Path) -> tuple[list[dict], dict]:
