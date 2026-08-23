@@ -81,6 +81,10 @@ struct ScreeExpiringSession: Identifiable {
     let daysLeft: Int
     let sizeBytes: Int
     let storyAlive: Bool
+    /// The owner deleted this conversation in the desktop app; only the
+    /// transcript outlived that decision. Urging its rescue would argue with a
+    /// choice already made, so the row says what happened instead.
+    let ownerDeleted: Bool
 
     init(json: [String: Any]) {
         tool = JsonRead.string(json, "tool")
@@ -89,6 +93,7 @@ struct ScreeExpiringSession: Identifiable {
         daysLeft = JsonRead.int(json, "days_left")
         sizeBytes = JsonRead.int(json, "size_bytes")
         storyAlive = JsonRead.bool(json, "story_alive") ?? false
+        ownerDeleted = JsonRead.bool(json, "owner_deleted") ?? false
     }
 
     var workspaceLastComponent: String {

@@ -195,7 +195,9 @@ struct ScreeExpiringSection: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(session.workspaceLastComponent)
                             .font(.body.weight(.medium))
-                        Text("\(session.tool) · \(session.storyAlive ? "작업 경로 현존" : "작업 경로 소멸")")
+                        Text(session.ownerDeleted
+                             ? "\(session.tool) · 앱에서 삭제됨 · 트랜스크립트 잔존"
+                             : "\(session.tool) · \(session.storyAlive ? "작업 경로 현존" : "작업 경로 소멸")")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

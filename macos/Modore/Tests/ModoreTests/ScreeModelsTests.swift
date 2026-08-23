@@ -2,6 +2,32 @@ import XCTest
 @testable import Modore
 
 final class ScreeModelsTests: XCTestCase {
+    private func expiringJson(ownerDeleted: Any? = nil) -> [String: Any] {
+        var session: [String: Any] = [
+            "tool": "Claude",
+            "workspace": "/Users/test/Projects/proj",
+            "source": "/Users/test/.claude/projects/-p/s.jsonl",
+            "days_left": 2,
+            "size_bytes": 1024,
+            "story_alive": true,
+        ]
+        if let ownerDeleted {
+            session["owner_deleted"] = ownerDeleted
+        }
+        return session
+    }
+
+    func testExpiringSessionCarriesTheOwnerDeletedVerdict() {
+        XCTAssertTrue(ScreeExpiringSession(json: expiringJson(ownerDeleted: true)).ownerDeleted)
+        XCTAssertFalse(ScreeExpiringSession(json: expiringJson(ownerDeleted: false)).ownerDeleted)
+    }
+
+    func testAnExpiringSessionWithoutTheFlagIsNotTreatedAsDeleted() {
+        // An older scree that does not emit the key must never make the app
+        // claim the owner threw a conversation away.
+        XCTAssertFalse(ScreeExpiringSession(json: expiringJson()).ownerDeleted)
+    }
+
     private func worktreeJson(
         strayCheckout: Bool? = nil,
         path: String = "/Users/test/IdeaProjects/repo/.claude/worktrees/wt1",
