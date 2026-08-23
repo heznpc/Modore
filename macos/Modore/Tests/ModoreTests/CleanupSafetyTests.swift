@@ -728,3 +728,115 @@ final class CleanupSafetyTests: XCTestCase {
         )
     }
 }
+
+/// Modore's own residue. The app's whole subject is state that outlived
+/// whatever made it, and it had been leaving a runtime backup behind on
+/// every install since it was first built -- 33 of them on the owner's
+/// machine, none ever removed.
+final class RuntimeBackupRetentionTests: XCTestCase {
+    private func runtime(at url: URL, marker: String) throws {
+        let scripts = url.appendingPathComponent("scripts")
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try "#!/bin/bash\n# \(marker)\n".write(
+            to: scripts.appendingPathComponent("scanner.sh"), atomically: true, encoding: .utf8)
+        try marker.write(
+            to: url.appendingPathComponent("runtime-manifest.txt"),
+            atomically: true, encoding: .utf8)
+    }
+
+    private func backups(in parent: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("runtime-backup-") }
+    }
+
+    /// Repeated installs must not pile up. Each backup here is a stale
+    /// copy of the previous runtime and holds nothing else.
+    func test_staleBackupsDoNotAccumulateAcrossInstalls() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-backup-retention-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("bundle/runtime")
+        let destination = root.appendingPathComponent("support/Modore/runtime")
+
+        for version in 1...5 {
+            try runtime(at: source, marker: "v\(version)")
+            try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
+        }
+
+        let remaining = try backups(in: destination.deletingLastPathComponent())
+        XCTAssertLessThanOrEqual(remaining.count, 1,
+                                 "five installs must not leave five backups")
+    }
+
+    /// The property the backup exists for, unchanged: a file the owner put
+    /// in the runtime directory survives, and its backup is never pruned.
+    func test_aBackupHoldingUnknownFilesIsNeverPruned() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-backup-owner-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("bundle/runtime")
+        let destination = root.appendingPathComponent("support/Modore/runtime")
+
+        try runtime(at: source, marker: "v1")
+        try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
+        try "owner data\n".write(
+            to: destination.appendingPathComponent("do-not-delete.txt"),
+            atomically: true, encoding: .utf8)
+
+        // Two further installs; the backup carrying the owner's file is
+        // the older one and must still survive.
+        for version in 2...3 {
+            try runtime(at: source, marker: "v\(version)")
+            try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
+        }
+
+        let remaining = try backups(in: destination.deletingLastPathComponent())
+        let carried = remaining.filter {
+            FileManager.default.fileExists(
+                atPath: $0.appendingPathComponent("do-not-delete.txt").path)
+        }
+        XCTAssertEqual(carried.count, 1, "the owner's file must not be deleted to tidy up")
+        XCTAssertEqual(
+            try String(contentsOf: carried[0].appendingPathComponent("do-not-delete.txt")),
+            "owner data\n")
+    }
+
+    /// A staging directory is a leftover from an install that died between
+    /// copy and move. It never held owner data.
+    func test_abandonedStagingDirectoriesArePruned() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-backup-staging-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("support/Modore")
+        let destination = parent.appendingPathComponent("runtime")
+        try runtime(at: destination, marker: "v1")
+        let stranded = parent.appendingPathComponent("runtime-staging-\(UUID().uuidString)")
+        try runtime(at: stranded, marker: "abandoned")
+
+        RuntimeWorkspace.pruneSupersededRuntimeBackups(
+            in: parent, keeping: nil, against: destination)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stranded.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    /// Nothing outside the two known prefixes is ever touched.
+    func test_pruningIgnoresEverythingItDidNotCreate() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-backup-scope-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("support/Modore")
+        let destination = parent.appendingPathComponent("runtime")
+        try runtime(at: destination, marker: "v1")
+        let receipts = parent.appendingPathComponent("cleanup-receipts")
+        try FileManager.default.createDirectory(at: receipts, withIntermediateDirectories: true)
+        try "version\t1\n".write(
+            to: receipts.appendingPathComponent("a.tsv"), atomically: true, encoding: .utf8)
+
+        RuntimeWorkspace.pruneSupersededRuntimeBackups(
+            in: parent, keeping: nil, against: destination)
+
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: receipts.appendingPathComponent("a.tsv").path))
+    }
+}
