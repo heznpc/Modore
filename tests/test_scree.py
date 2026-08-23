@@ -1162,7 +1162,8 @@ def test_content_reading_commands_are_all_declared_in_the_module_contract():
     사람의 기억에 맡기지 않도록, 세 명령이 모듈 docstring에 이름으로 남아
     있는지 고정한다."""
     doc = scree.__doc__ or ""
-    for command in ("preserve", "title", "titles", "bind", "inspect", "search"):
+    for command in ("preserve", "title", "titles", "bind", "inspect",
+                    "search", "evidence"):
         assert command in doc, f"{command}가 no-content 계약 설명에 없다"
     assert "never" in doc and "names" in doc
 
@@ -1949,3 +1950,121 @@ def test_search_accepts_the_query_from_a_file_so_it_is_not_in_argv(tmp_path, cap
 
 def test_search_without_a_query_is_an_error_not_an_empty_scan(tmp_path, capsys):
     assert scree.main(["search", "--home", str(tmp_path)]) == 2
+
+
+# --- evidence: 네 종류를 절대 합치지 않는다 ---------------------------------
+
+
+def _evidence_home(tmp_path):
+    """실행 기록이 있는 Claude 세션 하나와 Codex 세션 하나."""
+    claude = tmp_path / ".claude" / "projects" / "-Users-example-repo" / "a.jsonl"
+    claude.parent.mkdir(parents=True)
+    _write(claude, _jsonl(
+        {"cwd": "/w"},
+        {"timestamp": "2026-08-14T00:00:00Z",
+         "message": {"role": "user", "content": [
+             {"type": "text", "text": "npm cache clean 하는 게 좋을까?"}]}},
+        {"timestamp": "2026-08-14T00:01:00Z",
+         "message": {"role": "assistant", "content": [
+             {"type": "tool_use", "name": "Bash",
+              "input": {"command": "npm cache clean --force"}}]}},
+    ))
+    codex = tmp_path / ".codex" / "sessions" / "2026" / "08" / "14" / "rollout-x.jsonl"
+    codex.parent.mkdir(parents=True)
+    _write(codex, _jsonl(
+        {"timestamp": "2026-08-14T00:02:00Z", "type": "session_meta",
+         "payload": {"id": "codex-x", "cwd": "/w"}},
+        {"timestamp": "2026-08-14T00:03:00Z", "type": "response_item",
+         "payload": {"type": "function_call", "name": "exec_command",
+                     "arguments": json.dumps({"cmd": "npm cache clean --force",
+                                              "workdir": "/w"})}},
+    ))
+    return tmp_path
+
+
+def test_evidence_keeps_a_mention_and_an_execution_apart(tmp_path):
+    """'npm cache clean 하는 게 좋을까?'와 실제로 그 명령을 실행한 것은
+    다른 주장이다. 합치면 '81번 등장'이 '81번 실행'이 된다."""
+    out = scree.build_evidence("npm cache clean", _evidence_home(tmp_path))
+    mentions = out["conversationMentions"]
+    executions = out["providerToolExecutions"]
+    assert len(mentions) == 1 and "좋을까" in mentions[0]["snippet"]
+    assert all(m["kind"] == "conversation_mention" for m in mentions)
+    assert len(executions) == 2, "Claude tool_use와 Codex exec_command 둘 다"
+    assert all(e["kind"] == "provider_tool_execution" for e in executions)
+    assert all("npm cache clean --force" in e["command"] for e in executions)
+
+
+def test_evidence_never_returns_a_merged_total(tmp_path):
+    """네 종류는 네 리스트로 남는다. 합계 필드를 두는 순간 강도가 사라진다."""
+    out = scree.build_evidence("npm cache clean", _evidence_home(tmp_path))
+    for key in ("conversationMentions", "providerToolExecutions",
+                "modoreCleanupReceipts", "filesystemObservations"):
+        assert isinstance(out[key], list)
+    assert "totalEvidence" not in out and "evidenceCount" not in out
+
+
+def test_evidence_reports_the_command_that_ran_not_the_phrase(tmp_path):
+    """`rg -e 'npm cache clean'`은 그 문구를 검색한 것이지 실행한 것이
+    아니다. 텍스트만으로는 구분할 수 없으므로, 실제로 돌아간 명령 전체를
+    보여주고 판단은 읽는 사람에게 남긴다."""
+    home = tmp_path
+    src = home / ".claude" / "projects" / "-Users-example-repo" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    _write(src, _jsonl(
+        {"cwd": "/w"},
+        {"message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash",
+             "input": {"command": "rg -e 'npm cache clean' ~/.claude"}}]}},
+    ))
+    executions = scree.build_evidence("npm cache clean", home)["providerToolExecutions"]
+    assert len(executions) == 1
+    assert executions[0]["command"].startswith("rg -e")
+
+
+def test_evidence_reads_modore_receipts_as_their_own_kind(tmp_path):
+    support = tmp_path / "Library" / "Application Support" / "Modore" / "cleanup-receipts"
+    support.mkdir(parents=True)
+    (support / "20260814T000000Z-npm_cache-1.tsv").write_text(
+        "version\t1\ntimestamp\t2026-08-14T00:00:00Z\nstatus\tcomplete\n"
+        "recipeId\tnpm_cache\nlabel\tnpm 캐시\nestimatedKB\t3400000\n",
+        encoding="utf-8")
+    receipts = scree.read_cleanup_receipts(tmp_path)
+    assert len(receipts) == 1
+    assert receipts[0]["kind"] == "modore_cleanup_receipt"
+    assert receipts[0]["recipeId"] == "npm_cache"
+    assert receipts[0]["estimatedKB"] == 3_400_000
+
+
+def test_evidence_reads_free_space_observations_without_joining_them(tmp_path):
+    """삭제 뒤에 공간이 생긴 것은 순서지 증명이 아니다. 숫자와 시각만
+    내고 그 사이에 화살표를 그리지 않는다."""
+    support = tmp_path / "Library" / "Application Support" / "Modore"
+    support.mkdir(parents=True)
+    (support / "storage-samples.tsv").write_text(
+        "2026-08-13T11:25:25Z\t11035252\t9861124\twarning\n"
+        "2026-08-14T00:05:00Z\t24035252\t0\tnormal\n", encoding="utf-8")
+    observations = scree.read_storage_observations(tmp_path)
+    assert [o["kind"] for o in observations] == ["filesystem_observation"] * 2
+    assert observations[1]["freeKB"] == 24_035_252
+    # 관찰에는 어떤 원인 필드도 없다.
+    assert not any("cause" in o or "because" in o for o in observations)
+
+
+def test_evidence_withholds_conclusions_when_it_could_not_read_everything(tmp_path):
+    home = _evidence_home(tmp_path)
+    blocked = home / ".claude" / "projects" / "-Users-example-repo" / "b.jsonl"
+    _write(blocked, _jsonl({"cwd": "/w"}))
+    blocked.chmod(0o000)
+    try:
+        out = scree.build_evidence("npm cache clean", home)
+    finally:
+        blocked.chmod(0o600)
+    assert out["definitive"] is False
+
+
+def test_evidence_cli_emits_json(tmp_path, capsys):
+    assert scree.main(["evidence", "npm cache clean",
+                       "--home", str(_evidence_home(tmp_path))]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["providerToolExecutions"]

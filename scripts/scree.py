@@ -44,6 +44,12 @@ default:
   finding which session matters is the question -- so it is scoped by the
   query instead: it runs only on an explicit search, retains nothing, and
   no verdict reads it.
+- `scree.py evidence <query>` answers "how was this handled before" from
+  four separate sources -- what was said, what an agent actually ran,
+  what Modore itself deleted, and how free space then moved. They are
+  returned in four lists and never summed: a mention is not an
+  execution, and no arrow is drawn between a deletion and the space that
+  appeared after it.
 - `scree.py bind <workspace> --deep` reads transcript bodies to find
   file-access evidence, and emits only whether such evidence exists.
 - `scree.py inspect <source>` returns one session's conversation for
@@ -2142,38 +2148,48 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     }
 
 
-def _search_probes(needle: str) -> tuple[str, ...]:
-    """Cheap strings to look for in a raw line before parsing it.
+def _search_probes(needle: str) -> tuple[tuple[str, ...], ...]:
+    """Per-word alternatives a file must contain before it is worth decoding.
 
-    Two things make a naive `needle in line` wrong. Runs of whitespace:
-    the query is normalised but the transcript is not, so "Xcode
-    DerivedData" must still match "Xcode   DerivedData" -- answered by
-    probing on the longest single word and confirming against the
-    normalised turn afterwards. And JSON escaping: a store written with
-    `ensure_ascii` holds Korean as `\uc6a9\ub7c9`, where the literal
-    phrase never appears, which would make this search silently useless
-    for most of what is on this machine.
+    One group per word in the phrase, and every group has to appear
+    somewhere in the file. If the phrase is present then each of its
+    words is, so requiring all of them cannot lose a match -- and it is
+    far more selective than probing on a single word. Probing on the
+    longest word alone picked "cache" out of "npm cache clean", which
+    occurs in nearly every transcript, so nearly every session got fully
+    decoded: 63s against 22s for the same corpus.
+
+    Each group also carries the JSON-escaped spelling. A store written
+    with `ensure_ascii` holds Korean as `\uc6a9\ub7c9`, where the literal
+    word never appears -- without this the search is silently useless for
+    most of what is on this machine.
     """
-    word = max(needle.split(), key=len, default=needle)
-    escaped = json.dumps(word, ensure_ascii=True)[1:-1].casefold()
-    return (word, escaped) if escaped != word else (word,)
+    groups: list[tuple[str, ...]] = []
+    for word in needle.split() or [needle]:
+        escaped = json.dumps(word, ensure_ascii=True)[1:-1].casefold()
+        groups.append((word, escaped) if escaped != word else (word,))
+    return tuple(groups)
 
 
-def _file_might_contain(source: Path, probes: tuple[str, ...]) -> tuple[bool, bool]:
+def _file_might_contain(source: Path,
+                        probes: tuple[tuple[str, ...], ...]) -> tuple[bool, bool]:
     """`(worth_parsing, readable)` from a raw byte scan of the file.
 
-    The cheap half of the search. Most sessions cannot match anything,
-    and decoding several gigabytes of transcript only to discard it is
-    the difference between a search that answers and one nobody waits
-    for. Files that do look promising are then read properly, through the
-    same canonical turn pipeline the viewer uses -- so speed here never
-    costs the search a different idea of what a conversation is.
+    The cheap half of the search: a necessary condition, checked without
+    decoding anything. Stops as soon as every word has been seen, so a
+    file that matches early costs almost nothing.
     """
+    if not probes:
+        return (False, True)
+    outstanding = set(range(len(probes)))
     try:
         with source.open("r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 folded = line.casefold()
-                if any(probe in folded for probe in probes):
+                for position in tuple(outstanding):
+                    if any(probe in folded for probe in probes[position]):
+                        outstanding.discard(position)
+                if not outstanding:
                     return (True, True)
     except OSError:
         return (False, False)
@@ -2237,6 +2253,289 @@ def _search_hit(position: int, role: str, text: str, needle: str, *,
         "role": role,
         "isUser": _is_user_role(role),
         "snippet": snippet if raw else mask_text(snippet, home),
+    }
+
+
+# The only record types that can carry a command. Checked as raw
+# substrings before anything is decoded.
+EXECUTION_MARKERS = ('"tool_use"', '"function_call"', '"local_shell_call"')
+
+# Evidence costs about twice a search, and the reason is structural
+# rather than fixable: a search stops reading a file the moment it has
+# seen every word, while an execution can be on any line, so a file that
+# matches must be read to the end. Measured on this machine's 6.0 GB of
+# transcripts: 33s to search, 59s to gather evidence. The budget is set
+# above that so the common case reports complete coverage instead of
+# truncating just short of the finish.
+EVIDENCE_DEFAULT_BUDGET_SECONDS = 180.0
+
+EVIDENCE_KINDS = (
+    "conversation_mention",
+    "provider_tool_execution",
+    "modore_cleanup_receipt",
+    "filesystem_observation",
+)
+
+
+def _extract_execution(line: str, needle: str, *, raw: bool,
+                       home: Path) -> Optional[dict]:
+    """A command an agent actually ran, if this record is one.
+
+    Two provider shapes, both read off real transcripts on this machine:
+    Claude writes `tool_use` with `name: "Bash"` and the command in
+    `input.command`; Codex writes `function_call` with
+    `name: "exec_command"` and the command in a JSON `arguments` blob.
+
+    Returning `None` for anything else is the point. A record that merely
+    *mentions* a command is a different kind of evidence, handled
+    elsewhere, and quietly folding the two together is how "appeared 81
+    times" turns into "ran 81 times".
+    """
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict):
+        return None
+
+    commands: list[str] = []
+    message = record.get("message")
+    if isinstance(message, dict):
+        for part in message.get("content") or []:
+            if not isinstance(part, dict) or part.get("type") != "tool_use":
+                continue
+            if str(part.get("name", "")).lower() not in ("bash", "shell"):
+                continue
+            command = (part.get("input") or {}).get("command")
+            if isinstance(command, str):
+                commands.append(command)
+
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else record
+    if isinstance(payload, dict) and payload.get("type") in (
+        "function_call", "local_shell_call"
+    ):
+        arguments = payload.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = None
+        if isinstance(arguments, dict):
+            command = arguments.get("cmd") or arguments.get("command")
+            if isinstance(command, list):
+                command = " ".join(str(part) for part in command)
+            if isinstance(command, str):
+                commands.append(command)
+
+    for command in commands:
+        flat = " ".join(command.split())
+        if needle not in flat.casefold():
+            continue
+        return {
+            "kind": "provider_tool_execution",
+            # The whole command, deliberately. This is evidence that a
+            # command *containing* the phrase ran -- not that the phrase
+            # ran. `rg -e 'npm cache clean'` searches for it; the two are
+            # indistinguishable from the text alone, so the reader is
+            # shown what actually ran and left to judge, rather than
+            # being told "npm cache clean was executed".
+            "command": flat if raw else mask_text(flat, home),
+            "at": str(record.get("timestamp") or ""),
+        }
+    return None
+
+
+def _session_evidence(source: Path, needle: str, *,
+                      raw: bool) -> tuple[list[dict], list[dict], bool]:
+    """`(mentions, executions, readable)` for one session, in one read.
+
+    One pass, not two. Executions have to be looked for on every line, so
+    there is no cheap early exit to be had for them -- but re-reading the
+    file afterwards to find the mentions doubled the wall clock on this
+    machine's corpus. The word test and the execution extraction share
+    the single walk, and the decode into turns happens only if the walk
+    saw every word.
+    """
+    home = Path.home()
+    probes = _search_probes(needle)
+    if not probes:
+        return ([], [], True)
+    outstanding = set(range(len(probes)))
+    executions: list[dict] = []
+    try:
+        with source.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                folded = line.casefold()
+                if outstanding:
+                    for position in tuple(outstanding):
+                        if any(probe in folded for probe in probes[position]):
+                            outstanding.discard(position)
+                if len(executions) >= SEARCH_MATCHES_PER_SESSION:
+                    if not outstanding:
+                        break
+                    continue
+                # Cheapest possible test first. Only a handful of lines in
+                # a transcript are tool calls at all, and running the
+                # phrase check on every line of six gigabytes was the
+                # whole cost -- 59s against 33s for the same walk.
+                if not any(marker in folded for marker in EXECUTION_MARKERS):
+                    continue
+                # An execution has to carry the whole phrase on its own
+                # line; the file-level test above is a different question.
+                if not all(any(probe in folded for probe in group)
+                           for group in probes):
+                    continue
+                found = _extract_execution(line, needle, raw=raw, home=home)
+                if found:
+                    executions.append(found)
+    except OSError:
+        return ([], [], False)
+
+    if outstanding:
+        return ([], [], True)
+
+    turns, status = visible_turns(source)
+    if status != "ok":
+        return ([], executions, False)
+    mentions: list[dict] = []
+    for position, (role, text) in enumerate(turns):
+        if needle not in " ".join(text.split()).casefold():
+            continue
+        mentions.append(_search_hit(position, role, text, needle,
+                                    raw=raw, home=home))
+        if len(mentions) >= SEARCH_MATCHES_PER_SESSION:
+            break
+    return (mentions, executions, True)
+
+
+def read_cleanup_receipts(home: Path, *, limit: int = 50) -> list[dict]:
+    """What Modore itself deleted, from its own receipts.
+
+    The strongest evidence available, because it is not a report of an
+    action -- it is the record the action wrote as it happened. Kept
+    apart from everything else for exactly that reason.
+    """
+    directory = (home / "Library" / "Application Support" / "Modore"
+                 / "cleanup-receipts")
+    if not directory.is_dir():
+        return []
+    receipts: list[dict] = []
+    for path in sorted(directory.glob("*.tsv"), reverse=True)[:limit]:
+        fields: dict[str, str] = {}
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                key, _, value = line.partition("\t")
+                if key and key not in fields:
+                    fields[key] = value
+        except OSError:
+            continue
+        if not fields.get("timestamp"):
+            continue
+        receipts.append({
+            "kind": "modore_cleanup_receipt",
+            "at": fields.get("timestamp", ""),
+            "recipeId": fields.get("recipeId", ""),
+            "label": fields.get("label", ""),
+            "status": fields.get("status", ""),
+            "estimatedKB": int(fields["estimatedKB"])
+                           if fields.get("estimatedKB", "").isdigit() else None,
+        })
+    return receipts
+
+
+def read_storage_observations(home: Path, *, limit: int = 60) -> list[dict]:
+    """Free space as it was actually measured, over time.
+
+    Never matched against the query, and never joined to anything above.
+    A cache deleted at 14:02 and space appearing at 14:03 is a sequence,
+    not a proof, and this file is the only honest thing to show for it --
+    the numbers, with their times, and no arrow drawn between them.
+    """
+    samples = (home / "Library" / "Application Support" / "Modore"
+               / "storage-samples.tsv")
+    if not samples.is_file():
+        return []
+    out: list[dict] = []
+    try:
+        lines = samples.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    for line in lines[-limit:]:
+        parts = line.split("\t")
+        if len(parts) < 4 or not parts[1].isdigit():
+            continue
+        out.append({
+            "kind": "filesystem_observation",
+            "at": parts[0],
+            "freeKB": int(parts[1]),
+            "dropKB": int(parts[2]) if parts[2].isdigit() else 0,
+            "status": parts[3],
+        })
+    return out
+
+
+def build_evidence(query: str, home: Path, *, raw: bool = False,
+                   limit: int = SEARCH_DEFAULT_LIMIT,
+                   budget_seconds: float = EVIDENCE_DEFAULT_BUDGET_SECONDS) -> dict:
+    """How this machine answered a question like this before.
+
+    Four kinds of evidence, kept in four lists and never summed. Somebody
+    saying "npm cache clean" is not the same claim as an agent running
+    it, which is not the same as Modore deleting something, which is not
+    the same as free space changing afterwards. Every one of those is
+    worth showing and they are worth different amounts, so the caller
+    gets them labelled rather than merged into a count that means
+    nothing.
+
+    Mentions and executions answer the query. Receipts and observations
+    are the machine's own record and are not searched -- they are the
+    timeline the query's answers sit in.
+    """
+    needle = " ".join(query.split()).casefold()
+    sessions = build_sessions(home, limit=0)["sessions"] if needle else []
+    started = time.monotonic()
+    mentions: list[dict] = []
+    executions: list[dict] = []
+    scanned = unreadable = 0
+    truncated_reason: Optional[str] = None
+
+    for session in sessions:
+        if len(mentions) + len(executions) >= limit > 0:
+            truncated_reason = "limit"
+            break
+        if time.monotonic() - started > budget_seconds:
+            truncated_reason = "time"
+            break
+        found_mentions, found_executions, ok = _session_evidence(
+            Path(session["source"]), needle, raw=raw)
+        scanned += 1
+        if not ok:
+            unreadable += 1
+            continue
+        context = {"tool": session["tool"], "source": session["source"],
+                   "workspace": session["workspace"],
+                   "lastActive": session["lastActive"]}
+        mentions.extend({**hit, "kind": "conversation_mention", **context}
+                        for hit in found_mentions)
+        executions.extend({**hit, **context} for hit in found_executions)
+
+    swept = truncated_reason is None and scanned == len(sessions)
+    return {
+        "query": query,
+        "conversationMentions": sorted(
+            mentions, key=lambda m: m["lastActive"], reverse=True),
+        "providerToolExecutions": sorted(
+            executions, key=lambda m: m["lastActive"], reverse=True),
+        "modoreCleanupReceipts": read_cleanup_receipts(home),
+        "filesystemObservations": read_storage_observations(home),
+        "scannedSessions": scanned,
+        "totalSessions": len(sessions),
+        "unreadableSessions": unreadable,
+        "coverage": "complete" if swept else "truncated",
+        "truncatedReason": truncated_reason,
+        # Whether the absence of executions may be stated as a fact.
+        "definitive": swept and unreadable == 0,
+        "masked": not raw,
     }
 
 
@@ -2347,6 +2646,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="disable masking (explicit opt-out, off by default)")
     search.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    evidence = sub.add_parser(
+        "evidence",
+        help="how this machine handled a question like this before (four kinds, never merged)")
+    evidence.add_argument("query", nargs="?", default=None, help="phrase to look for")
+    evidence.add_argument("--query-file", type=Path, default=None,
+                          help="read the phrase from this file instead of the command line")
+    evidence.add_argument("--limit", type=int, default=SEARCH_DEFAULT_LIMIT,
+                          help="maximum mentions plus executions to return")
+    evidence.add_argument("--budget-seconds", type=float,
+                          default=EVIDENCE_DEFAULT_BUDGET_SECONDS,
+                          help="stop after this long and report truncated coverage")
+    evidence.add_argument("--raw", action="store_true",
+                          help="disable masking (explicit opt-out, off by default)")
+    evidence.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     titles_many = sub.add_parser(
         "titles", help="titles for MANY named sessions in one pass (display only)")
     titles_many.add_argument("--sources", type=Path, default=None,
@@ -2431,17 +2745,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    if args.command == "search":
+    if args.command in ("search", "evidence"):
         query = args.query
         if args.query_file is not None:
             try:
                 query = args.query_file.read_text(encoding="utf-8")
             except OSError as exc:
-                print(f"search: {exc}", file=sys.stderr)
+                print(f"{args.command}: {exc}", file=sys.stderr)
                 return 1
         if query is None:
-            print("search: a query is required", file=sys.stderr)
+            print(f"{args.command}: a query is required", file=sys.stderr)
             return 2
+        if args.command == "evidence":
+            print(json.dumps(
+                build_evidence(query, args.home, raw=args.raw, limit=args.limit,
+                               budget_seconds=args.budget_seconds),
+                ensure_ascii=False, indent=2))
+            return 0
         # Straight to stdout. A result is a few hundred short snippets,
         # nowhere near the size that made `bind-all` write a file, and a
         # command whose contract is that it keeps nothing should not
