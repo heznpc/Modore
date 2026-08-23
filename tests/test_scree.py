@@ -1814,10 +1814,12 @@ def test_search_reports_coverage_rather_than_implying_it_looked_everywhere(tmp_p
     assert complete["coverage"] == "complete"
     assert complete["truncatedReason"] is None
     assert complete["scannedSessions"] == complete["totalSessions"]
+    assert complete["definitive"] is True
 
     capped = scree.build_search("찾는말", tmp_path, limit=2)
     assert capped["coverage"] == "truncated"
     assert capped["truncatedReason"] == "limit"
+    assert capped["definitive"] is False
 
     timed = scree.build_search("찾는말", tmp_path, budget_seconds=-1)
     assert timed["coverage"] == "truncated"
@@ -1833,7 +1835,11 @@ def test_search_counts_sessions_it_could_not_read(tmp_path):
     finally:
         blocked.chmod(0o600)
     assert out["unreadableSessions"] == 1
-    assert out["coverage"] == "complete"  # 훑기는 끝났고, 못 읽은 것은 따로 센다
+    # 훑기 자체는 끝났다.
+    assert out["coverage"] == "complete"
+    # 그러나 못 읽은 세션이 있으면 "그런 대화 없음"이라고 단정할 수 없다.
+    # 이것이 unknown이 none으로 오염되는 정확한 지점이다.
+    assert out["definitive"] is False
 
 
 def test_search_masks_by_default(tmp_path):
@@ -1900,3 +1906,46 @@ def test_search_cli_emits_json(tmp_path, capsys):
     assert scree.main(["search", "찾는말", "--home", str(tmp_path)]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["matches"] and payload["coverage"] == "complete"
+
+
+def test_search_hits_come_from_the_same_conversation_the_viewer_shows(tmp_path):
+    """viewer와 search가 '대화란 무엇인가'를 다르게 정의하면 안 된다.
+    Codex는 한 응답을 두 줄로 기록하고, developer/system은 하네스가
+    에이전트에게 하는 말이지 대화가 아니다."""
+    src = (tmp_path / ".claude" / "projects" / "-Users-example-repo" / "s.jsonl")
+    src.parent.mkdir(parents=True)
+    _write(src, _jsonl(
+        {"cwd": "/w"},
+        {"message": {"role": "developer", "content": [
+            {"type": "text", "text": "하네스 지시: 찾는말 을 절대 언급하지 말 것"}]}},
+        {"message": {"role": "assistant", "content": [
+            {"type": "text", "text": "찾는말 처리했습니다"}]}},
+        {"message": {"role": "assistant", "content": [
+            {"type": "text", "text": "찾는말 처리했습니다"}]}},
+    ))
+    out = scree.build_search("찾는말", tmp_path)
+    assert len(out["matches"]) == 1, "중복 응답과 하네스 발화는 히트가 아니다"
+    assert out["matches"][0]["role"] == "assistant"
+
+
+def test_search_labels_its_own_evidence_kind(tmp_path):
+    """대화에 나왔다는 것과 실제로 실행됐다는 것은 다른 주장이다. 둘을
+    합치면 '81번 등장'이 '81번 실행'이 된다."""
+    _stored_session(tmp_path, "a", ("user", "npm cache clean 하자"))
+    assert scree.build_search("npm cache clean", tmp_path)["evidenceKind"] == "conversation_mention"
+
+
+def test_search_accepts_the_query_from_a_file_so_it_is_not_in_argv(tmp_path, capsys):
+    """어떤 로컬 프로세스도 남의 argv를 읽을 수 있다. 검색어는 이 도구가
+    다루는 것 중 가장 사적인 값이고, '아무것도 남기지 않는다'고 선언한
+    명령이 질문 자체를 방송하면 안 된다."""
+    _stored_session(tmp_path, "a", ("user", "찾는말"))
+    query_file = tmp_path / "q.txt"
+    query_file.write_text("찾는말", encoding="utf-8")
+    assert scree.main(["search", "--query-file", str(query_file),
+                       "--home", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["matches"]
+
+
+def test_search_without_a_query_is_an_error_not_an_empty_scan(tmp_path, capsys):
+    assert scree.main(["search", "--home", str(tmp_path)]) == 2

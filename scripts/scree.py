@@ -1791,6 +1791,40 @@ def _read_session_turns(source: Path) -> tuple[list[tuple[str, str]], str]:
     return (turns, "ok")
 
 
+def visible_turns(source: Path) -> tuple[list[tuple[str, str]], str]:
+    """`(turns, status)` for one session, as a person would read it.
+
+    The single definition of what counts as the conversation. It lived
+    inside `inspect` and nothing else could reach it, so every other
+    reader answered a slightly different question about the same file --
+    `search` could return the same Codex reply twice or surface harness
+    instructions as a hit, and `title` could name a session after
+    something the harness said rather than anything a person did.
+
+    Two provider facts, both measured rather than assumed:
+
+    Codex records one reply twice, as `response_item/message` and again
+    as `event_msg/agent_message`, so a straight read doubles every agent
+    turn -- 16 of 41 turns on a live rollout. Collapsing *consecutive*
+    identical turns is provider-agnostic and cannot merge two things a
+    person genuinely said twice, because a reply always separates those.
+
+    `developer` and `system` turns are the harness talking to the agent,
+    not the conversation. They are the longest thing in a Codex rollout,
+    and treating them as content pushes the actual exchange off screen.
+    """
+    turns, status = _read_session_turns(source)
+    if status != "ok":
+        return ([], status)
+    deduped: list[tuple[str, str]] = []
+    for turn in turns:
+        if deduped and deduped[-1] == turn:
+            continue
+        deduped.append(turn)
+    return ([(role, text) for role, text in deduped
+             if role.lower() not in ("developer", "system")], "ok")
+
+
 def _turns_from_session(source: Path) -> list[tuple[str, str]]:
     """Turns only, for callers that already treat absence as absence.
 
@@ -1798,7 +1832,7 @@ def _turns_from_session(source: Path) -> list[tuple[str, str]]:
     which is honest on its own terms. `inspect` needs the status and uses
     `_read_session_turns` directly.
     """
-    return _read_session_turns(source)[0]
+    return visible_turns(source)[0]
 
 
 def _is_user_role(role: str) -> bool:
@@ -1944,7 +1978,7 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
     its own explicit act.
     """
     provider = _session_provider(source, home)
-    turns, status = _read_session_turns(source)
+    turns, status = visible_turns(source)
 
     def clip(text: str) -> str:
         cleaned = " ".join(text.split())
@@ -1953,24 +1987,6 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
         if len(cleaned) > INSPECT_TURN_CHARS:
             cleaned = cleaned[: INSPECT_TURN_CHARS - 1].rstrip() + "\u2026"
         return cleaned
-
-    # Codex records one reply twice -- as `response_item/message` and
-    # again as `event_msg/agent_message` -- so a straight read shows
-    # every agent turn doubled. Measured on a live rollout: 16 of 41
-    # turns were a repeat of the line before. Collapsing consecutive
-    # identical turns is provider-agnostic and cannot merge two things a
-    # person actually said twice in a row into one, because those are
-    # separated by a reply.
-    deduped: list[tuple[str, str]] = []
-    for turn in turns:
-        if deduped and deduped[-1] == turn:
-            continue
-        deduped.append(turn)
-    # `developer` and `system` turns are the harness talking to the
-    # agent, not the conversation. They are the longest thing in a Codex
-    # rollout and push the actual exchange off the screen.
-    turns = [(role, text) for role, text in deduped
-             if role.lower() not in ("developer", "system")]
 
     first_user = next((clip(text) for role, text in turns
                        if _is_user_role(role) and text.strip()), None)
@@ -2065,8 +2081,10 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     needle = " ".join(query.split()).casefold()
     if not needle:
         return {"query": query, "matches": [], "scannedSessions": 0,
-                "unreadableSessions": 0, "coverage": "complete",
-                "truncatedReason": None, "masked": not raw}
+                "totalSessions": 0, "unreadableSessions": 0,
+                "coverage": "complete", "truncatedReason": None,
+                "definitive": False, "evidenceKind": "conversation_mention",
+                "masked": not raw}
 
     sessions = build_sessions(home, limit=0)["sessions"]
     started = time.monotonic()
@@ -2093,6 +2111,7 @@ def build_search(query: str, home: Path, *, raw: bool = False,
                             "workspace": session["workspace"],
                             "lastActive": session["lastActive"]})
 
+    swept = truncated_reason is None and scanned == len(sessions)
     return {
         "query": query,
         # Newest first: the recent time you solved this is the one worth
@@ -2101,9 +2120,24 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         "scannedSessions": scanned,
         "totalSessions": len(sessions),
         "unreadableSessions": unreadable,
-        "coverage": "complete" if truncated_reason is None and scanned == len(sessions)
-                    else "truncated",
+        # Did the sweep reach every session it knew about.
+        "coverage": "complete" if swept else "truncated",
         "truncatedReason": truncated_reason,
+        # Whether "no match" may be stated as a fact.
+        #
+        # Decided here rather than by each caller, because this is the
+        # exact place `unknown` turns into `none` if anybody gets it
+        # wrong: a sweep that visited every session but could not open 59
+        # of them is a finished sweep and is not grounds for telling
+        # someone the phrase never appears. The two failures are separate
+        # -- stopping early, and being unable to read -- and either one
+        # is enough to withhold the conclusion.
+        "definitive": swept and unreadable == 0,
+        # What kind of evidence a hit is. A phrase in a conversation is a
+        # mention -- somebody said it. That it was ever run is a
+        # different claim needing a different source, and collapsing the
+        # two is how "81 occurrences" becomes "ran 81 times".
+        "evidenceKind": "conversation_mention",
         "masked": not raw,
     }
 
@@ -2125,55 +2159,56 @@ def _search_probes(needle: str) -> tuple[str, ...]:
     return (word, escaped) if escaped != word else (word,)
 
 
+def _file_might_contain(source: Path, probes: tuple[str, ...]) -> tuple[bool, bool]:
+    """`(worth_parsing, readable)` from a raw byte scan of the file.
+
+    The cheap half of the search. Most sessions cannot match anything,
+    and decoding several gigabytes of transcript only to discard it is
+    the difference between a search that answers and one nobody waits
+    for. Files that do look promising are then read properly, through the
+    same canonical turn pipeline the viewer uses -- so speed here never
+    costs the search a different idea of what a conversation is.
+    """
+    try:
+        with source.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                folded = line.casefold()
+                if any(probe in folded for probe in probes):
+                    return (True, True)
+    except OSError:
+        return (False, False)
+    return (False, True)
+
+
 def _search_one_session(source: Path, needle: str, *,
                         raw: bool) -> tuple[list[dict], bool]:
     """Matching turns in one transcript, and whether it could be read.
 
-    The cheap substring test runs before any JSON parse. Most lines in
-    most sessions cannot match, and parsing several gigabytes only to
-    discard it is the difference between a search that answers and one
-    nobody waits for.
+    Reads through `visible_turns`, so a hit is something a person could
+    have seen in the viewer: Codex's doubled replies are collapsed and
+    the harness's own instructions are not searchable content.
     """
     home = Path.home()
     probes = _search_probes(needle)
-    hits: list[dict] = []
+    worth_parsing, readable = _file_might_contain(source, probes)
+    if not readable:
+        return ([], False)
+    if not worth_parsing:
+        return ([], True)
 
-    def consider(position: int, role: str, text: str) -> bool:
+    turns, status = visible_turns(source)
+    if status != "ok":
+        return ([], False)
+
+    hits: list[dict] = []
+    for position, (role, text) in enumerate(turns):
         # Confirm against the normalised turn, not the raw bytes: the
         # query had its whitespace collapsed and the transcript did not.
         if needle not in " ".join(text.split()).casefold():
-            return False
+            continue
         hits.append(_search_hit(position, role, text, needle, raw=raw, home=home))
-        return len(hits) >= SEARCH_MATCHES_PER_SESSION
-
-    try:
-        if source.suffix == ".json":
-            turns, status = _read_session_turns(source)
-            if status != "ok":
-                return ([], False)
-            for position, (role, text) in enumerate(turns):
-                if consider(position, role, text):
-                    break
-            return (hits, True)
-
-        with source.open("r", encoding="utf-8", errors="replace") as handle:
-            for position, line in enumerate(handle):
-                folded = line.casefold()
-                if not any(probe in folded for probe in probes):
-                    continue
-                try:
-                    parsed = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(parsed, dict):
-                    continue
-                turn = _extract_turn(parsed)
-                if not turn:
-                    continue
-                if consider(position, turn[0], turn[1]):
-                    break
-    except OSError:
-        return ([], False)
+        if len(hits) >= SEARCH_MATCHES_PER_SESSION:
+            break
     return (hits, True)
 
 
@@ -2296,7 +2331,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     search = sub.add_parser(
         "search", help="find a phrase across all sessions (masked; explicit content read)")
-    search.add_argument("query", help="phrase to look for")
+    # The phrase can come from a file instead of the command line. Every
+    # argv on the machine is readable by any local process, and a search
+    # query is the most personal thing this tool handles -- a command
+    # that promises to retain nothing should not broadcast the question.
+    search.add_argument("query", nargs="?", default=None, help="phrase to look for")
+    search.add_argument("--query-file", type=Path, default=None,
+                        help="read the phrase from this file instead of the command line")
     search.add_argument("--limit", type=int, default=SEARCH_DEFAULT_LIMIT,
                         help="maximum matches to return")
     search.add_argument("--budget-seconds", type=float,
@@ -2304,8 +2345,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="stop after this long and report truncated coverage")
     search.add_argument("--raw", action="store_true",
                         help="disable masking (explicit opt-out, off by default)")
-    search.add_argument("--out", type=Path, default=None,
-                        help="write to this file instead of stdout")
     search.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
     titles_many = sub.add_parser(
@@ -2393,20 +2432,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if args.command == "search":
-        payload = json.dumps(
-            build_search(args.query, args.home, raw=args.raw, limit=args.limit,
-                         budget_seconds=args.budget_seconds),
-            ensure_ascii=False, indent=2)
-        if args.out:
+        query = args.query
+        if args.query_file is not None:
             try:
-                args.out.parent.mkdir(parents=True, exist_ok=True)
-                args.out.write_text(payload, encoding="utf-8")
+                query = args.query_file.read_text(encoding="utf-8")
             except OSError as exc:
                 print(f"search: {exc}", file=sys.stderr)
                 return 1
-            print(f"wrote {args.out}")
-        else:
-            print(payload)
+        if query is None:
+            print("search: a query is required", file=sys.stderr)
+            return 2
+        # Straight to stdout. A result is a few hundred short snippets,
+        # nowhere near the size that made `bind-all` write a file, and a
+        # command whose contract is that it keeps nothing should not
+        # leave the answer on disk to be tidied up afterwards -- a
+        # `defer` does not run when the app is force quit.
+        print(json.dumps(
+            build_search(query, args.home, raw=args.raw, limit=args.limit,
+                         budget_seconds=args.budget_seconds),
+            ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "titles":
