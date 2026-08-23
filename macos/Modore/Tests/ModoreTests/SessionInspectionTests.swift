@@ -303,3 +303,60 @@ final class WorkSearchTests: XCTestCase {
             .subtitle.contains("작업 경로 소멸"))
     }
 }
+
+/// Coverage is part of a search answer, not a footnote.
+final class SessionSearchResultTests: XCTestCase {
+    private func result(
+        matches: Int = 0, scanned: Int = 100, total: Int = 100,
+        unreadable: Int = 0, coverage: String = "complete", reason: String? = nil
+    ) throws -> SessionSearchResult {
+        let rows = (0..<matches).map { i in
+            """
+            {"source":"/Users/example/.claude/projects/x/\(i).jsonl","tool":"Claude",
+             "workspace":"/Users/example/repo","lastActive":"2026-08-20 10:00",
+             "index":\(i),"role":"user","isUser":true,"snippet":"npm cache clean"}
+            """
+        }.joined(separator: ",")
+        let json = """
+        {"query":"npm","matches":[\(rows)],"scannedSessions":\(scanned),
+         "totalSessions":\(total),"unreadableSessions":\(unreadable),
+         "coverage":"\(coverage)","truncatedReason":\(reason.map { "\"\($0)\"" } ?? "null")}
+        """
+        return try JSONDecoder().decode(SessionSearchResult.self, from: Data(json.utf8))
+    }
+
+    func test_aCompleteSearchWithNothingHiddenSaysNothingExtra() throws {
+        XCTAssertNil(try result().caveat)
+        XCTAssertTrue(try result().isComplete)
+    }
+
+    /// A search that stopped at a time budget and reported nothing found
+    /// would be a lie by omission.
+    func test_aTruncatedSearchAdmitsHowFarItGot() throws {
+        let r = try result(scanned: 600, total: 7210, coverage: "truncated", reason: "time")
+        XCTAssertFalse(r.isComplete)
+        let caveat = try XCTUnwrap(r.caveat)
+        XCTAssertTrue(caveat.contains("600"))
+        XCTAssertTrue(caveat.contains("7210"))
+    }
+
+    func test_aCappedSearchSaysToNarrowRatherThanClaimingCompleteness() throws {
+        let caveat = try XCTUnwrap(
+            try result(coverage: "truncated", reason: "limit").caveat)
+        XCTAssertTrue(caveat.contains("좁히"))
+    }
+
+    /// Sessions that could not be opened are counted even when the sweep
+    /// itself finished.
+    func test_unreadableSessionsAreAlwaysDisclosed() throws {
+        let caveat = try XCTUnwrap(try result(unreadable: 29).caveat)
+        XCTAssertTrue(caveat.contains("29"))
+    }
+
+    func test_aMatchNamesTheProjectAndFallsBackToTheFileName() throws {
+        let match = try XCTUnwrap(try result(matches: 1).matches.first)
+        XCTAssertEqual(match.displayLabel, "repo")
+        XCTAssertTrue(match.subtitle.contains("Claude"))
+        XCTAssertTrue(match.subtitle.contains("나"))
+    }
+}

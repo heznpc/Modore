@@ -453,6 +453,37 @@ extension ScreeService {
         }
     }
 
+    /// Content search across every session, via `scree.py search`.
+    ///
+    /// Runs only when a person types a query and presses return -- the
+    /// judgment plane never calls this, and nothing it returns reaches a
+    /// verdict. Masked at the source.
+    static func search(
+        execution: RuntimeExecutionContext,
+        query: String,
+        limit: Int = 200,
+        homeOverride: URL? = nil
+    ) async -> Result<SessionSearchResult, ScreeInspectionError> {
+        let resultFile = execution.outputRoot
+            .appending(path: "scree-search-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: resultFile) }
+
+        var arguments = ["search", query, "--limit", String(limit), "--out", resultFile.path]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        switch await invoke(execution: execution, arguments: arguments, timeout: 180) {
+        case .timedOut:
+            return .failure(.init(message: "검색이 시간 안에 끝나지 않았습니다."))
+        case .failure(let message):
+            return .failure(.init(message: message))
+        case .success:
+            guard let data = try? Data(contentsOf: resultFile),
+                  let decoded = try? JSONDecoder().decode(SessionSearchResult.self, from: data) else {
+                return .failure(.init(message: "검색 결과를 해석하지 못했습니다."))
+            }
+            return .success(decoded)
+        }
+    }
+
     /// Titles for many named sessions in one pass.
     ///
     /// The per-session call is right for one session and wrong for a

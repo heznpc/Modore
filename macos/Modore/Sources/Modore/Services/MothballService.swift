@@ -271,6 +271,49 @@ extension ScanModel {
         }
     }
 
+    /// Searches conversation bodies. Explicit: a person typed a query and
+    /// pressed return.
+    ///
+    /// Typing alone filters metadata, which is free. Reading 7,000
+    /// transcripts is not, and doing it on every keystroke would turn a
+    /// filter box into a disk scan.
+    func runContentSearch() {
+        let query = sessionSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, !contentSearchRunning else { return }
+        contentSearchRunning = true
+        contentSearchError = nil
+        let root = projectRoot
+        Task {
+            defer { contentSearchRunning = false }
+            guard let execution = await Task.detached(priority: .userInitiated, operation: {
+                RuntimeWorkspace.prepareExecution(projectRoot: root)
+            }).value else {
+                contentSearchError = "서명된 실행 런타임을 확인하지 못했습니다."
+                return
+            }
+            switch await ScreeService.search(execution: execution, query: query) {
+            case .success(let result):
+                contentSearch = result
+            case .failure(let error):
+                contentSearchError = error.message
+            }
+        }
+    }
+
+    /// Drops a finished search. The metadata filter keeps working.
+    func clearContentSearch() {
+        contentSearch = nil
+        contentSearchError = nil
+    }
+
+    /// Opens the conversation a search result points at.
+    func openSearchMatch(_ match: SessionSearchMatch) {
+        selectedSessionSource = match.source
+        guard let entry = sessionIndex?.sessions.first(where: { $0.source == match.source })
+        else { return }
+        loadConversation(for: entry)
+    }
+
     /// Fetches titles for the rows a screen is about to show, in one pass.
     ///
     /// Bounded to what is visible on purpose. Titling every session on the
