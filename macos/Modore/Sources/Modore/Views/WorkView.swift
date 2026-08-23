@@ -58,12 +58,26 @@ struct WorkListPane: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("작업 검색", text: $model.sessionSearch)
+            // Typing filters metadata; return searches conversations. Both
+            // in one box, because "where is the thing I said" and "where
+            // is the project" are the same question asked two ways, and
+            // making the user pick the right box first is how the answer
+            // ended up in a terminal instead.
+            TextField("작업·대화 검색 (Return으로 대화 내용까지)", text: $model.sessionSearch)
                 .textFieldStyle(.roundedBorder)
+                .onSubmit { model.runContentSearch() }
             if let summary = Self.summary(model.workProjects) {
                 Text(summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            if model.contentSearchRunning {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("대화 내용을 검색하는 중…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(12)
@@ -103,6 +117,13 @@ struct WorkListPane: View {
         let projects = Self.filter(model.workProjects, search: model.sessionSearch)
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
+                if let error = model.contentSearchError {
+                    WorkNotice(text: error, action: ("다시 시도", { model.runContentSearch() }))
+                    Divider()
+                } else if let result = model.contentSearch {
+                    ContentSearchResults(result: result)
+                    Divider()
+                }
                 if projects.isEmpty {
                     WorkNotice(
                         text: model.workProjects.isEmpty
@@ -448,5 +469,78 @@ private struct WorkAuditSummary: View {
         }
         .macSettingsFormStyle()
         .task { model.refreshTimeQuotaCard() }
+    }
+}
+
+
+/// What a conversation search found, above the projects it was filtering.
+///
+/// Kept in the same pane rather than a separate screen: the person did
+/// not switch modes, they pressed return, and the projects underneath
+/// are still the answer to the same query.
+private struct ContentSearchResults: View {
+    @EnvironmentObject private var model: ScanModel
+    let result: SessionSearchResult
+
+    /// Enough to recognise the moment; the rest is behind the query.
+    static let shown = 12
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("대화에서 \(result.matches.count)건")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Button("지우기") { model.clearContentSearch() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
+            if result.matches.isEmpty {
+                // "Nothing matched" is only sayable when the look finished.
+                Text(result.isComplete
+                    ? "이 검색어가 나오는 대화가 없습니다."
+                    : "아직 일치하는 대화를 찾지 못했습니다. 전부 훑지는 못했습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(result.matches.prefix(Self.shown)) { match in
+                Button {
+                    model.openSearchMatch(match)
+                } label: {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(match.snippet)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .lineLimit(3)
+                            .multilineTextAlignment(.leading)
+                        Text(match.subtitle)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(
+                        model.selectedSessionSource == match.source
+                            ? Color.primary.opacity(0.06) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 4))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if result.matches.count > Self.shown {
+                Text("외 \(result.matches.count - Self.shown)건은 검색어를 좁혀서 보세요.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            // The coverage the answer rests on, never omitted.
+            if let caveat = result.caveat {
+                Text(caveat)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.primary.opacity(0.03))
     }
 }

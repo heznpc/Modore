@@ -1162,7 +1162,7 @@ def test_content_reading_commands_are_all_declared_in_the_module_contract():
     사람의 기억에 맡기지 않도록, 세 명령이 모듈 docstring에 이름으로 남아
     있는지 고정한다."""
     doc = scree.__doc__ or ""
-    for command in ("preserve", "title", "titles", "bind", "inspect"):
+    for command in ("preserve", "title", "titles", "bind", "inspect", "search"):
         assert command in doc, f"{command}가 no-content 계약 설명에 없다"
     assert "never" in doc and "names" in doc
 
@@ -1778,3 +1778,125 @@ def test_gemini_keeps_registry_semantics_in_the_report_and_chats_in_the_browser(
 
     browser = [s for s in scree.build_sessions(home)["sessions"] if s["tool"] == "Gemini"]
     assert len(browser) == 3, "브라우저는 대화 수를 센다"
+
+
+# --- search: 전체 세션 본문 검색 (사용자가 물어야만 동작) ---------------------
+
+
+def _stored_session(home, name, *turns):
+    """search는 이름으로 받는 게 아니라 스스로 찾아야 하므로, 세션을 실제
+    프로바이더 저장소 안에 놓는다."""
+    return _session_with_turns(
+        home / ".claude" / "projects" / "-Users-example-repo" / f"{name}.jsonl", *turns)
+
+
+
+def test_search_finds_the_phrase_across_sessions(tmp_path):
+    a = _stored_session(tmp_path, "a", ("user", "npm cache clean 으로 정리했다"))
+    _stored_session(tmp_path, "b", ("user", "관계 없는 이야기"))
+    out = scree.build_search("npm cache clean", tmp_path)
+    assert [m["source"] for m in out["matches"]] == [str(a)]
+    assert "npm cache clean" in out["matches"][0]["snippet"]
+    assert out["matches"][0]["isUser"] is True
+
+
+def test_search_is_case_insensitive_and_whitespace_normalised(tmp_path):
+    _stored_session(tmp_path, "a", ("user", "Xcode   DerivedData 지움"))
+    assert scree.build_search("xcode derivedData", tmp_path)["matches"]
+
+
+def test_search_reports_coverage_rather_than_implying_it_looked_everywhere(tmp_path):
+    """'결과 없음'과 '다 못 봤음'은 다른 사실이다. 시간 예산에 걸려 멈춘
+    검색이 아무것도 못 찾았다고 보고하면 그건 거짓말이 된다."""
+    for i in range(5):
+        _stored_session(tmp_path, f"s{i}", ("user", f"찾는말 {i}"))
+    complete = scree.build_search("찾는말", tmp_path)
+    assert complete["coverage"] == "complete"
+    assert complete["truncatedReason"] is None
+    assert complete["scannedSessions"] == complete["totalSessions"]
+
+    capped = scree.build_search("찾는말", tmp_path, limit=2)
+    assert capped["coverage"] == "truncated"
+    assert capped["truncatedReason"] == "limit"
+
+    timed = scree.build_search("찾는말", tmp_path, budget_seconds=-1)
+    assert timed["coverage"] == "truncated"
+    assert timed["truncatedReason"] == "time"
+
+
+def test_search_counts_sessions_it_could_not_read(tmp_path):
+    _stored_session(tmp_path, "ok", ("user", "찾는말"))
+    blocked = _stored_session(tmp_path, "no", ("user", "찾는말"))
+    blocked.chmod(0o000)
+    try:
+        out = scree.build_search("찾는말", tmp_path)
+    finally:
+        blocked.chmod(0o600)
+    assert out["unreadableSessions"] == 1
+    assert out["coverage"] == "complete"  # 훑기는 끝났고, 못 읽은 것은 따로 센다
+
+
+def test_search_masks_by_default(tmp_path):
+    _stored_session(tmp_path, "a", ("user", "연락처 someone@example.com 로 용량 문의"))
+    masked = scree.build_search("용량", tmp_path)
+    assert "someone@example.com" not in json.dumps(masked, ensure_ascii=False)
+    assert masked["masked"] is True
+    raw = scree.build_search("용량", tmp_path, raw=True)
+    assert "someone@example.com" in json.dumps(raw, ensure_ascii=False)
+
+
+def test_search_returns_a_window_not_the_whole_turn(tmp_path):
+    """턴 하나가 수천 자일 수 있다. 읽는 사람에게 필요한 건 그 구절이
+    들어앉은 문장이다."""
+    _stored_session(tmp_path, "a", ("user", "앞" * 3000 + " 찾는말 " + "뒤" * 3000))
+    snippet = scree.build_search("찾는말", tmp_path)["matches"][0]["snippet"]
+    assert "찾는말" in snippet
+    assert len(snippet) < scree.SEARCH_SNIPPET_CHARS + 40
+
+
+def test_search_caps_matches_per_session_so_one_file_cannot_fill_the_answer(tmp_path):
+    turns = [("user", f"찾는말 {i}") for i in range(30)]
+    _stored_session(tmp_path, "a", *turns)
+    out = scree.build_search("찾는말", tmp_path)
+    assert len(out["matches"]) == scree.SEARCH_MATCHES_PER_SESSION
+
+
+def test_search_returns_newest_first(tmp_path):
+    old = _stored_session(tmp_path, "old", ("user", "찾는말"))
+    new = _stored_session(tmp_path, "new", ("user", "찾는말"))
+    os.utime(old, (1_700_000_000, 1_700_000_000))
+    os.utime(new, (1_800_000_000, 1_800_000_000))
+    assert scree.build_search("찾는말", tmp_path)["matches"][0]["source"] == str(new)
+
+
+def test_search_of_nothing_is_not_a_scan(tmp_path):
+    """빈 질의는 기기 전체를 읽을 이유가 되지 않는다."""
+    _stored_session(tmp_path, "a", ("user", "무언가"))
+    out = scree.build_search("   ", tmp_path)
+    assert out["matches"] == [] and out["scannedSessions"] == 0
+
+
+def test_search_is_not_reachable_from_the_judgment_path(bind_home):
+    """판정은 metadata-only로 남는다. report 출력 어디에도 search가 내는
+    키가 나타나지 않는 것으로 고정한다."""
+    report = scree.build_scree(bind_home["home"])
+
+    def keys(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                yield key
+                yield from keys(value)
+        elif isinstance(node, list):
+            for item in node:
+                yield from keys(item)
+
+    present = set(keys(report))
+    for forbidden in ("snippet", "matches", "coverage", "scannedSessions"):
+        assert forbidden not in present
+
+
+def test_search_cli_emits_json(tmp_path, capsys):
+    _stored_session(tmp_path, "a", ("user", "찾는말"))
+    assert scree.main(["search", "찾는말", "--home", str(tmp_path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["matches"] and payload["coverage"] == "complete"

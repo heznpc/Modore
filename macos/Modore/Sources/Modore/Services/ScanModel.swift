@@ -48,6 +48,12 @@ final class ScanModel: ObservableObject {
     @Published var sessionIndexError: String?
     /// What the person typed into the browser's search field.
     @Published var sessionSearch = ""
+    /// Content-search results, and whether one is running. Separate from
+    /// `sessionSearch` because typing filters metadata instantly while
+    /// reading transcript bodies waits for an explicit return.
+    @Published var contentSearch: SessionSearchResult?
+    @Published var contentSearchRunning = false
+    @Published var contentSearchError: String?
     /// Titles for sessions a screen has shown, keyed by source path.
     /// Display only -- no judgment reads these.
     @Published var sessionTitles: [String: SessionTitle] = [:]

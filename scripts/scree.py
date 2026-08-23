@@ -23,8 +23,9 @@ Judgment limits (preview-grade evidence, not deletion authorization):
   remote; any destructive consumer must revalidate before acting.
 
 Content-reading commands (the deliberate exceptions to the no-content
-contract above). All five act only on sessions the caller names — never on
-anything discovered automatically — and all five mask by default:
+contract above). Every one of them runs only when a person asks — never
+on the app's own initiative, never during a scan — and every one masks by
+default:
 - `scree.py preserve <source>` writes a masked Markdown export of one
   transcript, the same shape as hydroject's `export`;
 - `scree.py title <source>` returns one masked line: the first user
@@ -37,6 +38,12 @@ anything discovered automatically — and all five mask by default:
   pay thirty process spawns for their labels. A batch of explicit
   targets is still not a bulk read of the disk: nothing is discovered
   here, and the caller names every source.
+- `scree.py search <query>` looks for a phrase across every session and
+  returns masked snippets with the coverage the answer rests on. The one
+  exception that is not scoped to named sessions -- it cannot be, since
+  finding which session matters is the question -- so it is scoped by the
+  query instead: it runs only on an explicit search, retains nothing, and
+  no verdict reads it.
 - `scree.py bind <workspace> --deep` reads transcript bodies to find
   file-access evidence, and emits only whether such evidence exists.
 - `scree.py inspect <source>` returns one session's conversation for
@@ -2028,6 +2035,176 @@ def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
     return "\n".join(lines)
 
 
+SEARCH_DEFAULT_LIMIT = 200
+SEARCH_MATCHES_PER_SESSION = 3
+SEARCH_SNIPPET_CHARS = 240
+SEARCH_DEFAULT_BUDGET_SECONDS = 60.0
+
+
+def build_search(query: str, home: Path, *, raw: bool = False,
+                 limit: int = SEARCH_DEFAULT_LIMIT,
+                 budget_seconds: float = SEARCH_DEFAULT_BUDGET_SECONDS) -> dict:
+    """Find a phrase across every session on the machine.
+
+    The one thing the owner kept leaving this app to do. Modore could
+    already list 7,000 conversations and open any one by name, and had no
+    way to answer "which of these was the one where I fixed this before" --
+    so the answer came from `rg` in a terminal instead.
+
+    A deliberate content read, and the exception is the same shape as the
+    other four: the caller names what to look for, nothing is discovered
+    on the app's own initiative, snippets are masked by default, and
+    nothing here reaches a verdict. `report` and `bind` stay
+    metadata-only; this runs only when a person types a query.
+
+    Coverage is part of the answer, not a footnote. "No results" and "I
+    could not finish looking" are different facts, and a search that
+    quietly stops at a time budget while reporting nothing found is the
+    same collapse this codebase keeps having to undo.
+    """
+    needle = " ".join(query.split()).casefold()
+    if not needle:
+        return {"query": query, "matches": [], "scannedSessions": 0,
+                "unreadableSessions": 0, "coverage": "complete",
+                "truncatedReason": None, "masked": not raw}
+
+    sessions = build_sessions(home, limit=0)["sessions"]
+    started = time.monotonic()
+    matches: list[dict] = []
+    scanned = unreadable = 0
+    truncated_reason: Optional[str] = None
+
+    for session in sessions:
+        if len(matches) >= limit > 0:
+            truncated_reason = "limit"
+            break
+        if time.monotonic() - started > budget_seconds:
+            truncated_reason = "time"
+            break
+        source = Path(session["source"])
+        found, ok = _search_one_session(source, needle, raw=raw)
+        scanned += 1
+        if not ok:
+            unreadable += 1
+            continue
+        for hit in found:
+            matches.append({**hit, "tool": session["tool"],
+                            "source": session["source"],
+                            "workspace": session["workspace"],
+                            "lastActive": session["lastActive"]})
+
+    return {
+        "query": query,
+        # Newest first: the recent time you solved this is the one worth
+        # reading, and the older ones are what "see all" is for.
+        "matches": sorted(matches, key=lambda m: m["lastActive"], reverse=True)[:limit or None],
+        "scannedSessions": scanned,
+        "totalSessions": len(sessions),
+        "unreadableSessions": unreadable,
+        "coverage": "complete" if truncated_reason is None and scanned == len(sessions)
+                    else "truncated",
+        "truncatedReason": truncated_reason,
+        "masked": not raw,
+    }
+
+
+def _search_probes(needle: str) -> tuple[str, ...]:
+    """Cheap strings to look for in a raw line before parsing it.
+
+    Two things make a naive `needle in line` wrong. Runs of whitespace:
+    the query is normalised but the transcript is not, so "Xcode
+    DerivedData" must still match "Xcode   DerivedData" -- answered by
+    probing on the longest single word and confirming against the
+    normalised turn afterwards. And JSON escaping: a store written with
+    `ensure_ascii` holds Korean as `\uc6a9\ub7c9`, where the literal
+    phrase never appears, which would make this search silently useless
+    for most of what is on this machine.
+    """
+    word = max(needle.split(), key=len, default=needle)
+    escaped = json.dumps(word, ensure_ascii=True)[1:-1].casefold()
+    return (word, escaped) if escaped != word else (word,)
+
+
+def _search_one_session(source: Path, needle: str, *,
+                        raw: bool) -> tuple[list[dict], bool]:
+    """Matching turns in one transcript, and whether it could be read.
+
+    The cheap substring test runs before any JSON parse. Most lines in
+    most sessions cannot match, and parsing several gigabytes only to
+    discard it is the difference between a search that answers and one
+    nobody waits for.
+    """
+    home = Path.home()
+    probes = _search_probes(needle)
+    hits: list[dict] = []
+
+    def consider(position: int, role: str, text: str) -> bool:
+        # Confirm against the normalised turn, not the raw bytes: the
+        # query had its whitespace collapsed and the transcript did not.
+        if needle not in " ".join(text.split()).casefold():
+            return False
+        hits.append(_search_hit(position, role, text, needle, raw=raw, home=home))
+        return len(hits) >= SEARCH_MATCHES_PER_SESSION
+
+    try:
+        if source.suffix == ".json":
+            turns, status = _read_session_turns(source)
+            if status != "ok":
+                return ([], False)
+            for position, (role, text) in enumerate(turns):
+                if consider(position, role, text):
+                    break
+            return (hits, True)
+
+        with source.open("r", encoding="utf-8", errors="replace") as handle:
+            for position, line in enumerate(handle):
+                folded = line.casefold()
+                if not any(probe in folded for probe in probes):
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                turn = _extract_turn(parsed)
+                if not turn:
+                    continue
+                if consider(position, turn[0], turn[1]):
+                    break
+    except OSError:
+        return ([], False)
+    return (hits, True)
+
+
+def _search_hit(position: int, role: str, text: str, needle: str, *,
+                raw: bool, home: Path) -> dict:
+    """One match, as a window around the phrase rather than a whole turn.
+
+    A turn can be thousands of characters; what the reader needs is the
+    sentence the phrase sits in. Masking is applied after the window is
+    cut so the snippet a person sees is the snippet that was masked.
+    """
+    flat = " ".join(text.split())
+    where = flat.casefold().find(needle)
+    if where < 0:
+        where = 0
+    half = max(0, (SEARCH_SNIPPET_CHARS - len(needle)) // 2)
+    start = max(0, where - half)
+    end = min(len(flat), where + len(needle) + half)
+    snippet = flat[start:end]
+    if start > 0:
+        snippet = "\u2026" + snippet
+    if end < len(flat):
+        snippet = snippet + "\u2026"
+    return {
+        "index": position,
+        "role": role,
+        "isUser": _is_user_role(role),
+        "snippet": snippet if raw else mask_text(snippet, home),
+    }
+
+
 def build_titles_many(sources: list[str], home: Path, *,
                       raw: bool = False) -> dict:
     """Titles for the sessions a screen is about to show, in one pass.
@@ -2117,6 +2294,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                           help="write to this file instead of stdout")
     sessions.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    search = sub.add_parser(
+        "search", help="find a phrase across all sessions (masked; explicit content read)")
+    search.add_argument("query", help="phrase to look for")
+    search.add_argument("--limit", type=int, default=SEARCH_DEFAULT_LIMIT,
+                        help="maximum matches to return")
+    search.add_argument("--budget-seconds", type=float,
+                        default=SEARCH_DEFAULT_BUDGET_SECONDS,
+                        help="stop after this long and report truncated coverage")
+    search.add_argument("--raw", action="store_true",
+                        help="disable masking (explicit opt-out, off by default)")
+    search.add_argument("--out", type=Path, default=None,
+                        help="write to this file instead of stdout")
+    search.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+
     titles_many = sub.add_parser(
         "titles", help="titles for MANY named sessions in one pass (display only)")
     titles_many.add_argument("--sources", type=Path, default=None,
@@ -2199,6 +2390,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"inspect: {exc}", file=sys.stderr)
             return 1
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "search":
+        payload = json.dumps(
+            build_search(args.query, args.home, raw=args.raw, limit=args.limit,
+                         budget_seconds=args.budget_seconds),
+            ensure_ascii=False, indent=2)
+        if args.out:
+            try:
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                args.out.write_text(payload, encoding="utf-8")
+            except OSError as exc:
+                print(f"search: {exc}", file=sys.stderr)
+                return 1
+            print(f"wrote {args.out}")
+        else:
+            print(payload)
         return 0
 
     if args.command == "titles":
