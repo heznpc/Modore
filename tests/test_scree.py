@@ -146,6 +146,74 @@ def test_bucket_resolution_never_leaves_the_real_tree(tmp_path):
         scree._encode_claude_project_dir(str(tmp_path / "nope" / "gone"))) is None
 
 
+# ---------------------------------------------------------------------------
+# 소유자가 앱에서 이미 지운 대화 (데스크탑 인덱스 톰스톤)
+# ---------------------------------------------------------------------------
+
+def _retention_home(tmp_path, *session_ids, deleted=()):
+    """cleanupPeriodDays 가 설정된 홈 + 만료 임박 세션 + 톰스톤."""
+    home = tmp_path / "home"
+    _write(home / ".claude" / "settings.json", json.dumps({"cleanupPeriodDays": 30}))
+    workspace = tmp_path / "work"
+    workspace.mkdir(parents=True)
+    records = []
+    for index, session_id in enumerate(session_ids):
+        path = home / ".claude" / "projects" / "-w" / f"{session_id}.jsonl"
+        _write(path, "{}\n")
+        records.append({"tool": "Claude", "kind": "session", "source": str(path),
+                        "workspace": str(workspace), "size_bytes": 100 + index,
+                        "last_active": 0.0})
+    index_dir = home.joinpath(*scree.CLAUDE_DESKTOP_INDEX, "acct", "org")
+    index_dir.mkdir(parents=True)
+    for session_id in deleted:
+        (index_dir / f"deleted_{session_id}").write_text("1755000000000")
+    # 28일 지난 세션 -> 30일 창에서 D-2
+    return home, records, 28 * 86400
+
+
+def test_a_conversation_deleted_in_the_app_is_not_urged_as_worth_rescuing(tmp_path):
+    """앱에서 지워도 트랜스크립트는 남는다. 남았다는 이유로 구하라고 재촉하면
+    소유자가 이미 내린 결정을 뒤집으라고 조르는 셈이다."""
+    home, records, now = _retention_home(tmp_path, "keep-me", "threw-away",
+                                         deleted=["threw-away"])
+    retention = scree.build_retention(records, now, home)
+    by_id = {Path(e["source"]).stem: e for e in retention["expiring"]}
+    assert by_id["keep-me"]["owner_deleted"] is False
+    assert by_id["threw-away"]["owner_deleted"] is True
+    # 이미 버린 것은 목록 머리에서 밀려난다 — 상단은 아직 원하는 작업만.
+    assert retention["expiring"][0]["owner_deleted"] is False
+    assert retention["expiring"][-1]["owner_deleted"] is True
+
+
+def test_the_already_deleted_count_is_named_in_the_report(tmp_path):
+    home, records, now = _retention_home(tmp_path, "keep-me", "threw-away",
+                                         deleted=["threw-away"])
+    report = {"stores": [], "groups": [], "unresolved_sessions": 0,
+              "retention": scree.build_retention(records, now, home)}
+    assert "already deleted in the app 1" in scree.render_report(report, limit=5)
+
+
+def test_tombstone_bodies_are_never_opened(tmp_path):
+    """톰스톤 내용은 삭제 시각일 뿐이다. 파일명만 읽으면 metadata-only 계약
+    안에 머문다 — 읽을 수 없게 만들어도 판정은 그대로여야 한다."""
+    home, records, now = _retention_home(tmp_path, "threw-away", deleted=["threw-away"])
+    tomb = next(home.joinpath(*scree.CLAUDE_DESKTOP_INDEX).rglob("deleted_*"))
+    tomb.chmod(0o000)
+    try:
+        retention = scree.build_retention(records, now, home)
+        assert retention["expiring"][0]["owner_deleted"] is True
+    finally:
+        tomb.chmod(0o600)
+
+
+def test_a_machine_with_no_desktop_index_judges_exactly_as_before(tmp_path):
+    home, records, now = _retention_home(tmp_path, "keep-me")
+    shutil.rmtree(home.joinpath(*scree.CLAUDE_DESKTOP_INDEX))
+    assert scree.collect_claude_desktop_deletions(home) == set()
+    retention = scree.build_retention(records, now, home)
+    assert [e["owner_deleted"] for e in retention["expiring"]] == [False]
+
+
 def test_orphan_workspace_is_flagged(scree_home):
     home, _, ws2 = scree_home
     result = scree.build_scree(home)

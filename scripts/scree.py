@@ -619,6 +619,37 @@ def read_claude_cleanup_period_days(home: Path) -> Optional[int]:
 EFFECTIVELY_INDEFINITE_DAYS = 3650
 
 
+# The Claude desktop app keeps the list of conversations it shows beside the
+# transcripts rather than inside them: one `local_<id>.json` per listed
+# conversation, and a `deleted_<id>` tombstone per conversation the owner
+# removed. Deleting in the app rewrites only that index -- the transcript is
+# never touched -- so a tombstone is the one record on disk of the owner
+# having decided a conversation was finished with.
+CLAUDE_DESKTOP_INDEX = ("Library", "Application Support", "Claude", "claude-code-sessions")
+_TOMBSTONE_PREFIX = "deleted_"
+
+
+def collect_claude_desktop_deletions(home: Path) -> set[str]:
+    """Ids the desktop app was told to delete, from tombstone filenames alone.
+
+    The tombstone body is a delete timestamp and is never opened, so this stays
+    inside the metadata-only contract -- it reads a directory listing, nothing
+    more. One delete writes two or three tombstones (the app's own session id,
+    the transcript id, sometimes a third), but an id naming no transcript
+    simply never matches one, so no pairing rule is needed here.
+    """
+    root = home.joinpath(*CLAUDE_DESKTOP_INDEX)
+    if not root.is_dir():
+        return set()
+    deleted: set[str] = set()
+    try:
+        for path in root.rglob(f"{_TOMBSTONE_PREFIX}*"):
+            deleted.add(path.name[len(_TOMBSTONE_PREFIX):])
+    except OSError:
+        pass
+    return deleted
+
+
 def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = None) -> dict:
     """Per-store retention judgment.
 
@@ -630,12 +661,20 @@ def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = N
     within EXPIRY_SOON_DAYS of that window are flagged, split by whether their
     workspace still exists (a living story about to lose its transcript versus
     an orphan whose loss likely goes unnoticed).
+
+    A third state sits underneath both: a conversation the owner already
+    deleted in the desktop app. Deleting there removes the app's index entry
+    and leaves the transcript untouched, so the session reads here as any other
+    live one and the forecast urges rescuing something its owner threw away.
+    Tombstoned sessions are marked `owner_deleted` and sorted below the rest,
+    so the urgency at the top of the list is only ever about work still wanted.
     """
     configured_days: dict[str, int] = {}
     if home is not None:
         claude_configured = read_claude_cleanup_period_days(home)
         if claude_configured is not None:
             configured_days["Claude"] = claude_configured
+    owner_deleted = collect_claude_desktop_deletions(home) if home is not None else set()
     stores: list[dict] = []
     expiring: list[dict] = []
 
@@ -644,13 +683,15 @@ def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = N
             days_left = round(window - age)
             if days_left <= EXPIRY_SOON_DAYS:
                 workspace = session["workspace"]
+                source = session.get("source")
                 expiring.append({
                     "tool": tool,
                     "workspace": workspace,
-                    "source": session.get("source"),
+                    "source": source,
                     "days_left": days_left,
                     "size_bytes": session["size_bytes"],
                     "story_alive": bool(workspace) and Path(workspace).exists(),
+                    "owner_deleted": bool(source) and Path(source).stem in owner_deleted,
                 })
 
     by_tool: dict[str, list[dict]] = {}
@@ -680,7 +721,7 @@ def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = N
         else:
             entry["mode"] = "long"
         stores.append(entry)
-    expiring.sort(key=lambda e: (e["days_left"], -e["size_bytes"]))
+    expiring.sort(key=lambda e: (e["owner_deleted"], e["days_left"], -e["size_bytes"]))
     return {"stores": stores, "expiring": expiring}
 
 
@@ -1679,9 +1720,15 @@ def render_report(scree: dict, limit: int) -> str:
             lines.append(f"  {store['store']}: " + " · ".join(bits))
         expiring = retention.get("expiring", [])
         if expiring:
-            alive = [e for e in expiring if e["story_alive"]]
+            wanted = [e for e in expiring if not e.get("owner_deleted")]
+            alive = [e for e in wanted if e["story_alive"]]
+            counts = [f"alive workspaces {len(alive)}",
+                      f"orphaned {len(wanted) - len(alive)}"]
+            discarded = len(expiring) - len(wanted)
+            if discarded:
+                counts.append(f"already deleted in the app {discarded}")
             lines.append(f"  expiring soon (within D-{EXPIRY_SOON_DAYS}) {len(expiring)}"
-                         f" — alive workspaces {len(alive)} · orphaned {len(expiring) - len(alive)}")
+                         f" — " + " · ".join(counts))
             for entry in alive[:5]:
                 lines.append(f"    D-{entry['days_left']} {entry['workspace']}"
                              f" ({entry['tool']}, {_format_size(entry['size_bytes'])})")
