@@ -54,6 +54,10 @@ final class ScanModel: ObservableObject {
     @Published var contentSearch: SessionSearchResult?
     @Published var contentSearchRunning = false
     @Published var contentSearchError: String?
+    /// Which search request is current. A result from an older one is
+    /// dropped rather than written under a query nobody asked.
+    var contentSearchGeneration = 0
+    var contentSearchTask: Task<Void, Never>?
     /// Titles for sessions a screen has shown, keyed by source path.
     /// Display only -- no judgment reads these.
     @Published var sessionTitles: [String: SessionTitle] = [:]

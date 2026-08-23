@@ -317,10 +317,12 @@ final class SessionSearchResultTests: XCTestCase {
              "index":\(i),"role":"user","isUser":true,"snippet":"npm cache clean"}
             """
         }.joined(separator: ",")
+        let definitive = coverage == "complete" && reason == nil && unreadable == 0
         let json = """
         {"query":"npm","matches":[\(rows)],"scannedSessions":\(scanned),
          "totalSessions":\(total),"unreadableSessions":\(unreadable),
-         "coverage":"\(coverage)","truncatedReason":\(reason.map { "\"\($0)\"" } ?? "null")}
+         "coverage":"\(coverage)","truncatedReason":\(reason.map { "\"\($0)\"" } ?? "null"),
+         "definitive":\(definitive),"evidenceKind":"conversation_mention"}
         """
         return try JSONDecoder().decode(SessionSearchResult.self, from: Data(json.utf8))
     }
@@ -358,5 +360,55 @@ final class SessionSearchResultTests: XCTestCase {
         XCTAssertEqual(match.displayLabel, "repo")
         XCTAssertTrue(match.subtitle.contains("Claude"))
         XCTAssertTrue(match.subtitle.contains("나"))
+    }
+}
+
+
+/// The exact place `unknown` turns into `none`.
+final class SearchNoMatchHonestyTests: XCTestCase {
+    private func result(
+        unreadable: Int, coverage: String, reason: String?, total: Int = 7210
+    ) throws -> SessionSearchResult {
+        let definitive = coverage == "complete" && reason == nil && unreadable == 0
+        let json = """
+        {"query":"용량","matches":[],"scannedSessions":\(total),
+         "totalSessions":\(total),"unreadableSessions":\(unreadable),
+         "coverage":"\(coverage)","truncatedReason":\(reason.map { "\"\($0)\"" } ?? "null"),
+         "definitive":\(definitive),"evidenceKind":"conversation_mention"}
+        """
+        return try JSONDecoder().decode(SessionSearchResult.self, from: Data(json.utf8))
+    }
+
+    /// A sweep that visited every session but could not open 59 of them
+    /// finished -- and is still not grounds for telling someone the
+    /// phrase never appears.
+    func test_unreadableSessionsForbidTheFlatNoMatchSentence() throws {
+        let r = try result(unreadable: 59, coverage: "complete", reason: nil)
+        XCTAssertTrue(r.isComplete, "the sweep did finish")
+        XCTAssertFalse(r.definitive, "but it may not conclude")
+        XCTAssertFalse(r.emptyResultText.contains("없습니다"))
+        XCTAssertTrue(r.emptyResultText.contains("7151"))
+        XCTAssertTrue(r.emptyResultText.contains("59"))
+    }
+
+    func test_onlyAFullyReadSweepMaySayThereIsNone() throws {
+        let r = try result(unreadable: 0, coverage: "complete", reason: nil)
+        XCTAssertTrue(r.definitive)
+        XCTAssertEqual(r.emptyResultText, "이 검색어가 나오는 대화가 없습니다.")
+    }
+
+    func test_aTruncatedSweepNeverConcludes() throws {
+        for reason in ["time", "limit"] {
+            let r = try result(unreadable: 0, coverage: "truncated", reason: reason)
+            XCTAssertFalse(r.definitive)
+            XCTAssertFalse(r.emptyResultText.contains("없습니다"))
+        }
+    }
+
+    /// A hit means somebody said it, not that it was ever run.
+    func test_searchDeclaresItsEvidenceKind() throws {
+        XCTAssertEqual(
+            try result(unreadable: 0, coverage: "complete", reason: nil).evidenceKind,
+            "conversation_mention")
     }
 }

@@ -242,7 +242,9 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
 
     /// Provider identity for the conversation cache key. The listing
     /// speaks scree's display names; the cache speaks MothballCore's.
-    var provider: SessionProvider {
+    var provider: SessionProvider { Self.provider(forTool: tool) }
+
+    static func provider(forTool tool: String) -> SessionProvider {
         switch tool.lowercased() {
         case "claude": return .claude
         case "codex": return .codex
@@ -302,6 +304,11 @@ struct SessionSearchMatch: Decodable, Identifiable, Equatable {
     var id: String { "\(source)#\(index)" }
     var sourceURL: URL { URL(fileURLWithPath: source) }
 
+    /// Same mapping the index uses, so a conversation opened from a
+    /// search result lands on the same cache entry as one opened from a
+    /// project row rather than fetching it twice under two keys.
+    var provider: SessionProvider { SessionIndexEntry.provider(forTool: tool) }
+
     var displayLabel: String {
         workspace.isEmpty
             ? sourceURL.lastPathComponent
@@ -326,7 +333,15 @@ struct SessionSearchResult: Decodable, Equatable {
     let unreadableSessions: Int
     let coverage: String
     let truncatedReason: String?
+    /// Whether "no match" may be stated as a fact. Decided by scree, not
+    /// re-derived here, so every consumer withholds the conclusion on the
+    /// same evidence.
+    let definitive: Bool
+    /// A hit means somebody said this, not that it was ever run.
+    let evidenceKind: String
 
+    /// The sweep reached every session. Not the same as being allowed to
+    /// conclude anything -- see `definitive`.
     var isComplete: Bool { coverage == "complete" }
 
     /// What the screen must admit under the results.
@@ -341,5 +356,21 @@ struct SessionSearchResult: Decodable, Equatable {
             notes.append("세션 \(unreadableSessions)개는 읽지 못했습니다.")
         }
         return notes.isEmpty ? nil : notes.joined(separator: " ")
+    }
+
+    /// What to say when nothing matched.
+    ///
+    /// Only a search that finished and could open everything is allowed
+    /// the flat sentence. Anything else has to name what it could not
+    /// see, or it turns "I do not know" into "there is none" -- the
+    /// collapse this project keeps having to undo.
+    var emptyResultText: String {
+        if definitive { return "이 검색어가 나오는 대화가 없습니다." }
+        if unreadableSessions > 0 && isComplete {
+            let readable = max(0, totalSessions - unreadableSessions)
+            return "읽을 수 있었던 대화 \(readable)개에서는 찾지 못했습니다."
+                + " \(unreadableSessions)개는 확인하지 못했습니다."
+        }
+        return "아직 일치하는 대화를 찾지 못했습니다. 전부 훑지는 못했습니다."
     }
 }
