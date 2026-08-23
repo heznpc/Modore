@@ -279,19 +279,35 @@ extension ScanModel {
     /// filter box into a disk scan.
     func runContentSearch() {
         let query = sessionSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, !contentSearchRunning else { return }
+        guard !query.isEmpty else { return }
+        // A search takes tens of seconds, which is long enough for the
+        // person to type something else and press return again. Refusing
+        // the second search while the first runs made the box feel
+        // broken, and letting the first one land would have written a
+        // stale answer under a different query. The newest request wins:
+        // the previous one is cancelled, and any result that arrives from
+        // a superseded generation is dropped.
+        contentSearchTask?.cancel()
+        contentSearchGeneration += 1
+        let generation = contentSearchGeneration
         contentSearchRunning = true
         contentSearchError = nil
         let root = projectRoot
-        Task {
-            defer { contentSearchRunning = false }
+        contentSearchTask = Task {
+            defer {
+                if generation == contentSearchGeneration { contentSearchRunning = false }
+            }
             guard let execution = await Task.detached(priority: .userInitiated, operation: {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
             }).value else {
-                contentSearchError = "서명된 실행 런타임을 확인하지 못했습니다."
+                if generation == contentSearchGeneration {
+                    contentSearchError = "서명된 실행 런타임을 확인하지 못했습니다."
+                }
                 return
             }
-            switch await ScreeService.search(execution: execution, query: query) {
+            let outcome = await ScreeService.search(execution: execution, query: query)
+            guard !Task.isCancelled, generation == contentSearchGeneration else { return }
+            switch outcome {
             case .success(let result):
                 contentSearch = result
             case .failure(let error):
@@ -307,11 +323,15 @@ extension ScanModel {
     }
 
     /// Opens the conversation a search result points at.
+    ///
+    /// From the match itself, never by looking the path back up in
+    /// `sessionIndex`. The index is a snapshot from whenever the screen
+    /// last loaded; the search walked the filesystem just now. A session
+    /// created in between is findable and would have been unopenable --
+    /// the click would have done nothing at all.
     func openSearchMatch(_ match: SessionSearchMatch) {
         selectedSessionSource = match.source
-        guard let entry = sessionIndex?.sessions.first(where: { $0.source == match.source })
-        else { return }
-        loadConversation(for: entry)
+        loadConversation(source: match.sourceURL, provider: match.provider)
     }
 
     /// Fetches titles for the rows a screen is about to show, in one pass.
@@ -345,8 +365,15 @@ extension ScanModel {
     /// Same fetch as `loadConversation(for:)`, for a browser row that has
     /// a transcript but no binding to any repo.
     func loadConversation(for entry: SessionIndexEntry, retry: Bool = false) {
+        loadConversation(source: entry.sourceURL, provider: entry.provider, retry: retry)
+    }
+
+    /// The fetch itself, given only a transcript. Every caller that has a
+    /// path can use it, whether or not the session is in the index.
+    func loadConversation(source: URL, provider: SessionProvider, retry: Bool = false) {
+        let entrySource = source.path
         let key = Self.conversationKey(
-            provider: entry.provider, sessionID: entry.source, source: entry.sourceURL
+            provider: provider, sessionID: entrySource, source: source
         )
         if retry {
             conversationLoads[key] = nil
@@ -355,7 +382,6 @@ extension ScanModel {
         }
         conversationLoads[key] = .loading
         let root = projectRoot
-        let source = entry.sourceURL
         Task {
             guard let execution = await Task.detached(priority: .userInitiated, operation: {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)

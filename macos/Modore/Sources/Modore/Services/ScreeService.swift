@@ -464,19 +464,31 @@ extension ScreeService {
         limit: Int = 200,
         homeOverride: URL? = nil
     ) async -> Result<SessionSearchResult, ScreeInspectionError> {
-        let resultFile = execution.outputRoot
-            .appending(path: "scree-search-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: resultFile) }
+        // The phrase goes in a file, not in argv: any local process can
+        // read another's command line, and the search query is the most
+        // personal thing this tool is ever handed.
+        let queryFile = execution.outputRoot
+            .appending(path: "scree-query-\(UUID().uuidString).txt")
+        guard (try? Data(query.utf8).write(to: queryFile, options: [.atomic])) != nil else {
+            return .failure(.init(message: "검색어를 전달하지 못했습니다."))
+        }
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: queryFile.path)
+        defer { try? FileManager.default.removeItem(at: queryFile) }
 
-        var arguments = ["search", query, "--limit", String(limit), "--out", resultFile.path]
+        var arguments = ["search", "--query-file", queryFile.path, "--limit", String(limit)]
         if let homeOverride { arguments += ["--home", homeOverride.path] }
+        // The answer comes back on stdout and is never written to disk:
+        // a few hundred short snippets fit easily, and a result file
+        // would outlive a force quit that skips every `defer`.
         switch await invoke(execution: execution, arguments: arguments, timeout: 180) {
         case .timedOut:
             return .failure(.init(message: "검색이 시간 안에 끝나지 않았습니다."))
         case .failure(let message):
             return .failure(.init(message: message))
-        case .success:
-            guard let data = try? Data(contentsOf: resultFile),
+        case .success(let output):
+            guard let start = output.firstIndex(of: "{"),
+                  let data = output[start...].data(using: .utf8),
                   let decoded = try? JSONDecoder().decode(SessionSearchResult.self, from: data) else {
                 return .failure(.init(message: "검색 결과를 해석하지 못했습니다."))
             }

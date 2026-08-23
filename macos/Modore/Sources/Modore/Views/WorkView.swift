@@ -488,18 +488,21 @@ private struct ContentSearchResults: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("대화에서 \(result.matches.count)건")
+                // Name the query the results belong to. A search takes
+                // long enough that the box above may already say
+                // something else by the time these land.
+                Text("“\(result.query)” 대화 검색 · \(result.matches.count)건")
                     .font(.caption.weight(.semibold))
+                    .lineLimit(1)
                 Spacer()
                 Button("지우기") { model.clearContentSearch() }
                     .buttonStyle(.link)
                     .font(.caption)
             }
             if result.matches.isEmpty {
-                // "Nothing matched" is only sayable when the look finished.
-                Text(result.isComplete
-                    ? "이 검색어가 나오는 대화가 없습니다."
-                    : "아직 일치하는 대화를 찾지 못했습니다. 전부 훑지는 못했습니다.")
+                // "Nothing matched" is only sayable when the search both
+                // finished and could open everything it visited.
+                Text(result.emptyResultText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
