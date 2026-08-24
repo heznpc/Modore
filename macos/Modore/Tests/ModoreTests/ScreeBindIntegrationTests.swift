@@ -142,7 +142,8 @@ final class ScreeBindIntegrationTests: XCTestCase {
         let transcript = """
         {"cwd":"/Users/example/work"}
         {"timestamp":"2026-08-14T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"npm cache clean 할까요?"}]}}
-        {"timestamp":"2026-08-14T00:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"npm cache clean --force"}}]}}
+        {"timestamp":"2026-08-14T00:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"Bash","input":{"command":"npm cache clean --force"}}]}}
+        {"timestamp":"2026-08-14T00:01:01Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"done"}]}}
         """
         try Data(transcript.utf8).write(to: store.appending(path: "storage.jsonl"))
 
@@ -158,6 +159,8 @@ final class ScreeBindIntegrationTests: XCTestCase {
         recipeId\tnpm_cache
         label\tnpm 캐시
         estimatedKB\t3400000
+        reclaimedKB\t3200000
+        physicalDeltaKB\t3100000
         """.utf8).write(to: receipts.appending(path: "20260814-npm.tsv"))
         try Data("2026-08-14T00:03:00Z\t24035252\t0\tnormal\n".utf8)
             .write(to: support.appending(path: "storage-samples.tsv"))
@@ -167,8 +170,10 @@ final class ScreeBindIntegrationTests: XCTestCase {
         )
         let result = try outcome.get()
         XCTAssertEqual(result.conversationMentions.count, 1)
-        XCTAssertEqual(result.providerToolExecutions.first?.command, "npm cache clean --force")
+        XCTAssertEqual(result.providerToolInvocations.first?.command, "npm cache clean --force")
+        XCTAssertEqual(result.providerToolInvocations.first?.status, "completed")
         XCTAssertEqual(result.modoreCleanupReceipts.first?.recipeId, "npm_cache")
+        XCTAssertEqual(result.modoreCleanupReceipts.first?.reclaimedKB, 3_200_000)
         XCTAssertEqual(result.filesystemObservations.first?.freeKB, 24_035_252)
 
         let leftovers = try FileManager.default.contentsOfDirectory(
