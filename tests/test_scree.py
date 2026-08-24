@@ -93,6 +93,127 @@ def test_subtranscripts_counted_by_size_without_opening(scree_home):
     assert group["size_bytes"] > 0
 
 
+# ---------------------------------------------------------------------------
+# 프로젝트 디렉터리 이름 해석 (Claude 버킷)
+# ---------------------------------------------------------------------------
+
+def test_bucket_name_resolves_a_non_ascii_directory(tmp_path):
+    """비ASCII 이름은 하이픈만 남지만, 실디렉터리와 대조하면 특정된다."""
+    target = tmp_path / "Projects" / "집필"
+    target.mkdir(parents=True)
+    bucket = scree._encode_claude_project_dir(str(target))
+    assert bucket.endswith("---")          # 'Projects' + '/' + 2글자 -> 하이픈 3개
+    assert scree._decode_claude_project_dir(bucket) == str(target)
+
+
+def test_a_vanished_non_ascii_directory_is_unresolved_not_its_parent(tmp_path):
+    """빈 세그먼트를 존재 검사에 넘기면 `Path(x) / ""` 가 x 라서 조상이 답으로 나온다.
+
+    조상은 살아있는 다른 워크스페이스이므로, 사라진 경로의 세션과 중첩
+    트랜스크립트가 그쪽으로 조용히 귀속된다 — 미해결로 두는 편이 옳다.
+    """
+    parent = tmp_path / "Projects"
+    parent.mkdir(parents=True)
+    bucket = scree._encode_claude_project_dir(str(parent / "집필"))
+    assert scree._decode_claude_project_dir(bucket) is None
+    assert scree._decode_claude_project_dir(bucket) != str(parent)
+
+
+def test_an_ambiguous_bucket_name_is_left_unresolved(tmp_path):
+    """같은 이름으로 인코딩되는 디렉터리가 둘이면 증거가 하나를 고르지 못한다."""
+    root = tmp_path / "Projects"
+    (root / "집필").mkdir(parents=True)
+    (root / "작업").mkdir(parents=True)
+    bucket = scree._encode_claude_project_dir(str(root / "집필"))
+    assert bucket == scree._encode_claude_project_dir(str(root / "작업"))
+    assert scree._decode_claude_project_dir(bucket) is None
+
+
+@pytest.mark.parametrize("leaf", ["chatgpt-to-cli", "my.proj", "with space", "-Users-x"])
+def test_names_that_already_contain_the_separator_round_trip(tmp_path, leaf):
+    """이름 자체에 하이픈·점·공백이 있어도 인코딩 대조는 흔들리지 않는다."""
+    target = tmp_path / "Projects" / leaf
+    target.mkdir(parents=True)
+    bucket = scree._encode_claude_project_dir(str(target))
+    resolved = scree._decode_claude_project_dir(bucket)
+    assert resolved == str(target)
+    assert scree._encode_claude_project_dir(resolved) == bucket
+
+
+def test_bucket_resolution_never_leaves_the_real_tree(tmp_path):
+    assert scree._decode_claude_project_dir("no-leading-hyphen") is None
+    assert scree._decode_claude_project_dir(
+        scree._encode_claude_project_dir(str(tmp_path / "nope" / "gone"))) is None
+
+
+# ---------------------------------------------------------------------------
+# 소유자가 앱에서 이미 지운 대화 (데스크탑 인덱스 톰스톤)
+# ---------------------------------------------------------------------------
+
+def _retention_home(tmp_path, *session_ids, deleted=()):
+    """cleanupPeriodDays 가 설정된 홈 + 만료 임박 세션 + 톰스톤."""
+    home = tmp_path / "home"
+    _write(home / ".claude" / "settings.json", json.dumps({"cleanupPeriodDays": 30}))
+    workspace = tmp_path / "work"
+    workspace.mkdir(parents=True)
+    records = []
+    for index, session_id in enumerate(session_ids):
+        path = home / ".claude" / "projects" / "-w" / f"{session_id}.jsonl"
+        _write(path, "{}\n")
+        records.append({"tool": "Claude", "kind": "session", "source": str(path),
+                        "workspace": str(workspace), "size_bytes": 100 + index,
+                        "last_active": 0.0})
+    index_dir = home.joinpath(*scree.CLAUDE_DESKTOP_INDEX, "acct", "org")
+    index_dir.mkdir(parents=True)
+    for session_id in deleted:
+        (index_dir / f"deleted_{session_id}").write_text("1755000000000")
+    # 28일 지난 세션 -> 30일 창에서 D-2
+    return home, records, 28 * 86400
+
+
+def test_a_conversation_deleted_in_the_app_is_not_urged_as_worth_rescuing(tmp_path):
+    """앱에서 지워도 트랜스크립트는 남는다. 남았다는 이유로 구하라고 재촉하면
+    소유자가 이미 내린 결정을 뒤집으라고 조르는 셈이다."""
+    home, records, now = _retention_home(tmp_path, "keep-me", "threw-away",
+                                         deleted=["threw-away"])
+    retention = scree.build_retention(records, now, home)
+    by_id = {Path(e["source"]).stem: e for e in retention["expiring"]}
+    assert by_id["keep-me"]["owner_deleted"] is False
+    assert by_id["threw-away"]["owner_deleted"] is True
+    # 이미 버린 것은 목록 머리에서 밀려난다 — 상단은 아직 원하는 작업만.
+    assert retention["expiring"][0]["owner_deleted"] is False
+    assert retention["expiring"][-1]["owner_deleted"] is True
+
+
+def test_the_already_deleted_count_is_named_in_the_report(tmp_path):
+    home, records, now = _retention_home(tmp_path, "keep-me", "threw-away",
+                                         deleted=["threw-away"])
+    report = {"stores": [], "groups": [], "unresolved_sessions": 0,
+              "retention": scree.build_retention(records, now, home)}
+    assert "already deleted in the app 1" in scree.render_report(report, limit=5)
+
+
+def test_tombstone_bodies_are_never_opened(tmp_path):
+    """톰스톤 내용은 삭제 시각일 뿐이다. 파일명만 읽으면 metadata-only 계약
+    안에 머문다 — 읽을 수 없게 만들어도 판정은 그대로여야 한다."""
+    home, records, now = _retention_home(tmp_path, "threw-away", deleted=["threw-away"])
+    tomb = next(home.joinpath(*scree.CLAUDE_DESKTOP_INDEX).rglob("deleted_*"))
+    tomb.chmod(0o000)
+    try:
+        retention = scree.build_retention(records, now, home)
+        assert retention["expiring"][0]["owner_deleted"] is True
+    finally:
+        tomb.chmod(0o600)
+
+
+def test_a_machine_with_no_desktop_index_judges_exactly_as_before(tmp_path):
+    home, records, now = _retention_home(tmp_path, "keep-me")
+    shutil.rmtree(home.joinpath(*scree.CLAUDE_DESKTOP_INDEX))
+    assert scree.collect_claude_desktop_deletions(home) == set()
+    retention = scree.build_retention(records, now, home)
+    assert [e["owner_deleted"] for e in retention["expiring"]] == [False]
+
+
 def test_orphan_workspace_is_flagged(scree_home):
     home, _, ws2 = scree_home
     result = scree.build_scree(home)

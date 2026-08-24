@@ -185,24 +185,99 @@ def collect_codex(home: Path) -> tuple[list[dict], dict]:
     return records, status
 
 
+# Claude derives a project directory name from the session's cwd by replacing
+# every non-alphanumeric character -- not only the separators -- with a hyphen,
+# then capping the result. '.', '_', spaces and every non-ASCII character all
+# collapse to the same '-', so the encoding is lossy and cannot be inverted by
+# string surgery.
+CLAUDE_BUCKET_CAP = 200
+_CLAUDE_BUCKET_UNSAFE = re.compile(r"[^a-zA-Z0-9]")
+# Directories examined while resolving one bucket name. A bucket that needs
+# more than this is left unresolved rather than resolved slowly.
+_CLAUDE_BUCKET_BUDGET = 4096
+
+
+def _encode_claude_project_dir(path: str) -> str:
+    """The name Claude would file a session at this cwd under."""
+    return _CLAUDE_BUCKET_UNSAFE.sub("-", path)[:CLAUDE_BUCKET_CAP]
+
+
 def _decode_claude_project_dir(name: str) -> Optional[str]:
-    """Best-effort decode of '-Users-ren-my-proj' by existence-guided segmentation."""
+    """Resolve '-Users-ren-my-proj' back to the directory it was encoded from.
+
+    Segmenting the name on hyphens and testing each candidate for existence is
+    not enough, because a path component made only of non-alphanumeric
+    characters encodes to hyphens and nothing else: a home directory and a
+    two-character subdirectory of it differ by three hyphens and nothing more.
+    And `Path(x) / ""` is `x`, so an
+    empty segment tested as a directory reports that it exists and the walk
+    stops early -- returning an *ancestor* of the real path, confidently and
+    silently, exactly where the name is hardest to read. The ancestor is
+    usually another live workspace, so every session and nested transcript
+    filed under the bucket is misattributed to it.
+
+    A component that encodes to itself -- every plain ASCII one -- is still
+    tried by name, which costs one stat() and covers the ordinary case. Only
+    when no name at a level matches is that one directory enumerated and its
+    children matched on their encoded form, the way the app resolves it. A
+    bucket that resolves to more than one directory is ambiguous by
+    construction and is left unresolved: scree reports an unresolved workspace
+    as unresolved, and that is the honest answer here.
+    """
     if not name.startswith("-"):
         return None
-    parts = name.lstrip("-").split("-")
-    current = Path("/")
-    index = 0
-    while index < len(parts):
-        segment = parts[index]
-        cursor = index + 1
-        while not (current / segment).exists() and cursor < len(parts):
-            segment = f"{segment}-{parts[cursor]}"
-            cursor += 1
-        if not (current / segment).exists():
-            return None
-        current = current / segment
-        index = cursor
-    return str(current)
+    truncated = len(name) >= CLAUDE_BUCKET_CAP
+    budget = {"nodes": 4096, "listings": 64}
+
+    def spend(kind: str) -> bool:
+        budget[kind] -= 1
+        return budget[kind] >= 0
+
+    def enumerate_matches(current: Path, rest: str) -> list[Path]:
+        if not spend("listings"):
+            return []
+        try:
+            children = sorted(c for c in current.iterdir() if c.is_dir())
+        except OSError:
+            return []
+        found: list[Path] = []
+        for child in children:
+            if not spend("nodes"):
+                return found[:2]
+            token = _encode_claude_project_dir(child.name)
+            if rest == token or (truncated and token.startswith(rest)):
+                found.append(child)
+            elif rest.startswith(f"{token}-"):
+                found.extend(resolve(child, rest[len(token) + 1:]))
+            if len(found) > 1:
+                return found[:2]
+        return found
+
+    def resolve(current: Path, rest: str) -> list[Path]:
+        if not rest:
+            return [current]
+        found: list[Path] = []
+        for cut in [i for i, ch in enumerate(rest) if ch == "-"] + [len(rest)]:
+            head = rest[:cut]
+            if not head or not spend("nodes"):
+                continue
+            child = current / head
+            if not child.is_dir():
+                continue
+            found.extend(resolve(child, rest[cut + 1:]))
+            if len(found) > 1:
+                return found[:2]
+        # Every name at this level failed, so the component here encodes to
+        # something other than itself. Widen to this directory only.
+        return found or enumerate_matches(current, rest)
+
+    matches = resolve(Path("/"), name[1:])
+    if len(matches) != 1:
+        return None
+    resolved = str(matches[0])
+    # The walk may take a symlinked route ('/var' -> '/private/var'); only a
+    # path that re-encodes to this bucket can be the one it names.
+    return resolved if _encode_claude_project_dir(resolved) == name else None
 
 
 def collect_claude(home: Path) -> tuple[list[dict], dict]:
@@ -544,6 +619,37 @@ def read_claude_cleanup_period_days(home: Path) -> Optional[int]:
 EFFECTIVELY_INDEFINITE_DAYS = 3650
 
 
+# The Claude desktop app keeps the list of conversations it shows beside the
+# transcripts rather than inside them: one `local_<id>.json` per listed
+# conversation, and a `deleted_<id>` tombstone per conversation the owner
+# removed. Deleting in the app rewrites only that index -- the transcript is
+# never touched -- so a tombstone is the one record on disk of the owner
+# having decided a conversation was finished with.
+CLAUDE_DESKTOP_INDEX = ("Library", "Application Support", "Claude", "claude-code-sessions")
+_TOMBSTONE_PREFIX = "deleted_"
+
+
+def collect_claude_desktop_deletions(home: Path) -> set[str]:
+    """Ids the desktop app was told to delete, from tombstone filenames alone.
+
+    The tombstone body is a delete timestamp and is never opened, so this stays
+    inside the metadata-only contract -- it reads a directory listing, nothing
+    more. One delete writes two or three tombstones (the app's own session id,
+    the transcript id, sometimes a third), but an id naming no transcript
+    simply never matches one, so no pairing rule is needed here.
+    """
+    root = home.joinpath(*CLAUDE_DESKTOP_INDEX)
+    if not root.is_dir():
+        return set()
+    deleted: set[str] = set()
+    try:
+        for path in root.rglob(f"{_TOMBSTONE_PREFIX}*"):
+            deleted.add(path.name[len(_TOMBSTONE_PREFIX):])
+    except OSError:
+        pass
+    return deleted
+
+
 def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = None) -> dict:
     """Per-store retention judgment.
 
@@ -555,12 +661,20 @@ def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = N
     within EXPIRY_SOON_DAYS of that window are flagged, split by whether their
     workspace still exists (a living story about to lose its transcript versus
     an orphan whose loss likely goes unnoticed).
+
+    A third state sits underneath both: a conversation the owner already
+    deleted in the desktop app. Deleting there removes the app's index entry
+    and leaves the transcript untouched, so the session reads here as any other
+    live one and the forecast urges rescuing something its owner threw away.
+    Tombstoned sessions are marked `owner_deleted` and sorted below the rest,
+    so the urgency at the top of the list is only ever about work still wanted.
     """
     configured_days: dict[str, int] = {}
     if home is not None:
         claude_configured = read_claude_cleanup_period_days(home)
         if claude_configured is not None:
             configured_days["Claude"] = claude_configured
+    owner_deleted = collect_claude_desktop_deletions(home) if home is not None else set()
     stores: list[dict] = []
     expiring: list[dict] = []
 
@@ -569,13 +683,15 @@ def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = N
             days_left = round(window - age)
             if days_left <= EXPIRY_SOON_DAYS:
                 workspace = session["workspace"]
+                source = session.get("source")
                 expiring.append({
                     "tool": tool,
                     "workspace": workspace,
-                    "source": session.get("source"),
+                    "source": source,
                     "days_left": days_left,
                     "size_bytes": session["size_bytes"],
                     "story_alive": bool(workspace) and Path(workspace).exists(),
+                    "owner_deleted": bool(source) and Path(source).stem in owner_deleted,
                 })
 
     by_tool: dict[str, list[dict]] = {}
@@ -605,7 +721,7 @@ def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = N
         else:
             entry["mode"] = "long"
         stores.append(entry)
-    expiring.sort(key=lambda e: (e["days_left"], -e["size_bytes"]))
+    expiring.sort(key=lambda e: (e["owner_deleted"], e["days_left"], -e["size_bytes"]))
     return {"stores": stores, "expiring": expiring}
 
 
@@ -1604,9 +1720,15 @@ def render_report(scree: dict, limit: int) -> str:
             lines.append(f"  {store['store']}: " + " · ".join(bits))
         expiring = retention.get("expiring", [])
         if expiring:
-            alive = [e for e in expiring if e["story_alive"]]
+            wanted = [e for e in expiring if not e.get("owner_deleted")]
+            alive = [e for e in wanted if e["story_alive"]]
+            counts = [f"alive workspaces {len(alive)}",
+                      f"orphaned {len(wanted) - len(alive)}"]
+            discarded = len(expiring) - len(wanted)
+            if discarded:
+                counts.append(f"already deleted in the app {discarded}")
             lines.append(f"  expiring soon (within D-{EXPIRY_SOON_DAYS}) {len(expiring)}"
-                         f" — alive workspaces {len(alive)} · orphaned {len(expiring) - len(alive)}")
+                         f" — " + " · ".join(counts))
             for entry in alive[:5]:
                 lines.append(f"    D-{entry['days_left']} {entry['workspace']}"
                              f" ({entry['tool']}, {_format_size(entry['size_bytes'])})")

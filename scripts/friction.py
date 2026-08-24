@@ -326,10 +326,27 @@ def _timestamp_of(line: dict) -> Optional[str]:
     return None
 
 
+# Rows Claude writes into the user channel that the operator never typed.
+# A `/compact` continuation carries isCompactSummary; a row the app renders but
+# was never sent as a prompt carries isVisibleInTranscriptOnly.
+CLAUDE_UNTYPED_ROW_FLAGS = ("isCompactSummary", "isVisibleInTranscriptOnly")
+
+
 def claude_user_turns(path: Path, budget: dict) -> Iterator[tuple[Optional[str], str]]:
-    """Claude Code and Claude Desktop streams alike."""
+    """Claude Code and Claude Desktop streams alike.
+
+    A `/compact` continuation is stored as `type: "user"`, but its body is the
+    assistant's summary of the conversation so far. Reading it as operator text
+    breaks the content contract twice over: it invents pushback the operator
+    never expressed, and it emits assistant prose inside a quote attributed to
+    them. Both kinds of row are skipped by their flag rather than by matching
+    the summary's opening sentence, which is English and would miss any
+    localised build.
+    """
     for line in _iter_json_lines(path, budget):
         if line.get("type") != "user":
+            continue
+        if any(line.get(flag) for flag in CLAUDE_UNTYPED_ROW_FLAGS):
             continue
         message = line.get("message")
         if not isinstance(message, dict):
@@ -446,6 +463,40 @@ def extract_friction(turns: Iterable[tuple[Optional[str], str]], ref: dict,
     return findings, user_turns
 
 
+def _dedupe_replayed_turns(findings: list[dict]) -> tuple[list[dict], int]:
+    """One operator turn is one finding, however many transcripts replay it.
+
+    Resuming or forking a Claude session writes a fresh `.jsonl` that replays
+    the whole prior conversation: each message keeps its `uuid` and
+    `timestamp` and only the `sessionId` changes. A turn typed once is
+    therefore on disk once per resume -- eleven copies for one conversation on
+    the development machine -- and counting every copy inflates the finding
+    list and both summary tables with turns that were never repeated. This is
+    the rule the Gemini parser already applies to `$set` rewrites, widened
+    from within one file to across the store.
+
+    Keyed on (source, timestamp, quote). A turn with no timestamp cannot be
+    identified across files, so it is kept rather than guessed at. Sessions
+    arrive newest-first, so the copy that survives is the one in the most
+    recently active session -- the transcript the operator would resume.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    kept: list[dict] = []
+    collapsed = 0
+    for finding in findings:
+        timestamp = finding["ts"]
+        if not timestamp:
+            kept.append(finding)
+            continue
+        key = (finding["source"], timestamp, finding["quote"])
+        if key in seen:
+            collapsed += 1
+            continue
+        seen.add(key)
+        kept.append(finding)
+    return kept, collapsed
+
+
 DEFAULT_SINCE_DAYS = 30
 DEFAULT_MAX_SESSIONS = 200
 
@@ -474,6 +525,7 @@ def build_friction(home: Path, *, since_days: int = DEFAULT_SINCE_DAYS,
         findings.extend(session_findings)
         user_turns += turns
         scanned_by_source[ref["source"]] = scanned_by_source.get(ref["source"], 0) + 1
+    findings, replayed_copies = _dedupe_replayed_turns(findings)
     findings.sort(key=lambda f: (f["ts"] or "", f["path"]))
 
     by_category = {name: 0 for name in FRICTION_CATEGORIES}
@@ -499,6 +551,7 @@ def build_friction(home: Path, *, since_days: int = DEFAULT_SINCE_DAYS,
         "sessions_in_window": len(candidates),
         "sessions_scanned": len(selected),
         "sessions_skipped_by_cap": max(0, len(candidates) - len(selected)),
+        "replayed_copies_collapsed": replayed_copies,
         "max_sessions": max_sessions,
         "user_turns_scanned": user_turns,
         "skipped": budget,
@@ -532,6 +585,10 @@ def render_report(report: dict, limit: int) -> str:
     if report["sessions_skipped_by_cap"]:
         lines.append(f"  note: {report['sessions_skipped_by_cap']} in-window sessions were not "
                      f"scanned (--max-sessions {report['max_sessions']}); raise the cap to cover them")
+    if report.get("replayed_copies_collapsed"):
+        lines.append(f"  note: {report['replayed_copies_collapsed']} replayed copies of turns "
+                     f"counted above were collapsed; resuming a session rewrites the whole "
+                     f"transcript, so one turn can sit in many files")
     skipped = report["skipped"]
     if any(skipped.values()):
         lines.append("  skipped: " + " · ".join(f"{k} {v}" for k, v in skipped.items() if v))
