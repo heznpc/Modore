@@ -72,7 +72,7 @@ final class WorkAssessmentTests: XCTestCase {
             MothballService.rankCandidates(repos: [dirty], now: now).isEmpty,
             "precondition: this repo is not a retirement candidate")
 
-        let project = WorkProject(path: "/repo", assessment: assessment(dirty))
+        let project = WorkProject(path: "/repo", git: .assessed(assessment(dirty)))
         XCTAssertFalse(project.gitRisks.isEmpty, "its risks must still be visible")
         XCTAssertTrue(project.needsAttention)
         XCTAssertNil(project.candidate, "but there is no retirement to review")
@@ -82,7 +82,7 @@ final class WorkAssessmentTests: XCTestCase {
     /// the ideal retirement candidate, and it was getting a warning
     /// triangle because "dormant" was being counted as a risk.
     func test_aDormantCleanRepoIsNotAWarning() {
-        let project = WorkProject(path: "/repo", assessment: assessment(repo(path: "/repo")))
+        let project = WorkProject(path: "/repo", git: .assessed(assessment(repo(path: "/repo"))))
         XCTAssertTrue(project.gitRisks.isEmpty)
         XCTAssertFalse(project.needsAttention)
         XCTAssertFalse(project.gitNotes.isEmpty, "dormancy is still worth saying")

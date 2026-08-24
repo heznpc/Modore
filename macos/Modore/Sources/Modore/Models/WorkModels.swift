@@ -30,9 +30,22 @@ struct WorkProject: Identifiable {
     let path: String
     var sessions: [SessionIndexEntry] = []
     var worktrees: [ScreeWorktreeItem] = []
-    /// This project's git state, for every repo the scan could judge --
-    /// not only the archivable ones. Absent when no scan has reached it.
-    var assessment: ArchiveCandidate?
+
+    /// What is known about this project's git state -- including the two
+    /// cases where the answer is that nothing is known.
+    ///
+    /// It was an `ArchiveCandidate?`, and `nil` had to mean three
+    /// different things at once: judged and clean, never looked at
+    /// because the scan stopped at its root cap, and looked at but
+    /// unreadable. All three drew the same row, which is the collapse of
+    /// unknown into none that this project keeps having to undo.
+    var git: GitAssessmentState = .notApplicable
+
+    /// The judged repo, when there is one.
+    var assessment: ArchiveCandidate? {
+        if case .assessed(let candidate) = git { return candidate }
+        return nil
+    }
 
     /// The same assessment, when it says the repo may be retired at all.
     /// `[은퇴 검토]` is offered from this, never from `assessment`: a repo
@@ -139,6 +152,65 @@ struct WorkProject: Identifiable {
     }
 }
 
+/// Which project's retirement sheet is open, by identity rather than by
+/// value. See the `sheet(item:)` call site for why.
+struct RetirementReviewTarget: Identifiable, Equatable {
+    let id: String
+}
+
+/// Everything one git scan established, including what it did not reach.
+struct RepoScanOutcome {
+    let candidates: [ArchiveCandidate]
+    /// Repo path to the reason it could not be read.
+    let failures: [String: String]
+    /// Repo paths the root cap left out entirely.
+    let notScanned: [String]
+
+    var failureCount: Int { failures.count }
+}
+
+/// What a scan was able to establish about one repository.
+///
+/// The two failure cases are kept apart because they call for different
+/// things from the reader: a repo the scan never reached is answered by
+/// raising the cap, and a repo it could not read is answered by looking
+/// at the repo.
+enum GitAssessmentState: Equatable {
+    /// A scanner read the repo and judged it.
+    case assessed(ArchiveCandidate)
+
+    /// Known to be a git repository, and the scan stopped before it. Not
+    /// a statement about the repo at all.
+    case notScanned
+
+    /// Reached and unreadable -- a corrupt `.git`, a permission wall, a
+    /// git process that timed out.
+    case failed(String)
+
+    /// Nothing here claims to be a git repository, so there is no git
+    /// answer to withhold.
+    case notApplicable
+
+    static func == (lhs: GitAssessmentState, rhs: GitAssessmentState) -> Bool {
+        switch (lhs, rhs) {
+        case (.assessed(let a), .assessed(let b)): return a.id == b.id
+        case (.notScanned, .notScanned), (.notApplicable, .notApplicable): return true
+        case (.failed(let a), .failed(let b)): return a == b
+        default: return false
+        }
+    }
+
+    /// The one line a row shows when there is no judgment to show. `nil`
+    /// when the project never claimed to be a repository.
+    var unknownReason: String? {
+        switch self {
+        case .assessed, .notApplicable: return nil
+        case .notScanned: return "Git 상태 미확인 · 이번 검사 범위 밖"
+        case .failed: return "Git 상태 미확인 · 저장소를 읽지 못했습니다"
+        }
+    }
+}
+
 /// Identity plus contents. `ArchiveCandidate` and `ScreeWorktreeItem` are
 /// not themselves `Equatable`, and the comparisons this type is actually
 /// used for -- did the list change, is this the same project -- are
@@ -148,7 +220,7 @@ extension WorkProject: Equatable {
         lhs.path == rhs.path
             && lhs.sessions == rhs.sessions
             && lhs.worktrees.map(\.id) == rhs.worktrees.map(\.id)
-            && lhs.assessment?.id == rhs.assessment?.id
+            && lhs.git == rhs.git
     }
 }
 
@@ -175,7 +247,13 @@ enum WorkProjectBuilder {
         sessions: [SessionIndexEntry],
         worktrees: [ScreeWorktreeItem],
         assessments: [ArchiveCandidate],
-        gitRoots: [String] = []
+        gitRoots: [String] = [],
+        // Repos the scan could not read, and repos it never reached.
+        // Passed in rather than inferred from the absence of an
+        // assessment, because absence cannot tell the two apart -- and
+        // telling them apart is the whole point.
+        scanFailures: [String: String] = [:],
+        notScanned: [String] = []
     ) -> [WorkProject] {
         var roots: Set<String> = []
         for assessment in assessments { roots.insert(canonical(assessment.pathText)) }
@@ -214,7 +292,15 @@ enum WorkProjectBuilder {
             upsert(worktree.repo) { $0.worktrees.append(worktree) }
         }
         for assessment in assessments {
-            upsert(assessment.pathText) { $0.assessment = assessment }
+            upsert(assessment.pathText) { $0.git = .assessed(assessment) }
+        }
+        // Applied after the assessments, and only where none landed: a
+        // repo that was both retried and judged is judged.
+        for (path, reason) in scanFailures {
+            upsert(path) { if case .notApplicable = $0.git { $0.git = .failed(reason) } }
+        }
+        for path in notScanned {
+            upsert(path) { if case .notApplicable = $0.git { $0.git = .notScanned } }
         }
 
         return projects.values
