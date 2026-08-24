@@ -469,11 +469,9 @@ extension ScreeService {
         // personal thing this tool is ever handed.
         let queryFile = execution.outputRoot
             .appending(path: "scree-query-\(UUID().uuidString).txt")
-        guard (try? Data(query.utf8).write(to: queryFile, options: [.atomic])) != nil else {
+        guard writePrivateQuery(query, to: queryFile) else {
             return .failure(.init(message: "검색어를 전달하지 못했습니다."))
         }
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600], ofItemAtPath: queryFile.path)
         defer { try? FileManager.default.removeItem(at: queryFile) }
 
         var arguments = ["search", "--query-file", queryFile.path, "--limit", String(limit)]
@@ -493,6 +491,67 @@ extension ScreeService {
                 return .failure(.init(message: "검색 결과를 해석하지 못했습니다."))
             }
             return .success(decoded)
+        }
+    }
+
+    /// Reads the four evidence kinds behind a storage-history question.
+    ///
+    /// Like content search, this runs only after an explicit submit and
+    /// keeps the personal query out of argv. scree owns the 180-second
+    /// coverage budget; the process gets another minute to encode and
+    /// return that bounded answer before the app stops waiting.
+    static func evidence(
+        execution: RuntimeExecutionContext,
+        query: String,
+        limit: Int = 200,
+        homeOverride: URL? = nil
+    ) async -> Result<ScreeEvidenceResult, ScreeInspectionError> {
+        let queryFile = execution.outputRoot
+            .appending(path: "scree-evidence-query-\(UUID().uuidString).txt")
+        guard writePrivateQuery(query, to: queryFile) else {
+            return .failure(.init(message: "질문을 전달하지 못했습니다."))
+        }
+        defer { try? FileManager.default.removeItem(at: queryFile) }
+
+        var arguments = [
+            "evidence", "--query-file", queryFile.path,
+            "--limit", String(limit), "--budget-seconds", "180",
+        ]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        switch await invoke(execution: execution, arguments: arguments, timeout: 240) {
+        case .timedOut:
+            return .failure(.init(message: "이전 기록 확인이 4분 안에 끝나지 않았습니다."))
+        case .failure(let message):
+            return .failure(.init(message: message))
+        case .success(let output):
+            guard let start = output.firstIndex(of: "{"),
+                  let data = output[start...].data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode(
+                    ScreeEvidenceResult.self, from: data
+                  ) else {
+                return .failure(.init(message: "이전 기록 결과를 해석하지 못했습니다."))
+            }
+            return .success(decoded)
+        }
+    }
+
+    /// Writes a subprocess query with owner-only permissions. Failure to
+    /// establish 0600 is failure to hand the query over, not a best-effort
+    /// warning: this file briefly contains transcript search terms.
+    static func writePrivateQuery(_ query: String, to url: URL) -> Bool {
+        do {
+            try Data(query.utf8).write(to: url, options: [.atomic])
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: url.path)
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600 else {
+                try? FileManager.default.removeItem(at: url)
+                return false
+            }
+            return true
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            return false
         }
     }
 
@@ -665,6 +724,41 @@ extension ScanModel {
                 AccessibilityAnnouncer.announce("세션을 보존했습니다")
             case .failure(let message):
                 errorMessage = message
+            }
+        }
+    }
+
+    /// Searches prior storage-related evidence only after the person submits
+    /// a phrase. The newest request wins, matching conversation search: a
+    /// slow earlier scan must not land beneath a question typed afterwards.
+    func runStorageEvidenceSearch() {
+        let query = storageEvidenceQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        storageEvidenceTask?.cancel()
+        storageEvidenceGeneration += 1
+        let generation = storageEvidenceGeneration
+        storageEvidenceRunning = true
+        storageEvidenceError = nil
+        let root = projectRoot
+        storageEvidenceTask = Task {
+            defer {
+                if generation == storageEvidenceGeneration { storageEvidenceRunning = false }
+            }
+            guard let execution = await Task.detached(priority: .userInitiated, operation: {
+                RuntimeWorkspace.prepareExecution(projectRoot: root)
+            }).value else {
+                if generation == storageEvidenceGeneration {
+                    storageEvidenceError = "서명된 실행 런타임을 확인하지 못했습니다."
+                }
+                return
+            }
+            let outcome = await ScreeService.evidence(execution: execution, query: query)
+            guard !Task.isCancelled, generation == storageEvidenceGeneration else { return }
+            switch outcome {
+            case .success(let result):
+                storageEvidence = result
+            case .failure(let error):
+                storageEvidenceError = error.message
             }
         }
     }
