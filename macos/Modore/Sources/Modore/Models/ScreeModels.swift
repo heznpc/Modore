@@ -301,6 +301,9 @@ struct SessionSearchMatch: Decodable, Identifiable, Equatable {
     let tool: String
     let workspace: String
     let lastActive: String
+    /// Present in evidence payloads so their local-time display string can
+    /// share a real timeline with UTC filesystem observations.
+    let lastActiveEpoch: Double?
     let index: Int
     let role: String
     let isUser: Bool
@@ -453,6 +456,7 @@ struct ScreeProviderToolExecution: Decodable, Equatable {
     let source: String
     let workspace: String
     let lastActive: String
+    let lastActiveEpoch: Double?
 }
 
 struct ScreeCleanupReceipt: Decodable, Equatable {

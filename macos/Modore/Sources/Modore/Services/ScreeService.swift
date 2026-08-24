@@ -5,20 +5,19 @@ import MothballCore
 /// Runs the sealed `scree.py` and parses its output. Read-only: this never
 /// deletes anything.
 ///
-/// A `report` retains no session content — scree's own contract
-/// guarantees that and this layer only decodes the JSON. Two commands
-/// deliberately read inside a conversation, both for one session the
-/// user named: `preserve`, which exports a masked transcript, and
-/// `title`, which returns one masked line to show beside a deletion
-/// decision. Neither runs during a scan.
+/// `report` and ordinary inventory paths are metadata-only. Explicit
+/// owner-requested inspection and search commands may read transcript bodies;
+/// `scree.py`'s module-level content-reading contract is the authoritative
+/// list. Raw transcript content is never fed to a safety verdict; deep binding
+/// emits only derived binding evidence and does not retain the body.
 enum ScreeOutcome {
     case success(ScreeReport)
     case failure(String)
 }
 
-/// `preserve` is scree's one deliberate exception to its no-content contract
-/// (see scree.py's module docstring): a single, explicitly-named session
-/// file, exported as masked Markdown. `.success` carries the file it wrote.
+/// `preserve` is an explicit content-reading command (see scree.py's module
+/// contract): a single, explicitly-named session file exported as masked
+/// Markdown. `.success` carries the file it wrote.
 enum ScreePreserveOutcome {
     case success(URL)
     case failure(String)

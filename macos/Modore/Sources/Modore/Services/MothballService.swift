@@ -20,7 +20,16 @@ enum MothballService {
         scanScope(from: lineagePaths, limit: limit).roots
     }
 
-    /// Use complete, bounded batch evidence and disclose scan limits before presenting retirement decisions.
+    /// The roots a scan will cover, and the ones the cap leaves out.
+    ///
+    /// The cap keeps a pathological session history from turning one page
+    /// load into an unbounded git-process fan-out, and it has to stay.
+    /// What cannot stay is dropping the excess silently: the 작업 screen
+    /// is now the authority on every project's git state, so a repo that
+    /// was never looked at drew the same clean row as a repo that was
+    /// looked at and found clean. The cap is not currently reached on the
+    /// reference machine, but if it is reached the omitted repos must remain
+    /// explicit rather than looking clean.
     static func scanScope(
         from lineagePaths: [ScreeLineagePath], limit: Int = 300
     ) -> (roots: [URL], notScanned: [String]) {
