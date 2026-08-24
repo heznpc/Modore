@@ -409,3 +409,64 @@ def test_cli_json_is_machine_readable(friction_home, tmp_path):
 
 def test_cli_rejects_nonpositive_windows(friction_home):
     assert friction.main(["scan", "--since-days", "0", "--home", str(friction_home)]) == 2
+
+
+# --- catch-all 비율 공개 (판정은 그대로) -------------------------------------
+
+
+def test_unclassified_share_is_none_when_there_are_no_findings():
+    """0/0은 비율이 아니다. 0%로 표시하면 '문제 없음'으로 읽힌다."""
+    assert friction._unclassified_share({c: 0 for c in friction.FRICTION_CATEGORIES}) is None
+
+
+def test_unclassified_share_measures_only_the_catch_all():
+    counts = {c: 0 for c in friction.FRICTION_CATEGORIES}
+    counts[friction.CATCH_ALL_CATEGORY] = 52
+    counts["wrong-action"] = 1
+    counts["rule-contamination"] = 1
+    assert friction._unclassified_share(counts) == 0.963
+
+
+def test_a_high_catch_all_share_is_disclosed_in_the_report():
+    """96%가 catch-all이면 그 자체가 신호다 — '아홉 범주 pushback'이 아니라
+    'pushback처럼 시작한 턴'으로 읽어야 한다는."""
+    counts = {c: 0 for c in friction.FRICTION_CATEGORIES}
+    counts[friction.CATCH_ALL_CATEGORY] = 52
+    counts["wrong-action"] = 2
+    report = {
+        "stores": [], "window_days": 30, "sessions_scanned": 1,
+        "sessions_in_window": 1, "user_turns_scanned": 1789,
+        "sessions_skipped_by_cap": 0, "max_sessions": 200,
+        "quotes": "masked", "skipped": {}, "findings": [],
+        "by_category": counts, "by_severity": {"3": 0, "2": 0, "1": 54},
+        "unclassified_share": friction._unclassified_share(counts),
+    }
+    text = friction.render_report(report, limit=5)
+    assert "96%" in text
+    assert friction.CATCH_ALL_CATEGORY in text
+
+
+def test_a_normal_run_is_not_annotated():
+    """대부분이 분류된 실행에 주석을 달면 경고가 배경 소음이 된다."""
+    counts = {c: 0 for c in friction.FRICTION_CATEGORIES}
+    counts["wrong-action"] = 9
+    counts[friction.CATCH_ALL_CATEGORY] = 1
+    report = {
+        "stores": [], "window_days": 30, "sessions_scanned": 1,
+        "sessions_in_window": 1, "user_turns_scanned": 10,
+        "sessions_skipped_by_cap": 0, "max_sessions": 200,
+        "quotes": "masked", "skipped": {}, "findings": [], "by_category": counts,
+        "by_severity": {"3": 0, "2": 0, "1": 10},
+        "unclassified_share": friction._unclassified_share(counts),
+    }
+    assert "fell to" not in friction.render_report(report, limit=5)
+
+
+def test_disclosing_the_share_does_not_change_any_verdict():
+    """이슈 #92의 핵심 조건: 공개는 판정을 건드리지 않는다. 진술을 정정하는
+    턴은 여전히 catch-all이고, wrong-action으로 승격되지 않는다."""
+    statements = ("아니 그게 아니라 해상도는 4K임", "ㄴㄴ 그 제품은 27인치야")
+    for text in statements:
+        assert friction.severity_of(text) is not None, "심각도 사다리는 그대로 받아들인다"
+        assert friction.category_of(text) == friction.CATCH_ALL_CATEGORY
+        assert friction.category_of(text) != "wrong-action"
