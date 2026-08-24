@@ -130,6 +130,53 @@ final class ScreeBindIntegrationTests: XCTestCase {
         XCTAssertEqual(ContinuityGate.evaluate(outcome.assessment),
                        .block(.unsealedSessions(count: 1)))
     }
+
+    /// Locks the storage screen to the real `scree evidence` pipe. This is
+    /// also the privacy regression test for the UUID query file: after the
+    /// subprocess exits, no query scratch file remains in the runtime output.
+    func test_evidenceReturnsFourSeparateKindsThroughTheRealSubprocess() async throws {
+        let store = home.appending(
+            path: ".claude/projects/-example-storage", directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        let transcript = """
+        {"cwd":"/Users/example/work"}
+        {"timestamp":"2026-08-14T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"npm cache clean 할까요?"}]}}
+        {"timestamp":"2026-08-14T00:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"npm cache clean --force"}}]}}
+        """
+        try Data(transcript.utf8).write(to: store.appending(path: "storage.jsonl"))
+
+        let support = home.appending(
+            path: "Library/Application Support/Modore", directoryHint: .isDirectory
+        )
+        let receipts = support.appending(path: "cleanup-receipts", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: receipts, withIntermediateDirectories: true)
+        try Data("""
+        version\t1
+        timestamp\t2026-08-14T00:02:00Z
+        status\tcomplete
+        recipeId\tnpm_cache
+        label\tnpm 캐시
+        estimatedKB\t3400000
+        """.utf8).write(to: receipts.appending(path: "20260814-npm.tsv"))
+        try Data("2026-08-14T00:03:00Z\t24035252\t0\tnormal\n".utf8)
+            .write(to: support.appending(path: "storage-samples.tsv"))
+
+        let outcome = await ScreeService.evidence(
+            execution: execution, query: "npm cache clean", homeOverride: home
+        )
+        let result = try outcome.get()
+        XCTAssertEqual(result.conversationMentions.count, 1)
+        XCTAssertEqual(result.providerToolExecutions.first?.command, "npm cache clean --force")
+        XCTAssertEqual(result.modoreCleanupReceipts.first?.recipeId, "npm_cache")
+        XCTAssertEqual(result.filesystemObservations.first?.freeKB, 24_035_252)
+
+        let leftovers = try FileManager.default.contentsOfDirectory(
+            at: execution.outputRoot,
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("scree-evidence-query-") }
+        XCTAssertTrue(leftovers.isEmpty)
+    }
 }
 
 /// The escalation rule, tested on payloads rather than through the

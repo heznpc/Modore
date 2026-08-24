@@ -41,4 +41,54 @@ final class ScreeServiceTests: XCTestCase {
         let name = ScreeService.preserveFilename(tool: "Claude", source: "")
         XCTAssertEqual(name, "Claude-session.md")
     }
+
+    func testPrivateQueryScratchFileIsOwnerOnly() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scree-query-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertTrue(ScreeService.writePrivateQuery("private phrase", to: url))
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "private phrase")
+    }
+}
+
+final class ScreeEvidenceResultTests: XCTestCase {
+    private func decode(definitive: Bool, coverage: String = "complete") throws
+        -> ScreeEvidenceResult {
+        let scanned = definitive ? 20 : 12
+        let unreadable = definitive ? 0 : 2
+        let json = """
+        {"query":"DerivedData","conversationMentions":[],
+         "providerToolExecutions":[],"modoreCleanupReceipts":[],
+         "filesystemObservations":[],"scannedSessions":\(scanned),"totalSessions":20,
+         "unreadableSessions":\(unreadable),"coverage":"\(coverage)",
+         "truncatedReason":\(coverage == "complete" ? "null" : "\"time\""),
+         "definitive":\(definitive),"masked":true}
+        """
+        return try JSONDecoder().decode(ScreeEvidenceResult.self, from: Data(json.utf8))
+    }
+
+    func testFourKindsKeepTheirRequiredNaturalLanguageLabels() {
+        XCTAssertEqual(
+            ScreeEvidenceKind.allCases.map(\.label),
+            ["언급됨", "실행 기록 있음", "Modore가 실행함", "후속 변화 관찰됨"]
+        )
+    }
+
+    func testIncompleteEvidenceDoesNotTurnUnknownIntoNone() throws {
+        let result = try decode(definitive: false, coverage: "truncated")
+        XCTAssertFalse(result.matchSummary.contains("없습니다"))
+        let note = try XCTUnwrap(result.coverageNote)
+        XCTAssertTrue(note.contains("단정하지 않습니다"))
+        XCTAssertTrue(note.contains("12/20"))
+        XCTAssertTrue(note.contains("2"))
+    }
+
+    func testOnlyDefinitivePayloadMayStateNoMatchingRecord() throws {
+        let result = try decode(definitive: true)
+        XCTAssertTrue(result.matchSummary.contains("찾지 못했습니다"))
+        XCTAssertNil(result.coverageNote)
+    }
 }
