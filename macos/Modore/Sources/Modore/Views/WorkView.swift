@@ -28,8 +28,13 @@ struct WorkPage: View {
         // this the retirement review never becomes available in the session
         // that first ran the audit.
         .task(id: model.screeReport != nil) { model.prepareWorkScreen() }
-        .sheet(item: $model.retirementReview) { project in
-            RetirementReviewSheet(project: project)
+        .sheet(item: $model.retirementReview) { target in
+            // The id, not the project. Continuity binding finishes after
+            // the sheet can already be open, and a value captured at
+            // presentation time would keep showing the counts from before
+            // the binder ran -- on the one screen whose entire job is to
+            // say what a retirement would strand.
+            RetirementReviewSheet(projectID: target.id)
         }
     }
 }
@@ -188,7 +193,9 @@ struct WorkProjectRow: View {
             // project does not belong at the bottom of a list of its
             // contents.
             if expanded, project.candidate != nil {
-                Button("은퇴 검토") { model.retirementReview = project }
+                Button("은퇴 검토") {
+                    model.retirementReview = RetirementReviewTarget(id: project.id)
+                }
                     .buttonStyle(.link)
                     .font(.caption)
                     .padding(.leading, 8)
@@ -256,6 +263,22 @@ struct WorkProjectRow: View {
                         // one of these.
                         .fontWeight(.medium)
                         .foregroundStyle(.primary)
+                }
+                // Facts that describe the repo without warning about it.
+                // They were computed and then dropped on the floor, so
+                // "400일 미사용" -- the reason a repo is a good candidate
+                // -- never reached the screen at all.
+                if !project.gitNotes.isEmpty {
+                    Text(project.gitNotes.joined(separator: " · "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                // Said out loud, because a repo nobody looked at drew the
+                // same row as a repo that was looked at and found clean.
+                if let unknown = project.git.unknownReason {
+                    Text(unknown)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             Spacer()

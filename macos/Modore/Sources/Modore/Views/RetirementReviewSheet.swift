@@ -15,9 +15,34 @@ import MothballCore
 struct RetirementReviewSheet: View {
     @EnvironmentObject private var model: ScanModel
     @Environment(\.dismiss) private var dismiss
-    let project: WorkProject
+    /// Resolved from the model on every render rather than captured once,
+    /// so counts that arrive after the sheet opens are the counts shown.
+    let projectID: String
+
+    private var project: WorkProject? {
+        model.workProjects.first { $0.id == projectID }
+    }
 
     var body: some View {
+        if let project {
+            content(project)
+        } else {
+            // The project stopped existing while its sheet was open -- a
+            // rescan that no longer sees it, most likely. Saying so beats
+            // an empty sheet that looks like a clean bill of health.
+            VStack(spacing: 12) {
+                Text("이 작업을 더 이상 찾을 수 없습니다.")
+                    .foregroundStyle(.secondary)
+                Button("닫기") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(32)
+            .frame(minWidth: 320, minHeight: 160)
+        }
+    }
+
+    @ViewBuilder
+    private func content(_ project: WorkProject) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(project.name) 은퇴 가능성 검토")
@@ -33,15 +58,15 @@ struct RetirementReviewSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    section("Git", rows: gitRows)
-                    section("AI 작업", rows: agentRows)
+                    section("Git", rows: gitRows(project))
+                    section("AI 작업", rows: agentRows(project))
                     if !project.protectedWorktrees.isEmpty {
-                        section("보호할 워크트리", rows: worktreeRows)
+                        section("보호할 워크트리", rows: worktreeRows(project))
                     }
                     if !project.unverifiedWorktrees.isEmpty {
-                        section("확인 못 한 워크트리", rows: unverifiedRows)
+                        section("확인 못 한 워크트리", rows: unverifiedRows(project))
                     }
-                    section("보존될 것", rows: preservationRows)
+                    section("보존될 것", rows: preservationRows(project))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(20)
@@ -88,7 +113,7 @@ struct RetirementReviewSheet: View {
         }
     }
 
-    private var gitRows: [(Bool, String)] {
+    private func gitRows(_ project: WorkProject) -> [(Bool, String)] {
         // The assessment, not the candidate: they are the same object here
         // (the sheet only opens for an eligible repo) but the git state is
         // a fact about the repo rather than about its eligibility.
@@ -116,7 +141,7 @@ struct RetirementReviewSheet: View {
     /// binder answers a different question -- which sessions are bound to
     /// this repo, on what evidence, and whether it managed to look at
     /// everything -- and that is the answer this screen exists to show.
-    private var agentRows: [(Bool, String)] {
+    private func agentRows(_ project: WorkProject) -> [(Bool, String)] {
         guard let continuity = project.candidate?.continuity else {
             return [(false, "이 저장소의 AI 대화 연결을 아직 확인하지 않았습니다.")]
         }
@@ -170,7 +195,7 @@ struct RetirementReviewSheet: View {
         }
     }
 
-    private var worktreeRows: [(Bool, String)] {
+    private func worktreeRows(_ project: WorkProject) -> [(Bool, String)] {
         project.protectedWorktrees.map { worktree in
             (false, "\(URL(fileURLWithPath: worktree.path).lastPathComponent) · \(worktree.branch) · \(worktree.reasonText)")
         }
@@ -178,7 +203,7 @@ struct RetirementReviewSheet: View {
 
     /// Unreadable is not safe, and it is not protected either -- calling
     /// it protected claims knowledge nobody has.
-    private var unverifiedRows: [(Bool, String)] {
+    private func unverifiedRows(_ project: WorkProject) -> [(Bool, String)] {
         project.unverifiedWorktrees.map { worktree in
             (false, "\(URL(fileURLWithPath: worktree.path).lastPathComponent) · \(worktree.branch) · 상태를 읽지 못했습니다")
         }
@@ -187,7 +212,7 @@ struct RetirementReviewSheet: View {
     /// What survives the retirement, said plainly. The whole reason the
     /// continuity work exists is that a repo and its conversations are
     /// deleted by different hands, and only this screen knows both.
-    private var preservationRows: [(Bool, String)] {
+    private func preservationRows(_ project: WorkProject) -> [(Bool, String)] {
         guard let continuity = project.candidate?.continuity else {
             return [(false, "무엇이 보존될지 판단할 근거가 아직 없습니다.")]
         }

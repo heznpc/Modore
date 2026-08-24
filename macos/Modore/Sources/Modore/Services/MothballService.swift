@@ -17,10 +17,16 @@ enum MothballService {
     /// workspaces) from turning one page load into an unbounded git-process
     /// fan-out.
     static func candidateRoots(from lineagePaths: [ScreeLineagePath], limit: Int = 300) -> [URL] {
-        lineagePaths
-            .filter { $0.exists && $0.hasGit }
-            .prefix(limit)
-            .map { URL(fileURLWithPath: $0.path) }
+        scanScope(from: lineagePaths, limit: limit).roots
+    }
+
+    /// Use complete, bounded batch evidence and disclose scan limits before presenting retirement decisions.
+    static func scanScope(
+        from lineagePaths: [ScreeLineagePath], limit: Int = 300
+    ) -> (roots: [URL], notScanned: [String]) {
+        let repos = lineagePaths.filter { $0.exists && $0.hasGit }.map(\.path)
+        return (repos.prefix(limit).map { URL(fileURLWithPath: $0) },
+                Array(repos.dropFirst(limit)))
     }
 
     /// Pure and independently testable: which scanned repos are worth
@@ -71,14 +77,28 @@ enum MothballService {
     /// it could not look.
     static func scanCandidates(
         lineagePaths: [ScreeLineagePath]
-    ) async -> (candidates: [ArchiveCandidate], failureCount: Int) {
-        let roots = candidateRoots(from: lineagePaths)
-        guard !roots.isEmpty else { return ([], 0) }
-        let report = await RepoScanner().scanReport(roots: roots)
+    ) async -> RepoScanOutcome {
+        let scope = scanScope(from: lineagePaths)
+        guard !scope.roots.isEmpty else {
+            return RepoScanOutcome(candidates: [], failures: [:], notScanned: scope.notScanned)
+        }
+        let report = await RepoScanner().scanReport(roots: scope.roots)
         // Every assessment, not only the archivable ones. Which of them
         // may be retired is a question `isRetirementEligible` answers per
         // repo; the screen also has to say what state the others are in.
-        return (assessRepos(repos: report.repos), report.failures.count)
+        //
+        // Failures travel by path, not as a count. A total tells the user
+        // that something somewhere could not be read; only the path tells
+        // them which row is not to be trusted.
+        var failures: [String: String] = [:]
+        for failure in report.failures {
+            failures[failure.path.path] = failure.reason
+        }
+        return RepoScanOutcome(
+            candidates: assessRepos(repos: report.repos),
+            failures: failures,
+            notScanned: scope.notScanned
+        )
     }
 
     /// Reads titles for the handful of sessions one row will show, when
@@ -240,7 +260,9 @@ extension ScanModel {
             // depend on which repos survived the archive classifier or the
             // scanner's own root limit.
             gitRoots: (screeReport?.lineagePaths ?? [])
-                .filter(\.hasGit).map(\.path)
+                .filter(\.hasGit).map(\.path),
+            scanFailures: repoScanFailures,
+            notScanned: reposNotScanned
         )
     }
 
@@ -248,9 +270,15 @@ extension ScanModel {
     ///
     /// Entering the screen *is* the explicit intent -- the privacy line
     /// this project holds is metadata-only *judgment*, not a rule that a
-    /// listing must be asked for twice. Nothing here reads a transcript
-    /// body; titles are fetched separately, for rows that are actually on
-    /// screen, and are never an input to a verdict.
+    /// listing must be asked for twice.
+    ///
+    /// This does reach transcript bodies, and the comment here used to
+    /// deny it. The continuity binder runs `bind-all --deep`, which reads
+    /// transcripts to find file-access evidence and emits only whether
+    /// such evidence exists. That is inside the contract -- no body is
+    /// retained and no verdict quotes one -- but a comment claiming the
+    /// screen never reads a body was simply false, and a false comment
+    /// about a privacy boundary is worse than none.
     func prepareWorkScreen() {
         if sessionIndex == nil && !sessionIndexLoading && sessionIndexError == nil {
             refreshSessionIndex()
@@ -461,10 +489,24 @@ extension ScanModel {
             // Until it lands every row reads "AI 세션 확인 안 됨", which is
             // true rather than reassuring.
             repoAssessments = outcome.candidates
+            repoScanFailures = outcome.failures
+            reposNotScanned = outcome.notScanned
             archiveInspectionFailures = outcome.failureCount
-            repoAssessments = await MothballService.withContinuity(
-                outcome.candidates, projectRoot: projectRoot
+            // Binding is for repos there is a retirement to review. It
+            // reads every session store per pass, and running it over
+            // repos that can never be archived -- the `.unsafe` ones,
+            // which are `.unsafe` precisely because they hold live work
+            // -- spends that pass on a question nobody asked. The
+            // ineligible keep their assessment and their `.notAssessed`
+            // continuity, which is the honest answer for them.
+            let eligible = outcome.candidates.filter(\.isRetirementEligible)
+            guard !eligible.isEmpty else { return }
+            let bound = await MothballService.withContinuity(
+                eligible, projectRoot: projectRoot
             )
+            var byPath: [String: ArchiveCandidate] = [:]
+            for candidate in bound { byPath[candidate.pathText] = candidate }
+            repoAssessments = outcome.candidates.map { byPath[$0.pathText] ?? $0 }
         }
     }
 }
