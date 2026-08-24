@@ -647,6 +647,58 @@ enum RuntimeWorkspace {
 
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: destination.path)
+        pruneSupersededRuntimeBackups(in: parent, keeping: backup, against: destination)
+    }
+
+    /// Retain the newest rollback and unknown user files; prune only backups whose contents are already present in the current runtime.
+    static func pruneSupersededRuntimeBackups(
+        in parent: URL,
+        keeping newest: URL?,
+        against runtime: URL,
+        fileManager: FileManager = .default
+    ) {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: parent, includingPropertiesForKeys: nil
+        ) else { return }
+        let current = relativeFilePaths(under: runtime, fileManager: fileManager)
+        for entry in entries {
+            let name = entry.lastPathComponent
+            // Staging directories are pure leftovers from an install that
+            // died between copy and move; they never held owner data.
+            let isStaging = name.hasPrefix("runtime-staging-")
+            guard isStaging || name.hasPrefix("runtime-backup-") else { continue }
+            if let newest, entry.standardizedFileURL == newest.standardizedFileURL { continue }
+            guard isDirectoryWithoutSymlink(at: entry) else { continue }
+            if !isStaging {
+                let held = relativeFilePaths(under: entry, fileManager: fileManager)
+                guard held.isSubset(of: current) else { continue }
+            }
+            try? fileManager.removeItem(at: entry)
+        }
+    }
+
+    /// Every regular file under `root`, by path relative to it. Symlinks
+    /// are reported by name and never followed, so a link cannot make a
+    /// directory look like it holds only known files.
+    private static func relativeFilePaths(
+        under root: URL, fileManager: FileManager
+    ) -> Set<String> {
+        guard isDirectoryWithoutSymlink(at: root),
+              let walker = fileManager.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: []
+              ) else { return [] }
+        let prefix = root.standardizedFileURL.path + "/"
+        var found: Set<String> = []
+        for case let url as URL in walker {
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values?.isSymbolicLink == true || values?.isRegularFile == true else { continue }
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(prefix) else { continue }
+            found.insert(String(path.dropFirst(prefix.count)))
+        }
+        return found
     }
 
     private static func workspacePathsAreSafe(
