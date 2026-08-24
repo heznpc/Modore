@@ -8,6 +8,7 @@ struct CleanupWorkspaceList: View {
         List {
             StorageIncidentCauseSection(event: model.storageWatchPathEvents.last)
             StorageIncidentTimelineSection()
+            StorageIncidentContextSection()
             CleanupCandidateSection(storage: storage)
             if !storage.reviewCandidates.isEmpty {
                 CleanupProtectedSection(storage: storage)
@@ -58,7 +59,7 @@ private struct StorageIncidentCauseSection: View {
                 .foregroundStyle(.secondary)
         } header: {
             NativeSectionHeader(
-                title: "지금 왜 부족한가",
+                title: "최근 부족 시점에 무엇이 컸나",
                 subtitle: "최근 부족 경고 때 함께 측정한 known root입니다. 큰 항목이라는 사실만 확인하며 원인으로 단정하지 않습니다.",
                 value: event?.capturedAt.formatted(date: .abbreviated, time: .shortened) ?? "확인 안 됨"
             )
@@ -115,14 +116,11 @@ private struct StorageIncidentTimelineSection: View {
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
-                ForEach(StorageEvidenceTimelineItem.items(from: result)) { item in
+                ForEach(StorageEvidenceTimelineItem.queryItems(from: result)) { item in
                     StorageEvidenceTimelineRow(item: item)
                 }
-                Text("시각 순서로 함께 놓았을 뿐입니다. 같은 시간대의 앞뒤 순서가 원인을 증명하지 않습니다.")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.secondary)
             } else {
-                Text("위의 큰 항목이나 기억나는 정리 명령을 입력하면 과거 기록을 네 증거 종류로 나눠 확인합니다.")
+                Text("위의 큰 항목이나 기억나는 정리 명령을 입력하면 과거 언급과 provider 도구 기록을 구분해 확인합니다.")
                     .foregroundStyle(.secondary)
             }
         } header: {
@@ -130,6 +128,28 @@ private struct StorageIncidentTimelineSection: View {
                 title: "이전에 비슷한 문제를 어떻게 해결했나요?",
                 subtitle: "검색은 Return 또는 버튼을 눌렀을 때만 시작하며 질문은 프로세스 인자에 남기지 않습니다."
             )
+        }
+    }
+}
+
+private struct StorageIncidentContextSection: View {
+    @EnvironmentObject private var model: ScanModel
+
+    var body: some View {
+        if let result = model.storageEvidence {
+            Section {
+                ForEach(StorageEvidenceTimelineItem.contextItems(from: result)) { item in
+                    StorageEvidenceTimelineRow(item: item)
+                }
+                Text("검색어와 직접 일치한 기록이 아닙니다. 시각 순서로 함께 놓았을 뿐이며, 같은 시간대의 앞뒤 순서가 원인을 증명하지 않습니다.")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } header: {
+                NativeSectionHeader(
+                    title: "주변 로컬 기록",
+                    subtitle: "최근 Modore 조치 영수증과 저장공간 관찰입니다. 검색 결과와 별도로 봅니다."
+                )
+            }
         }
     }
 }
@@ -179,11 +199,11 @@ struct StorageEvidenceTimelineItem: Identifiable {
         return occurredAt.formatted(date: .abbreviated, time: .standard)
     }
 
-    static func items(from result: ScreeEvidenceResult) -> [Self] {
+    static func queryItems(from result: ScreeEvidenceResult) -> [Self] {
         let mentions = result.conversationMentions.map { mention in
             Self(
-                id: "mention|\(mention.source)|\(mention.index)",
-                occurredAt: epochDate(mention.lastActiveEpoch),
+                id: "mention|\(mention.eventId ?? mention.source)|\(mention.index)",
+                occurredAt: isoDate(mention.at ?? ""),
                 evidenceLabel: ScreeEvidenceKind.conversationMention.label,
                 symbol: "text.bubble",
                 title: mention.snippet,
@@ -191,26 +211,37 @@ struct StorageEvidenceTimelineItem: Identifiable {
                     .filter { !$0.isEmpty }.joined(separator: " · ")
             )
         }
-        let executions = result.providerToolExecutions.enumerated().map { index, execution in
+        let invocations = result.providerToolInvocations.enumerated().map { index, invocation in
             Self(
-                id: "execution|\(execution.source)|\(execution.at)|\(index)",
-                occurredAt: isoDate(execution.at) ?? epochDate(execution.lastActiveEpoch),
-                evidenceLabel: ScreeEvidenceKind.providerToolExecution.label,
+                id: "invocation|\(invocation.callId)|\(invocation.source)|\(index)",
+                occurredAt: isoDate(invocation.at),
+                evidenceLabel: providerStatusLabel(invocation.status),
                 symbol: "terminal",
-                title: execution.command,
-                detail: [execution.tool, location(execution.workspace)]
+                title: invocation.command,
+                detail: [invocation.tool, location(invocation.workspace)]
                     .filter { !$0.isEmpty }.joined(separator: " · ")
             )
         }
+        return sorted(mentions + invocations)
+    }
+
+    static func contextItems(from result: ScreeEvidenceResult) -> [Self] {
         let receipts = result.modoreCleanupReceipts.enumerated().map { index, receipt in
             let estimate = receipt.estimatedKB.map(sizeText(kilobytes:))
+            let reclaimed = receipt.reclaimedKB.map(sizeText(kilobytes:))
+            let physicalDelta = receipt.physicalDeltaKB.map(sizeText(kilobytes:))
             return Self(
                 id: "receipt|\(receipt.at)|\(receipt.recipeId)|\(index)",
                 occurredAt: isoDate(receipt.at),
                 evidenceLabel: ScreeEvidenceKind.modoreCleanupReceipt.label,
-                symbol: "checkmark.seal",
+                symbol: receipt.status == "blocked" ? "nosign" : "checkmark.seal",
                 title: receipt.label.isEmpty ? receipt.recipeId : receipt.label,
-                detail: [statusText(receipt.status), estimate.map { "당시 추정 \($0)" }]
+                detail: [
+                    cleanupStatusText(receipt.status),
+                    reclaimed.map { "회수 기록 \($0)" },
+                    physicalDelta.map { "가용 공간 변화 \($0)" },
+                    estimate.map { "사전 추정 \($0)" },
+                ]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
             )
         }
@@ -228,7 +259,11 @@ struct StorageEvidenceTimelineItem: Identifiable {
                 detail: drop
             )
         }
-        return (mentions + executions + receipts + observations).sorted {
+        return sorted(receipts + observations)
+    }
+
+    private static func sorted(_ items: [Self]) -> [Self] {
+        items.sorted {
             switch ($0.occurredAt, $1.occurredAt) {
             case let (left?, right?) where left != right: return left > right
             case (_?, nil): return true
@@ -236,11 +271,6 @@ struct StorageEvidenceTimelineItem: Identifiable {
             default: return $0.id < $1.id
             }
         }
-    }
-
-    private static func epochDate(_ epoch: Double?) -> Date? {
-        guard let epoch, epoch.isFinite, epoch >= 0 else { return nil }
-        return Date(timeIntervalSince1970: epoch)
     }
 
     private static func isoDate(_ raw: String) -> Date? {
@@ -264,9 +294,27 @@ struct StorageEvidenceTimelineItem: Identifiable {
         )
     }
 
+    private static func cleanupStatusText(_ status: String) -> String? {
+        switch status {
+        case "complete": return "실행 완료"
+        case "partial": return "부분 실행"
+        case "blocked": return "실행 차단"
+        default: return statusText(status)
+        }
+    }
+
+    private static func providerStatusLabel(_ status: String) -> String {
+        switch status {
+        case "completed": return "실행 완료 기록"
+        case "failed": return "실행 실패 기록"
+        case "denied": return "실행 차단 기록"
+        case "requested": return "도구 호출 요청됨"
+        default: return "실행 여부 확인 안 됨"
+        }
+    }
+
     private static func statusText(_ status: String) -> String? {
         switch status {
-        case "complete": return "완료 기록"
         case "warning": return "부족 상태"
         case "normal": return "정상 범위"
         case "failed": return "실패 기록"

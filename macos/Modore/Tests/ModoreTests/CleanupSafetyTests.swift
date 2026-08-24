@@ -801,6 +801,36 @@ final class RuntimeBackupRetentionTests: XCTestCase {
             "owner data\n")
     }
 
+    /// A managed pathname does not establish ownership of its current bytes.
+    /// If the owner edited an existing script, the installation-time hash no
+    /// longer matches and that older backup must survive later refreshes.
+    func test_aBackupHoldingOwnerModifiedManagedContentIsNeverPruned() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-backup-modified-managed-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("bundle/runtime")
+        let destination = root.appendingPathComponent("support/Modore/runtime")
+
+        try runtime(at: source, marker: "v1")
+        try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
+        let scanner = destination.appendingPathComponent("scripts/scanner.sh")
+        try "#!/bin/bash\n# owner modification\n".write(
+            to: scanner, atomically: true, encoding: .utf8)
+
+        for version in 2...3 {
+            try runtime(at: source, marker: "v\(version)")
+            try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
+        }
+
+        let remaining = try backups(in: destination.deletingLastPathComponent())
+        let modified = remaining.filter {
+            (try? String(contentsOf: $0.appendingPathComponent("scripts/scanner.sh")))
+                == "#!/bin/bash\n# owner modification\n"
+        }
+        XCTAssertEqual(modified.count, 1,
+                       "an edited managed path must not be pruned by path identity")
+    }
+
     /// A staging directory is a leftover from an install that died between
     /// copy and move. It never held owner data.
     func test_abandonedStagingDirectoriesArePruned() throws {

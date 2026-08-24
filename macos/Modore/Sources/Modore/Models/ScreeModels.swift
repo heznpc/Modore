@@ -301,9 +301,15 @@ struct SessionSearchMatch: Decodable, Identifiable, Equatable {
     let tool: String
     let workspace: String
     let lastActive: String
-    /// Present in evidence payloads so their local-time display string can
-    /// share a real timeline with UTC filesystem observations.
+    /// Session-level provenance only. A resumed session's mtime must never be
+    /// substituted for the matching turn's own `at` timestamp.
     let lastActiveEpoch: Double?
+    /// The matching turn's own provider timestamp. Never replaced with the
+    /// session mtime: a resumed conversation can be weeks newer than the hit.
+    let at: String?
+    /// Provider event identity when the store exposes one; used by scree to
+    /// collapse Claude resume/fork replay across transcript files.
+    let eventId: String?
     let index: Int
     let role: String
     let isUser: Bool
@@ -386,12 +392,12 @@ struct SessionSearchResult: Decodable, Equatable {
 /// Four deliberately separate answers to a storage-history question.
 ///
 /// They must not collapse into one count: a phrase in a conversation, a
-/// provider tool call containing that phrase, Modore's own cleanup receipt,
+/// provider tool invocation containing that phrase, a Modore cleanup receipt,
 /// and a later free-space sample establish four different things.
 struct ScreeEvidenceResult: Decodable, Equatable {
     let query: String
     let conversationMentions: [SessionSearchMatch]
-    let providerToolExecutions: [ScreeProviderToolExecution]
+    let providerToolInvocations: [ScreeProviderToolInvocation]
     let modoreCleanupReceipts: [ScreeCleanupReceipt]
     let filesystemObservations: [ScreeFilesystemObservation]
     let scannedSessions: Int
@@ -422,8 +428,8 @@ struct ScreeEvidenceResult: Decodable, Equatable {
     }
 
     var matchSummary: String {
-        guard conversationMentions.isEmpty && providerToolExecutions.isEmpty else {
-            return "대화 언급과 provider 도구 기록을 종류별로 표시합니다."
+        guard conversationMentions.isEmpty && providerToolInvocations.isEmpty else {
+            return "대화 언급과 provider 도구 호출 기록을 종류별로 표시합니다."
         }
         if definitive {
             return "확인한 모든 대화에서 이 문구의 언급이나 provider 도구 기록을 찾지 못했습니다."
@@ -434,24 +440,28 @@ struct ScreeEvidenceResult: Decodable, Equatable {
 
 enum ScreeEvidenceKind: String, CaseIterable {
     case conversationMention = "conversation_mention"
-    case providerToolExecution = "provider_tool_execution"
+    case providerToolInvocation = "provider_tool_invocation"
     case modoreCleanupReceipt = "modore_cleanup_receipt"
     case filesystemObservation = "filesystem_observation"
 
     var label: String {
         switch self {
         case .conversationMention: return "언급됨"
-        case .providerToolExecution: return "실행 기록 있음"
-        case .modoreCleanupReceipt: return "Modore가 실행함"
+        case .providerToolInvocation: return "Provider 도구 기록"
+        case .modoreCleanupReceipt: return "Modore 조치 기록"
         case .filesystemObservation: return "후속 변화 관찰됨"
         }
     }
 }
 
-struct ScreeProviderToolExecution: Decodable, Equatable {
+struct ScreeProviderToolInvocation: Decodable, Equatable {
     let kind: String
     let command: String
     let at: String
+    let callId: String
+    /// requested/completed/failed/denied/unknown, decided by scree after
+    /// correlating provider call and result records.
+    let status: String
     let tool: String
     let source: String
     let workspace: String
@@ -466,6 +476,8 @@ struct ScreeCleanupReceipt: Decodable, Equatable {
     let label: String
     let status: String
     let estimatedKB: Int64?
+    let reclaimedKB: Int64?
+    let physicalDeltaKB: Int64?
 }
 
 struct ScreeFilesystemObservation: Decodable, Equatable {
