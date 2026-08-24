@@ -163,25 +163,27 @@ private struct StorageEvidenceTimelineRow: View {
     }
 }
 
-private struct StorageEvidenceTimelineItem: Identifiable {
+struct StorageEvidenceTimelineItem: Identifiable {
     let id: String
-    let sortKey: String
+    let occurredAt: Date?
     let evidenceLabel: String
     let symbol: String
     let title: String
     let detail: String
 
     var displayTime: String {
-        guard !sortKey.isEmpty else { return "시각 확인 안 됨" }
-        return sortKey.replacingOccurrences(of: "T", with: " ")
-            .replacingOccurrences(of: "Z", with: "")
+        guard let occurredAt else { return "시각 확인 안 됨" }
+        // Date's formatted representation uses the person's current locale
+        // and timezone. In particular, a UTC storage-watch timestamp must not
+        // be shown as wall-clock local time merely by stripping its trailing Z.
+        return occurredAt.formatted(date: .abbreviated, time: .standard)
     }
 
     static func items(from result: ScreeEvidenceResult) -> [Self] {
         let mentions = result.conversationMentions.map { mention in
             Self(
                 id: "mention|\(mention.source)|\(mention.index)",
-                sortKey: mention.lastActive,
+                occurredAt: epochDate(mention.lastActiveEpoch),
                 evidenceLabel: ScreeEvidenceKind.conversationMention.label,
                 symbol: "text.bubble",
                 title: mention.snippet,
@@ -192,7 +194,7 @@ private struct StorageEvidenceTimelineItem: Identifiable {
         let executions = result.providerToolExecutions.enumerated().map { index, execution in
             Self(
                 id: "execution|\(execution.source)|\(execution.at)|\(index)",
-                sortKey: execution.at.isEmpty ? execution.lastActive : execution.at,
+                occurredAt: isoDate(execution.at) ?? epochDate(execution.lastActiveEpoch),
                 evidenceLabel: ScreeEvidenceKind.providerToolExecution.label,
                 symbol: "terminal",
                 title: execution.command,
@@ -204,7 +206,7 @@ private struct StorageEvidenceTimelineItem: Identifiable {
             let estimate = receipt.estimatedKB.map(sizeText(kilobytes:))
             return Self(
                 id: "receipt|\(receipt.at)|\(receipt.recipeId)|\(index)",
-                sortKey: receipt.at,
+                occurredAt: isoDate(receipt.at),
                 evidenceLabel: ScreeEvidenceKind.modoreCleanupReceipt.label,
                 symbol: "checkmark.seal",
                 title: receipt.label.isEmpty ? receipt.recipeId : receipt.label,
@@ -219,7 +221,7 @@ private struct StorageEvidenceTimelineItem: Identifiable {
                 : statusText(observation.status) ?? "상태 확인 안 됨"
             return Self(
                 id: "observation|\(observation.at)|\(index)",
-                sortKey: observation.at,
+                occurredAt: isoDate(observation.at),
                 evidenceLabel: ScreeEvidenceKind.filesystemObservation.label,
                 symbol: "internaldrive",
                 title: "사용 가능 \(free)",
@@ -227,9 +229,28 @@ private struct StorageEvidenceTimelineItem: Identifiable {
             )
         }
         return (mentions + executions + receipts + observations).sorted {
-            if $0.sortKey != $1.sortKey { return $0.sortKey > $1.sortKey }
-            return $0.id < $1.id
+            switch ($0.occurredAt, $1.occurredAt) {
+            case let (left?, right?) where left != right: return left > right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return $0.id < $1.id
+            }
         }
+    }
+
+    private static func epochDate(_ epoch: Double?) -> Date? {
+        guard let epoch, epoch.isFinite, epoch >= 0 else { return nil }
+        return Date(timeIntervalSince1970: epoch)
+    }
+
+    private static func isoDate(_ raw: String) -> Date? {
+        guard !raw.isEmpty else { return nil }
+        if let fractional = try? Date.ISO8601FormatStyle(
+            includingFractionalSeconds: true
+        ).parse(raw) {
+            return fractional
+        }
+        return try? Date.ISO8601FormatStyle().parse(raw)
     }
 
     private static func location(_ path: String) -> String {

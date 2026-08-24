@@ -30,7 +30,7 @@ default:
   transcript, the same shape as hydroject's `export`;
 - `scree.py title <source>` returns one masked line: the first user
   request that says what the session was about, for display beside a
-  deletion decision. It is the smaller exception of the two and the only
+  deletion decision. It is the smallest content read and the only
   one whose output is retained anywhere, so it is capped to one short
   line and is never an input to a safety judgement.
 - `scree.py titles` returns the same one masked line for many named
@@ -54,7 +54,7 @@ default:
   file-access evidence, and emits only whether such evidence exists.
 - `scree.py inspect <source>` returns one session's conversation for
   display -- masked, per-turn capped, recent-window only. The viewer the
-  other three imply: judgment stays metadata-only, but the owner can
+  display commands imply: judgment stays metadata-only, but the owner can
   always look at what the machine already holds. Never an input to any
   verdict.
 Everything above this line in the module never calls any of them.
@@ -2195,11 +2195,11 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     way to answer "which of these was the one where I fixed this before" --
     so the answer came from `rg` in a terminal instead.
 
-    A deliberate content read, and the exception is the same shape as the
-    other four: the caller names what to look for, nothing is discovered
-    on the app's own initiative, snippets are masked by default, and
-    nothing here reaches a verdict. `report` and `bind` stay
-    metadata-only; this runs only when a person types a query.
+    A deliberate content read: the caller names what to look for, nothing
+    is discovered on the app's own initiative, snippets are masked by
+    default, and nothing here reaches a verdict. `report` stays
+    metadata-only; this runs only when a person types a query. Deep bind's
+    separate derived-evidence contract is documented at module level.
 
     Coverage is part of the answer, not a footnote. "No results" and "I
     could not finish looking" are different facts, and a search that
@@ -2636,7 +2636,12 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
             continue
         context = {"tool": session["tool"], "source": session["source"],
                    "workspace": session["workspace"],
-                   "lastActive": session["lastActive"]}
+                   "lastActive": session["lastActive"],
+                   # The display string is local time while storage-watch
+                   # observations are UTC ISO-8601. Carry the source epoch so
+                   # consumers never have to compare those two spellings as
+                   # strings or guess which timezone the first one used.
+                   "lastActiveEpoch": session["lastActiveEpoch"]}
         mentions.extend({**hit, "kind": "conversation_mention", **context}
                         for hit in found_mentions)
         executions.extend({**hit, **context} for hit in found_executions)

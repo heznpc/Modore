@@ -2114,6 +2114,8 @@ def test_evidence_keeps_a_mention_and_an_execution_apart(tmp_path):
     assert len(executions) == 2, "Claude tool_use와 Codex exec_command 둘 다"
     assert all(e["kind"] == "provider_tool_execution" for e in executions)
     assert all("npm cache clean --force" in e["command"] for e in executions)
+    assert all(isinstance(row["lastActiveEpoch"], (int, float))
+               for row in mentions + executions)
 
 
 def test_evidence_never_returns_a_merged_total(tmp_path):

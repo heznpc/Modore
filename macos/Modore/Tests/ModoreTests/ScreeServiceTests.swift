@@ -91,4 +91,57 @@ final class ScreeEvidenceResultTests: XCTestCase {
         XCTAssertTrue(result.matchSummary.contains("찾지 못했습니다"))
         XCTAssertNil(result.coverageNote)
     }
+
+    /// The conversation timestamp is deliberately the Korean wall-clock
+    /// spelling of 09:30Z. A string sort puts every ISO value before it due
+    /// to `T > space`; a real timeline has to order the three instants.
+    func testTimelineSortsMixedLocalEpochAndUTCISOByInstant() throws {
+        let json = """
+        {"query":"storage","conversationMentions":[
+          {"source":"/Users/example/session.jsonl","tool":"Claude",
+           "workspace":"/Users/example/work","lastActive":"2026-08-24 18:30",
+           "lastActiveEpoch":1787563800,"index":1,"role":"user",
+           "isUser":true,"snippet":"storage"}],
+         "providerToolExecutions":[
+          {"kind":"provider_tool_execution","command":"du -sh .","at":"2026-08-24T09:40:00.500Z",
+           "tool":"Codex","source":"/Users/example/tool.jsonl","workspace":"/Users/example/work",
+           "lastActive":"2026-08-24 18:41","lastActiveEpoch":1787564460}],
+         "modoreCleanupReceipts":[],
+         "filesystemObservations":[
+          {"kind":"filesystem_observation","at":"2026-08-24T09:45:00Z",
+           "freeKB":1000,"dropKB":0,"status":"normal"}],
+         "scannedSessions":1,"totalSessions":1,"unreadableSessions":0,
+         "coverage":"complete","truncatedReason":null,"definitive":true,"masked":true}
+        """
+        let result = try JSONDecoder().decode(ScreeEvidenceResult.self, from: Data(json.utf8))
+        let items = StorageEvidenceTimelineItem.items(from: result)
+
+        XCTAssertEqual(
+            items.map(\.evidenceLabel),
+            ["후속 변화 관찰됨", "실행 기록 있음", "언급됨"]
+        )
+        XCTAssertEqual(items[0].occurredAt, Date(timeIntervalSince1970: 1_787_564_700))
+        XCTAssertEqual(items[1].occurredAt, Date(timeIntervalSince1970: 1_787_564_400.5))
+        XCTAssertEqual(items[2].occurredAt, Date(timeIntervalSince1970: 1_787_563_800))
+    }
+
+    func testTimelineKeepsMalformedTimesExplicitlyUnknownAndLast() throws {
+        let json = """
+        {"query":"storage","conversationMentions":[],"providerToolExecutions":[],
+         "modoreCleanupReceipts":[
+          {"kind":"modore_cleanup_receipt","at":"not-a-date","recipeId":"cache",
+           "label":"cache","status":"complete","estimatedKB":null}],
+         "filesystemObservations":[
+          {"kind":"filesystem_observation","at":"2026-08-24T09:45:00Z",
+           "freeKB":1000,"dropKB":0,"status":"normal"}],
+         "scannedSessions":0,"totalSessions":0,"unreadableSessions":0,
+         "coverage":"complete","truncatedReason":null,"definitive":true,"masked":true}
+        """
+        let result = try JSONDecoder().decode(ScreeEvidenceResult.self, from: Data(json.utf8))
+        let items = StorageEvidenceTimelineItem.items(from: result)
+
+        XCTAssertNotNil(items.first?.occurredAt)
+        XCTAssertNil(items.last?.occurredAt)
+        XCTAssertEqual(items.last?.displayTime, "시각 확인 안 됨")
+    }
 }
