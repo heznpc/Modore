@@ -2083,12 +2083,17 @@ def _evidence_home(tmp_path):
     _write(claude, _jsonl(
         {"cwd": "/w"},
         {"timestamp": "2026-08-14T00:00:00Z",
+         "uuid": "message-claude-1",
          "message": {"role": "user", "content": [
              {"type": "text", "text": "npm cache clean 하는 게 좋을까?"}]}},
         {"timestamp": "2026-08-14T00:01:00Z",
          "message": {"role": "assistant", "content": [
-             {"type": "tool_use", "name": "Bash",
+             {"type": "tool_use", "id": "call-claude-1", "name": "Bash",
               "input": {"command": "npm cache clean --force"}}]}},
+        {"timestamp": "2026-08-14T00:01:01Z",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "call-claude-1",
+              "content": "done"}]}},
     ))
     codex = tmp_path / ".codex" / "sessions" / "2026" / "08" / "14" / "rollout-x.jsonl"
     codex.parent.mkdir(parents=True)
@@ -2097,8 +2102,12 @@ def _evidence_home(tmp_path):
          "payload": {"id": "codex-x", "cwd": "/w"}},
         {"timestamp": "2026-08-14T00:03:00Z", "type": "response_item",
          "payload": {"type": "function_call", "name": "exec_command",
+                     "call_id": "call-codex-1",
                      "arguments": json.dumps({"cmd": "npm cache clean --force",
                                               "workdir": "/w"})}},
+        {"timestamp": "2026-08-14T00:03:01Z", "type": "response_item",
+         "payload": {"type": "function_call_output", "call_id": "call-codex-1",
+                     "output": "Process exited with code 0\nFinal output:\ndone"}},
     ))
     return tmp_path
 
@@ -2108,29 +2117,30 @@ def test_evidence_keeps_a_mention_and_an_execution_apart(tmp_path):
     다른 주장이다. 합치면 '81번 등장'이 '81번 실행'이 된다."""
     out = scree.build_evidence("npm cache clean", _evidence_home(tmp_path))
     mentions = out["conversationMentions"]
-    executions = out["providerToolExecutions"]
+    invocations = out["providerToolInvocations"]
     assert len(mentions) == 1 and "좋을까" in mentions[0]["snippet"]
     assert all(m["kind"] == "conversation_mention" for m in mentions)
-    assert len(executions) == 2, "Claude tool_use와 Codex exec_command 둘 다"
-    assert all(e["kind"] == "provider_tool_execution" for e in executions)
-    assert all("npm cache clean --force" in e["command"] for e in executions)
+    assert len(invocations) == 2, "Claude tool_use와 Codex exec_command 둘 다"
+    assert all(e["kind"] == "provider_tool_invocation" for e in invocations)
+    assert all(e["status"] == "completed" for e in invocations)
+    assert all("npm cache clean --force" in e["command"] for e in invocations)
     assert all(isinstance(row["lastActiveEpoch"], (int, float))
-               for row in mentions + executions)
+               for row in mentions + invocations)
+    assert mentions[0]["at"] == "2026-08-14T00:00:00Z"
 
 
 def test_evidence_never_returns_a_merged_total(tmp_path):
     """네 종류는 네 리스트로 남는다. 합계 필드를 두는 순간 강도가 사라진다."""
     out = scree.build_evidence("npm cache clean", _evidence_home(tmp_path))
-    for key in ("conversationMentions", "providerToolExecutions",
+    for key in ("conversationMentions", "providerToolInvocations",
                 "modoreCleanupReceipts", "filesystemObservations"):
         assert isinstance(out[key], list)
     assert "totalEvidence" not in out and "evidenceCount" not in out
 
 
-def test_evidence_reports_the_command_that_ran_not_the_phrase(tmp_path):
-    """`rg -e 'npm cache clean'`은 그 문구를 검색한 것이지 실행한 것이
-    아니다. 텍스트만으로는 구분할 수 없으므로, 실제로 돌아간 명령 전체를
-    보여주고 판단은 읽는 사람에게 남긴다."""
+def test_evidence_reports_the_whole_invocation_not_only_the_phrase(tmp_path):
+    """`rg -e 'npm cache clean'`은 그 문구를 검색하려는 호출이다. 호출
+    텍스트만으로 실행 완료를 단정하지 않고 전체 명령과 요청 상태를 보인다."""
     home = tmp_path
     src = home / ".claude" / "projects" / "-Users-example-repo" / "a.jsonl"
     src.parent.mkdir(parents=True)
@@ -2140,9 +2150,121 @@ def test_evidence_reports_the_command_that_ran_not_the_phrase(tmp_path):
             {"type": "tool_use", "name": "Bash",
              "input": {"command": "rg -e 'npm cache clean' ~/.claude"}}]}},
     ))
-    executions = scree.build_evidence("npm cache clean", home)["providerToolExecutions"]
-    assert len(executions) == 1
-    assert executions[0]["command"].startswith("rg -e")
+    invocations = scree.build_evidence("npm cache clean", home)["providerToolInvocations"]
+    assert len(invocations) == 1
+    assert invocations[0]["command"].startswith("rg -e")
+    assert invocations[0]["status"] == "unknown"
+
+
+def test_evidence_correlates_provider_results_without_promoting_a_call(tmp_path):
+    """호출 레코드만 있으면 실행 증거가 아니다. provider 결과와 call id를
+    결합한 뒤에도 완료/실패/차단/요청됨의 강도를 그대로 보존한다."""
+    src = tmp_path / ".claude" / "projects" / "-Users-example-repo" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    _write(src, _jsonl(
+        {"message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "ok", "name": "Bash",
+             "input": {"command": "cleanup cache ok"}},
+            {"type": "tool_use", "id": "failed", "name": "Bash",
+             "input": {"command": "cleanup cache failed"}},
+            {"type": "tool_use", "id": "denied", "name": "Bash",
+             "input": {"command": "cleanup cache denied"}},
+            {"type": "tool_use", "id": "pending", "name": "Bash",
+             "input": {"command": "cleanup cache pending"}},
+        ]}},
+        {"message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "ok", "content": "done"},
+            {"type": "tool_result", "tool_use_id": "failed",
+             "content": "Exit code 2\nprocess failed"},
+            {"type": "tool_result", "tool_use_id": "denied", "is_error": True,
+             "content": "permission denied"},
+        ]}},
+    ))
+    rows = scree.build_evidence("cleanup cache", tmp_path)["providerToolInvocations"]
+    assert {row["callId"]: row["status"] for row in rows} == {
+        "ok": "completed", "failed": "failed", "denied": "denied",
+        "pending": "requested",
+    }
+
+
+def test_evidence_reads_codex_exit_and_denial_outcomes(tmp_path):
+    src = tmp_path / ".codex" / "sessions" / "2026" / "08" / "rollout.jsonl"
+    src.parent.mkdir(parents=True)
+    records = [{"type": "session_meta", "payload": {"id": "s", "cwd": "/w"}}]
+    outcomes = {
+        "ok": json.dumps({"exit_code": 0, "output": "done"}),
+        "failed": "Process exited with code 2\nFinal output:\nerror",
+        "denied": "Process exited with code 1\nFinal output:\npermission denied",
+    }
+    for call_id in outcomes:
+        records.append({
+            "timestamp": f"2026-08-14T00:0{len(records)}:00Z",
+            "type": "response_item",
+            "payload": {"type": "function_call", "name": "exec_command",
+                        "call_id": call_id,
+                        "arguments": json.dumps({"cmd": f"storage tool {call_id}"})},
+        })
+    for call_id, output in outcomes.items():
+        records.append({
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": call_id,
+                        "output": output},
+        })
+    _write(src, _jsonl(*records))
+
+    rows = scree.build_evidence("storage tool", tmp_path)["providerToolInvocations"]
+    assert {row["callId"]: row["status"] for row in rows} == {
+        "ok": "completed", "failed": "failed", "denied": "denied",
+    }
+
+
+def test_evidence_dedupes_claude_resume_replay_across_session_files(tmp_path):
+    """resume/fork가 같은 provider UUID와 call id를 새 JSONL에 replay해도
+    한 발언과 한 호출은 corpus 전체에서 한 번만 나온다."""
+    store = tmp_path / ".claude" / "projects" / "-Users-example-repo"
+    store.mkdir(parents=True)
+    records = _jsonl(
+        {"timestamp": "2026-08-04T00:00:00Z", "uuid": "turn-same",
+         "message": {"role": "user", "content": [
+             {"type": "text", "text": "replay cache 정리"}]}},
+        {"timestamp": "2026-08-04T00:01:00Z",
+         "message": {"role": "assistant", "content": [
+             {"type": "tool_use", "id": "call-same", "name": "Bash",
+              "input": {"command": "replay cache clean"}}]}},
+        {"message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "call-same", "content": "done"}]}},
+    )
+    _write(store / "original.jsonl", records)
+    _write(store / "resumed.jsonl", records)
+
+    out = scree.build_evidence("replay cache", tmp_path)
+    assert len(out["conversationMentions"]) == 1
+    assert len(out["providerToolInvocations"]) == 1
+
+
+def test_evidence_turn_without_timestamp_stays_unknown_not_session_mtime(tmp_path):
+    src = tmp_path / ".claude" / "projects" / "-Users-example-repo" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    _write(src, _jsonl(
+        {"message": {"role": "user", "content": [
+            {"type": "text", "text": "timestamp 없는 storage 발언"}]}},
+    ))
+    hit = scree.build_evidence("storage", tmp_path)["conversationMentions"][0]
+    assert hit["at"] is None
+    assert "lastActiveEpoch" in hit, "세션 provenance는 남아도 timeline 대체 시각은 아니다"
+
+
+def test_visible_turn_provenance_is_shared_by_search_and_inspect(tmp_path):
+    src = tmp_path / "session.jsonl"
+    _write(src, _jsonl(
+        {"timestamp": "2026-08-04T01:02:03Z", "uuid": "turn-shared",
+         "message": {"role": "user", "content": [
+             {"type": "text", "text": "shared timestamp storage"}]}},
+    ))
+    search = scree._search_one_session(src, "storage", raw=False)[0][0]
+    inspect = scree.build_inspect(src, tmp_path)["turns"][0]
+    assert search["at"] == inspect["at"] == "2026-08-04T01:02:03Z"
+    assert search["eventId"] == inspect["eventId"] == "turn-shared"
 
 
 def test_evidence_reads_modore_receipts_as_their_own_kind(tmp_path):
@@ -2150,13 +2272,16 @@ def test_evidence_reads_modore_receipts_as_their_own_kind(tmp_path):
     support.mkdir(parents=True)
     (support / "20260814T000000Z-npm_cache-1.tsv").write_text(
         "version\t1\ntimestamp\t2026-08-14T00:00:00Z\nstatus\tcomplete\n"
-        "recipeId\tnpm_cache\nlabel\tnpm 캐시\nestimatedKB\t3400000\n",
+        "recipeId\tnpm_cache\nlabel\tnpm 캐시\nestimatedKB\t3400000\n"
+        "reclaimedKB\t3200000\nphysicalDeltaKB\t3100000\n",
         encoding="utf-8")
     receipts = scree.read_cleanup_receipts(tmp_path)
     assert len(receipts) == 1
     assert receipts[0]["kind"] == "modore_cleanup_receipt"
     assert receipts[0]["recipeId"] == "npm_cache"
     assert receipts[0]["estimatedKB"] == 3_400_000
+    assert receipts[0]["reclaimedKB"] == 3_200_000
+    assert receipts[0]["physicalDeltaKB"] == 3_100_000
 
 
 def test_evidence_reads_free_space_observations_without_joining_them(tmp_path):
@@ -2190,4 +2315,4 @@ def test_evidence_cli_emits_json(tmp_path, capsys):
     assert scree.main(["evidence", "npm cache clean",
                        "--home", str(_evidence_home(tmp_path))]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["providerToolExecutions"]
+    assert payload["providerToolInvocations"]

@@ -617,6 +617,12 @@ enum RuntimeWorkspace {
         let staging = parent.appendingPathComponent("runtime-staging-\(UUID().uuidString)")
         let backup = parent.appendingPathComponent("runtime-backup-\(UUID().uuidString)")
         try fileManager.copyItem(at: source, to: staging)
+        do {
+            try writeRuntimeProvenance(for: source, to: staging, fileManager: fileManager)
+        } catch {
+            try? fileManager.removeItem(at: staging)
+            throw error
+        }
 
         let legacyConfig = destination.appendingPathComponent("data/config.json")
         let externalConfig = parent.appendingPathComponent("config.json")
@@ -650,8 +656,8 @@ enum RuntimeWorkspace {
         pruneSupersededRuntimeBackups(in: parent, keeping: backup, against: destination)
     }
 
-    /// Deletes runtime backups that hold nothing the current runtime does
-    /// not already have.
+    /// Deletes runtime backups that hold only unmodified Modore-owned files
+    /// already represented by the current runtime.
     ///
     /// The backup exists so a refresh can never destroy a file the owner
     /// put in the runtime directory, and the two tests around that are
@@ -662,12 +668,11 @@ enum RuntimeWorkspace {
     /// outlived whatever made it.
     ///
     /// The newest backup always stays; it is the rollback for the install
-    /// that just happened. An older one is removed only when every file
-    /// in it also exists in the new runtime, which makes it a stale copy
-    /// of a previous version and nothing else. A backup holding anything
-    /// unrecognised is kept, exactly as before -- deleting it is the one
-    /// outcome this whole mechanism exists to prevent, and a tidier
-    /// directory is not worth it.
+    /// that just happened. Each installed runtime carries a hash manifest
+    /// of the bundle bytes copied into it. An older backup is removed only
+    /// when every held file still matches that installation-time manifest
+    /// and its paths exist in the current runtime. A missing manifest, an
+    /// owner-modified managed path, or an unrecognised file keeps the backup.
     static func pruneSupersededRuntimeBackups(
         in parent: URL,
         keeping newest: URL?,
@@ -688,10 +693,66 @@ enum RuntimeWorkspace {
             guard isDirectoryWithoutSymlink(at: entry) else { continue }
             if !isStaging {
                 let held = relativeFilePaths(under: entry, fileManager: fileManager)
-                guard held.isSubset(of: current) else { continue }
+                guard held.isSubset(of: current),
+                      backupContainsOnlyUnmodifiedRuntime(
+                        entry, heldPaths: held, fileManager: fileManager
+                      ) else { continue }
             }
             try? fileManager.removeItem(at: entry)
         }
+    }
+
+    private static let runtimeProvenanceName = ".modore-runtime-provenance.json"
+
+    private struct RuntimeProvenance: Codable {
+        let schemaVersion: Int
+        let sha256ByPath: [String: String]
+    }
+
+    private static func writeRuntimeProvenance(
+        for source: URL,
+        to staging: URL,
+        fileManager: FileManager
+    ) throws {
+        guard let payload = runtimeFilePayload(at: source) else {
+            throw RuntimeWorkspaceError.scannerMissing(source)
+        }
+        let hashes = payload.mapValues { data in
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+        let encoded = try JSONEncoder().encode(
+            RuntimeProvenance(schemaVersion: 1, sha256ByPath: hashes)
+        )
+        let destination = staging.appendingPathComponent(runtimeProvenanceName)
+        try encoded.write(to: destination, options: .atomic)
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: destination.path
+        )
+    }
+
+    private static func backupContainsOnlyUnmodifiedRuntime(
+        _ backup: URL,
+        heldPaths: Set<String>,
+        fileManager: FileManager
+    ) -> Bool {
+        let manifestURL = backup.appendingPathComponent(runtimeProvenanceName)
+        guard let data = try? boundedData(contentsOf: manifestURL, maximumBytes: 1_048_576),
+              let provenance = try? JSONDecoder().decode(RuntimeProvenance.self, from: data),
+              provenance.schemaVersion == 1 else {
+            return false
+        }
+        for path in heldPaths where path != runtimeProvenanceName {
+            guard let expected = provenance.sha256ByPath[path] else { return false }
+            let file = backup.appendingPathComponent(path)
+            guard isRegularFileWithoutSymlink(at: file),
+                  let contents = try? boundedData(
+                    contentsOf: file, maximumBytes: maximumRuntimeFileBytes
+                  ) else { return false }
+            let actual = SHA256.hash(data: contents)
+                .map { String(format: "%02x", $0) }.joined()
+            guard actual == expected else { return false }
+        }
+        return true
     }
 
     /// Every regular file under `root`, by path relative to it. Symlinks
@@ -899,6 +960,7 @@ enum RuntimeWorkspace {
         "raw_facts.json",
         "검사결과.html",
         "검사결과_공유용.html",
+        runtimeProvenanceName,
     ]
     private static let maximumRuntimeEntries = 512
     private static let maximumRuntimeFileBytes = 16 * 1_024 * 1_024

@@ -61,7 +61,7 @@ final class ScreeEvidenceResultTests: XCTestCase {
         let unreadable = definitive ? 0 : 2
         let json = """
         {"query":"DerivedData","conversationMentions":[],
-         "providerToolExecutions":[],"modoreCleanupReceipts":[],
+         "providerToolInvocations":[],"modoreCleanupReceipts":[],
          "filesystemObservations":[],"scannedSessions":\(scanned),"totalSessions":20,
          "unreadableSessions":\(unreadable),"coverage":"\(coverage)",
          "truncatedReason":\(coverage == "complete" ? "null" : "\"time\""),
@@ -73,7 +73,7 @@ final class ScreeEvidenceResultTests: XCTestCase {
     func testFourKindsKeepTheirRequiredNaturalLanguageLabels() {
         XCTAssertEqual(
             ScreeEvidenceKind.allCases.map(\.label),
-            ["언급됨", "실행 기록 있음", "Modore가 실행함", "후속 변화 관찰됨"]
+            ["언급됨", "Provider 도구 기록", "Modore 조치 기록", "후속 변화 관찰됨"]
         )
     }
 
@@ -92,18 +92,19 @@ final class ScreeEvidenceResultTests: XCTestCase {
         XCTAssertNil(result.coverageNote)
     }
 
-    /// The conversation timestamp is deliberately the Korean wall-clock
-    /// spelling of 09:30Z. A string sort puts every ISO value before it due
-    /// to `T > space`; a real timeline has to order the three instants.
-    func testTimelineSortsMixedLocalEpochAndUTCISOByInstant() throws {
+    /// Query hits use their own event time, while query-independent storage
+    /// records remain in a separate context list.
+    func testTimelineUsesTurnTimestampAndSeparatesQueryMatchesFromContext() throws {
         let json = """
         {"query":"storage","conversationMentions":[
           {"source":"/Users/example/session.jsonl","tool":"Claude",
            "workspace":"/Users/example/work","lastActive":"2026-08-24 18:30",
-           "lastActiveEpoch":1787563800,"index":1,"role":"user",
+           "lastActiveEpoch":1787563800,"at":"2026-08-24T09:30:00Z",
+           "eventId":"turn-1","index":1,"role":"user",
            "isUser":true,"snippet":"storage"}],
-         "providerToolExecutions":[
-          {"kind":"provider_tool_execution","command":"du -sh .","at":"2026-08-24T09:40:00.500Z",
+         "providerToolInvocations":[
+          {"kind":"provider_tool_invocation","command":"du -sh .","at":"2026-08-24T09:40:00.500Z",
+           "callId":"call-1","status":"completed",
            "tool":"Codex","source":"/Users/example/tool.jsonl","workspace":"/Users/example/work",
            "lastActive":"2026-08-24 18:41","lastActiveEpoch":1787564460}],
          "modoreCleanupReceipts":[],
@@ -114,20 +115,21 @@ final class ScreeEvidenceResultTests: XCTestCase {
          "coverage":"complete","truncatedReason":null,"definitive":true,"masked":true}
         """
         let result = try JSONDecoder().decode(ScreeEvidenceResult.self, from: Data(json.utf8))
-        let items = StorageEvidenceTimelineItem.items(from: result)
+        let queryItems = StorageEvidenceTimelineItem.queryItems(from: result)
+        let contextItems = StorageEvidenceTimelineItem.contextItems(from: result)
 
         XCTAssertEqual(
-            items.map(\.evidenceLabel),
-            ["후속 변화 관찰됨", "실행 기록 있음", "언급됨"]
+            queryItems.map(\.evidenceLabel),
+            ["실행 완료 기록", "언급됨"]
         )
-        XCTAssertEqual(items[0].occurredAt, Date(timeIntervalSince1970: 1_787_564_700))
-        XCTAssertEqual(items[1].occurredAt, Date(timeIntervalSince1970: 1_787_564_400.5))
-        XCTAssertEqual(items[2].occurredAt, Date(timeIntervalSince1970: 1_787_563_800))
+        XCTAssertEqual(queryItems[0].occurredAt, Date(timeIntervalSince1970: 1_787_564_400.5))
+        XCTAssertEqual(queryItems[1].occurredAt, Date(timeIntervalSince1970: 1_787_563_800))
+        XCTAssertEqual(contextItems.map(\.evidenceLabel), ["후속 변화 관찰됨"])
     }
 
     func testTimelineKeepsMalformedTimesExplicitlyUnknownAndLast() throws {
         let json = """
-        {"query":"storage","conversationMentions":[],"providerToolExecutions":[],
+        {"query":"storage","conversationMentions":[],"providerToolInvocations":[],
          "modoreCleanupReceipts":[
           {"kind":"modore_cleanup_receipt","at":"not-a-date","recipeId":"cache",
            "label":"cache","status":"complete","estimatedKB":null}],
@@ -138,10 +140,48 @@ final class ScreeEvidenceResultTests: XCTestCase {
          "coverage":"complete","truncatedReason":null,"definitive":true,"masked":true}
         """
         let result = try JSONDecoder().decode(ScreeEvidenceResult.self, from: Data(json.utf8))
-        let items = StorageEvidenceTimelineItem.items(from: result)
+        let items = StorageEvidenceTimelineItem.contextItems(from: result)
 
         XCTAssertNotNil(items.first?.occurredAt)
         XCTAssertNil(items.last?.occurredAt)
         XCTAssertEqual(items.last?.displayTime, "시각 확인 안 됨")
+    }
+
+    func testConversationHitNeverFallsBackToResumedSessionTime() throws {
+        let json = """
+        {"query":"storage","conversationMentions":[
+          {"source":"/Users/example/session.jsonl","tool":"Claude",
+           "workspace":"/Users/example/work","lastActive":"2026-08-24 18:30",
+           "lastActiveEpoch":1787563800,"at":null,"eventId":null,
+           "index":1,"role":"user","isUser":true,"snippet":"storage"}],
+         "providerToolInvocations":[],"modoreCleanupReceipts":[],
+         "filesystemObservations":[],"scannedSessions":1,"totalSessions":1,
+         "unreadableSessions":0,"coverage":"complete","truncatedReason":null,
+         "definitive":true,"masked":true}
+        """
+        let result = try JSONDecoder().decode(ScreeEvidenceResult.self, from: Data(json.utf8))
+        let item = try XCTUnwrap(StorageEvidenceTimelineItem.queryItems(from: result).first)
+        XCTAssertNil(item.occurredAt)
+        XCTAssertEqual(item.displayTime, "시각 확인 안 됨")
+    }
+
+    func testBlockedReceiptIsNeutralAndKeepsMeasuredAmountsSeparate() throws {
+        let json = """
+        {"query":"storage","conversationMentions":[],"providerToolInvocations":[],
+         "modoreCleanupReceipts":[
+          {"kind":"modore_cleanup_receipt","at":"2026-08-24T09:45:00Z",
+           "recipeId":"cache","label":"캐시","status":"blocked",
+           "estimatedKB":3000,"reclaimedKB":0,"physicalDeltaKB":0}],
+         "filesystemObservations":[],"scannedSessions":0,"totalSessions":0,
+         "unreadableSessions":0,"coverage":"complete","truncatedReason":null,
+         "definitive":true,"masked":true}
+        """
+        let result = try JSONDecoder().decode(ScreeEvidenceResult.self, from: Data(json.utf8))
+        let item = try XCTUnwrap(StorageEvidenceTimelineItem.contextItems(from: result).first)
+        XCTAssertEqual(item.evidenceLabel, "Modore 조치 기록")
+        XCTAssertTrue(item.detail.contains("실행 차단"))
+        XCTAssertTrue(item.detail.contains("회수 기록"))
+        XCTAssertTrue(item.detail.contains("가용 공간 변화"))
+        XCTAssertTrue(item.detail.contains("사전 추정"))
     }
 }

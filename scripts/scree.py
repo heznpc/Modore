@@ -45,11 +45,11 @@ default:
   query instead: it runs only on an explicit search, retains nothing, and
   no verdict reads it.
 - `scree.py evidence <query>` answers "how was this handled before" from
-  four separate sources -- what was said, what an agent actually ran,
-  what Modore itself deleted, and how free space then moved. They are
-  returned in four lists and never summed: a mention is not an
-  execution, and no arrow is drawn between a deletion and the space that
-  appeared after it.
+  four separate sources -- what was said, provider tool invocations and
+  their correlated outcomes, Modore cleanup receipts, and free-space
+  observations. They are returned in four lists and never summed: a
+  mention is not an invocation, a requested call is not a completed one,
+  and no arrow is drawn between a cleanup receipt and later free space.
 - `scree.py bind <workspace> --deep` reads transcript bodies to find
   file-access evidence, and emits only whether such evidence exists.
 - `scree.py inspect <source>` returns one session's conversation for
@@ -68,6 +68,7 @@ import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import unquote, urlparse
@@ -1795,17 +1796,50 @@ def mask_text(text: str, home: Path) -> str:
 TURN_TEXT_TYPES = ("text", "input_text", "output_text")
 
 
-def _extract_turn(line: dict) -> Optional[tuple[str, str]]:
-    """Best-effort (role, text) from one Claude or Codex JSONL line."""
+@dataclass(frozen=True)
+class VisibleTurn:
+    """One person-visible turn with its provider event provenance.
+
+    Iteration deliberately yields only ``(role, text)`` so the title,
+    inspect, and preserve readers keep consuming the same canonical
+    conversation definition. Timestamp and event identity are additive
+    provenance for search/evidence; they never change what counts as a
+    visible turn.
+    """
+
+    role: str
+    text: str
+    at: Optional[str] = None
+    event_id: Optional[str] = None
+
+    def __iter__(self):
+        yield self.role
+        yield self.text
+
+
+def _event_string(container: dict, *keys: str) -> Optional[str]:
+    for key in keys:
+        value = container.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _extract_turn(line: dict) -> Optional[VisibleTurn]:
+    """Best-effort visible turn from one Claude, Codex, or Gemini record."""
     message = line.get("message") if isinstance(line.get("message"), dict) else None
     payload = line.get("payload") if isinstance(line.get("payload"), dict) else None
     container = message or payload
     if not isinstance(container, dict):
         return None
     role = container.get("role") or line.get("type")
+    at = _event_string(line, "timestamp", "createdAt", "created_at") \
+        or _event_string(container, "timestamp", "createdAt", "created_at")
+    event_id = _event_string(line, "uuid", "eventId", "event_id") \
+        or _event_string(container, "id", "uuid", "eventId", "event_id")
     content = container.get("content")
     if isinstance(content, str):
-        return (str(role or "?"), content)
+        return VisibleTurn(str(role or "?"), content, at, event_id)
     if isinstance(content, list):
         # Gemini's items carry `text` with no `type` at all, so an item
         # that is nothing but text counts as text.
@@ -1813,11 +1847,11 @@ def _extract_turn(line: dict) -> Optional[tuple[str, str]]:
                  if isinstance(c, dict)
                  and (c.get("type") in TURN_TEXT_TYPES or ("text" in c and "type" not in c))]
         joined = "\n".join(p for p in parts if p)
-        return (str(role or "?"), joined) if joined else None
+        return VisibleTurn(str(role or "?"), joined, at, event_id) if joined else None
     # Codex also emits a plain `agent_message` payload whose text is not
     # wrapped in a content list at all.
     if isinstance(container.get("message"), str) and container.get("type") == "agent_message":
-        return ("assistant", container["message"])
+        return VisibleTurn("assistant", container["message"], at, event_id)
     return None
 
 
@@ -1854,7 +1888,7 @@ TITLE_BOILERPLATE = {
 }
 
 
-def _read_session_turns(source: Path) -> tuple[list[tuple[str, str]], str]:
+def _read_session_turns(source: Path) -> tuple[list[VisibleTurn], str]:
     """`(turns, status)` for one session.
 
     The status is the half that matters. A transcript that vanished
@@ -1869,7 +1903,7 @@ def _read_session_turns(source: Path) -> tuple[list[tuple[str, str]], str]:
     """
     if not source.exists():
         return ([], "missing")
-    turns: list[tuple[str, str]] = []
+    turns: list[VisibleTurn] = []
     if source.suffix == ".json":
         try:
             payload = json.loads(source.read_text(encoding="utf-8-sig"))
@@ -1890,7 +1924,11 @@ def _read_session_turns(source: Path) -> tuple[list[tuple[str, str]], str]:
             normalised = dict(message)
             if "role" not in normalised and isinstance(normalised.get("type"), str):
                 normalised["role"] = normalised["type"]
-            turn = _extract_turn({"message": normalised})
+            turn = _extract_turn({
+                "message": normalised,
+                "timestamp": message.get("timestamp"),
+                "uuid": message.get("uuid"),
+            })
             if turn:
                 turns.append(turn)
         return (turns, "ok")
@@ -1919,7 +1957,7 @@ def _read_session_turns(source: Path) -> tuple[list[tuple[str, str]], str]:
     return (turns, "ok")
 
 
-def visible_turns(source: Path) -> tuple[list[tuple[str, str]], str]:
+def visible_turns(source: Path) -> tuple[list[VisibleTurn], str]:
     """`(turns, status)` for one session, as a person would read it.
 
     The single definition of what counts as the conversation. It lived
@@ -1944,16 +1982,26 @@ def visible_turns(source: Path) -> tuple[list[tuple[str, str]], str]:
     turns, status = _read_session_turns(source)
     if status != "ok":
         return ([], status)
-    deduped: list[tuple[str, str]] = []
+    deduped: list[VisibleTurn] = []
     for turn in turns:
-        if deduped and deduped[-1] == turn:
+        if (deduped and deduped[-1].role == turn.role
+                and deduped[-1].text == turn.text):
+            # Codex emits the same reply in two adjacent record shapes.
+            # Keep the richer provenance if only one spelling has it.
+            previous = deduped[-1]
+            deduped[-1] = VisibleTurn(
+                previous.role,
+                previous.text,
+                previous.at or turn.at,
+                previous.event_id or turn.event_id,
+            )
             continue
         deduped.append(turn)
-    return ([(role, text) for role, text in deduped
-             if role.lower() not in ("developer", "system")], "ok")
+    return ([turn for turn in deduped
+             if turn.role.lower() not in ("developer", "system")], "ok")
 
 
-def _turns_from_session(source: Path) -> list[tuple[str, str]]:
+def _turns_from_session(source: Path) -> list[VisibleTurn]:
     """Turns only, for callers that already treat absence as absence.
 
     `title` is one: a session it cannot read gets a date-shaped fallback,
@@ -2136,8 +2184,9 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
         # text -- collides on exactly the case the dedupe rule
         # deliberately preserves: the same person saying the same thing
         # twice with a reply in between.
-        "turns": [{"index": position, "role": role, "text": clip(text)}
-                  for position, (role, text) in enumerate(window) if text.strip()],
+        "turns": [{"index": position, "role": turn.role, "text": clip(turn.text),
+                   "at": turn.at, "eventId": turn.event_id}
+                  for position, turn in enumerate(window) if turn.text.strip()],
         "omittedTurns": max(0, len(turns) - len(window)),
         "masked": not raw,
     }
@@ -2339,26 +2388,26 @@ def _search_one_session(source: Path, needle: str, *,
         return ([], False)
 
     hits: list[dict] = []
-    for position, (role, text) in enumerate(turns):
+    for position, turn in enumerate(turns):
         # Confirm against the normalised turn, not the raw bytes: the
         # query had its whitespace collapsed and the transcript did not.
-        if needle not in " ".join(text.split()).casefold():
+        if needle not in " ".join(turn.text.split()).casefold():
             continue
-        hits.append(_search_hit(position, role, text, needle, raw=raw, home=home))
+        hits.append(_search_hit(position, turn, needle, raw=raw, home=home))
         if len(hits) >= SEARCH_MATCHES_PER_SESSION:
             break
     return (hits, True)
 
 
-def _search_hit(position: int, role: str, text: str, needle: str, *,
-                raw: bool, home: Path) -> dict:
+def _search_hit(position: int, turn: VisibleTurn, needle: str, *,
+                raw: bool, home: Path, include_identity: bool = False) -> dict:
     """One match, as a window around the phrase rather than a whole turn.
 
     A turn can be thousands of characters; what the reader needs is the
     sentence the phrase sits in. Masking is applied after the window is
     cut so the snippet a person sees is the snippet that was masked.
     """
-    flat = " ".join(text.split())
+    flat = " ".join(turn.text.split())
     where = flat.casefold().find(needle)
     if where < 0:
         where = 0
@@ -2370,17 +2419,27 @@ def _search_hit(position: int, role: str, text: str, needle: str, *,
         snippet = "\u2026" + snippet
     if end < len(flat):
         snippet = snippet + "\u2026"
-    return {
+    hit = {
         "index": position,
-        "role": role,
-        "isUser": _is_user_role(role),
+        "role": turn.role,
+        "isUser": _is_user_role(turn.role),
         "snippet": snippet if raw else mask_text(snippet, home),
+        "at": turn.at,
+        "eventId": turn.event_id,
     }
+    if include_identity:
+        hit["_identity"] = hashlib.sha256(
+            f"{turn.role.casefold()}\0{flat}".encode("utf-8")
+        ).hexdigest()
+    return hit
 
 
-# The only record types that can carry a command. Checked as raw
-# substrings before anything is decoded.
-EXECUTION_MARKERS = ('"tool_use"', '"function_call"', '"local_shell_call"')
+# The only record types that can carry a command or its outcome. Checked as
+# raw substrings before anything is decoded.
+PROVIDER_TOOL_MARKERS = (
+    '"tool_use"', '"tool_result"', '"function_call"',
+    '"function_call_output"', '"local_shell_call"',
+)
 
 # Evidence costs about twice a search, and the reason is structural
 # rather than fixable: a search stops reading a file the moment it has
@@ -2393,34 +2452,16 @@ EVIDENCE_DEFAULT_BUDGET_SECONDS = 180.0
 
 EVIDENCE_KINDS = (
     "conversation_mention",
-    "provider_tool_execution",
+    "provider_tool_invocation",
     "modore_cleanup_receipt",
     "filesystem_observation",
 )
 
 
-def _extract_execution(line: str, needle: str, *, raw: bool,
-                       home: Path) -> Optional[dict]:
-    """A command an agent actually ran, if this record is one.
-
-    Two provider shapes, both read off real transcripts on this machine:
-    Claude writes `tool_use` with `name: "Bash"` and the command in
-    `input.command`; Codex writes `function_call` with
-    `name: "exec_command"` and the command in a JSON `arguments` blob.
-
-    Returning `None` for anything else is the point. A record that merely
-    *mentions* a command is a different kind of evidence, handled
-    elsewhere, and quietly folding the two together is how "appeared 81
-    times" turns into "ran 81 times".
-    """
-    try:
-        record = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(record, dict):
-        return None
-
-    commands: list[str] = []
+def _provider_invocations(record: dict, needle: str, *, raw: bool,
+                          home: Path) -> list[dict]:
+    """Shell invocations in one provider record, before outcome correlation."""
+    invocations: list[dict] = []
     message = record.get("message")
     if isinstance(message, dict):
         for part in message.get("content") or []:
@@ -2430,7 +2471,12 @@ def _extract_execution(line: str, needle: str, *, raw: bool,
                 continue
             command = (part.get("input") or {}).get("command")
             if isinstance(command, str):
-                commands.append(command)
+                invocations.append({
+                    "callId": str(part.get("id") or ""),
+                    "command": command,
+                    "at": str(record.get("timestamp") or ""),
+                    "inlineStatus": None,
+                })
 
     payload = record.get("payload") if isinstance(record.get("payload"), dict) else record
     if isinstance(payload, dict) and payload.get("type") in (
@@ -2442,39 +2488,145 @@ def _extract_execution(line: str, needle: str, *, raw: bool,
                 arguments = json.loads(arguments)
             except json.JSONDecodeError:
                 arguments = None
+        if not isinstance(arguments, dict):
+            action = payload.get("action")
+            arguments = action if isinstance(action, dict) else payload
         if isinstance(arguments, dict):
             command = arguments.get("cmd") or arguments.get("command")
             if isinstance(command, list):
                 command = " ".join(str(part) for part in command)
             if isinstance(command, str):
-                commands.append(command)
+                invocations.append({
+                    "callId": str(payload.get("call_id") or payload.get("id") or ""),
+                    "command": command,
+                    "at": str(record.get("timestamp") or ""),
+                    "inlineStatus": payload.get("status"),
+                })
 
-    for command in commands:
-        flat = " ".join(command.split())
+    matched: list[dict] = []
+    for invocation in invocations:
+        flat = " ".join(invocation["command"].split())
         if needle not in flat.casefold():
             continue
-        return {
-            "kind": "provider_tool_execution",
-            # The whole command, deliberately. This is evidence that a
-            # command *containing* the phrase ran -- not that the phrase
-            # ran. `rg -e 'npm cache clean'` searches for it; the two are
-            # indistinguishable from the text alone, so the reader is
-            # shown what actually ran and left to judge, rather than
-            # being told "npm cache clean was executed".
+        matched.append({
+            "kind": "provider_tool_invocation",
+            # `rg -e 'npm cache clean'` is a search, not that cleanup
+            # command. Text alone cannot distinguish intent, so the
+            # reader sees the complete provider call.
             "command": flat if raw else mask_text(flat, home),
-            "at": str(record.get("timestamp") or ""),
-        }
+            "at": invocation["at"],
+            "callId": invocation["callId"],
+            "status": _inline_invocation_status(invocation["inlineStatus"]),
+            "_identity": hashlib.sha256(flat.encode("utf-8")).hexdigest(),
+        })
+    return matched
+
+
+_DENIAL_RE = re.compile(
+    r"permission|not permitted|denied|rejected|cancelled|canceled|approval",
+    re.IGNORECASE,
+)
+_SHELL_EXIT_RE = re.compile(
+    r"(?:Process exited with code|Exit code)\s*:?\s*(-?\d+)", re.IGNORECASE
+)
+
+
+def _inline_invocation_status(value: Any) -> Optional[str]:
+    status = str(value or "").casefold()
+    if status in ("completed", "complete", "success", "succeeded"):
+        return "completed"
+    if status in ("failed", "error"):
+        return "failed"
+    if status in ("denied", "rejected", "cancelled", "canceled"):
+        return "denied"
     return None
+
+
+def _structured_exit_code(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, dict):
+        exit_code = value.get("exit_code", value.get("exitCode"))
+        if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+            return exit_code
+        for nested in value.values():
+            found = _structured_exit_code(nested)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for nested in value:
+            found = _structured_exit_code(nested)
+            if found is not None:
+                return found
+    elif isinstance(value, str) and value.lstrip().startswith(("{", "[")):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return _structured_exit_code(decoded)
+    return None
+
+
+def _provider_outcomes(record: dict) -> list[tuple[str, str]]:
+    """Call outcomes carried by one provider record, keyed for correlation."""
+    outcomes: list[tuple[str, str]] = []
+    message = record.get("message")
+    if isinstance(message, dict):
+        for part in message.get("content") or []:
+            if not isinstance(part, dict) or part.get("type") != "tool_result":
+                continue
+            call_id = str(part.get("tool_use_id") or "")
+            if not call_id:
+                continue
+            content = part.get("content")
+            rendered = content if isinstance(content, str) else json.dumps(
+                content, ensure_ascii=False)
+            exit_match = _SHELL_EXIT_RE.search(rendered)
+            if record.get("toolDenialKind"):
+                status = "denied"
+            elif exit_match:
+                exit_code = int(exit_match.group(1))
+                status = ("completed" if exit_code == 0 else
+                          "denied" if _DENIAL_RE.search(rendered) else "failed")
+            elif part.get("is_error") is True:
+                denied = (bool(record.get("toolDenialKind"))
+                          or bool(_DENIAL_RE.search(rendered)))
+                status = "denied" if denied else "failed"
+            else:
+                status = "completed"
+            outcomes.append((call_id, status))
+
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else record
+    if isinstance(payload, dict) and payload.get("type") == "function_call_output":
+        call_id = str(payload.get("call_id") or "")
+        if call_id:
+            output = payload.get("output")
+            rendered = output if isinstance(output, str) else json.dumps(
+                output, ensure_ascii=False)
+            structured_exit = _structured_exit_code(output)
+            exit_match = _SHELL_EXIT_RE.search(rendered)
+            exit_code = structured_exit if structured_exit is not None else (
+                int(exit_match.group(1)) if exit_match else None
+            )
+            if exit_code is not None:
+                status = ("completed" if exit_code == 0 else
+                          "denied" if _DENIAL_RE.search(rendered) else "failed")
+            elif _DENIAL_RE.search(rendered):
+                status = "denied"
+            else:
+                status = "unknown"
+            outcomes.append((call_id, status))
+    return outcomes
 
 
 def _session_evidence(source: Path, needle: str, *,
                       raw: bool) -> tuple[list[dict], list[dict], bool]:
-    """`(mentions, executions, readable)` for one session, in one read.
+    """`(mentions, invocations, readable)` for one session, in one read.
 
-    One pass, not two. Executions have to be looked for on every line, so
-    there is no cheap early exit to be had for them -- but re-reading the
+    One pass, not two. Invocation results can be on later lines, so the
+    scan cannot stop at the call record -- but re-reading the
     file afterwards to find the mentions doubled the wall clock on this
-    machine's corpus. The word test and the execution extraction share
+    machine's corpus. The word test and invocation correlation share
     the single walk, and the decode into turns happens only if the walk
     saw every word.
     """
@@ -2483,7 +2635,8 @@ def _session_evidence(source: Path, needle: str, *,
     if not probes:
         return ([], [], True)
     outstanding = set(range(len(probes)))
-    executions: list[dict] = []
+    invocations: list[dict] = []
+    outcomes: dict[str, str] = {}
     try:
         with source.open("r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -2492,50 +2645,58 @@ def _session_evidence(source: Path, needle: str, *,
                     for position in tuple(outstanding):
                         if any(probe in folded for probe in probes[position]):
                             outstanding.discard(position)
-                if len(executions) >= SEARCH_MATCHES_PER_SESSION:
-                    if not outstanding:
-                        break
+                if not any(marker in folded for marker in PROVIDER_TOOL_MARKERS):
                     continue
-                # Cheapest possible test first. Only a handful of lines in
-                # a transcript are tool calls at all, and running the
-                # phrase check on every line of six gigabytes was the
-                # whole cost -- 59s against 33s for the same walk.
-                if not any(marker in folded for marker in EXECUTION_MARKERS):
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
                     continue
-                # An execution has to carry the whole phrase on its own
-                # line; the file-level test above is a different question.
-                if not all(any(probe in folded for probe in group)
-                           for group in probes):
+                if not isinstance(record, dict):
                     continue
-                found = _extract_execution(line, needle, raw=raw, home=home)
-                if found:
-                    executions.append(found)
+                for call_id, status in _provider_outcomes(record):
+                    outcomes[call_id] = status
+                if (len(invocations) < SEARCH_MATCHES_PER_SESSION
+                        and all(any(probe in folded for probe in group)
+                                for group in probes)):
+                    invocations.extend(_provider_invocations(
+                        record, needle, raw=raw, home=home))
     except OSError:
         return ([], [], False)
+
+    for invocation in invocations:
+        call_id = invocation.get("callId", "")
+        invocation["status"] = (
+            outcomes.get(call_id)
+            or invocation.get("status")
+            or ("requested" if call_id else "unknown")
+        )
 
     if outstanding:
         return ([], [], True)
 
     turns, status = visible_turns(source)
     if status != "ok":
-        return ([], executions, False)
+        return ([], invocations, False)
     mentions: list[dict] = []
-    for position, (role, text) in enumerate(turns):
-        if needle not in " ".join(text.split()).casefold():
+    for position, turn in enumerate(turns):
+        if needle not in " ".join(turn.text.split()).casefold():
             continue
-        mentions.append(_search_hit(position, role, text, needle,
-                                    raw=raw, home=home))
+        mentions.append(_search_hit(
+            position, turn, needle, raw=raw, home=home, include_identity=True
+        ))
         if len(mentions) >= SEARCH_MATCHES_PER_SESSION:
             break
-    return (mentions, executions, True)
+    return (mentions, invocations, True)
 
 
 def read_cleanup_receipts(home: Path, *, limit: int = 50) -> list[dict]:
-    """What Modore itself deleted, from its own receipts.
+    """Modore action receipts, including blocked and partial outcomes.
 
-    The strongest evidence available, because it is not a report of an
-    action -- it is the record the action wrote as it happened. Kept
-    apart from everything else for exactly that reason.
+    A receipt is stronger provenance than a conversation mention, but it
+    is not synonymous with deletion: the cleanup harness also writes a
+    receipt when it blocks before moving anything. Status and measured
+    deltas therefore travel with the record instead of being promoted to
+    an unconditional execution claim.
     """
     directory = (home / "Library" / "Application Support" / "Modore"
                  / "cleanup-receipts")
@@ -2561,6 +2722,10 @@ def read_cleanup_receipts(home: Path, *, limit: int = 50) -> list[dict]:
             "status": fields.get("status", ""),
             "estimatedKB": int(fields["estimatedKB"])
                            if fields.get("estimatedKB", "").isdigit() else None,
+            "reclaimedKB": int(fields["reclaimedKB"])
+                         if fields.get("reclaimedKB", "").isdigit() else None,
+            "physicalDeltaKB": int(fields["physicalDeltaKB"])
+                             if fields.get("physicalDeltaKB", "").isdigit() else None,
         })
     return receipts
 
@@ -2602,33 +2767,34 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
     """How this machine answered a question like this before.
 
     Four kinds of evidence, kept in four lists and never summed. Somebody
-    saying "npm cache clean" is not the same claim as an agent running
-    it, which is not the same as Modore deleting something, which is not
-    the same as free space changing afterwards. Every one of those is
-    worth showing and they are worth different amounts, so the caller
-    gets them labelled rather than merged into a count that means
-    nothing.
+    saying "npm cache clean" is not the same claim as a provider recording
+    a tool request or result. A completed Modore receipt is different from
+    a blocked receipt, and neither proves why free space later changed.
+    Every one is worth showing at its own strength, so the caller gets
+    labelled records rather than a merged count that means nothing.
 
-    Mentions and executions answer the query. Receipts and observations
-    are the machine's own record and are not searched -- they are the
-    timeline the query's answers sit in.
+    Mentions and provider invocations answer the query. Receipts and
+    observations are query-independent local context and stay in their
+    own lists so a consumer cannot present them as search matches.
     """
     needle = " ".join(query.split()).casefold()
     sessions = build_sessions(home, limit=0)["sessions"] if needle else []
     started = time.monotonic()
     mentions: list[dict] = []
-    executions: list[dict] = []
+    invocations: list[dict] = []
+    mention_ids: set[tuple] = set()
+    invocation_ids: dict[tuple, int] = {}
     scanned = unreadable = 0
     truncated_reason: Optional[str] = None
 
     for session in sessions:
-        if len(mentions) + len(executions) >= limit > 0:
+        if len(mentions) + len(invocations) >= limit > 0:
             truncated_reason = "limit"
             break
         if time.monotonic() - started > budget_seconds:
             truncated_reason = "time"
             break
-        found_mentions, found_executions, ok = _session_evidence(
+        found_mentions, found_invocations, ok = _session_evidence(
             Path(session["source"]), needle, raw=raw)
         scanned += 1
         if not ok:
@@ -2642,17 +2808,45 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
                    # consumers never have to compare those two spellings as
                    # strings or guess which timezone the first one used.
                    "lastActiveEpoch": session["lastActiveEpoch"]}
-        mentions.extend({**hit, "kind": "conversation_mention", **context}
-                        for hit in found_mentions)
-        executions.extend({**hit, **context} for hit in found_executions)
+        for hit in found_mentions:
+            identity = (
+                "event", session["tool"], hit["eventId"]
+            ) if hit.get("eventId") else (
+                "fallback", session["tool"], hit.get("at") or "",
+                hit["_identity"],
+            )
+            if identity in mention_ids:
+                continue
+            mention_ids.add(identity)
+            hit = {key: value for key, value in hit.items() if key != "_identity"}
+            mentions.append({**hit, "kind": "conversation_mention", **context})
+        for hit in found_invocations:
+            identity = (
+                "call", session["tool"], hit["callId"]
+            ) if hit.get("callId") else (
+                "fallback", session["tool"], hit.get("at") or "",
+                hit["_identity"],
+            )
+            hit = {key: value for key, value in hit.items() if key != "_identity"}
+            candidate = {**hit, **context}
+            if identity in invocation_ids:
+                existing_index = invocation_ids[identity]
+                strength = {"unknown": 0, "requested": 1,
+                            "completed": 2, "failed": 2, "denied": 2}
+                if strength.get(candidate["status"], 0) > strength.get(
+                        invocations[existing_index]["status"], 0):
+                    invocations[existing_index] = candidate
+                continue
+            invocation_ids[identity] = len(invocations)
+            invocations.append(candidate)
 
     swept = truncated_reason is None and scanned == len(sessions)
     return {
         "query": query,
         "conversationMentions": sorted(
-            mentions, key=lambda m: m["lastActive"], reverse=True),
-        "providerToolExecutions": sorted(
-            executions, key=lambda m: m["lastActive"], reverse=True),
+            mentions, key=lambda m: (bool(m.get("at")), m.get("at") or ""), reverse=True),
+        "providerToolInvocations": sorted(
+            invocations, key=lambda m: (bool(m.get("at")), m.get("at") or ""), reverse=True),
         "modoreCleanupReceipts": read_cleanup_receipts(home),
         "filesystemObservations": read_storage_observations(home),
         "scannedSessions": scanned,
@@ -2660,7 +2854,7 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
         "unreadableSessions": unreadable,
         "coverage": "complete" if swept else "truncated",
         "truncatedReason": truncated_reason,
-        # Whether the absence of executions may be stated as a fact.
+        # Whether the absence of matching mentions/invocations may be stated.
         "definitive": swept and unreadable == 0,
         "masked": not raw,
     }
@@ -2780,7 +2974,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     evidence.add_argument("--query-file", type=Path, default=None,
                           help="read the phrase from this file instead of the command line")
     evidence.add_argument("--limit", type=int, default=SEARCH_DEFAULT_LIMIT,
-                          help="maximum mentions plus executions to return")
+                          help="maximum mentions plus provider invocations to return")
     evidence.add_argument("--budget-seconds", type=float,
                           default=EVIDENCE_DEFAULT_BUDGET_SECONDS,
                           help="stop after this long and report truncated coverage")
