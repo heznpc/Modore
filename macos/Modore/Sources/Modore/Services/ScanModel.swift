@@ -63,6 +63,14 @@ final class ScanModel: ObservableObject {
     /// dropped rather than written under a query nobody asked.
     var contentSearchGeneration = 0
     var contentSearchTask: Task<Void, Never>?
+    /// Storage incident evidence is an explicit transcript-body query,
+    /// separate from the always-local known-root snapshot above it.
+    @Published var storageEvidenceQuery = ""
+    @Published var storageEvidence: ScreeEvidenceResult?
+    @Published var storageEvidenceRunning = false
+    @Published var storageEvidenceError: String?
+    var storageEvidenceGeneration = 0
+    var storageEvidenceTask: Task<Void, Never>?
     /// Titles for sessions a screen has shown, keyed by source path.
     /// Display only -- no judgment reads these.
     @Published var sessionTitles: [String: SessionTitle] = [:]

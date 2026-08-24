@@ -379,3 +379,95 @@ struct SessionSearchResult: Decodable, Equatable {
         return "아직 일치하는 대화를 찾지 못했습니다. 전부 훑지는 못했습니다."
     }
 }
+
+/// Four deliberately separate answers to a storage-history question.
+///
+/// They must not collapse into one count: a phrase in a conversation, a
+/// provider tool call containing that phrase, Modore's own cleanup receipt,
+/// and a later free-space sample establish four different things.
+struct ScreeEvidenceResult: Decodable, Equatable {
+    let query: String
+    let conversationMentions: [SessionSearchMatch]
+    let providerToolExecutions: [ScreeProviderToolExecution]
+    let modoreCleanupReceipts: [ScreeCleanupReceipt]
+    let filesystemObservations: [ScreeFilesystemObservation]
+    let scannedSessions: Int
+    let totalSessions: Int
+    let unreadableSessions: Int
+    let coverage: String
+    let truncatedReason: String?
+    /// Whether an absent conversation/tool-call match may be stated as
+    /// absent. This is scree's conclusion and is never re-derived here.
+    let definitive: Bool
+    let masked: Bool
+
+    var coverageNote: String? {
+        guard !definitive else { return nil }
+        var notes: [String] = []
+        if coverage != "complete" {
+            notes.append(truncatedReason == "time"
+                ? "시간 제한으로 \(scannedSessions)/\(totalSessions)개 대화까지만 확인했습니다."
+                : "결과 제한에 닿아 모든 대화를 확인하지 못했습니다.")
+        }
+        if unreadableSessions > 0 {
+            notes.append("대화 \(unreadableSessions)개는 읽지 못했습니다.")
+        }
+        if notes.isEmpty {
+            notes.append("모든 대화를 확인하지 못했습니다.")
+        }
+        return notes.joined(separator: " ") + " 기록이 없다고 단정하지 않습니다."
+    }
+
+    var matchSummary: String {
+        guard conversationMentions.isEmpty && providerToolExecutions.isEmpty else {
+            return "대화 언급과 provider 도구 기록을 종류별로 표시합니다."
+        }
+        if definitive {
+            return "확인한 모든 대화에서 이 문구의 언급이나 provider 도구 기록을 찾지 못했습니다."
+        }
+        return "아직 일치하는 언급이나 provider 도구 기록을 찾지 못했습니다."
+    }
+}
+
+enum ScreeEvidenceKind: String, CaseIterable {
+    case conversationMention = "conversation_mention"
+    case providerToolExecution = "provider_tool_execution"
+    case modoreCleanupReceipt = "modore_cleanup_receipt"
+    case filesystemObservation = "filesystem_observation"
+
+    var label: String {
+        switch self {
+        case .conversationMention: return "언급됨"
+        case .providerToolExecution: return "실행 기록 있음"
+        case .modoreCleanupReceipt: return "Modore가 실행함"
+        case .filesystemObservation: return "후속 변화 관찰됨"
+        }
+    }
+}
+
+struct ScreeProviderToolExecution: Decodable, Equatable {
+    let kind: String
+    let command: String
+    let at: String
+    let tool: String
+    let source: String
+    let workspace: String
+    let lastActive: String
+}
+
+struct ScreeCleanupReceipt: Decodable, Equatable {
+    let kind: String
+    let at: String
+    let recipeId: String
+    let label: String
+    let status: String
+    let estimatedKB: Int64?
+}
+
+struct ScreeFilesystemObservation: Decodable, Equatable {
+    let kind: String
+    let at: String
+    let freeKB: Int64
+    let dropKB: Int64
+    let status: String
+}

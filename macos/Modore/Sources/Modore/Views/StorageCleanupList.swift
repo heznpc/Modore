@@ -1,10 +1,13 @@
 import SwiftUI
 
 struct CleanupWorkspaceList: View {
+    @EnvironmentObject private var model: ScanModel
     let storage: StorageSnapshot
 
     var body: some View {
         List {
+            StorageIncidentCauseSection(event: model.storageWatchPathEvents.last)
+            StorageIncidentTimelineSection()
             CleanupCandidateSection(storage: storage)
             if !storage.reviewCandidates.isEmpty {
                 CleanupProtectedSection(storage: storage)
@@ -12,6 +15,243 @@ struct CleanupWorkspaceList: View {
         }
         .listStyle(.inset)
         .accessibilityLabel("저장공간 정리 항목")
+        .task { await model.refreshStorageWatchEvidence() }
+    }
+}
+
+private struct StorageIncidentCauseSection: View {
+    let event: StorageWatchPathEvent?
+
+    var body: some View {
+        Section {
+            if let event {
+                ForEach(event.rows) { row in
+                    HStack(alignment: .top, spacing: 12) {
+                        NativeStatusGlyph(
+                            symbol: row.measured ? "folder" : "questionmark.folder",
+                            tint: .secondary
+                        )
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.label)
+                                .font(.body.weight(.medium))
+                            Text(row.path)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .help(row.path)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(measurementText(row))
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(row.measured ? .primary : .secondary)
+                            .monospacedDigit()
+                    }
+                    .padding(.vertical, 4)
+                }
+            } else {
+                Text("부족 경고 당시의 known root 스냅샷을 아직 확인하지 못했습니다.")
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("원인을 모두 설명하지는 못했습니다.")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+        } header: {
+            NativeSectionHeader(
+                title: "지금 왜 부족한가",
+                subtitle: "최근 부족 경고 때 함께 측정한 known root입니다. 큰 항목이라는 사실만 확인하며 원인으로 단정하지 않습니다.",
+                value: event?.capturedAt.formatted(date: .abbreviated, time: .shortened) ?? "확인 안 됨"
+            )
+        }
+    }
+
+    private func measurementText(_ row: StorageWatchPathSnapshot) -> String {
+        guard row.measured else {
+            return row.status == "timed_out" ? "시간 제한" : "측정 못함"
+        }
+        return String(format: "%.1fGB", row.sizeGB)
+    }
+}
+
+private struct StorageIncidentTimelineSection: View {
+    @EnvironmentObject private var model: ScanModel
+
+    var body: some View {
+        Section {
+            HStack(spacing: 8) {
+                TextField("예: DerivedData, npm cache clean", text: $model.storageEvidenceQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { model.runStorageEvidenceSearch() }
+                Button(model.storageEvidenceRunning ? "확인 중…" : "이전 기록 확인") {
+                    model.runStorageEvidenceSearch()
+                }
+                .buttonStyle(.bordered)
+                .disabled(
+                    model.storageEvidenceRunning
+                    || model.storageEvidenceQuery.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty
+                )
+            }
+
+            if model.storageEvidenceRunning {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("대화와 로컬 기록을 확인하는 중…")
+                        .foregroundStyle(.secondary)
+                }
+            } else if let error = model.storageEvidenceError {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(error).foregroundStyle(.secondary)
+                    Button("다시 시도") { model.runStorageEvidenceSearch() }
+                        .buttonStyle(.link)
+                }
+            } else if let result = model.storageEvidence {
+                Text("“\(result.query)” · \(result.matchSummary)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if let note = result.coverageNote {
+                    Text(note)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(StorageEvidenceTimelineItem.items(from: result)) { item in
+                    StorageEvidenceTimelineRow(item: item)
+                }
+                Text("시각 순서로 함께 놓았을 뿐입니다. 같은 시간대의 앞뒤 순서가 원인을 증명하지 않습니다.")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("위의 큰 항목이나 기억나는 정리 명령을 입력하면 과거 기록을 네 증거 종류로 나눠 확인합니다.")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            NativeSectionHeader(
+                title: "이전에 비슷한 문제를 어떻게 해결했나요?",
+                subtitle: "검색은 Return 또는 버튼을 눌렀을 때만 시작하며 질문은 프로세스 인자에 남기지 않습니다."
+            )
+        }
+    }
+}
+
+private struct StorageEvidenceTimelineRow: View {
+    let item: StorageEvidenceTimelineItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            NativeStatusGlyph(symbol: item.symbol, tint: .secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.evidenceLabel)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(item.title)
+                    .font(.body.weight(.medium))
+                    .textSelection(.enabled)
+                if !item.detail.isEmpty {
+                    Text(item.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(item.displayTime)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct StorageEvidenceTimelineItem: Identifiable {
+    let id: String
+    let sortKey: String
+    let evidenceLabel: String
+    let symbol: String
+    let title: String
+    let detail: String
+
+    var displayTime: String {
+        guard !sortKey.isEmpty else { return "시각 확인 안 됨" }
+        return sortKey.replacingOccurrences(of: "T", with: " ")
+            .replacingOccurrences(of: "Z", with: "")
+    }
+
+    static func items(from result: ScreeEvidenceResult) -> [Self] {
+        let mentions = result.conversationMentions.map { mention in
+            Self(
+                id: "mention|\(mention.source)|\(mention.index)",
+                sortKey: mention.lastActive,
+                evidenceLabel: ScreeEvidenceKind.conversationMention.label,
+                symbol: "text.bubble",
+                title: mention.snippet,
+                detail: [mention.tool, location(mention.workspace), mention.isUser ? "나" : "에이전트"]
+                    .filter { !$0.isEmpty }.joined(separator: " · ")
+            )
+        }
+        let executions = result.providerToolExecutions.enumerated().map { index, execution in
+            Self(
+                id: "execution|\(execution.source)|\(execution.at)|\(index)",
+                sortKey: execution.at.isEmpty ? execution.lastActive : execution.at,
+                evidenceLabel: ScreeEvidenceKind.providerToolExecution.label,
+                symbol: "terminal",
+                title: execution.command,
+                detail: [execution.tool, location(execution.workspace)]
+                    .filter { !$0.isEmpty }.joined(separator: " · ")
+            )
+        }
+        let receipts = result.modoreCleanupReceipts.enumerated().map { index, receipt in
+            let estimate = receipt.estimatedKB.map(sizeText(kilobytes:))
+            return Self(
+                id: "receipt|\(receipt.at)|\(receipt.recipeId)|\(index)",
+                sortKey: receipt.at,
+                evidenceLabel: ScreeEvidenceKind.modoreCleanupReceipt.label,
+                symbol: "checkmark.seal",
+                title: receipt.label.isEmpty ? receipt.recipeId : receipt.label,
+                detail: [statusText(receipt.status), estimate.map { "당시 추정 \($0)" }]
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+            )
+        }
+        let observations = result.filesystemObservations.enumerated().map { index, observation in
+            let free = sizeText(kilobytes: observation.freeKB)
+            let drop = observation.dropKB > 0
+                ? "직전 표본보다 \(sizeText(kilobytes: observation.dropKB)) 감소"
+                : statusText(observation.status) ?? "상태 확인 안 됨"
+            return Self(
+                id: "observation|\(observation.at)|\(index)",
+                sortKey: observation.at,
+                evidenceLabel: ScreeEvidenceKind.filesystemObservation.label,
+                symbol: "internaldrive",
+                title: "사용 가능 \(free)",
+                detail: drop
+            )
+        }
+        return (mentions + executions + receipts + observations).sorted {
+            if $0.sortKey != $1.sortKey { return $0.sortKey > $1.sortKey }
+            return $0.id < $1.id
+        }
+    }
+
+    private static func location(_ path: String) -> String {
+        path.isEmpty ? "" : URL(fileURLWithPath: path).lastPathComponent
+    }
+
+    private static func sizeText(kilobytes: Int64) -> String {
+        ByteCountFormatter.string(
+            fromByteCount: max(0, kilobytes) * 1_024,
+            countStyle: .file
+        )
+    }
+
+    private static func statusText(_ status: String) -> String? {
+        switch status {
+        case "complete": return "완료 기록"
+        case "warning": return "부족 상태"
+        case "normal": return "정상 범위"
+        case "failed": return "실패 기록"
+        case "": return nil
+        default: return status
+        }
     }
 }
 
