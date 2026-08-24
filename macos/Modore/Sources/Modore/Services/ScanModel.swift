@@ -37,6 +37,11 @@ final class ScanModel: ObservableObject {
     /// is: `rankCandidates` drops `.unsafe` repos, which is right for a
     /// retirement list and wrong as a project's git state.
     @Published var repoAssessments: [ArchiveCandidate]?
+    /// Repo path to why it could not be read, and the repos the scan's
+    /// root cap never reached. Both travel per path: a total says
+    /// something somewhere is untrustworthy, only a path says which row.
+    @Published var repoScanFailures: [String: String] = [:]
+    @Published var reposNotScanned: [String] = []
     /// Conversations a person opened, and how each fetch went, keyed by
     /// the transcript's byte identity rather than its path -- see
     /// `loadConversation`. Display-only cache; never consulted by any
@@ -70,7 +75,7 @@ final class ScanModel: ObservableObject {
     @Published var selectedSessionSource: String?
     /// The project whose retirement sheet is open. Retirement is an action
     /// on a project, not a place in the sidebar.
-    @Published var retirementReview: WorkProject?
+    @Published var retirementReview: RetirementReviewTarget?
     @Published var archiveInspectionFailures = 0
     @Published var archiveLoading = false
     @Published var pendingLoginItemRemoval: PendingLoginItemRemoval?
