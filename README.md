@@ -28,7 +28,7 @@ python3 scripts/scree.py title <session-file>     # one masked line: what that s
 ```
 
 - **Cross-tool join** — which tools touched which workspace/repository, when, across Claude Code, Codex, Gemini CLI, and VS Code-fork stores.
-- **Retention forecast** — per-store rolling windows estimated from file ages, with D-day flags for sessions about to expire inside still-active projects.
+- **Retention forecast** — per-store rolling windows estimated from file ages, with D-day flags for sessions about to expire inside still-active projects. Deleting a conversation in the Claude desktop app rewrites only that app's index and leaves the transcript on disk, so those sessions are read from the desktop tombstones (filenames only), marked `owner_deleted`, and sorted below the rest: a transcript outliving the delete that was meant to remove it is not a reason to urge its rescue.
 - **Sole-copy judgment** — agent worktrees *and* primary checkouts stranded off main: protected (dirty or unpushed commits) versus rebuildable, from read-only git evidence, every verdict preview-grade with an explicit revalidation duty.
 - **Orphans & lineage** — sessions pointing at vanished workspaces (`orphan_basis: path_missing`), and every remembered work path classified alive+git / alive+plain / vanished, with macOS case-variant ghosts merged.
 - **Worktree coverage** — scree uses standard Git checks across agent worktrees regardless of their creating tool, primary checkouts stranded off main, and registry entries whose directories are gone.

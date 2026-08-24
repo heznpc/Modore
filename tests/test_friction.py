@@ -99,6 +99,23 @@ def test_noise_rows_are_not_turns_at_all():
     assert turns == 0
 
 
+@pytest.mark.parametrize("flag", ["isCompactSummary", "isVisibleInTranscriptOnly"])
+def test_rows_the_operator_never_typed_are_not_turns(tmp_path, flag):
+    """`/compact` 요약은 type:user 로 저장되지만 본문은 어시스턴트가 쓴 요약이다."""
+    home = tmp_path / "home"
+    _write(home / ".claude" / "projects" / "-p" / "s.jsonl", _jsonl(
+        {"type": "user", "cwd": "/w", "timestamp": "2026-08-01T00:00:00Z", flag: True,
+         "message": {"role": "user", "content":
+                     "This session is being continued from a previous conversation. "
+                     "사용자가 '아니 왜 자꾸 물어만 보냐' 라고 지적했습니다."}},
+        {"type": "user", "cwd": "/w", "timestamp": "2026-08-01T00:00:01Z",
+         "message": {"role": "user", "content": "아니 누가 그거 하래?"}},
+    ))
+    report = friction.build_friction(home, raw_quotes=True)
+    assert report["user_turns_scanned"] == 1
+    assert [f["quote"] for f in report["findings"]] == ["아니 누가 그거 하래?"]
+
+
 def test_pasted_assistant_report_is_not_operator_pushback():
     pasted = "검토를 완료했습니다. " + "세부 내용은 다음과 같습니다. " * 40 + " 시발"
     assert len(pasted) > 400
@@ -309,6 +326,43 @@ def test_the_session_cap_is_reported_rather_than_applied_silently(friction_home)
     assert report["sessions_skipped_by_cap"] > 0
     assert f"{report['sessions_skipped_by_cap']} in-window sessions were not scanned" \
         in friction.render_report(report, 5)
+
+
+def test_a_turn_replayed_by_resume_is_counted_once(tmp_path):
+    """리줌하면 전체 트랜스크립트가 새 파일로 복제된다 — 턴은 하나다."""
+    home = tmp_path / "home"
+    turn = {"type": "user", "cwd": "/w", "timestamp": "2026-08-01T00:00:00Z",
+            "message": {"role": "user", "content": "아니 누가 그거 하래?"}}
+    for name in ("sess-a.jsonl", "sess-b.jsonl", "sess-c.jsonl"):
+        _write(home / ".claude" / "projects" / "-p" / name, _jsonl(turn))
+    report = friction.build_friction(home, raw_quotes=True)
+    assert report["sessions_scanned"] == 3
+    assert len(report["findings"]) == 1
+    assert report["replayed_copies_collapsed"] == 2
+    assert sum(report["by_severity"].values()) == 1
+    assert "2 replayed copies" in friction.render_report(report, 5)
+
+
+def test_distinct_turns_are_not_collapsed_by_a_shared_timestamp(tmp_path):
+    home = tmp_path / "home"
+    _write(home / ".claude" / "projects" / "-p" / "s.jsonl", _jsonl(
+        {"type": "user", "cwd": "/w", "timestamp": "2026-08-01T00:00:00Z",
+         "message": {"role": "user", "content": "아니 누가 그거 하래?"}},
+        {"type": "user", "cwd": "/w", "timestamp": "2026-08-01T00:00:00Z",
+         "message": {"role": "user", "content": "ㄴㄴ 그거 말고 다른거"}},
+    ))
+    report = friction.build_friction(home, raw_quotes=True)
+    assert len(report["findings"]) == 2
+    assert report["replayed_copies_collapsed"] == 0
+
+
+def test_a_turn_without_a_timestamp_is_kept_rather_than_guessed_at():
+    """타임스탬프가 없으면 파일 사이에서 같은 턴인지 판정할 수 없다 — 남긴다."""
+    findings = [{"ts": None, "source": "gemini", "quote": "아니 그거 말고", "path": "a"},
+                {"ts": None, "source": "gemini", "quote": "아니 그거 말고", "path": "b"}]
+    kept, collapsed = friction._dedupe_replayed_turns(findings)
+    assert len(kept) == 2
+    assert collapsed == 0
 
 
 def test_oversized_lines_are_counted_not_silently_dropped(tmp_path):
