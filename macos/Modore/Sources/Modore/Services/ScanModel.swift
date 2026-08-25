@@ -100,16 +100,27 @@ final class ScanModel: ObservableObject {
     private let shareReportName = "검사결과_공유용.html"
     private let terminationSafetyGate = AppTerminationSafetyGate()
     private var scanTask: Task<Void, Never>?
+    private var initialResultsLoaded = false
+    private var lastScanAttemptAt: Date?
     var cleanupTask: Task<Void, Never>?
     var browserAutomationStopTask: Task<Void, Never>?
 
-    init() {
+    nonisolated static let storageSnapshotFreshnessInterval: TimeInterval = 30 * 60
+    nonisolated static let automaticScanRetryInterval: TimeInterval = 5 * 60
+
+    init(automaticallyScansStaleResults: Bool = true) {
         self.projectRoot = Self.detectProjectRoot()
         self.virusTotalEnabled = Self.loadVirusTotalEnabled(projectRoot: projectRoot)
         let keepState = SimulatorKeepStore.load()
         self.simulatorKeepUUIDs = keepState.uuids
         self.simulatorLegacyKeepEntries = keepState.legacyEntries
-        Task { await refreshExistingResults() }
+        Task {
+            await refreshExistingResults()
+            initialResultsLoaded = true
+            if automaticallyScansStaleResults {
+                runAutomaticScanIfNeeded()
+            }
+        }
         Task { await refreshStorageWatchStatus() }
     }
 
@@ -193,7 +204,7 @@ final class ScanModel: ObservableObject {
         // A timestamp meaningfully in the future is untrustworthy — a timezone
         // change between scan and view can reinterpret the zone-less scan time
         // hours ahead — so treat it as stale instead of reporting "방금 검사".
-        return age >= 30 * 60 || age < -60
+        return age >= Self.storageSnapshotFreshnessInterval || age < -60
     }
     func storageSnapshotNeedsRefresh(at date: Date = Date()) -> Bool {
         isStorageSnapshotStale(at: date) || hasNewerStorageHistory
@@ -210,7 +221,12 @@ final class ScanModel: ObservableObject {
     }
 
     func runScan() {
+        startScan(at: Date())
+    }
+
+    private func startScan(at date: Date) {
         guard !isBusy else { return }
+        lastScanAttemptAt = date
         state = .running
         errorMessage = nil
         logStore.clear()
@@ -234,6 +250,45 @@ final class ScanModel: ObservableObject {
             await finishRun(success: ok)
             scanTask = nil
         }
+    }
+
+    /// The saved result remains visible while it is restored. Once restoration
+    /// has finished, opening or returning to the app refreshes a missing or stale
+    /// snapshot without making the person press the toolbar button first.
+    func runAutomaticScanIfNeeded(at date: Date = Date()) {
+        guard Self.shouldRunAutomaticScan(
+            initialResultsLoaded: initialResultsLoaded,
+            isBusy: isBusy,
+            lastStorageScanAt: lastStorageScanAt,
+            hasNewerStorageHistory: hasNewerStorageHistory,
+            lastScanAttemptAt: lastScanAttemptAt,
+            now: date
+        ) else { return }
+
+        startScan(at: date)
+        guard isRunning else { return }
+        appendLog("저장된 검사 결과가 없거나 오래되어 자동 검사를 시작했습니다.")
+    }
+
+    nonisolated static func shouldRunAutomaticScan(
+        initialResultsLoaded: Bool,
+        isBusy: Bool,
+        lastStorageScanAt: Date?,
+        hasNewerStorageHistory: Bool,
+        lastScanAttemptAt: Date?,
+        now: Date
+    ) -> Bool {
+        guard initialResultsLoaded, !isBusy else { return false }
+        if let lastScanAttemptAt {
+            let attemptAge = now.timeIntervalSince(lastScanAttemptAt)
+            if attemptAge >= -60, attemptAge < automaticScanRetryInterval {
+                return false
+            }
+        }
+        if hasNewerStorageHistory { return true }
+        guard let lastStorageScanAt else { return true }
+        let resultAge = now.timeIntervalSince(lastStorageScanAt)
+        return resultAge >= storageSnapshotFreshnessInterval || resultAge < -60
     }
 
     func cancelScan() {
