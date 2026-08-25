@@ -354,7 +354,7 @@ private struct StatusWatchGapSection: View {
             } header: {
                 NativeSectionHeader(
                     title: "앱을 닫은 동안",
-                    subtitle: "이 앱은 열려 있을 때만 검사합니다. 닫힌 동안의 변화는 감시를 켜야 확인합니다.",
+                    subtitle: "앱을 열거나 다시 활성화하면 오래된 결과를 자동으로 갱신합니다. 닫힌 동안의 변화는 감시를 켜야 확인합니다.",
                     value: "감시 꺼짐"
                 )
             }

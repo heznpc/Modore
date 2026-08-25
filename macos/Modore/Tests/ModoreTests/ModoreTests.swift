@@ -2,6 +2,91 @@ import XCTest
 @testable import Modore
 
 final class ModoreTests: XCTestCase {
+    func testAutomaticScanWaitsForRestoreAndDoesNotOverlapBusyWork() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        XCTAssertFalse(ScanModel.shouldRunAutomaticScan(
+            initialResultsLoaded: false,
+            isBusy: false,
+            lastStorageScanAt: nil,
+            hasNewerStorageHistory: false,
+            lastScanAttemptAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(ScanModel.shouldRunAutomaticScan(
+            initialResultsLoaded: true,
+            isBusy: true,
+            lastStorageScanAt: nil,
+            hasNewerStorageHistory: false,
+            lastScanAttemptAt: nil,
+            now: now
+        ))
+    }
+
+    func testAutomaticScanRefreshesMissingStaleOrSupersededResults() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let fresh = now.addingTimeInterval(-ScanModel.storageSnapshotFreshnessInterval + 1)
+        let stale = now.addingTimeInterval(-ScanModel.storageSnapshotFreshnessInterval)
+
+        XCTAssertTrue(ScanModel.shouldRunAutomaticScan(
+            initialResultsLoaded: true,
+            isBusy: false,
+            lastStorageScanAt: nil,
+            hasNewerStorageHistory: false,
+            lastScanAttemptAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(ScanModel.shouldRunAutomaticScan(
+            initialResultsLoaded: true,
+            isBusy: false,
+            lastStorageScanAt: fresh,
+            hasNewerStorageHistory: false,
+            lastScanAttemptAt: nil,
+            now: now
+        ))
+        XCTAssertTrue(ScanModel.shouldRunAutomaticScan(
+            initialResultsLoaded: true,
+            isBusy: false,
+            lastStorageScanAt: stale,
+            hasNewerStorageHistory: false,
+            lastScanAttemptAt: nil,
+            now: now
+        ))
+        XCTAssertTrue(ScanModel.shouldRunAutomaticScan(
+            initialResultsLoaded: true,
+            isBusy: false,
+            lastStorageScanAt: fresh,
+            hasNewerStorageHistory: true,
+            lastScanAttemptAt: nil,
+            now: now
+        ))
+    }
+
+    func testAutomaticScanThrottlesRecentFailedAttempt() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        XCTAssertFalse(ScanModel.shouldRunAutomaticScan(
+            initialResultsLoaded: true,
+            isBusy: false,
+            lastStorageScanAt: nil,
+            hasNewerStorageHistory: false,
+            lastScanAttemptAt: now.addingTimeInterval(
+                -ScanModel.automaticScanRetryInterval + 1
+            ),
+            now: now
+        ))
+        XCTAssertTrue(ScanModel.shouldRunAutomaticScan(
+            initialResultsLoaded: true,
+            isBusy: false,
+            lastStorageScanAt: nil,
+            hasNewerStorageHistory: false,
+            lastScanAttemptAt: now.addingTimeInterval(
+                -ScanModel.automaticScanRetryInterval
+            ),
+            now: now
+        ))
+    }
+
     func testScanEnvironmentRequiresExplicitVTConsentAndValidAndroidPaths() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-scan-environment-\(UUID().uuidString)")

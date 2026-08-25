@@ -30,6 +30,7 @@ final class PCHealthCheckApplicationDelegate: NSObject, NSApplicationDelegate {
 struct ModoreApp: App {
     @NSApplicationDelegateAdaptor(PCHealthCheckApplicationDelegate.self)
     private var applicationDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = ScanModel()
 
     init() {
@@ -53,6 +54,11 @@ struct ModoreApp: App {
                 .frame(minWidth: 900, minHeight: 640)
                 .onAppear {
                     applicationDelegate.bind(to: model)
+                }
+                .onChange(of: scenePhase) { phase in
+                    if phase == .active {
+                        model.runAutomaticScanIfNeeded()
+                    }
                 }
         }
         .windowStyle(.titleBar)
