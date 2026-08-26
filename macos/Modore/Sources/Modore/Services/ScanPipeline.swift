@@ -1,19 +1,42 @@
 import Darwin
 import Foundation
 
+enum PipelineStageState: String, Sendable, Equatable {
+    case notAttempted
+    case succeeded
+    case failed
+}
+
+struct ScanRunResult: Sendable, Equatable {
+    let scan: PipelineStageState
+    let normalReport: PipelineStageState
+    let shareReport: PipelineStageState
+
+    static let scanFailed = ScanRunResult(
+        scan: .failed,
+        normalReport: .notAttempted,
+        shareReport: .notAttempted
+    )
+
+    var scanSucceeded: Bool { scan == .succeeded }
+    var reportsSucceeded: Bool {
+        normalReport == .succeeded && shareReport == .succeeded
+    }
+}
+
 enum ScanPipeline {
     static func run(
         projectRoot: URL,
         onOutput: @escaping @Sendable (String) -> Void
-    ) async -> Bool {
+    ) async -> ScanRunResult {
         guard let execution = RuntimeWorkspace.prepareExecution(projectRoot: projectRoot) else {
             onOutput("검사 런타임 무결성을 확인하지 못해 실행을 중단했습니다.")
-            return false
+            return .scanFailed
         }
 
         guard let configurationData = configurationSnapshot(at: execution.configurationURL) else {
             onOutput("사용자 설정을 안전하게 읽지 못해 검사를 중단했습니다.")
-            return false
+            return .scanFailed
         }
         var scannerEnvironment = scanEnvironment(
             configurationData: configurationData
@@ -40,6 +63,11 @@ enum ScanPipeline {
                 ("autoruns", "scripts/modules/macos/autoruns.sh", "PCH_PINNED_AUTORUNS_MODULE"),
                 ("security", "scripts/modules/macos/security.sh", "PCH_PINNED_SECURITY_MODULE"),
                 ("storage", "scripts/modules/macos/storage.sh", "PCH_PINNED_STORAGE_MODULE"),
+                ("idle_cpu", "scripts/modules/macos/idle_cpu.sh", "PCH_PINNED_IDLE_CPU_MODULE"),
+                ("idle_cpu_script", "scripts/idle_cpu.sh", "PCH_PINNED_IDLE_CPU_SCRIPT"),
+                ("privacy", "scripts/modules/macos/privacy.sh", "PCH_PINNED_PRIVACY_MODULE"),
+                ("devtool_updates", "scripts/modules/macos/devtool_updates.sh", "PCH_PINNED_DEVTOOL_UPDATES_MODULE"),
+                ("support_dir", "scripts/modules/support_dir.sh", "PCH_PINNED_SUPPORT_DIR_MODULE"),
                 ("helper", "scripts/scanner_helper.jxa.js", "PCH_PINNED_SCANNER_HELPER"),
                 ("whitelist", "data/whitelist.json", "PCH_PINNED_WHITELIST"),
                 ("rule_autoruns", "rules/autoruns.json", "PCH_PINNED_RULE_AUTORUNS"),
@@ -51,7 +79,7 @@ enum ScanPipeline {
             for resource in resources {
                 guard let contents = payload[resource.path] else {
                     onOutput("서명 시점에 봉인한 검사 리소스가 없어 실행을 중단했습니다: \(resource.path)")
-                    return false
+                    return .scanFailed
                 }
                 pinnedScannerFiles[resource.name] = contents
                 if let environmentName = resource.environment {
@@ -79,7 +107,7 @@ enum ScanPipeline {
         )
         guard scanner == 0 else {
             onOutput("scanner.sh 실패: \(scanner)")
-            return false
+            return .scanFailed
         }
         guard FilesystemIdentity.directory(at: execution.outputRoot) == execution.outputRootIdentity,
               RegularFileGeneration.capture(execution.scanResultURL) != previousScanGeneration,
@@ -90,39 +118,52 @@ enum ScanPipeline {
                 expectedParentIdentity: execution.outputRootIdentity
               ) else {
             onOutput("이번 실행의 새 검사 결과를 확인하지 못해 이전 결과 사용을 차단했습니다.")
-            return false
+            return .scanFailed
         }
 
-        guard let normalReportExecution = RuntimeWorkspace.prepareExecution(projectRoot: projectRoot) else {
-            onOutput("리포트 런타임 서명을 다시 확인하지 못해 생성을 중단했습니다.")
-            return false
-        }
-        let normal = await runReport(
-            execution: normalReportExecution,
-            output: normalReportExecution.outputRoot.appendingPathComponent("검사결과.html"),
+        let normalReport = await generateReport(
+            projectRoot: projectRoot,
+            fileName: "검사결과.html",
             redacted: false,
+            label: "일반 리포트",
             onOutput: onOutput
         )
-        guard normal == 0 else {
-            onOutput("일반 리포트 생성 실패: \(normal)")
-            return false
-        }
-
-        guard let shareReportExecution = RuntimeWorkspace.prepareExecution(projectRoot: projectRoot) else {
-            onOutput("공유용 리포트 런타임 서명을 다시 확인하지 못해 생성을 중단했습니다.")
-            return false
-        }
-        let share = await runReport(
-            execution: shareReportExecution,
-            output: shareReportExecution.outputRoot.appendingPathComponent("검사결과_공유용.html"),
+        let shareReport = await generateReport(
+            projectRoot: projectRoot,
+            fileName: "검사결과_공유용.html",
             redacted: true,
+            label: "공유용 리포트",
             onOutput: onOutput
         )
-        guard share == 0 else {
-            onOutput("공유용 리포트 생성 실패: \(share)")
-            return false
+        return ScanRunResult(
+            scan: .succeeded,
+            normalReport: normalReport,
+            shareReport: shareReport
+        )
+    }
+
+    private static func generateReport(
+        projectRoot: URL,
+        fileName: String,
+        redacted: Bool,
+        label: String,
+        onOutput: @escaping @Sendable (String) -> Void
+    ) async -> PipelineStageState {
+        guard let execution = RuntimeWorkspace.prepareExecution(projectRoot: projectRoot) else {
+            onOutput("\(label) 런타임 서명을 다시 확인하지 못해 생성을 중단했습니다.")
+            return .failed
         }
-        return true
+        let status = await runReport(
+            execution: execution,
+            output: execution.outputRoot.appendingPathComponent(fileName),
+            redacted: redacted,
+            onOutput: onOutput
+        )
+        guard status == 0 else {
+            onOutput("\(label) 생성 실패: \(status)")
+            return .failed
+        }
+        return .succeeded
     }
 
     private static func runReport(

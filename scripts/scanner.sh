@@ -35,8 +35,9 @@ DEVTOOL_UPDATES_MODULE="${PCH_PINNED_DEVTOOL_UPDATES_MODULE:-$MODULES_DIR/devtoo
 SCANNER_HELPER="${PCH_PINNED_SCANNER_HELPER:-$SCRIPT_DIR/scanner_helper.jxa.js}"
 PCH_PINNED_IDLE_CPU_SCRIPT="${PCH_PINNED_IDLE_CPU_SCRIPT:-$SCRIPT_DIR/idle_cpu.sh}"
 export PCH_PINNED_IDLE_CPU_SCRIPT
+SUPPORT_DIR_MODULE="${PCH_PINNED_SUPPORT_DIR_MODULE:-$SCRIPT_DIR/modules/support_dir.sh}"
 # shellcheck source=scripts/modules/support_dir.sh
-source "$SCRIPT_DIR/modules/support_dir.sh"
+source "$SUPPORT_DIR_MODULE"
 NO_VT=false
 
 if [[ -z "$CONFIG_PATH" ]]; then
