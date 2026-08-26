@@ -3,6 +3,7 @@ import Foundation
 
 struct LoadedScanResult: @unchecked Sendable {
     let content: ScanContent
+    let deepScanAt: Date?
     let storageHistory: [StorageHistoryEntry]
     let displayedStorageEntry: StorageHistoryEntry?
     let storageChange: StorageChangeSummary?
@@ -28,6 +29,7 @@ enum ScanResultLoader {
         guard FileManager.default.fileExists(atPath: scanURL.path) else {
             return LoadedScanResult(
                 content: .empty,
+                deepScanAt: nil,
                 storageHistory: existingHistory,
                 displayedStorageEntry: nil,
                 storageChange: nil,
@@ -66,10 +68,15 @@ enum ScanResultLoader {
             )
         }
 
+        let sourceText = JsonRead.string(root, "scannedAt")
+        let fileDate = (try? scanURL.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate ?? Date()
+        let deepScanAt = scanDate(from: sourceText) ?? fileDate
         let content = ScanContent(root: root)
         guard let storage = content.storage else {
             return LoadedScanResult(
                 content: content,
+                deepScanAt: deepScanAt,
                 storageHistory: existingHistory,
                 displayedStorageEntry: nil,
                 storageChange: nil,
@@ -78,10 +85,7 @@ enum ScanResultLoader {
             )
         }
 
-        let sourceText = JsonRead.string(root, "scannedAt")
-        let fileDate = (try? scanURL.resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate ?? Date()
-        let capturedAt = scanDate(from: sourceText) ?? fileDate
+        let capturedAt = deepScanAt
         let sourceID = sourceText.isEmpty
             ? String(Int(capturedAt.timeIntervalSince1970))
             : sourceText
@@ -116,6 +120,7 @@ enum ScanResultLoader {
             let history = try StorageHistoryStore.record(entry, at: historyURL)
             return LoadedScanResult(
                 content: content,
+                deepScanAt: deepScanAt,
                 storageHistory: history,
                 displayedStorageEntry: entry,
                 storageChange: StorageHistoryStore.changeSummary(endingAt: sourceID, in: history),
@@ -125,6 +130,7 @@ enum ScanResultLoader {
         } catch {
             return LoadedScanResult(
                 content: content,
+                deepScanAt: deepScanAt,
                 storageHistory: existingHistory,
                 displayedStorageEntry: entry,
                 storageChange: StorageHistoryStore.changeSummary(
@@ -163,6 +169,7 @@ enum ScanResultLoader {
     ) -> LoadedScanResult {
         LoadedScanResult(
             content: .empty,
+            deepScanAt: nil,
             storageHistory: history,
             displayedStorageEntry: nil,
             storageChange: nil,

@@ -239,9 +239,9 @@ private struct SidebarScanStatus: View {
                 : "위험 신호 확인"
         }
         if model.collectionIsIncomplete { return "안전 판단 보류" }
-        if model.storageSnapshotNeedsRefresh(at: date) { return "정밀 검사 필요" }
+        if model.deepScanSnapshotNeedsRefresh(at: date) { return "정밀 검사 필요" }
         if model.securityAttentionCount > 0 { return "확인 항목 \(model.securityAttentionCount)건" }
-        return model.storageSnapshotAgeText
+        return model.deepScanSnapshotAgeText
     }
 
     private func statusSymbol(at date: Date) -> String {
@@ -249,7 +249,7 @@ private struct SidebarScanStatus: View {
         if model.state == .failed { return "exclamationmark.circle" }
         if model.summary == nil { return "questionmark.circle" }
         if model.collectionIsIncomplete { return "questionmark.shield" }
-        if model.storageSnapshotNeedsRefresh(at: date) { return "clock" }
+        if model.deepScanSnapshotNeedsRefresh(at: date) { return "clock" }
         if model.securityAttentionCount > 0 { return "info.circle" }
         return model.state.symbol
     }

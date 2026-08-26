@@ -32,6 +32,7 @@ final class ScanModel: ObservableObject {
     @Published private(set) var reportState = ReportState.unknown
     @Published private(set) var liveState = LiveState.unobserved
     @Published private(set) var deepScanFailure: DeepScanFailure?
+    @Published private(set) var deepScanAt: Date?
     @Published var screeReport: ScreeReport?
     @Published var screeLoading = false
     @Published var screeError: String?
@@ -109,7 +110,10 @@ final class ScanModel: ObservableObject {
     var cleanupTask: Task<Void, Never>?
     var browserAutomationStopTask: Task<Void, Never>?
 
-    nonisolated static let storageSnapshotFreshnessInterval: TimeInterval = 30 * 60
+    /// Deep evidence is deliberately much slower-moving than the five-second
+    /// live free-space signal. Re-entering the app must not turn one current
+    /// number into a full CPU/network/security/storage collection every 30 minutes.
+    nonisolated static let deepScanFreshnessInterval: TimeInterval = 6 * 60 * 60
     nonisolated static let automaticScanRetryInterval: TimeInterval = 5 * 60
     nonisolated static let liveFreeSpaceRefreshInterval: UInt64 = 5_000_000_000
 
@@ -194,36 +198,35 @@ final class ScanModel: ObservableObject {
         }
         return Self.isSecureRegularFile(at: candidate, allowsRootOwner: false)
     }
-    var lastStorageScanAt: Date? { displayedStorageEntry?.capturedAt }
     var newerStorageHistoryEntry: StorageHistoryEntry? {
         StorageHistoryStore.newestEntry(after: displayedStorageEntry, in: storageHistory)
     }
     var hasNewerStorageHistory: Bool { newerStorageHistoryEntry != nil }
     var hasUnresolvedSimulatorKeepEntries: Bool { !simulatorLegacyKeepEntries.isEmpty }
     var terminationSafetyState: AppTerminationSafetyState { terminationSafetyGate.state }
-    var storageSnapshotIsStale: Bool {
-        isStorageSnapshotStale(at: Date())
+    var deepScanSnapshotIsStale: Bool {
+        isDeepScanSnapshotStale(at: Date())
     }
-    func isStorageSnapshotStale(at date: Date) -> Bool {
-        guard let lastStorageScanAt else { return true }
-        let age = date.timeIntervalSince(lastStorageScanAt)
+    func isDeepScanSnapshotStale(at date: Date) -> Bool {
+        guard let deepScanAt else { return true }
+        let age = date.timeIntervalSince(deepScanAt)
         // A timestamp meaningfully in the future is untrustworthy — a timezone
         // change between scan and view can reinterpret the zone-less scan time
         // hours ahead — so treat it as stale instead of reporting "방금 검사".
-        return age >= Self.storageSnapshotFreshnessInterval || age < -60
+        return age >= Self.deepScanFreshnessInterval || age < -60
     }
-    func storageSnapshotNeedsRefresh(at date: Date = Date()) -> Bool {
-        isStorageSnapshotStale(at: date) || hasNewerStorageHistory
+    func deepScanSnapshotNeedsRefresh(at date: Date = Date()) -> Bool {
+        isDeepScanSnapshotStale(at: date) || hasNewerStorageHistory
     }
-    var storageSnapshotAgeText: String {
-        guard let lastStorageScanAt else { return "검사 기록 없음" }
-        let raw = Date().timeIntervalSince(lastStorageScanAt)
+    var deepScanSnapshotAgeText: String {
+        guard let deepScanAt else { return "검사 기록 없음" }
+        let raw = Date().timeIntervalSince(deepScanAt)
         if raw < -60 { return "검사 시각 확인 필요" }
         let seconds = max(0, raw)
         if seconds < 60 { return "방금 검사" }
         if seconds < 3600 { return "\(Int(seconds / 60))분 전 검사" }
         if seconds < 86_400 { return "\(Int(seconds / 3600))시간 전 검사" }
-        return lastStorageScanAt.formatted(date: .abbreviated, time: .shortened)
+        return deepScanAt.formatted(date: .abbreviated, time: .shortened)
     }
 
     func runScan() {
@@ -292,13 +295,14 @@ final class ScanModel: ObservableObject {
     }
 
     /// The saved result remains visible while it is restored. Once restoration
-    /// has finished, opening or returning to the app refreshes a missing or stale
-    /// snapshot without making the person press the toolbar button first.
+    /// has finished, opening or returning to the app refreshes a missing or
+    /// six-hour-old deep snapshot. A newer bounded storage observation can
+    /// request reevaluation sooner; the five-second free-space value cannot.
     func runAutomaticScanIfNeeded(at date: Date = Date()) {
         guard Self.shouldRunAutomaticScan(
             initialResultsLoaded: initialResultsLoaded,
             isBusy: isBusy,
-            lastStorageScanAt: lastStorageScanAt,
+            lastDeepScanAt: deepScanAt,
             hasNewerStorageHistory: hasNewerStorageHistory,
             lastScanAttemptAt: lastScanAttemptAt,
             now: date
@@ -306,13 +310,13 @@ final class ScanModel: ObservableObject {
 
         startScan(at: date)
         guard isRunning else { return }
-        appendLog("저장된 검사 결과가 없거나 오래되어 자동 검사를 시작했습니다.")
+        appendLog("정밀 검사 결과가 없거나 6시간 이상 지났거나 새 저장공간 변화가 있어 자동 검사를 시작했습니다.")
     }
 
     nonisolated static func shouldRunAutomaticScan(
         initialResultsLoaded: Bool,
         isBusy: Bool,
-        lastStorageScanAt: Date?,
+        lastDeepScanAt: Date?,
         hasNewerStorageHistory: Bool,
         lastScanAttemptAt: Date?,
         now: Date
@@ -325,9 +329,9 @@ final class ScanModel: ObservableObject {
             }
         }
         if hasNewerStorageHistory { return true }
-        guard let lastStorageScanAt else { return true }
-        let resultAge = now.timeIntervalSince(lastStorageScanAt)
-        return resultAge >= storageSnapshotFreshnessInterval || resultAge < -60
+        guard let lastDeepScanAt else { return true }
+        let resultAge = now.timeIntervalSince(lastDeepScanAt)
+        return resultAge >= deepScanFreshnessInterval || resultAge < -60
     }
 
     func cancelScan() {
@@ -403,6 +407,7 @@ final class ScanModel: ObservableObject {
             ScanResultLoader.load(projectRoot: root)
         }.value
         deepScanSnapshot = loaded.content
+        deepScanAt = loaded.deepScanAt
         if let completedScanVirusTotalEnabled = loaded.content.virusTotalEnabled {
             virusTotalEnabled = completedScanVirusTotalEnabled
         }
