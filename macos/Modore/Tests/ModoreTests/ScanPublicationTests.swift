@@ -82,6 +82,27 @@ final class ScanPublicationTests: XCTestCase {
         XCTAssertTrue(leftovers.isEmpty)
     }
 
+    func testDeepScanTimestampDoesNotDependOnStorageCollection() throws {
+        let root = try privateTemporaryDirectory("no-storage")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identity = try XCTUnwrap(FilesystemIdentity.directory(at: root))
+        let output = try ScanPublication.prepare(in: root, expectedParentIdentity: identity)
+        try writeRun(output, scannedAt: "2026-08-26 12:00:00", freeGB: nil)
+        XCTAssertTrue(ScanPublication.publish(
+            output,
+            in: root,
+            expectedParentIdentity: identity
+        ))
+
+        let loaded = ScanResultLoader.load(
+            projectRoot: root,
+            historyURL: root.appendingPathComponent("history.json"),
+            sampleURL: root.appendingPathComponent("samples.tsv")
+        )
+        XCTAssertNotNil(loaded.deepScanAt)
+        XCTAssertNil(loaded.content.storage)
+    }
+
     private func privateTemporaryDirectory(_ suffix: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("modore-scan-publication-\(suffix)-\(UUID().uuidString)")
@@ -97,24 +118,26 @@ final class ScanPublicationTests: XCTestCase {
         _ output: StagedScanOutput,
         scannedAt: String,
         rawScannedAt: String? = nil,
-        freeGB: Double
+        freeGB: Double?
     ) throws {
+        var sections: [String: Any] = [:]
+        if let freeGB {
+            sections["storage"] = [
+                "volume": [
+                    "mount": "/",
+                    "freeGB": freeGB,
+                    "usedGB": 100 - freeGB,
+                    "totalGB": 100,
+                    "usePercent": 100 - freeGB,
+                    "risk": "safe",
+                ],
+                "cleanupCandidates": [],
+            ]
+        }
         let scan: [String: Any] = [
             "schemaVersion": "1.0",
             "scannedAt": scannedAt,
-            "sections": [
-                "storage": [
-                    "volume": [
-                        "mount": "/",
-                        "freeGB": freeGB,
-                        "usedGB": 100 - freeGB,
-                        "totalGB": 100,
-                        "usePercent": 100 - freeGB,
-                        "risk": "safe",
-                    ],
-                    "cleanupCandidates": [],
-                ],
-            ],
+            "sections": sections,
         ]
         let raw: [String: Any] = [
             "schemaVersion": "1.0",
