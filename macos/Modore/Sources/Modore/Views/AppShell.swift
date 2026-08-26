@@ -101,9 +101,9 @@ struct ModernRootView: View {
     private var primaryActionTitle: String {
         if model.cleanupIsExecuting { return "정리 중" }
         if model.cleanupInFlight { return "미리보기 취소" }
-        if model.isRunning { return "검사 취소" }
+        if model.isRunning { return "정밀 검사 취소" }
         if model.storageWatchInFlight { return "설정 적용 중" }
-        return "지금 검사"
+        return "정밀 검사"
     }
 
     private var primaryActionSymbol: String {
@@ -119,9 +119,9 @@ struct ModernRootView: View {
     private var primaryActionHelp: String {
         if model.cleanupIsExecuting { return "승인한 정리가 끝날 때까지 중단하지 않습니다" }
         if model.cleanupInFlight { return "삭제 없이 정리 대상 확인을 취소합니다" }
-        if model.isRunning { return "현재 검사를 안전하게 중단합니다" }
+        if model.isRunning { return "현재 정밀 검사를 안전하게 중단합니다" }
         if model.storageWatchInFlight { return "감시 설정을 적용하고 있습니다" }
-        return "현재 상태 다시 검사"
+        return "캐시·보안·자동 실행을 한 시점의 증거로 다시 평가합니다"
     }
 }
 
@@ -210,8 +210,13 @@ private struct SidebarScanStatus: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(statusTitle(at: date))
                     .font(.caption.weight(.semibold))
-                if let storage = model.storage {
-                    Text("\(storage.freeGB, specifier: "%.1f")GB 사용 가능")
+                if let liveFreeSpace = model.liveState.freeSpace {
+                    Text("\(liveFreeSpace.value.freeGB, specifier: "%.1f")GB 사용 가능")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                } else if let storage = model.storage {
+                    Text("검사 당시 \(storage.freeGB, specifier: "%.1f")GB")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
@@ -222,24 +227,26 @@ private struct SidebarScanStatus: View {
     }
 
     private func statusTitle(at date: Date) -> String {
-        if model.isRunning { return "검사 중" }
+        if model.isRunning { return "정밀 검사 중" }
         if model.cleanupInFlight { return "정리 대상 확인 중" }
         if model.browserAutomationStopInFlight { return "자동화 브라우저 확인 중" }
         if model.storageWatchInFlight { return "감시 설정 적용 중" }
-        if model.summary == nil { return "검사 필요" }
+        if model.state == .failed { return "정밀 검사 실패" }
+        if model.summary == nil { return "정밀 검사 필요" }
         if model.securityHasDanger {
             return model.securityAttentionCount > 0
                 ? "위험 신호 \(model.securityAttentionCount)건"
                 : "위험 신호 확인"
         }
         if model.collectionIsIncomplete { return "안전 판단 보류" }
-        if model.storageSnapshotNeedsRefresh(at: date) { return "업데이트 필요" }
+        if model.storageSnapshotNeedsRefresh(at: date) { return "정밀 검사 필요" }
         if model.securityAttentionCount > 0 { return "확인 항목 \(model.securityAttentionCount)건" }
         return model.storageSnapshotAgeText
     }
 
     private func statusSymbol(at date: Date) -> String {
         if model.securityHasDanger { return "exclamationmark.shield" }
+        if model.state == .failed { return "exclamationmark.circle" }
         if model.summary == nil { return "questionmark.circle" }
         if model.collectionIsIncomplete { return "questionmark.shield" }
         if model.storageSnapshotNeedsRefresh(at: date) { return "clock" }

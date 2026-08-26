@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 final class ScanModel: ObservableObject {
     @Published var state: ScanState = .idle
-    @Published private(set) var content = ScanContent.empty
+    @Published private(set) var deepScanSnapshot = DeepScanSnapshot.empty
     @Published var selectedReportURL: URL?
     @Published var selectedReportTitle = "리포트"
     @Published var errorMessage: String?
@@ -29,6 +29,9 @@ final class ScanModel: ObservableObject {
     @Published var storageWatchHealthState: StorageWatchHealthState = .neverAttempted
     @Published var storageWatchInFlight = false
     @Published private(set) var resultLoading = true
+    @Published private(set) var reportState = ReportState.unknown
+    @Published private(set) var liveState = LiveState.unobserved
+    @Published private(set) var deepScanFailure: DeepScanFailure?
     @Published var screeReport: ScreeReport?
     @Published var screeLoading = false
     @Published var screeError: String?
@@ -100,6 +103,7 @@ final class ScanModel: ObservableObject {
     private let shareReportName = "검사결과_공유용.html"
     private let terminationSafetyGate = AppTerminationSafetyGate()
     private var scanTask: Task<Void, Never>?
+    private var liveStateTask: Task<Void, Never>?
     private var initialResultsLoaded = false
     private var lastScanAttemptAt: Date?
     var cleanupTask: Task<Void, Never>?
@@ -107,6 +111,7 @@ final class ScanModel: ObservableObject {
 
     nonisolated static let storageSnapshotFreshnessInterval: TimeInterval = 30 * 60
     nonisolated static let automaticScanRetryInterval: TimeInterval = 5 * 60
+    nonisolated static let liveFreeSpaceRefreshInterval: UInt64 = 5_000_000_000
 
     init(automaticallyScansStaleResults: Bool = true) {
         self.projectRoot = Self.detectProjectRoot()
@@ -139,6 +144,7 @@ final class ScanModel: ObservableObject {
             || resultLoading
     }
     var logText: String { logStore.text }
+    var content: DeepScanSnapshot { deepScanSnapshot }
     var summary: ScanSummary? { content.summary }
     var collectionCoverage: CollectionCoverage? { content.collectionCoverage }
     var collectionIsIncomplete: Bool { collectionCoverage?.complete == false }
@@ -224,18 +230,51 @@ final class ScanModel: ObservableObject {
         startScan(at: Date())
     }
 
+    func setApplicationActive(_ active: Bool) {
+        if active {
+            startLiveStateUpdates()
+            runAutomaticScanIfNeeded()
+        } else {
+            liveStateTask?.cancel()
+            liveStateTask = nil
+        }
+    }
+
+    private func startLiveStateUpdates() {
+        guard liveStateTask == nil else { return }
+        liveStateTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshLiveState()
+                do {
+                    try await Task.sleep(nanoseconds: Self.liveFreeSpaceRefreshInterval)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    func refreshLiveState(at date: Date = Date()) async {
+        let freeSpace = await Task.detached(priority: .utility) {
+            LiveStateService.observeFreeSpace(observedAt: date)
+        }.value
+        liveState.freeSpace = freeSpace
+    }
+
     private func startScan(at date: Date) {
         guard !isBusy else { return }
         lastScanAttemptAt = date
         state = .running
         errorMessage = nil
+        deepScanFailure = nil
+        reportState = .unknown
         logStore.clear()
         appendLog("Modore 시작")
         appendLog("프로젝트: \(projectRoot.path)")
 
         let root = projectRoot
         scanTask = Task {
-            let ok = await ScanPipeline.run(projectRoot: root) { line in
+            let result = await ScanPipeline.run(projectRoot: root) { line in
                 Task { @MainActor in
                     self.appendLog(line)
                 }
@@ -247,7 +286,7 @@ final class ScanModel: ObservableObject {
                 scanTask = nil
                 return
             }
-            await finishRun(success: ok)
+            await finishRun(result: result)
             scanTask = nil
         }
     }
@@ -316,22 +355,44 @@ final class ScanModel: ObservableObject {
         terminationSafetyGate.deferTerminationUntilSafe(completion)
     }
 
-    func finishRun(success: Bool) async {
+    func finishRun(result: ScanRunResult) async {
         await refreshExistingResults()
-        if success {
+        if result.scanSucceeded {
             state = .finished
-            reportRevision += 1
-            appendLog("완료: 일반 리포트와 공유용 리포트를 생성했습니다.")
+            reportState = ReportState(runResult: result, attemptedAt: Date())
+            if result.normalReport == .succeeded || result.shareReport == .succeeded {
+                reportRevision += 1
+            }
+            if result.reportsSucceeded {
+                appendLog("완료: 정밀 검사와 일반·공유용 리포트를 생성했습니다.")
+            } else if let failureText = reportState.failureText {
+                appendLog(failureText)
+                markFailedReportAsPrevious(result)
+            }
             let verdict = IncidentAssessment.make(
                 content: content, storageChange: storageChange
             ).value
-            AccessibilityAnnouncer.announce("검사 완료: \(verdict)")
+            AccessibilityAnnouncer.announce("정밀 검사 완료: \(verdict)")
         } else {
             state = .failed
             if selectedReportURL != nil {
                 selectedReportTitle = "이전 리포트 (이번 검사 아님)"
             }
-            errorMessage = "이번 검사 또는 리포트 생성 중 오류가 발생했습니다. 표시된 이전 결과를 새 결과로 해석하지 마세요."
+            deepScanFailure = DeepScanFailure(
+                failedAt: Date(),
+                detail: "표시된 이전 정밀 검사 결과를 현재 상태로 해석하지 마세요. 기록 화면에서 실패 단계를 확인할 수 있습니다."
+            )
+        }
+    }
+
+    private func markFailedReportAsPrevious(_ result: ScanRunResult) {
+        guard let selectedReportURL else { return }
+        if result.normalReport == .failed,
+           selectedReportURL.standardizedFileURL == normalReportURL.standardizedFileURL {
+            selectedReportTitle = "이전 일반 리포트 (이번 검사 아님)"
+        } else if result.shareReport == .failed,
+                  selectedReportURL.standardizedFileURL == shareReportURL.standardizedFileURL {
+            selectedReportTitle = "이전 공유용 리포트 (이번 검사 아님)"
         }
     }
 
@@ -341,7 +402,7 @@ final class ScanModel: ObservableObject {
         let loaded = await Task.detached(priority: .utility) {
             ScanResultLoader.load(projectRoot: root)
         }.value
-        content = loaded.content
+        deepScanSnapshot = loaded.content
         if let completedScanVirusTotalEnabled = loaded.content.virusTotalEnabled {
             virusTotalEnabled = completedScanVirusTotalEnabled
         }

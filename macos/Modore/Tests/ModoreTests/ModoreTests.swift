@@ -2,6 +2,38 @@ import XCTest
 @testable import Modore
 
 final class ModoreTests: XCTestCase {
+    func testCompletedScanRemainsSuccessfulWhenAReportFails() {
+        let result = ScanRunResult(
+            scan: .succeeded,
+            normalReport: .succeeded,
+            shareReport: .failed
+        )
+        let reportState = ReportState(
+            runResult: result,
+            attemptedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertTrue(result.scanSucceeded)
+        XCTAssertFalse(result.reportsSucceeded)
+        XCTAssertEqual(reportState.normal, .generated)
+        XCTAssertEqual(reportState.share, .failed)
+        XCTAssertEqual(
+            reportState.failureText,
+            "정밀 검사는 완료됐지만 공유용 리포트를 생성하지 못했습니다."
+        )
+    }
+
+    func testUnattemptedReportsRemainUnknownAfterScannerFailure() {
+        let reportState = ReportState(
+            runResult: .scanFailed,
+            attemptedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertEqual(reportState.normal, .unknown)
+        XCTAssertEqual(reportState.share, .unknown)
+        XCTAssertNil(reportState.failureText)
+    }
+
     func testAutomaticScanWaitsForRestoreAndDoesNotOverlapBusyWork() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
 

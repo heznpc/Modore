@@ -44,7 +44,7 @@ struct IncidentAssessment: Equatable {
                 title: "아직 판단할 검사 결과가 없습니다",
                 detail: "앱을 열면 Modore가 자동으로 실행 프로세스, 네트워크, 자동 실행, 보호 상태와 저장공간 변화를 함께 확인합니다.",
                 impact: "검사 전에는 현재 Mac의 이상 징후나 검사 범위를 판단하지 않습니다.",
-                value: "검사 필요",
+                value: "정밀 검사 필요",
                 symbol: "questionmark.circle"
             )
         }
