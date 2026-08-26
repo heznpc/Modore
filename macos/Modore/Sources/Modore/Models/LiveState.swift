@@ -31,8 +31,30 @@ struct LiveFreeSpace: Equatable, Sendable {
     }
 }
 
+enum ObservationStatus: Equatable, Sendable {
+    case observing
+    case healthy
+    case failed(Date)
+}
+
 struct LiveState: Equatable, Sendable {
     var freeSpace: Observation<LiveFreeSpace>?
+    var freeSpaceStatus: ObservationStatus
 
-    static let unobserved = LiveState(freeSpace: nil)
+    static let unobserved = LiveState(
+        freeSpace: nil,
+        freeSpaceStatus: .observing
+    )
+
+    mutating func recordFreeSpaceAttempt(
+        _ observation: Observation<LiveFreeSpace>?,
+        attemptedAt: Date
+    ) {
+        if let observation {
+            freeSpace = observation
+            freeSpaceStatus = .healthy
+        } else {
+            freeSpaceStatus = .failed(attemptedAt)
+        }
+    }
 }

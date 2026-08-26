@@ -230,24 +230,43 @@ private struct StatusLiveStateSection: View {
                             Text(observation.ageText(at: context.date))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            if case .failed = model.liveState.freeSpaceStatus {
+                                Text("최근 갱신 실패")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                     .padding(.vertical, 8)
                 } else {
                     HStack(spacing: 10) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("현재 사용 가능 공간을 확인하고 있습니다.")
-                            .foregroundStyle(.secondary)
+                        if case .failed = model.liveState.freeSpaceStatus {
+                            Image(systemName: "exclamationmark.circle")
+                            Text("현재 사용 가능 공간을 확인하지 못했습니다. 5초 후 다시 시도합니다.")
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("현재 사용 가능 공간을 확인하고 있습니다.")
+                        }
                     }
+                    .foregroundStyle(.secondary)
                 }
             }
         } header: {
             NativeSectionHeader(
                 title: "현재",
                 subtitle: "앱이 활성화된 동안 가벼운 시스템 관찰값을 정밀 검사와 분리해 갱신합니다.",
-                value: model.liveState.freeSpace == nil ? "확인 중" : "실시간"
+                value: statusText
             )
+        }
+    }
+
+    private var statusText: String {
+        switch model.liveState.freeSpaceStatus {
+        case .observing: return "확인 중"
+        case .healthy: return "실시간"
+        case .failed: return "갱신 실패"
         }
     }
 }
