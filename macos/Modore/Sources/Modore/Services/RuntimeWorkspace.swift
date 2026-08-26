@@ -66,11 +66,15 @@ struct RuntimeExecutionContext: Equatable, Sendable {
     }
 
     var scanResultURL: URL {
-        outputRoot.appendingPathComponent("scan_result.json")
+        let directory = ScanPublication.canonicalDirectory(in: outputRoot)?.url
+            ?? outputRoot
+        return directory.appendingPathComponent("scan_result.json")
     }
 
     var rawFactsURL: URL {
-        outputRoot.appendingPathComponent("raw_facts.json")
+        let directory = ScanPublication.canonicalDirectory(in: outputRoot)?.url
+            ?? outputRoot
+        return directory.appendingPathComponent("raw_facts.json")
     }
 
     func pinnedInvocation(

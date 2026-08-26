@@ -38,19 +38,28 @@ enum ScanPipeline {
             onOutput("사용자 설정을 안전하게 읽지 못해 검사를 중단했습니다.")
             return .scanFailed
         }
+        guard let stagedOutput = try? ScanPublication.prepare(
+            in: execution.outputRoot,
+            expectedParentIdentity: execution.outputRootIdentity
+        ) else {
+            onOutput("검증 전 검사 결과를 격리할 작업 공간을 만들지 못했습니다.")
+            return .scanFailed
+        }
+        defer { ScanPublication.discard(stagedOutput) }
+
         var scannerEnvironment = scanEnvironment(
             configurationData: configurationData
         )
         scannerEnvironment["PCH_PROJECT_DIR"] = execution.outputRoot.path
         let usesSealedRuntime = execution.sealedRuntimeFiles != nil
         let scanWorkingDirectory = usesSealedRuntime
-            ? execution.outputRoot : execution.runtimeRoot
+            ? stagedOutput.directoryURL : execution.runtimeRoot
         let scanWorkingIdentity = usesSealedRuntime
-            ? execution.outputRootIdentity : execution.runtimeRootIdentity
+            ? stagedOutput.directoryIdentity : execution.runtimeRootIdentity
         let scanOutputArgument = usesSealedRuntime
-            ? execution.scanResultURL.lastPathComponent : execution.scanResultURL.path
+            ? stagedOutput.scanResultURL.lastPathComponent : stagedOutput.scanResultURL.path
         let rawOutputArgument = usesSealedRuntime
-            ? execution.rawFactsURL.lastPathComponent : execution.rawFactsURL.path
+            ? stagedOutput.rawFactsURL.lastPathComponent : stagedOutput.rawFactsURL.path
         var scannerScript = "scripts/scanner.sh"
         var pinnedScannerFiles: [String: Data] = ["configuration": configurationData]
         scannerEnvironment["PCH_CONFIG_PATH"] = pinnedPlaceholder("configuration")
@@ -89,8 +98,6 @@ enum ScanPipeline {
             scannerScript = pinnedPlaceholder("scanner")
         }
 
-        let previousScanGeneration = RegularFileGeneration.capture(execution.scanResultURL)
-        let previousRawGeneration = RegularFileGeneration.capture(execution.rawFactsURL)
         let scanner = await LocalProcessRunner.stream(
             executable: "/bin/bash",
             arguments: [
@@ -110,14 +117,20 @@ enum ScanPipeline {
             return .scanFailed
         }
         guard FilesystemIdentity.directory(at: execution.outputRoot) == execution.outputRootIdentity,
-              RegularFileGeneration.capture(execution.scanResultURL) != previousScanGeneration,
-              RegularFileGeneration.capture(execution.rawFactsURL) != previousRawGeneration,
-              scanOutputsAreConsistent(
-                scanResultURL: execution.scanResultURL,
-                rawFactsURL: execution.rawFactsURL,
-                expectedParentIdentity: execution.outputRootIdentity
-              ) else {
+              FilesystemIdentity.directory(at: stagedOutput.directoryURL)
+                == stagedOutput.directoryIdentity,
+              RegularFileGeneration.capture(stagedOutput.scanResultURL) != nil,
+              RegularFileGeneration.capture(stagedOutput.rawFactsURL) != nil,
+              ScanPublication.outputsAreConsistent(stagedOutput) else {
             onOutput("이번 실행의 새 검사 결과를 확인하지 못해 이전 결과 사용을 차단했습니다.")
+            return .scanFailed
+        }
+        guard ScanPublication.publish(
+            stagedOutput,
+            in: execution.outputRoot,
+            expectedParentIdentity: execution.outputRootIdentity
+        ) else {
+            onOutput("검증한 검사 결과를 신뢰 상태로 승격하지 못했습니다.")
             return .scanFailed
         }
 
@@ -361,30 +374,6 @@ enum ScanPipeline {
             return nil
         }
         return candidate.path
-    }
-
-    private static func scanOutputsAreConsistent(
-        scanResultURL: URL,
-        rawFactsURL: URL,
-        expectedParentIdentity: FilesystemIdentity
-    ) -> Bool {
-        func scannedAt(_ url: URL) -> String? {
-            guard let data = try? ScanResultLoader.boundedData(
-                contentsOf: url,
-                maximumBytes: ScanResultLoader.maximumScanResultBytes,
-                expectedParentIdentity: expectedParentIdentity
-            ),
-                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  root["schemaVersion"] != nil,
-                  let value = root["scannedAt"] as? String,
-                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return nil
-            }
-            return value
-        }
-        guard let scanTimestamp = scannedAt(scanResultURL),
-              let rawTimestamp = scannedAt(rawFactsURL) else { return false }
-        return scanTimestamp == rawTimestamp
     }
 
     static func pinnedPlaceholder(_ name: String) -> String {
