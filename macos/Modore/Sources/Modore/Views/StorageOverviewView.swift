@@ -17,6 +17,9 @@ struct StatusPage: View {
         Group {
             if let storage = model.storage {
                 Form {
+                    StatusLiveStateSection()
+                    DeepScanFailureSection()
+
                     Section {
                         StatusIncidentSummary(
                             assessment: assessment,
@@ -26,11 +29,13 @@ struct StatusPage: View {
                         )
                     } header: {
                         NativeSectionHeader(
-                            title: "현재 판단",
-                            subtitle: "관찰된 사실과 수집 범위를 기준으로 가장 중요한 상태 하나를 먼저 보여줍니다.",
+                            title: "최근 정밀 검사 판단",
+                            subtitle: "한 시점에 함께 수집한 증거와 범위를 기준으로 한 판단입니다.",
                             value: assessment.value
                         )
                     }
+
+                    ReportGenerationFailureSection()
 
                     StatusIncidentEvidenceSection(
                         coverage: model.collectionCoverage,
@@ -59,8 +64,8 @@ struct StatusPage: View {
                         )
                     } header: {
                         NativeSectionHeader(
-                            title: "현재 자원 상태",
-                            subtitle: "사고 판단을 보조하는 시동 볼륨 정보입니다.",
+                            title: "정밀 검사 당시 자원 상태",
+                            subtitle: "현재 값과 섞지 않은 정밀 검사 스냅샷입니다.",
                             value: model.storageSnapshotAgeText
                         )
                     }
@@ -111,15 +116,20 @@ struct StatusPage: View {
                 .macSettingsFormStyle()
             } else if model.summary != nil {
                 Form {
+                    StatusLiveStateSection()
+                    DeepScanFailureSection()
+
                     Section {
                         StatusIncidentSummary(assessment: assessment)
                     } header: {
                         NativeSectionHeader(
-                            title: "현재 판단",
-                            subtitle: "저장공간 수집 여부와 별개로 완료된 진단 결과를 표시합니다.",
+                            title: "최근 정밀 검사 판단",
+                            subtitle: "저장공간 수집 여부와 별개로 완료된 정밀 검사 결과입니다.",
                             value: assessment.value
                         )
                     }
+
+                    ReportGenerationFailureSection()
 
                     Section("관찰 근거") {
                         StatusNavigationRow(
@@ -155,17 +165,107 @@ struct StatusPage: View {
                 }
                 .macSettingsFormStyle()
             } else {
-                ModernEmptyState(
-                    symbol: "internaldrive",
-                    title: "아직 검사 결과가 없습니다",
-                    message: "검사가 끝나면 현재 저장공간과 보안 상태가 여기에 표시됩니다."
-                )
+                Form {
+                    StatusLiveStateSection()
+                    DeepScanFailureSection()
+                    Section("최근 정밀 검사") {
+                        StatusNoticeRow(
+                            symbol: "clock.badge.questionmark",
+                            title: "아직 정밀 검사 결과가 없습니다",
+                            detail: "현재 여유 공간은 위에서 계속 갱신합니다. 캐시·보안·자동 실행 분석은 정밀 검사가 끝난 뒤 별도 시각과 함께 표시합니다.",
+                            tint: .secondary
+                        )
+                    }
+                }
+                .macSettingsFormStyle()
             }
         }
     }
 
     private var assessment: IncidentAssessment {
-        IncidentAssessment.make(content: model.content, storageChange: model.storageChange)
+        IncidentAssessment.make(
+            content: model.deepScanSnapshot,
+            storageChange: model.storageChange
+        )
+    }
+}
+
+private struct DeepScanFailureSection: View {
+    @EnvironmentObject private var model: ScanModel
+
+    var body: some View {
+        if let failure = model.deepScanFailure {
+            Section("최근 정밀 검사") {
+                StatusNoticeRow(
+                    symbol: "exclamationmark.circle",
+                    title: "정밀 검사를 완료하지 못했습니다",
+                    detail: "\(failure.failedAt.formatted(date: .abbreviated, time: .shortened)) 실패. \(failure.detail)",
+                    tint: .secondary
+                )
+            }
+        }
+    }
+}
+
+private struct StatusLiveStateSection: View {
+    @EnvironmentObject private var model: ScanModel
+
+    var body: some View {
+        Section {
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                if let observation = model.liveState.freeSpace {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(observation.value.freeGB, specifier: "%.1f")GB 사용 가능")
+                                .font(.system(size: 30, weight: .semibold))
+                                .monospacedDigit()
+                            Text("파일 시스템 사용률 약 \(observation.value.usedPercent, specifier: "%.0f")%")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 20)
+                        VStack(alignment: .trailing, spacing: 3) {
+                            Text("시동 볼륨")
+                                .font(.headline)
+                            Text(observation.ageText(at: context.date))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 8)
+                } else {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("현재 사용 가능 공간을 확인하고 있습니다.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } header: {
+            NativeSectionHeader(
+                title: "현재",
+                subtitle: "앱이 활성화된 동안 가벼운 시스템 관찰값을 정밀 검사와 분리해 갱신합니다.",
+                value: model.liveState.freeSpace == nil ? "확인 중" : "실시간"
+            )
+        }
+    }
+}
+
+private struct ReportGenerationFailureSection: View {
+    @EnvironmentObject private var model: ScanModel
+
+    var body: some View {
+        if let failureText = model.reportState.failureText {
+            Section("리포트") {
+                StatusNoticeRow(
+                    symbol: "doc.badge.ellipsis",
+                    title: failureText,
+                    detail: "정밀 검사 결과는 이미 반영했습니다. 기록 화면에서 리포트 생성 실패 단계를 확인할 수 있습니다.",
+                    tint: .secondary
+                )
+            }
+        }
     }
 }
 
@@ -445,7 +545,7 @@ private struct StatusRecoverySection: View {
 
     private var buttonTitle: String {
         switch assessment.kind {
-        case .collectionIncomplete, .noResult: return "다시 검사"
+        case .collectionIncomplete, .noResult: return "정밀 검사"
         case .securityDanger, .securityAttention: return "보안 보기"
         case .storageCritical: return "후보 보기"
         case .browserAutomation, .runtimeAttention: return "개발 보기"
@@ -473,8 +573,7 @@ private struct StatusStorageSummary: View {
         VStack(alignment: .leading, spacing: 16) {
             StatusStorageHeader(
                 freeGB: storage.freeGB,
-                changeDescription: changeDescription,
-                snapshotNeedsRefresh: snapshotNeedsRefresh
+                changeDescription: changeDescription
             )
             StatusStorageMeter(storage: storage, snapshotNeedsRefresh: snapshotNeedsRefresh)
         }
@@ -498,7 +597,6 @@ private struct StatusStorageHeader: View {
     @EnvironmentObject private var model: ScanModel
     let freeGB: Double
     let changeDescription: String
-    let snapshotNeedsRefresh: Bool
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
@@ -525,7 +623,7 @@ private struct StatusStorageHeader: View {
 
     private var freeSpaceTitle: String {
         let value = String(format: "%.1fGB", freeGB)
-        return snapshotNeedsRefresh ? "검사 당시 \(value) 사용 가능" : "\(value) 사용 가능"
+        return "정밀 검사 당시 \(value) 사용 가능"
     }
 }
 

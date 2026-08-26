@@ -54,18 +54,17 @@ struct ModoreApp: App {
                 .frame(minWidth: 900, minHeight: 640)
                 .onAppear {
                     applicationDelegate.bind(to: model)
+                    model.setApplicationActive(scenePhase == .active)
                 }
                 .onChange(of: scenePhase) { phase in
-                    if phase == .active {
-                        model.runAutomaticScanIfNeeded()
-                    }
+                    model.setApplicationActive(phase == .active)
                 }
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1100, height: 760)
         .commands {
             CommandGroup(after: .newItem) {
-                Button(model.isRunning ? "검사 취소" : "지금 검사") {
+                Button(model.isRunning ? "정밀 검사 취소" : "정밀 검사") {
                     if model.isRunning {
                         model.cancelScan()
                     } else {
