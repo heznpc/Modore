@@ -40,7 +40,7 @@ final class ModoreTests: XCTestCase {
         XCTAssertFalse(ScanModel.shouldRunAutomaticScan(
             initialResultsLoaded: false,
             isBusy: false,
-            lastStorageScanAt: nil,
+            lastDeepScanAt: nil,
             hasNewerStorageHistory: false,
             lastScanAttemptAt: nil,
             now: now
@@ -48,22 +48,25 @@ final class ModoreTests: XCTestCase {
         XCTAssertFalse(ScanModel.shouldRunAutomaticScan(
             initialResultsLoaded: true,
             isBusy: true,
-            lastStorageScanAt: nil,
+            lastDeepScanAt: nil,
             hasNewerStorageHistory: false,
             lastScanAttemptAt: nil,
             now: now
         ))
     }
 
-    func testAutomaticScanRefreshesMissingStaleOrSupersededResults() {
+    func testAutomaticDeepScanUsesSixHourFreshnessAndStorageAnomalyOverride() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let fresh = now.addingTimeInterval(-ScanModel.storageSnapshotFreshnessInterval + 1)
-        let stale = now.addingTimeInterval(-ScanModel.storageSnapshotFreshnessInterval)
+        let thirtyMinutesAgo = now.addingTimeInterval(-30 * 60)
+        let fresh = now.addingTimeInterval(-ScanModel.deepScanFreshnessInterval + 1)
+        let stale = now.addingTimeInterval(-ScanModel.deepScanFreshnessInterval)
+
+        XCTAssertEqual(ScanModel.deepScanFreshnessInterval, 6 * 60 * 60)
 
         XCTAssertTrue(ScanModel.shouldRunAutomaticScan(
             initialResultsLoaded: true,
             isBusy: false,
-            lastStorageScanAt: nil,
+            lastDeepScanAt: nil,
             hasNewerStorageHistory: false,
             lastScanAttemptAt: nil,
             now: now
@@ -71,7 +74,15 @@ final class ModoreTests: XCTestCase {
         XCTAssertFalse(ScanModel.shouldRunAutomaticScan(
             initialResultsLoaded: true,
             isBusy: false,
-            lastStorageScanAt: fresh,
+            lastDeepScanAt: thirtyMinutesAgo,
+            hasNewerStorageHistory: false,
+            lastScanAttemptAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(ScanModel.shouldRunAutomaticScan(
+            initialResultsLoaded: true,
+            isBusy: false,
+            lastDeepScanAt: fresh,
             hasNewerStorageHistory: false,
             lastScanAttemptAt: nil,
             now: now
@@ -79,7 +90,7 @@ final class ModoreTests: XCTestCase {
         XCTAssertTrue(ScanModel.shouldRunAutomaticScan(
             initialResultsLoaded: true,
             isBusy: false,
-            lastStorageScanAt: stale,
+            lastDeepScanAt: stale,
             hasNewerStorageHistory: false,
             lastScanAttemptAt: nil,
             now: now
@@ -87,7 +98,7 @@ final class ModoreTests: XCTestCase {
         XCTAssertTrue(ScanModel.shouldRunAutomaticScan(
             initialResultsLoaded: true,
             isBusy: false,
-            lastStorageScanAt: fresh,
+            lastDeepScanAt: thirtyMinutesAgo,
             hasNewerStorageHistory: true,
             lastScanAttemptAt: nil,
             now: now
@@ -100,7 +111,7 @@ final class ModoreTests: XCTestCase {
         XCTAssertFalse(ScanModel.shouldRunAutomaticScan(
             initialResultsLoaded: true,
             isBusy: false,
-            lastStorageScanAt: nil,
+            lastDeepScanAt: nil,
             hasNewerStorageHistory: false,
             lastScanAttemptAt: now.addingTimeInterval(
                 -ScanModel.automaticScanRetryInterval + 1
@@ -110,7 +121,7 @@ final class ModoreTests: XCTestCase {
         XCTAssertTrue(ScanModel.shouldRunAutomaticScan(
             initialResultsLoaded: true,
             isBusy: false,
-            lastStorageScanAt: nil,
+            lastDeepScanAt: nil,
             hasNewerStorageHistory: false,
             lastScanAttemptAt: now.addingTimeInterval(
                 -ScanModel.automaticScanRetryInterval

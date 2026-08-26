@@ -37,7 +37,7 @@ struct CleanupApprovalSheet: View {
             $0.cleanupID == preview.recipeID
         })
         return CleanupPresentation.sizeChangeNotice(
-            snapshotAge: model.storageSnapshotAgeText,
+            snapshotAge: model.deepScanSnapshotAgeText,
             scannedSize: item?.sizeText,
             previewSize: preview.estimatedText,
             estimateMeasured: preview.estimateMeasured

@@ -58,7 +58,7 @@ struct SecurityPage: View {
                     NativeSectionHeader(
                         title: "정밀 검사 당시 활동",
                         subtitle: "한 검사 시점에 수집한 실행·통신 스냅샷입니다. 알 수 없음은 안전 판정이 아니며 경로와 맥락을 직접 대조하세요.",
-                        value: model.storageSnapshotAgeText
+                        value: model.deepScanSnapshotAgeText
                     )
                 }
             }
@@ -97,7 +97,7 @@ struct SecurityPage: View {
                 NativeSectionHeader(
                     title: "정밀 검사 당시 보호 상태",
                     subtitle: "현재 설정을 실시간 감시한 값이 아니라 최근 정밀 검사에서 확인한 스냅샷입니다.",
-                    value: model.storageSnapshotAgeText
+                    value: model.deepScanSnapshotAgeText
                 )
             }
 
@@ -108,7 +108,7 @@ struct SecurityPage: View {
                     NativeSectionHeader(
                         title: "정밀 검사 당시 개인정보 권한",
                         subtitle: "카메라·마이크 접근을 허용받은 앱 목록입니다. 지금 사용 중인지가 아니라 접근 자체가 가능한지를 보여주며, 대부분은 정상적인 권한입니다.",
-                        value: "\(model.privacyPermissionRows.count)개 · \(model.storageSnapshotAgeText)"
+                        value: "\(model.privacyPermissionRows.count)개 · \(model.deepScanSnapshotAgeText)"
                     )
                 }
             }
@@ -120,7 +120,7 @@ struct SecurityPage: View {
                     NativeSectionHeader(
                         title: "정밀 검사 당시 개발도구 업데이트",
                         subtitle: "Homebrew로 설치한 패키지 중 새 버전이 있는 항목입니다. 업데이트를 실행하지 않으며, 로컬에 이미 있는 정보만 비교합니다.",
-                        value: "\(model.devtoolUpdateRows.count)개 · \(model.storageSnapshotAgeText)"
+                        value: "\(model.devtoolUpdateRows.count)개 · \(model.deepScanSnapshotAgeText)"
                     )
                 }
             }
@@ -133,7 +133,7 @@ struct SecurityPage: View {
                     NativeSectionHeader(
                         title: "정밀 검사 당시 시스템 변경",
                         subtitle: "자동 실행 항목과 최근 설치 앱을 한 검사 시점의 스냅샷으로 표시합니다.",
-                        value: model.storageSnapshotAgeText
+                        value: model.deepScanSnapshotAgeText
                     )
                 }
             }
