@@ -37,4 +37,40 @@ final class LiveStateTests: XCTestCase {
             "2분 전"
         )
     }
+
+    func testFailedRefreshKeepsLastGoodFreeSpaceObservation() {
+        let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let failedAt = observedAt.addingTimeInterval(5)
+        let observation = Observation(
+            value: LiveFreeSpace(freeBytes: 70, totalBytes: 100),
+            observedAt: observedAt,
+            source: .systemVolume
+        )
+        var state = LiveState.unobserved
+
+        state.recordFreeSpaceAttempt(observation, attemptedAt: observedAt)
+        XCTAssertEqual(state.freeSpace, observation)
+        XCTAssertEqual(state.freeSpaceStatus, .healthy)
+
+        state.recordFreeSpaceAttempt(nil, attemptedAt: failedAt)
+        XCTAssertEqual(state.freeSpace, observation)
+        XCTAssertEqual(state.freeSpaceStatus, .failed(failedAt))
+    }
+
+    func testSuccessfulRefreshRecoversHealthAfterFailure() {
+        let failedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let recoveredAt = failedAt.addingTimeInterval(5)
+        let observation = Observation(
+            value: LiveFreeSpace(freeBytes: 60, totalBytes: 100),
+            observedAt: recoveredAt,
+            source: .systemVolume
+        )
+        var state = LiveState.unobserved
+
+        state.recordFreeSpaceAttempt(nil, attemptedAt: failedAt)
+        state.recordFreeSpaceAttempt(observation, attemptedAt: recoveredAt)
+
+        XCTAssertEqual(state.freeSpace, observation)
+        XCTAssertEqual(state.freeSpaceStatus, .healthy)
+    }
 }

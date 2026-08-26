@@ -18,8 +18,11 @@ enum ScanResultLoader {
         historyURL: URL = StorageHistoryStore.historyURL,
         sampleURL: URL = StorageHistoryStore.sampleURL
     ) -> LoadedScanResult {
-        let scanURL = projectRoot.appendingPathComponent("scan_result.json")
-        let scanParentIdentity = FilesystemIdentity.directory(at: projectRoot)
+        let publishedDirectory = ScanPublication.canonicalDirectory(in: projectRoot)
+        let scanURL = (publishedDirectory?.url ?? projectRoot)
+            .appendingPathComponent("scan_result.json")
+        let scanParentIdentity = publishedDirectory?.identity
+            ?? FilesystemIdentity.directory(at: projectRoot)
         let existingHistory = StorageHistoryStore.load(from: historyURL)
         let samples = StorageHistoryStore.loadFreeSpaceSamples(from: sampleURL)
         guard FileManager.default.fileExists(atPath: scanURL.path) else {

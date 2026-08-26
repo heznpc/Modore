@@ -783,6 +783,34 @@ def test_macos_scan_completion_does_not_open_browser_automatically(project_root)
     assert "showNormalReport()" not in finish_run
 
 
+def test_macos_rejected_scan_never_refreshes_or_publishes_canonical_state(project_root):
+    model = (
+        project_root
+        / "macos/Modore/Sources/Modore/Services/ScanModel.swift"
+    ).read_text(encoding="utf-8")
+    pipeline = (
+        project_root
+        / "macos/Modore/Sources/Modore/Services/ScanPipeline.swift"
+    ).read_text(encoding="utf-8")
+    publication = (
+        project_root
+        / "macos/Modore/Sources/Modore/Services/ScanPublication.swift"
+    ).read_text(encoding="utf-8")
+    finish_run = model.split("func finishRun", 1)[1].split(
+        "private func markFailedReportAsPrevious", 1
+    )[0]
+
+    assert finish_run.count("await refreshExistingResults()") == 1
+    assert finish_run.index("if result.scanSucceeded") < finish_run.index(
+        "await refreshExistingResults()"
+    )
+    assert "ScanPublication.prepare" in pipeline
+    assert "ScanPublication.outputsAreConsistent" in pipeline
+    assert "ScanPublication.publish" in pipeline
+    assert "renameatx_np" in publication
+    assert "RENAME_SWAP" in publication
+
+
 def test_macos_high_frequency_log_state_is_isolated(project_root):
     source = (
         project_root
