@@ -258,7 +258,7 @@ final class ScanModel: ObservableObject {
         let freeSpace = await Task.detached(priority: .utility) {
             LiveStateService.observeFreeSpace(observedAt: date)
         }.value
-        liveState.freeSpace = freeSpace
+        liveState.recordFreeSpaceAttempt(freeSpace, attemptedAt: date)
     }
 
     private func startScan(at date: Date) {
@@ -356,8 +356,8 @@ final class ScanModel: ObservableObject {
     }
 
     func finishRun(result: ScanRunResult) async {
-        await refreshExistingResults()
         if result.scanSucceeded {
+            await refreshExistingResults()
             state = .finished
             reportState = ReportState(runResult: result, attemptedAt: Date())
             if result.normalReport == .succeeded || result.shareReport == .succeeded {
