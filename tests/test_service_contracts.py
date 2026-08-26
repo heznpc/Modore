@@ -842,6 +842,39 @@ def test_macos_scanner_pins_the_exact_config_snapshot_used_for_network_consent(
     assert 'umask 077; exec /usr/bin/osascript' in pipeline
 
 
+def test_standalone_scanner_pins_every_sibling_dependency(project_root):
+    pipeline = (
+        project_root
+        / "macos/Modore/Sources/Modore/Services/ScanPipeline.swift"
+    ).read_text(encoding="utf-8")
+    runner = (
+        project_root
+        / "macos/Modore/Sources/Modore/Services/LocalProcessRunner.swift"
+    ).read_text(encoding="utf-8")
+    scanner = (project_root / "scripts/scanner.sh").read_text(encoding="utf-8")
+
+    dependencies = {
+        "PCH_PINNED_CPU_MODULE": "scripts/modules/macos/cpu.sh",
+        "PCH_PINNED_NETWORK_MODULE": "scripts/modules/macos/network.sh",
+        "PCH_PINNED_AUTORUNS_MODULE": "scripts/modules/macos/autoruns.sh",
+        "PCH_PINNED_SECURITY_MODULE": "scripts/modules/macos/security.sh",
+        "PCH_PINNED_STORAGE_MODULE": "scripts/modules/macos/storage.sh",
+        "PCH_PINNED_IDLE_CPU_MODULE": "scripts/modules/macos/idle_cpu.sh",
+        "PCH_PINNED_IDLE_CPU_SCRIPT": "scripts/idle_cpu.sh",
+        "PCH_PINNED_PRIVACY_MODULE": "scripts/modules/macos/privacy.sh",
+        "PCH_PINNED_DEVTOOL_UPDATES_MODULE": "scripts/modules/macos/devtool_updates.sh",
+        "PCH_PINNED_SUPPORT_DIR_MODULE": "scripts/modules/support_dir.sh",
+    }
+    for environment_name, relative_path in dependencies.items():
+        assert environment_name in pipeline
+        assert relative_path in pipeline
+        assert f'"{environment_name}"' in runner
+        assert environment_name in scanner
+
+    assert 'SUPPORT_DIR_MODULE="${PCH_PINNED_SUPPORT_DIR_MODULE:-' in scanner
+    assert 'source "$SUPPORT_DIR_MODULE"' in scanner
+
+
 def test_macos_collection_failures_cannot_be_reported_as_safe(project_root):
     scanner = (project_root / "scripts/scanner.sh").read_text(encoding="utf-8")
     network = (

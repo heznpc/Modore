@@ -259,10 +259,10 @@ extension ScanModel {
                 )
                 cleanupPreview = nil
                 state = .running
-                let ok = await ScanPipeline.run(projectRoot: root) { line in
+                let result = await ScanPipeline.run(projectRoot: root) { line in
                     Task { @MainActor in self.appendLog(line) }
                 }
-                await finishRun(success: ok)
+                await finishRun(result: result)
             } else {
                 cleanupPreview = executed
                 errorMessage = executed.failureMessage
