@@ -799,7 +799,7 @@ def test_macos_high_frequency_log_state_is_isolated(project_root):
 
     assert "@Published var logText" not in source
     assert "let logStore = ScanLogStore()" in source
-    assert "@Published private(set) var content = ScanContent.empty" in source
+    assert "@Published private(set) var deepScanSnapshot = DeepScanSnapshot.empty" in source
     assert "LocalProcessRunner.capture" in watch_service
     assert "struct StorageOverviewPage: View" not in overview
 
