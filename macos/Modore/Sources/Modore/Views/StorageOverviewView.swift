@@ -23,8 +23,8 @@ struct StatusPage: View {
                     Section {
                         StatusIncidentSummary(
                             assessment: assessment,
-                            evidenceTimingNote: model.isStorageSnapshotStale(at: date)
-                                ? "\(model.storageSnapshotAgeText) 결과 기준 판단입니다. 새 검사 전에는 현재 상태로 단정하지 않습니다."
+                            evidenceTimingNote: model.isDeepScanSnapshotStale(at: date)
+                                ? "\(model.deepScanSnapshotAgeText) 결과 기준 판단입니다. 새 검사 전에는 현재 상태로 단정하지 않습니다."
                                 : nil
                         )
                     } header: {
@@ -60,13 +60,13 @@ struct StatusPage: View {
                         StatusStorageSummary(
                             storage: storage,
                             change: model.storageChange,
-                            snapshotNeedsRefresh: model.storageSnapshotNeedsRefresh(at: date)
+                            snapshotNeedsRefresh: model.deepScanSnapshotNeedsRefresh(at: date)
                         )
                     } header: {
                         NativeSectionHeader(
                             title: "정밀 검사 당시 자원 상태",
                             subtitle: "현재 값과 섞지 않은 정밀 검사 스냅샷입니다.",
-                            value: model.storageSnapshotAgeText
+                            value: model.deepScanSnapshotAgeText
                         )
                     }
 
@@ -102,12 +102,12 @@ struct StatusPage: View {
                                 tint: .secondary
                             )
                         }
-                    } else if model.isStorageSnapshotStale(at: date) {
+                    } else if model.isDeepScanSnapshotStale(at: date) {
                         Section("결과 시점") {
                             StatusNoticeRow(
                                 symbol: "clock",
                                 title: "현재 결과가 오래되었습니다",
-                                detail: "\(model.storageSnapshotAgeText) 결과입니다. 새 검사 전에는 현재 상태로 단정하지 않습니다.",
+                                detail: "\(model.deepScanSnapshotAgeText) 결과입니다. 새 검사 전에는 현재 상태로 단정하지 않습니다.",
                                 tint: .secondary
                             )
                         }
@@ -632,7 +632,7 @@ private struct StatusStorageHeader: View {
                 Text("시동 볼륨")
                     .font(.headline)
                 TimelineView(.periodic(from: .now, by: 60)) { _ in
-                    Text(model.storageSnapshotAgeText)
+                    Text(model.deepScanSnapshotAgeText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

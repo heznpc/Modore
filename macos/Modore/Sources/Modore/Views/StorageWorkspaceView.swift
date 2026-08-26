@@ -76,7 +76,7 @@ private struct StorageWorkspaceToolbar: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 TimelineView(.periodic(from: .now, by: 60)) { context in
-                    Text(model.storageSnapshotNeedsRefresh(at: context.date)
+                    Text(model.deepScanSnapshotNeedsRefresh(at: context.date)
                         ? "정밀 검사 당시 \(value) · 업데이트 필요"
                         : value)
                         .font(.callout.weight(.semibold))
