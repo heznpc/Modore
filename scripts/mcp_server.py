@@ -48,6 +48,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -63,10 +65,21 @@ SERVER_VERSION = "0.3.0"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 SERVER_INSTRUCTIONS = (
-    "Modore judges what AI agents leave behind on a Mac -- session stores, git "
-    "worktrees holding the only copy of unpushed work, reclaimable caches -- and "
-    "where the operator pushed back on agent behaviour. Every verdict is "
-    "deterministic: declarative rules and read-only metadata, never a model. "
+    "Modore judges durable local state on this Mac -- what AI agents and removed "
+    "software left behind -- from read-only metadata and declarative rules, never "
+    "a model. Search for its tools before answering any of these: is a git "
+    "worktree, workspace, or project directory safe to delete, or the only copy "
+    "of unpushed work (agent_state_report); is an AI session store about to "
+    "expire, orphaned, or which tools touched a workspace and when "
+    "(agent_state_report); where did the operator previously push back on agent "
+    "behaviour (operator_friction_report); which sessions read, wrote, or "
+    "referenced a given file or path (agent_file_access); why does a registered "
+    "MCP server not start (mcp_hygiene); which cached Hugging Face models does "
+    "nothing reference (model_residue_report); what did an uninstalled app leave "
+    "in installer receipts and certificate trust roots (uninstall_residue_report); "
+    "and what is the machine's disk pressure, reclaimable storage, or macOS "
+    "security posture (system_scan_summary -- reads the scan already on disk and "
+    "reports its age and staleness explicitly). "
     "This surface is read-only by contract: it exposes judgment only. Cleanup, "
     "deletion, and scan execution are not available here and must not be "
     "attempted through it -- Modore gates those on an approval a human grants on "
@@ -302,26 +315,50 @@ def tool_moraine_report(args: dict) -> dict:
     return payload
 
 
-SCAN_RESULT_CANDIDATES = (
-    lambda: Path(os.environ["PCH_SCAN"]) if os.environ.get("PCH_SCAN") else None,
-    lambda: PROJECT_ROOT / "scan_result.json",
-    lambda: Path.home() / "Library" / "Application Support" / "Modore" / "results"
-    / "scan_result.json",
-)
+# The app publishes verified scans atomically into this directory (Swift
+# ScanPublication.currentDirectoryName); the CLI scanner still writes at the
+# root of its output directory. Both layouts in both roots are legitimate
+# producers, so discovery checks all four and the newest existing file wins --
+# a fixed priority order would let a stale legacy file shadow a fresh
+# canonical one, which is exactly the failure this tool exists to name.
+SCAN_PUBLICATION_DIRNAME = ".modore-scan-current"
+
+
+def _scan_result_roots() -> tuple[Path, ...]:
+    return (PROJECT_ROOT,
+            Path.home() / "Library" / "Application Support" / "Modore" / "results")
+
 
 MAX_SCAN_RESULT_BYTES = 32 << 20
 
 
 def _locate_scan_result() -> tuple[Optional[Path], list[str]]:
-    checked: list[str] = []
-    for candidate in SCAN_RESULT_CANDIDATES:
-        path = candidate()
-        if path is None:
-            continue
+    override = os.environ.get("PCH_SCAN")
+    if override:
+        # An explicit override is exclusive: silently falling back to some
+        # other file on the machine would answer a different question than
+        # the one the caller pinned.
+        path = Path(override)
+        checked = [str(path)]
+        return (path if path.is_file() else None), checked
+    checked = []
+    candidates: list[Path] = []
+    for root in _scan_result_roots():
+        candidates.append(root / SCAN_PUBLICATION_DIRNAME / "scan_result.json")
+        candidates.append(root / "scan_result.json")
+    newest: Optional[Path] = None
+    newest_mtime = float("-inf")
+    for path in candidates:
         checked.append(str(path))
-        if path.is_file():
-            return path, checked
-    return None, checked
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if not path.is_file():
+            continue
+        if mtime > newest_mtime:
+            newest, newest_mtime = path, mtime
+    return newest, checked
 
 
 def _roots_arg(args: dict) -> list[str]:
@@ -430,6 +467,46 @@ def tool_file_access(args: dict) -> dict:
     }
 
 
+# Mirrors ScanModel.deepScanFreshnessInterval and its future-timestamp guard:
+# a scan older than six hours is stale, and a scannedAt meaningfully in the
+# future is untrustworthy (a timezone change between scan and read can
+# reinterpret the zone-less timestamp hours ahead), so it is stale too.
+SCAN_FRESHNESS_THRESHOLD_SECONDS = 6 * 60 * 60
+SCAN_FUTURE_TOLERANCE_SECONDS = 60
+
+
+def _wall_clock() -> float:
+    return time.time()
+
+
+def _scan_freshness(scanned_at: Any, file_mtime: float) -> dict:
+    """Deterministic server-side staleness, so no caller has to derive age from
+    a zone-less local timestamp and its own idea of 'now'."""
+    basis = "file_mtime"
+    reference = file_mtime
+    if isinstance(scanned_at, str):
+        try:
+            reference = datetime.strptime(scanned_at.strip(),
+                                          "%Y-%m-%d %H:%M:%S").timestamp()
+            basis = "scanned_at"
+        except ValueError:
+            pass
+    age = _wall_clock() - reference
+    if age < -SCAN_FUTURE_TOLERANCE_SECONDS:
+        stale, reason = True, "timestamp is in the future; treated as untrustworthy"
+    elif age >= SCAN_FRESHNESS_THRESHOLD_SECONDS:
+        stale, reason = True, "older than the freshness threshold"
+    else:
+        stale, reason = False, None
+    return {
+        "age_seconds": round(age),
+        "age_basis": basis,
+        "stale": stale,
+        "stale_reason": reason,
+        "freshness_threshold_seconds": SCAN_FRESHNESS_THRESHOLD_SECONDS,
+    }
+
+
 def tool_system_scan_summary(args: dict) -> dict:
     limit = _int_arg(args, "limit", default=10, minimum=1, maximum=100)
     path, checked = _locate_scan_result()
@@ -469,13 +546,15 @@ def tool_system_scan_summary(args: dict) -> dict:
         [f for f in findings if isinstance(f, dict) and f.get("level") in ("danger", "warning")],
         limit)
 
+    # Staleness is the failure mode that matters here: a months-old result
+    # read as "the state of this machine" is worse than no result at all.
+    file_mtime = path.stat().st_mtime
     return {
         "available": True,
         "source_path": str(path),
         "scanned_at": scan.get("scannedAt"),
-        # Staleness is the failure mode that matters here: a months-old result
-        # read as "the state of this machine" is worse than no result at all.
-        "result_file_mtime_epoch": path.stat().st_mtime,
+        "result_file_mtime_epoch": file_mtime,
+        **_scan_freshness(scan.get("scannedAt"), file_mtime),
         "schema_version": scan.get("schemaVersion"),
         "platform": scan.get("platform"),
         "summary": scan.get("summary"),
@@ -707,8 +786,9 @@ TOOLS: list[dict] = [
             "Summary of the storage and security scan result already on disk: overall "
             "verdict, danger/warning counts, volume pressure, the largest reclaimable "
             "cache and protected-history candidates, and macOS security context "
-            "(Gatekeeper, SIP, XProtect). Reports where the file came from and how old it "
-            "is, because a stale result read as current is the failure mode here. This "
+            "(Gatekeeper, SIP, XProtect). Reports where the file came from, its age in "
+            "seconds, and whether it is stale by the app's own six-hour rule, because a "
+            "stale result read as current is the failure mode here. This "
             "tool never starts a scan -- collection is privileged and stays a human "
             "action -- and never runs cleanup; candidates are evidence, and deletion is "
             "gated on an approval a human grants on screen."),
