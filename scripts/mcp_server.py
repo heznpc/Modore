@@ -393,13 +393,22 @@ def _scan_recency(path: Path) -> tuple[int, float]:
 
     A restore, `cp`, or `touch` rewrites mtime without rescanning anything, so
     mtime is only the fallback for a result whose own timestamp cannot be
-    trusted. Two ways it cannot: it does not parse, or it sits meaningfully in
-    the future -- the same condition `_scan_freshness` refuses to read as "just
-    scanned", because a timezone change can reinterpret a zone-less timestamp
-    hours ahead. A timestamp this surface will not trust to answer *how old is
-    this* must not decide *which result to read*, so it never outranks a
-    trustworthy one; the leading element of the sort key enforces that, and
-    mtime only orders candidates that are equally (un)trustworthy.
+    trusted -- because it does not parse, or because it sits meaningfully in
+    the future, which `_scan_freshness` likewise refuses to read as "just
+    scanned" since a timezone change can reinterpret a zone-less timestamp
+    hours ahead.
+
+    The leading element of the key is a deliberate arbitration rule of this
+    surface, and it is *not* mirrored from the app: a timestamp untrustworthy
+    enough that mtime has to stand in for it never outranks one that could be
+    read, and mtime orders only candidates that are equally untrustworthy. The
+    app has no such rule to mirror -- ScanResultLoader reads a single file, so
+    `scanDate(from:) ?? fileDate` is only ever answering *how old is this one*,
+    never *which of these two*. Deciding which result the machine's state comes
+    from is the stronger claim, and this surface declines to let a malformed
+    file win it on the strength of a touch. So the two layers do differ on
+    purpose: mtime is good enough to date a result once it has been chosen, and
+    not good enough to choose it over a result that dated itself.
     """
     scanned_at = _scanned_at_epoch(path)
     if scanned_at is not None and _wall_clock() - scanned_at >= -SCAN_FUTURE_TOLERANCE_SECONDS:
