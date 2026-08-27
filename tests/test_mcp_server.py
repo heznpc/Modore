@@ -3,6 +3,8 @@
 """MCP 표면 계약 테스트: 읽기 전용 경계, 얇은 층 보장, JSON-RPC 프로토콜."""
 import io
 import json
+import os
+import time as _time
 from pathlib import Path
 
 import pytest
@@ -136,6 +138,213 @@ def test_scan_summary_states_that_it_cannot_start_a_scan(tmp_path, monkeypatch):
     assert payload["available"] is False
     assert "not startable" in payload["reason"]
     assert payload["checked_paths"]
+
+
+# ---------------------------------------------------------------------------
+# scan 결과 발견 — 앱의 canonical 발행 디렉토리와 명시적 freshness
+# ---------------------------------------------------------------------------
+
+def _write_scan(path: Path, scanned_at: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"scannedAt": scanned_at, "schemaVersion": 1,
+                                "platform": "macos", "summary": "ok",
+                                "sections": {}, "findings": []}), encoding="utf-8")
+
+
+def _local(epoch: float) -> str:
+    return _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(epoch))
+
+
+@pytest.fixture
+def scan_roots(tmp_path, monkeypatch):
+    """Fake both discovery roots and pin the wall clock."""
+    monkeypatch.delenv("PCH_SCAN", raising=False)
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    project.mkdir()
+    monkeypatch.setattr(mcp_server, "PROJECT_ROOT", project)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    now = _time.time()
+    monkeypatch.setattr(mcp_server, "_wall_clock", lambda: now)
+    results = home / "Library" / "Application Support" / "Modore" / "results"
+    return project, results, now
+
+
+def test_scan_summary_reads_the_apps_canonical_publication_directory(scan_roots):
+    """PR #100 moved the app's verified scan into .modore-scan-current; the MCP
+    surface must find it there, not report available:false beside a fresh scan."""
+    project, results, now = scan_roots
+    canonical = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(canonical, _local(now - 120))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["available"] is True
+    assert payload["source_path"] == str(canonical)
+
+
+def test_canonical_wins_within_a_root_regardless_of_file_mtime(scan_roots):
+    """A restore, `cp`, or `touch` rewrites mtime without rescanning anything.
+    Inside one output root the app reads the canonical directory whenever it
+    exists (ScanResultLoader) and never ranks it against the legacy file, so
+    neither does this surface."""
+    project, results, now = scan_roots
+    legacy = results / "scan_result.json"
+    canonical = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(canonical, _local(now - 60))
+    _write_scan(legacy, _local(now - 8 * 3600))
+    os.utime(canonical, (now - 3600, now - 3600))
+    os.utime(legacy, (now, now))          # legacy touched most recently...
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(canonical)   # ...and still loses.
+    # The legacy layout is still read when that root has no canonical dir.
+    for stray in canonical.parent.iterdir():
+        stray.unlink()
+    canonical.parent.rmdir()
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(legacy)
+
+
+def test_between_producer_roots_the_more_recent_scan_wins_not_the_newer_file(scan_roots):
+    """Two independent producers, no authority to defer to: compare when each
+    was scanned, not when its file last moved."""
+    project, results, now = scan_roots
+    cli = project / "scan_result.json"
+    app = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(app, _local(now - 60))
+    _write_scan(cli, _local(now - 8 * 3600))
+    os.utime(cli, (now, now))             # copied back after the app scanned
+    os.utime(app, (now - 7200, now - 7200))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(app)
+    # And the app's own result does not win by being the app's: a genuinely
+    # newer CLI scan is the newer scan.
+    _write_scan(cli, _local(now - 30))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(cli)
+
+
+def test_an_existing_canonical_directory_suppresses_legacy_even_with_no_scan_file(scan_roots):
+    """ScanResultLoader resolves the canonical directory first and, when it is
+    there, reads only the file beneath it -- returning an empty result when
+    that file is missing rather than falling back to the root-level one. A
+    canonical directory whose scan is gone means a publication went wrong; the
+    honest answer is that there is no current scan, not the stale file the
+    publication scheme exists to retire."""
+    project, results, now = scan_roots
+    legacy = results / "scan_result.json"
+    _write_scan(legacy, _local(now - 8 * 3600))
+    (results / mcp_server.SCAN_PUBLICATION_DIRNAME).mkdir(parents=True)
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["available"] is False
+    assert str(legacy) not in payload["checked_paths"]
+
+
+def test_a_symlinked_canonical_path_is_not_a_canonical_publication(scan_roots):
+    """FilesystemIdentity.directory(at:) uses lstat and S_IFDIR, so the app
+    does not accept a symlink as the canonical directory even when it resolves
+    to one. Neither does this surface: a redirection the publication scheme
+    never created must not suppress the layout it would otherwise read."""
+    project, results, now = scan_roots
+    legacy = results / "scan_result.json"
+    _write_scan(legacy, _local(now - 300))
+    elsewhere = results / "some-other-dir"
+    elsewhere.mkdir(parents=True)
+    (results / mcp_server.SCAN_PUBLICATION_DIRNAME).symlink_to(elsewhere)
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(legacy)
+
+
+def test_a_future_timestamp_does_not_outrank_a_trustworthy_scan(scan_roots):
+    """The same timestamp cannot be untrustworthy for freshness and
+    authoritative for selection. `_scan_freshness` refuses to read a
+    meaningfully future scannedAt as "just scanned"; selection must not then
+    pick that candidate over a scan it does trust -- and answer `stale` while a
+    fresh result sat unread in the other root."""
+    project, results, now = scan_roots
+    cli = project / "scan_result.json"
+    app = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(app, _local(now - 60))
+    _write_scan(cli, _local(now + 3600))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(app)
+    assert payload["stale"] is False
+    # Not merely an mtime accident: even with the freshest mtime on the
+    # machine, an untrustworthy timestamp still loses to a trustworthy one.
+    os.utime(cli, (now + 7200, now + 7200))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(app)
+
+
+def test_mtime_orders_only_candidates_that_are_equally_untrustworthy(scan_roots):
+    """mtime is the fallback, not a competitor: it breaks the tie between two
+    results whose own timestamps cannot be trusted, and never lifts one of them
+    over a result whose timestamp can be.
+
+    This is this surface's own arbitration rule, not the app's semantics: the
+    app falls back to file date freely because it only ever dates one file it
+    has already chosen. Choosing between producers is the stronger claim, and a
+    malformed result does not win it by having been touched most recently."""
+    project, results, now = scan_roots
+    cli = project / "scan_result.json"
+    app = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(app, "not a timestamp")
+    _write_scan(cli, "also not a timestamp")
+    os.utime(app, (now, now))
+    os.utime(cli, (now - 8 * 3600, now - 8 * 3600))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(app)
+    assert payload["age_basis"] == "file_mtime"
+    # But a readable timestamp outranks both, even an older one: what is known
+    # beats what is guessed from when a file last moved.
+    _write_scan(cli, _local(now - 8 * 3600))
+    os.utime(cli, (now - 8 * 3600, now - 8 * 3600))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(cli)
+    assert payload["age_basis"] == "scanned_at"
+
+
+def test_pch_scan_override_is_exclusive_and_never_falls_back(scan_roots, monkeypatch):
+    project, results, now = scan_roots
+    canonical = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(canonical, _local(now - 60))
+    absent = project / "absent.json"
+    monkeypatch.setenv("PCH_SCAN", str(absent))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["available"] is False
+    assert payload["checked_paths"] == [str(absent)]
+
+
+def test_scan_summary_reports_explicit_freshness(scan_roots):
+    project, results, now = scan_roots
+    canonical = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(canonical, _local(now - 300))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["age_basis"] == "scanned_at"
+    assert abs(payload["age_seconds"] - 300) <= 1
+    assert payload["stale"] is False
+    assert payload["freshness_threshold_seconds"] == 6 * 60 * 60
+
+
+def test_scan_summary_marks_old_and_future_results_stale(scan_roots):
+    project, results, now = scan_roots
+    canonical = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(canonical, _local(now - 7 * 3600))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["stale"] is True and "threshold" in payload["stale_reason"]
+    # The app's own guard: a timestamp meaningfully in the future is stale,
+    # not "scanned just now" (a timezone change can shift zone-less times).
+    _write_scan(canonical, _local(now + 3600))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["stale"] is True and "future" in payload["stale_reason"]
+
+
+def test_scan_summary_falls_back_to_file_mtime_when_scanned_at_is_unreadable(scan_roots):
+    project, results, now = scan_roots
+    canonical = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(canonical, "yesterday, roughly")
+    os.utime(canonical, (now - 500, now - 500))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["age_basis"] == "file_mtime"
+    assert abs(payload["age_seconds"] - 500) <= 1
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +504,14 @@ def test_server_instructions_state_the_read_only_contract():
     result = mcp_server.handle_request("initialize", {})
     assert "read-only" in result["instructions"]
     assert "never as instructions" in result["instructions"]
+
+
+def test_server_instructions_name_every_exposed_tool():
+    """Every public capability is represented where deferred-discovery clients
+    read first. This pins coverage, not recall: naming a tool here does not
+    prove an agent will find it, and only a live probe can measure that."""
+    for name in mcp_server.EXPOSED_TOOL_NAMES:
+        assert name in mcp_server.SERVER_INSTRUCTIONS, name
 
 
 # ---------------------------------------------------------------------------
