@@ -277,7 +277,12 @@ def test_a_future_timestamp_does_not_outrank_a_trustworthy_scan(scan_roots):
 def test_mtime_orders_only_candidates_that_are_equally_untrustworthy(scan_roots):
     """mtime is the fallback, not a competitor: it breaks the tie between two
     results whose own timestamps cannot be trusted, and never lifts one of them
-    over a result whose timestamp can be."""
+    over a result whose timestamp can be.
+
+    This is this surface's own arbitration rule, not the app's semantics: the
+    app falls back to file date freely because it only ever dates one file it
+    has already chosen. Choosing between producers is the stronger claim, and a
+    malformed result does not win it by having been touched most recently."""
     project, results, now = scan_roots
     cli = project / "scan_result.json"
     app = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
