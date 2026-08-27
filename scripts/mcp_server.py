@@ -317,10 +317,13 @@ def tool_moraine_report(args: dict) -> dict:
 
 # The app publishes verified scans atomically into this directory (Swift
 # ScanPublication.currentDirectoryName); the CLI scanner still writes at the
-# root of its output directory. Both layouts in both roots are legitimate
-# producers, so discovery checks all four and the newest existing file wins --
-# a fixed priority order would let a stale legacy file shadow a fresh
-# canonical one, which is exactly the failure this tool exists to name.
+# root of its output directory. Both are legitimate producers, so both roots
+# are searched -- but not as four flat candidates ranked by mtime. Inside one
+# root the canonical directory wins outright whenever it exists, matching
+# ScanResultLoader, which falls back to the root-level file only when no
+# canonical directory is there. Ranking a root's two layouts against each
+# other would let a copied or touched legacy file outrank the very scan the
+# app just published.
 SCAN_PUBLICATION_DIRNAME = ".modore-scan-current"
 
 
@@ -332,6 +335,50 @@ def _scan_result_roots() -> tuple[Path, ...]:
 MAX_SCAN_RESULT_BYTES = 32 << 20
 
 
+def _parse_scanned_at(value: Any) -> Optional[float]:
+    """The scanner writes a zone-less local timestamp; the app parses it with
+    en_US_POSIX in the current timezone, and so does this."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        return None
+
+
+def _scanned_at_epoch(path: Path) -> Optional[float]:
+    """The scanner's own timestamp, or None if it cannot be read.
+
+    Bounded and failure-tolerant: this runs on candidates that may lose the
+    comparison, so an oversized or malformed file falls back to mtime rather
+    than failing the tool.
+    """
+    try:
+        if path.stat().st_size > MAX_SCAN_RESULT_BYTES:
+            return None
+        scan = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(scan, dict):
+        return None
+    return _parse_scanned_at(scan.get("scannedAt"))
+
+
+def _scan_recency(path: Path) -> float:
+    """How recent a candidate's *scan* is -- not how recently its file moved.
+
+    A restore, `cp`, or `touch` rewrites mtime without rescanning anything, so
+    mtime is only the fallback for a result whose own timestamp is unreadable.
+    """
+    scanned_at = _scanned_at_epoch(path)
+    if scanned_at is not None:
+        return scanned_at
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return float("-inf")
+
+
 def _locate_scan_result() -> tuple[Optional[Path], list[str]]:
     override = os.environ.get("PCH_SCAN")
     if override:
@@ -341,24 +388,21 @@ def _locate_scan_result() -> tuple[Optional[Path], list[str]]:
         path = Path(override)
         checked = [str(path)]
         return (path if path.is_file() else None), checked
-    checked = []
-    candidates: list[Path] = []
+    checked: list[str] = []
+    resolved: list[Path] = []
     for root in _scan_result_roots():
-        candidates.append(root / SCAN_PUBLICATION_DIRNAME / "scan_result.json")
-        candidates.append(root / "scan_result.json")
-    newest: Optional[Path] = None
-    newest_mtime = float("-inf")
-    for path in candidates:
-        checked.append(str(path))
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            continue
-        if not path.is_file():
-            continue
-        if mtime > newest_mtime:
-            newest, newest_mtime = path, mtime
-    return newest, checked
+        # Canonical first and exclusive within the root, as the app resolves it.
+        for path in (root / SCAN_PUBLICATION_DIRNAME / "scan_result.json",
+                     root / "scan_result.json"):
+            checked.append(str(path))
+            if path.is_file():
+                resolved.append(path)
+                break
+    if not resolved:
+        return None, checked
+    # Between two independent producers there is no authority to defer to, so
+    # the more recent scan wins.
+    return max(resolved, key=_scan_recency), checked
 
 
 def _roots_arg(args: dict) -> list[str]:
@@ -482,15 +526,9 @@ def _wall_clock() -> float:
 def _scan_freshness(scanned_at: Any, file_mtime: float) -> dict:
     """Deterministic server-side staleness, so no caller has to derive age from
     a zone-less local timestamp and its own idea of 'now'."""
-    basis = "file_mtime"
-    reference = file_mtime
-    if isinstance(scanned_at, str):
-        try:
-            reference = datetime.strptime(scanned_at.strip(),
-                                          "%Y-%m-%d %H:%M:%S").timestamp()
-            basis = "scanned_at"
-        except ValueError:
-            pass
+    parsed = _parse_scanned_at(scanned_at)
+    basis = "scanned_at" if parsed is not None else "file_mtime"
+    reference = parsed if parsed is not None else file_mtime
     age = _wall_clock() - reference
     if age < -SCAN_FUTURE_TOLERANCE_SECONDS:
         stale, reason = True, "timestamp is in the future; treated as untrustworthy"

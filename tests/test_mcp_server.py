@@ -181,20 +181,57 @@ def test_scan_summary_reads_the_apps_canonical_publication_directory(scan_roots)
     assert payload["source_path"] == str(canonical)
 
 
-def test_a_stale_legacy_result_does_not_shadow_a_fresher_canonical_one(scan_roots):
+def test_canonical_wins_within_a_root_regardless_of_file_mtime(scan_roots):
+    """A restore, `cp`, or `touch` rewrites mtime without rescanning anything.
+    Inside one output root the app reads the canonical directory whenever it
+    exists (ScanResultLoader) and never ranks it against the legacy file, so
+    neither does this surface."""
     project, results, now = scan_roots
-    legacy = project / "scan_result.json"
+    legacy = results / "scan_result.json"
     canonical = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
-    _write_scan(legacy, _local(now - 8 * 3600))
     _write_scan(canonical, _local(now - 60))
-    os.utime(legacy, (now - 8 * 3600, now - 8 * 3600))
-    payload = _payload(_call("system_scan_summary", {}))
-    assert payload["source_path"] == str(canonical)
-    # And symmetrically: a fresher CLI result at the legacy path wins too.
-    os.utime(legacy, (now, now))
+    _write_scan(legacy, _local(now - 8 * 3600))
     os.utime(canonical, (now - 3600, now - 3600))
+    os.utime(legacy, (now, now))          # legacy touched most recently...
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(canonical)   # ...and still loses.
+    # The legacy layout is still read when that root has no canonical dir.
+    for stray in canonical.parent.iterdir():
+        stray.unlink()
+    canonical.parent.rmdir()
     payload = _payload(_call("system_scan_summary", {}))
     assert payload["source_path"] == str(legacy)
+
+
+def test_between_producer_roots_the_more_recent_scan_wins_not_the_newer_file(scan_roots):
+    """Two independent producers, no authority to defer to: compare when each
+    was scanned, not when its file last moved."""
+    project, results, now = scan_roots
+    cli = project / "scan_result.json"
+    app = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(app, _local(now - 60))
+    _write_scan(cli, _local(now - 8 * 3600))
+    os.utime(cli, (now, now))             # copied back after the app scanned
+    os.utime(app, (now - 7200, now - 7200))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(app)
+    # And the app's own result does not win by being the app's: a genuinely
+    # newer CLI scan is the newer scan.
+    _write_scan(cli, _local(now - 30))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(cli)
+
+
+def test_an_unparseable_timestamp_falls_back_to_mtime_for_ranking(scan_roots):
+    project, results, now = scan_roots
+    cli = project / "scan_result.json"
+    app = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(app, "not a timestamp")
+    _write_scan(cli, _local(now - 8 * 3600))
+    os.utime(app, (now, now))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(app)
+    assert payload["age_basis"] == "file_mtime"
 
 
 def test_pch_scan_override_is_exclusive_and_never_falls_back(scan_roots, monkeypatch):
@@ -402,9 +439,9 @@ def test_server_instructions_state_the_read_only_contract():
 
 
 def test_server_instructions_name_every_exposed_tool():
-    """Clients that defer tool schemas load only these instructions up front,
-    so a tool a trigger sentence here does not name is a tool an agent will
-    not search for."""
+    """Every public capability is represented where deferred-discovery clients
+    read first. This pins coverage, not recall: naming a tool here does not
+    prove an agent will find it, and only a live probe can measure that."""
     for name in mcp_server.EXPOSED_TOOL_NAMES:
         assert name in mcp_server.SERVER_INSTRUCTIONS, name
 

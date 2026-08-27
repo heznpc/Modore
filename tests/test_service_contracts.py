@@ -567,6 +567,53 @@ def test_storage_watch_plist_arguments_agree_across_schedule_sh_and_swift(projec
     )
 
 
+def test_scan_freshness_policy_agrees_across_the_mcp_surface_and_swift(project_root):
+    """The MCP server's system_scan_summary promises callers it applies "the
+    app's own six-hour rule", and each side pins its own constant in its own
+    test suite -- so the app's cadence could move to twelve hours with both
+    suites still green and the MCP surface quietly answering `stale` by a
+    policy the app abandoned. This is the only assertion that ties them.
+
+    Both numbers are read as expressions rather than evaluated seconds: the
+    Swift and Python sources spell the same policy the same way, and a
+    deliberate change to either has to be made on both sides.
+    """
+    server = (project_root / "scripts" / "mcp_server.py").read_text(encoding="utf-8")
+    scan_model = (
+        project_root / "macos" / "Modore" / "Sources" / "Modore" / "Services"
+        / "ScanModel.swift"
+    ).read_text(encoding="utf-8")
+
+    python_threshold = re.search(
+        r"SCAN_FRESHNESS_THRESHOLD_SECONDS\s*=\s*([0-9 */+]+)", server)
+    swift_threshold = re.search(
+        r"deepScanFreshnessInterval:\s*TimeInterval\s*=\s*([0-9 */+]+)", scan_model)
+    assert python_threshold and swift_threshold, "freshness constants not found"
+
+    def seconds(expression: str) -> int:
+        cleaned = expression.strip()
+        assert re.fullmatch(r"[0-9 */+]+", cleaned), cleaned
+        return int(eval(cleaned))  # noqa: S307 - digits and * + only, asserted above
+
+    assert seconds(python_threshold.group(1)) == seconds(swift_threshold.group(1)), (
+        "deep-scan freshness drift between the MCP surface and the app:\n"
+        f"  mcp_server.py:  {python_threshold.group(1).strip()}\n"
+        f"  ScanModel.swift: {swift_threshold.group(1).strip()}"
+    )
+
+    # The future-timestamp guard is the other half of the same policy: a
+    # zone-less scannedAt can be reinterpreted hours ahead by a timezone
+    # change, and both sides call that stale rather than "just scanned".
+    python_tolerance = re.search(
+        r"SCAN_FUTURE_TOLERANCE_SECONDS\s*=\s*(\d+)", server)
+    swift_tolerance = re.search(r"age\s*<\s*-(\d+)", scan_model)
+    assert python_tolerance and swift_tolerance, "future-timestamp guards not found"
+    assert int(python_tolerance.group(1)) == int(swift_tolerance.group(1)), (
+        "future-timestamp tolerance drift: "
+        f"{python_tolerance.group(1)} vs {swift_tolerance.group(1)}"
+    )
+
+
 def test_bundled_app_runtime_includes_every_macos_script(project_root):
     """release_smoke.py's MACOS_FILES (checked above) is a manifest-
     completeness gate, not what actually ships -- build_macos_swift_app.sh
