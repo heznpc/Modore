@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -319,11 +320,14 @@ def tool_moraine_report(args: dict) -> dict:
 # ScanPublication.currentDirectoryName); the CLI scanner still writes at the
 # root of its output directory. Both are legitimate producers, so both roots
 # are searched -- but not as four flat candidates ranked by mtime. Inside one
-# root the canonical directory wins outright whenever it exists, matching
-# ScanResultLoader, which falls back to the root-level file only when no
-# canonical directory is there. Ranking a root's two layouts against each
-# other would let a copied or touched legacy file outrank the very scan the
-# app just published.
+# root the canonical *directory* decides, exactly as ScanResultLoader decides:
+# it resolves ScanPublication.canonicalDirectory(in:) first and, when that
+# directory exists, reads only the file beneath it -- reporting nothing when
+# that file is absent rather than falling back to the root-level one. So a
+# canonical directory here suppresses the legacy layout on the strength of the
+# directory alone. Reviving a stale root-level file because the published scan
+# beside it went missing would answer with the very state the publication
+# scheme exists to retire, at the moment something has clearly gone wrong.
 SCAN_PUBLICATION_DIRNAME = ".modore-scan-current"
 
 
@@ -333,6 +337,19 @@ def _scan_result_roots() -> tuple[Path, ...]:
 
 
 MAX_SCAN_RESULT_BYTES = 32 << 20
+
+
+def _is_real_directory(path: Path) -> bool:
+    """`lstat` and S_ISDIR, matching FilesystemIdentity.directory(at:).
+
+    The app declines to treat a symlink as the canonical directory even when it
+    points at one, so a symlink here is not a canonical publication either --
+    it is a redirection the publication scheme never created.
+    """
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
 
 
 def _parse_scanned_at(value: Any) -> Optional[float]:
@@ -364,19 +381,30 @@ def _scanned_at_epoch(path: Path) -> Optional[float]:
     return _parse_scanned_at(scan.get("scannedAt"))
 
 
-def _scan_recency(path: Path) -> float:
-    """How recent a candidate's *scan* is -- not how recently its file moved.
-
-    A restore, `cp`, or `touch` rewrites mtime without rescanning anything, so
-    mtime is only the fallback for a result whose own timestamp is unreadable.
-    """
-    scanned_at = _scanned_at_epoch(path)
-    if scanned_at is not None:
-        return scanned_at
+def _file_mtime(path: Path) -> float:
     try:
         return path.stat().st_mtime
     except OSError:
         return float("-inf")
+
+
+def _scan_recency(path: Path) -> tuple[int, float]:
+    """How recent a candidate's *scan* is -- not how recently its file moved.
+
+    A restore, `cp`, or `touch` rewrites mtime without rescanning anything, so
+    mtime is only the fallback for a result whose own timestamp cannot be
+    trusted. Two ways it cannot: it does not parse, or it sits meaningfully in
+    the future -- the same condition `_scan_freshness` refuses to read as "just
+    scanned", because a timezone change can reinterpret a zone-less timestamp
+    hours ahead. A timestamp this surface will not trust to answer *how old is
+    this* must not decide *which result to read*, so it never outranks a
+    trustworthy one; the leading element of the sort key enforces that, and
+    mtime only orders candidates that are equally (un)trustworthy.
+    """
+    scanned_at = _scanned_at_epoch(path)
+    if scanned_at is not None and _wall_clock() - scanned_at >= -SCAN_FUTURE_TOLERANCE_SECONDS:
+        return (1, scanned_at)
+    return (0, _file_mtime(path))
 
 
 def _locate_scan_result() -> tuple[Optional[Path], list[str]]:
@@ -391,13 +419,17 @@ def _locate_scan_result() -> tuple[Optional[Path], list[str]]:
     checked: list[str] = []
     resolved: list[Path] = []
     for root in _scan_result_roots():
-        # Canonical first and exclusive within the root, as the app resolves it.
-        for path in (root / SCAN_PUBLICATION_DIRNAME / "scan_result.json",
-                     root / "scan_result.json"):
+        # The directory decides, not the file under it -- see above.
+        if _is_real_directory(root / SCAN_PUBLICATION_DIRNAME):
+            path = root / SCAN_PUBLICATION_DIRNAME / "scan_result.json"
             checked.append(str(path))
             if path.is_file():
                 resolved.append(path)
-                break
+            continue
+        path = root / "scan_result.json"
+        checked.append(str(path))
+        if path.is_file():
+            resolved.append(path)
     if not resolved:
         return None, checked
     # Between two independent producers there is no authority to defer to, so

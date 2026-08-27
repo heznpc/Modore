@@ -222,16 +222,79 @@ def test_between_producer_roots_the_more_recent_scan_wins_not_the_newer_file(sca
     assert payload["source_path"] == str(cli)
 
 
-def test_an_unparseable_timestamp_falls_back_to_mtime_for_ranking(scan_roots):
+def test_an_existing_canonical_directory_suppresses_legacy_even_with_no_scan_file(scan_roots):
+    """ScanResultLoader resolves the canonical directory first and, when it is
+    there, reads only the file beneath it -- returning an empty result when
+    that file is missing rather than falling back to the root-level one. A
+    canonical directory whose scan is gone means a publication went wrong; the
+    honest answer is that there is no current scan, not the stale file the
+    publication scheme exists to retire."""
+    project, results, now = scan_roots
+    legacy = results / "scan_result.json"
+    _write_scan(legacy, _local(now - 8 * 3600))
+    (results / mcp_server.SCAN_PUBLICATION_DIRNAME).mkdir(parents=True)
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["available"] is False
+    assert str(legacy) not in payload["checked_paths"]
+
+
+def test_a_symlinked_canonical_path_is_not_a_canonical_publication(scan_roots):
+    """FilesystemIdentity.directory(at:) uses lstat and S_IFDIR, so the app
+    does not accept a symlink as the canonical directory even when it resolves
+    to one. Neither does this surface: a redirection the publication scheme
+    never created must not suppress the layout it would otherwise read."""
+    project, results, now = scan_roots
+    legacy = results / "scan_result.json"
+    _write_scan(legacy, _local(now - 300))
+    elsewhere = results / "some-other-dir"
+    elsewhere.mkdir(parents=True)
+    (results / mcp_server.SCAN_PUBLICATION_DIRNAME).symlink_to(elsewhere)
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(legacy)
+
+
+def test_a_future_timestamp_does_not_outrank_a_trustworthy_scan(scan_roots):
+    """The same timestamp cannot be untrustworthy for freshness and
+    authoritative for selection. `_scan_freshness` refuses to read a
+    meaningfully future scannedAt as "just scanned"; selection must not then
+    pick that candidate over a scan it does trust -- and answer `stale` while a
+    fresh result sat unread in the other root."""
+    project, results, now = scan_roots
+    cli = project / "scan_result.json"
+    app = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+    _write_scan(app, _local(now - 60))
+    _write_scan(cli, _local(now + 3600))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(app)
+    assert payload["stale"] is False
+    # Not merely an mtime accident: even with the freshest mtime on the
+    # machine, an untrustworthy timestamp still loses to a trustworthy one.
+    os.utime(cli, (now + 7200, now + 7200))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(app)
+
+
+def test_mtime_orders_only_candidates_that_are_equally_untrustworthy(scan_roots):
+    """mtime is the fallback, not a competitor: it breaks the tie between two
+    results whose own timestamps cannot be trusted, and never lifts one of them
+    over a result whose timestamp can be."""
     project, results, now = scan_roots
     cli = project / "scan_result.json"
     app = results / mcp_server.SCAN_PUBLICATION_DIRNAME / "scan_result.json"
     _write_scan(app, "not a timestamp")
-    _write_scan(cli, _local(now - 8 * 3600))
+    _write_scan(cli, "also not a timestamp")
     os.utime(app, (now, now))
+    os.utime(cli, (now - 8 * 3600, now - 8 * 3600))
     payload = _payload(_call("system_scan_summary", {}))
     assert payload["source_path"] == str(app)
     assert payload["age_basis"] == "file_mtime"
+    # But a readable timestamp outranks both, even an older one: what is known
+    # beats what is guessed from when a file last moved.
+    _write_scan(cli, _local(now - 8 * 3600))
+    os.utime(cli, (now - 8 * 3600, now - 8 * 3600))
+    payload = _payload(_call("system_scan_summary", {}))
+    assert payload["source_path"] == str(cli)
+    assert payload["age_basis"] == "scanned_at"
 
 
 def test_pch_scan_override_is_exclusive_and_never_falls_back(scan_roots, monkeypatch):
