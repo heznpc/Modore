@@ -46,8 +46,11 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -63,10 +66,21 @@ SERVER_VERSION = "0.3.0"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 SERVER_INSTRUCTIONS = (
-    "Modore judges what AI agents leave behind on a Mac -- session stores, git "
-    "worktrees holding the only copy of unpushed work, reclaimable caches -- and "
-    "where the operator pushed back on agent behaviour. Every verdict is "
-    "deterministic: declarative rules and read-only metadata, never a model. "
+    "Modore judges durable local state on this Mac -- what AI agents and removed "
+    "software left behind -- from read-only metadata and declarative rules, never "
+    "a model. Search for its tools before answering any of these: is a git "
+    "worktree, workspace, or project directory safe to delete, or the only copy "
+    "of unpushed work (agent_state_report); is an AI session store about to "
+    "expire, orphaned, or which tools touched a workspace and when "
+    "(agent_state_report); where did the operator previously push back on agent "
+    "behaviour (operator_friction_report); which sessions read, wrote, or "
+    "referenced a given file or path (agent_file_access); why does a registered "
+    "MCP server not start (mcp_hygiene); which cached Hugging Face models does "
+    "nothing reference (model_residue_report); what did an uninstalled app leave "
+    "in installer receipts and certificate trust roots (uninstall_residue_report); "
+    "and what is the machine's disk pressure, reclaimable storage, or macOS "
+    "security posture (system_scan_summary -- reads the scan already on disk and "
+    "reports its age and staleness explicitly). "
     "This surface is read-only by contract: it exposes judgment only. Cleanup, "
     "deletion, and scan execution are not available here and must not be "
     "attempted through it -- Modore gates those on an approval a human grants on "
@@ -302,26 +316,134 @@ def tool_moraine_report(args: dict) -> dict:
     return payload
 
 
-SCAN_RESULT_CANDIDATES = (
-    lambda: Path(os.environ["PCH_SCAN"]) if os.environ.get("PCH_SCAN") else None,
-    lambda: PROJECT_ROOT / "scan_result.json",
-    lambda: Path.home() / "Library" / "Application Support" / "Modore" / "results"
-    / "scan_result.json",
-)
+# The app publishes verified scans atomically into this directory (Swift
+# ScanPublication.currentDirectoryName); the CLI scanner still writes at the
+# root of its output directory. Both are legitimate producers, so both roots
+# are searched -- but not as four flat candidates ranked by mtime. Inside one
+# root the canonical *directory* decides, exactly as ScanResultLoader decides:
+# it resolves ScanPublication.canonicalDirectory(in:) first and, when that
+# directory exists, reads only the file beneath it -- reporting nothing when
+# that file is absent rather than falling back to the root-level one. So a
+# canonical directory here suppresses the legacy layout on the strength of the
+# directory alone. Reviving a stale root-level file because the published scan
+# beside it went missing would answer with the very state the publication
+# scheme exists to retire, at the moment something has clearly gone wrong.
+SCAN_PUBLICATION_DIRNAME = ".modore-scan-current"
+
+
+def _scan_result_roots() -> tuple[Path, ...]:
+    return (PROJECT_ROOT,
+            Path.home() / "Library" / "Application Support" / "Modore" / "results")
+
 
 MAX_SCAN_RESULT_BYTES = 32 << 20
 
 
+def _is_real_directory(path: Path) -> bool:
+    """`lstat` and S_ISDIR, matching FilesystemIdentity.directory(at:).
+
+    The app declines to treat a symlink as the canonical directory even when it
+    points at one, so a symlink here is not a canonical publication either --
+    it is a redirection the publication scheme never created.
+    """
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _parse_scanned_at(value: Any) -> Optional[float]:
+    """The scanner writes a zone-less local timestamp; the app parses it with
+    en_US_POSIX in the current timezone, and so does this."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        return None
+
+
+def _scanned_at_epoch(path: Path) -> Optional[float]:
+    """The scanner's own timestamp, or None if it cannot be read.
+
+    Bounded and failure-tolerant: this runs on candidates that may lose the
+    comparison, so an oversized or malformed file falls back to mtime rather
+    than failing the tool.
+    """
+    try:
+        if path.stat().st_size > MAX_SCAN_RESULT_BYTES:
+            return None
+        scan = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(scan, dict):
+        return None
+    return _parse_scanned_at(scan.get("scannedAt"))
+
+
+def _file_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return float("-inf")
+
+
+def _scan_recency(path: Path) -> tuple[int, float]:
+    """How recent a candidate's *scan* is -- not how recently its file moved.
+
+    A restore, `cp`, or `touch` rewrites mtime without rescanning anything, so
+    mtime is only the fallback for a result whose own timestamp cannot be
+    trusted -- because it does not parse, or because it sits meaningfully in
+    the future, which `_scan_freshness` likewise refuses to read as "just
+    scanned" since a timezone change can reinterpret a zone-less timestamp
+    hours ahead.
+
+    The leading element of the key is a deliberate arbitration rule of this
+    surface, and it is *not* mirrored from the app: a timestamp untrustworthy
+    enough that mtime has to stand in for it never outranks one that could be
+    read, and mtime orders only candidates that are equally untrustworthy. The
+    app has no such rule to mirror -- ScanResultLoader reads a single file, so
+    `scanDate(from:) ?? fileDate` is only ever answering *how old is this one*,
+    never *which of these two*. Deciding which result the machine's state comes
+    from is the stronger claim, and this surface declines to let a malformed
+    file win it on the strength of a touch. So the two layers do differ on
+    purpose: mtime is good enough to date a result once it has been chosen, and
+    not good enough to choose it over a result that dated itself.
+    """
+    scanned_at = _scanned_at_epoch(path)
+    if scanned_at is not None and _wall_clock() - scanned_at >= -SCAN_FUTURE_TOLERANCE_SECONDS:
+        return (1, scanned_at)
+    return (0, _file_mtime(path))
+
+
 def _locate_scan_result() -> tuple[Optional[Path], list[str]]:
+    override = os.environ.get("PCH_SCAN")
+    if override:
+        # An explicit override is exclusive: silently falling back to some
+        # other file on the machine would answer a different question than
+        # the one the caller pinned.
+        path = Path(override)
+        checked = [str(path)]
+        return (path if path.is_file() else None), checked
     checked: list[str] = []
-    for candidate in SCAN_RESULT_CANDIDATES:
-        path = candidate()
-        if path is None:
+    resolved: list[Path] = []
+    for root in _scan_result_roots():
+        # The directory decides, not the file under it -- see above.
+        if _is_real_directory(root / SCAN_PUBLICATION_DIRNAME):
+            path = root / SCAN_PUBLICATION_DIRNAME / "scan_result.json"
+            checked.append(str(path))
+            if path.is_file():
+                resolved.append(path)
             continue
+        path = root / "scan_result.json"
         checked.append(str(path))
         if path.is_file():
-            return path, checked
-    return None, checked
+            resolved.append(path)
+    if not resolved:
+        return None, checked
+    # Between two independent producers there is no authority to defer to, so
+    # the more recent scan wins.
+    return max(resolved, key=_scan_recency), checked
 
 
 def _roots_arg(args: dict) -> list[str]:
@@ -430,6 +552,40 @@ def tool_file_access(args: dict) -> dict:
     }
 
 
+# Mirrors ScanModel.deepScanFreshnessInterval and its future-timestamp guard:
+# a scan older than six hours is stale, and a scannedAt meaningfully in the
+# future is untrustworthy (a timezone change between scan and read can
+# reinterpret the zone-less timestamp hours ahead), so it is stale too.
+SCAN_FRESHNESS_THRESHOLD_SECONDS = 6 * 60 * 60
+SCAN_FUTURE_TOLERANCE_SECONDS = 60
+
+
+def _wall_clock() -> float:
+    return time.time()
+
+
+def _scan_freshness(scanned_at: Any, file_mtime: float) -> dict:
+    """Deterministic server-side staleness, so no caller has to derive age from
+    a zone-less local timestamp and its own idea of 'now'."""
+    parsed = _parse_scanned_at(scanned_at)
+    basis = "scanned_at" if parsed is not None else "file_mtime"
+    reference = parsed if parsed is not None else file_mtime
+    age = _wall_clock() - reference
+    if age < -SCAN_FUTURE_TOLERANCE_SECONDS:
+        stale, reason = True, "timestamp is in the future; treated as untrustworthy"
+    elif age >= SCAN_FRESHNESS_THRESHOLD_SECONDS:
+        stale, reason = True, "older than the freshness threshold"
+    else:
+        stale, reason = False, None
+    return {
+        "age_seconds": round(age),
+        "age_basis": basis,
+        "stale": stale,
+        "stale_reason": reason,
+        "freshness_threshold_seconds": SCAN_FRESHNESS_THRESHOLD_SECONDS,
+    }
+
+
 def tool_system_scan_summary(args: dict) -> dict:
     limit = _int_arg(args, "limit", default=10, minimum=1, maximum=100)
     path, checked = _locate_scan_result()
@@ -469,13 +625,15 @@ def tool_system_scan_summary(args: dict) -> dict:
         [f for f in findings if isinstance(f, dict) and f.get("level") in ("danger", "warning")],
         limit)
 
+    # Staleness is the failure mode that matters here: a months-old result
+    # read as "the state of this machine" is worse than no result at all.
+    file_mtime = path.stat().st_mtime
     return {
         "available": True,
         "source_path": str(path),
         "scanned_at": scan.get("scannedAt"),
-        # Staleness is the failure mode that matters here: a months-old result
-        # read as "the state of this machine" is worse than no result at all.
-        "result_file_mtime_epoch": path.stat().st_mtime,
+        "result_file_mtime_epoch": file_mtime,
+        **_scan_freshness(scan.get("scannedAt"), file_mtime),
         "schema_version": scan.get("schemaVersion"),
         "platform": scan.get("platform"),
         "summary": scan.get("summary"),
@@ -707,8 +865,9 @@ TOOLS: list[dict] = [
             "Summary of the storage and security scan result already on disk: overall "
             "verdict, danger/warning counts, volume pressure, the largest reclaimable "
             "cache and protected-history candidates, and macOS security context "
-            "(Gatekeeper, SIP, XProtect). Reports where the file came from and how old it "
-            "is, because a stale result read as current is the failure mode here. This "
+            "(Gatekeeper, SIP, XProtect). Reports where the file came from, its age in "
+            "seconds, and whether it is stale by the app's own six-hour rule, because a "
+            "stale result read as current is the failure mode here. This "
             "tool never starts a scan -- collection is privileged and stays a human "
             "action -- and never runs cleanup; candidates are evidence, and deletion is "
             "gated on an approval a human grants on screen."),
