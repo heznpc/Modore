@@ -63,6 +63,49 @@ final class ScreeBindIntegrationTests: XCTestCase {
         if let home { try? FileManager.default.removeItem(at: home) }
     }
 
+    func testOriginalBackupReachesSealedScriptAndRestoresToolResults() async throws {
+        let source = home.appending(path: ".claude/projects/project/session.jsonl")
+        let sidecar = home.appending(path: ".claude/projects/project/session/tool-results/call.txt")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sidecar.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let transcript = Data(#"{"type":"user","message":{"content":"private@example.com"}}"#.utf8)
+        let toolOutput = Data([0, 1, 2, 255])
+        try transcript.write(to: source)
+        try toolOutput.write(to: sidecar)
+        let archive = home.appending(path: "session.zip")
+        let created = try await ScreeService.sessionBackup(
+            execution: execution,
+            operation: .create(source: source.path, destination: archive), homeOverride: home
+        ).get()
+        XCTAssertEqual(created.status, "verified")
+        XCTAssertEqual(created.fileCount, 2)
+        XCTAssertEqual(Set(created.categories), ["transcript", "tool-results"])
+        XCTAssertFalse(created.masked)
+
+        let checked = try await ScreeService.sessionBackup(
+            execution: execution, operation: .verify(archive)
+        ).get()
+        XCTAssertEqual(checked.totalBytes, Int64(transcript.count + toolOutput.count))
+        let restored = home.appending(path: "new-restore")
+        let receipt = try await ScreeService.sessionBackup(
+            execution: execution, operation: .restore(archive: archive, destination: restored)
+        ).get()
+        XCTAssertEqual(receipt.status, "restored")
+        let restoredSource = try XCTUnwrap(receipt.restoredSource)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: restoredSource)), transcript)
+        XCTAssertEqual(try Data(contentsOf: restored.appending(
+            path: ".claude/projects/project/session/tool-results/call.txt")), toolOutput)
+        XCTAssertEqual(try Data(contentsOf: source), transcript)
+
+        let again = await ScreeService.sessionBackup(
+            execution: execution, operation: .restore(archive: archive, destination: restored)
+        )
+        guard case .failure(let error) = again else { return XCTFail("must not overwrite a restore") }
+        XCTAssertTrue(error.message.contains("NEW directory"))
+    }
+
     /// A workspace no session ever touched must come back as a completed
     /// assessment, not as a failure. If the wrapper is broken this returns
     /// `notAssessed` instead — same empty result, opposite meaning, and

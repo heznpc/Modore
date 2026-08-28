@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import MothballCore
 
@@ -41,6 +42,7 @@ struct WorkPage: View {
 
 struct WorkListPane: View {
     @EnvironmentObject private var model: ScanModel
+    @State private var showingBackup = false
 
     /// Conversation titles shown under a project before it is selected.
     /// Enough to recognise the work, few enough that one project cannot
@@ -59,6 +61,9 @@ struct WorkListPane: View {
                 list
             }
         }
+        .sheet(isPresented: $showingBackup) {
+            SessionBackupSheet(source: nil, tool: nil)
+        }
     }
 
     private var header: some View {
@@ -71,6 +76,9 @@ struct WorkListPane: View {
             TextField("작업·대화 검색 (Return으로 대화 내용까지)", text: $model.sessionSearch)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { model.runContentSearch() }
+            Button("백업 확인·복원…") { showingBackup = true }
+                .font(.caption)
+                .accessibilityIdentifier("work-backup-library")
             if let summary = Self.summary(model.workProjects) {
                 Text(summary)
                     .font(.caption)
@@ -359,6 +367,9 @@ private struct ConversationTitleRow: View {
 
 private struct WorkDetailPane: View {
     @EnvironmentObject private var model: ScanModel
+    @State private var backupSession: SessionIndexEntry?
+    @State private var exporting = false
+    @State private var exportError: String?
 
     private var session: SessionIndexEntry? {
         guard let source = model.selectedSessionSource else { return nil }
@@ -375,6 +386,21 @@ private struct WorkDetailPane: View {
                     Text(session.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    HStack {
+                        if session.sourceURL.pathExtension.lowercased() == "jsonl" {
+                            Button("대화 내보내기…") { exportConversation(session) }
+                                .disabled(exporting)
+                                .help("대화 텍스트만 마스킹하여 Markdown으로 내보냅니다. 원본 백업이 아닙니다.")
+                        }
+                        if ["Claude", "Codex"].contains(session.tool) {
+                            Button("원본 백업…") { backupSession = session }
+                                .accessibilityIdentifier("work-session-backup")
+                        }
+                        if exporting { ProgressView().controlSize(.small) }
+                    }
+                    if let exportError {
+                        Text(exportError).font(.caption).foregroundStyle(.red)
+                    }
                     Divider()
                     detail(for: session)
                 } else {
@@ -383,6 +409,22 @@ private struct WorkDetailPane: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(session == nil ? 0 : 16)
+        }
+        .sheet(item: $backupSession) { selected in
+            SessionBackupSheet(source: selected.source, tool: selected.tool)
+        }
+    }
+
+    private func exportConversation(_ session: SessionIndexEntry) {
+        exporting = true
+        exportError = nil
+        Task {
+            defer { exporting = false }
+            switch await ScreeService.preserve(projectRoot: model.projectRoot,
+                                               tool: session.tool, source: session.source) {
+            case .success(let url): NSWorkspace.shared.activateFileViewerSelecting([url])
+            case .failure(let message): exportError = message
+            }
         }
     }
 
