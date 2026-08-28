@@ -2,8 +2,8 @@ import AppKit
 import Foundation
 import MothballCore
 
-/// Runs the sealed `scree.py` and parses its output. Read-only: this never
-/// deletes anything.
+/// Runs the sealed `scree.py` and parses its output. Audits are read-only;
+/// explicit exports and backups write separate outputs, never deleting sources.
 ///
 /// `report` and ordinary inventory paths are metadata-only. Explicit
 /// owner-requested inspection and search commands may read transcript bodies;
@@ -23,7 +23,92 @@ enum ScreePreserveOutcome {
     case failure(String)
 }
 
+struct SessionBackupReceipt: Decodable {
+    let schemaVersion: Int
+    let status: String
+    let archive: String
+    let provider: String
+    let sourceRelative: String
+    let fileCount: Int
+    let totalBytes: Int64
+    let categories: [String]
+    let excluded: [String]
+    let masked: Bool
+    let encrypted: Bool
+    let restoredRoot: String?
+    let restoredSource: String?
+
+    var summary: String {
+        let size = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        return "\(provider) · \(fileCount)개 파일 · 원본 \(size) · SHA-256 일치"
+    }
+
+    var includedDescription: String {
+        let labels = ["transcript": "대화 원본", "subagents": "서브에이전트",
+                      "tool-results": "도구 결과", "file-history": "파일 스냅샷",
+                      "image-cache": "이미지", "uploads": "첨부 파일"]
+        return categories.compactMap { labels[$0] }.joined(separator: " · ")
+    }
+}
+
+enum SessionBackupOperation {
+    case create(source: String, destination: URL)
+    case verify(URL)
+    case restore(archive: URL, destination: URL)
+
+    var arguments: [String] {
+        switch self {
+        case .create(let source, let destination):
+            return ["backup", source, "--out", destination.path, "--include-sensitive"]
+        case .verify(let archive):
+            return ["backup-verify", archive.path]
+        case .restore(let archive, let destination):
+            return ["backup-restore", archive.path, "--out", destination.path]
+        }
+    }
+
+    var expectedStatus: String {
+        if case .restore = self { return "restored" }
+        return "verified"
+    }
+}
+
 enum ScreeService {
+    static func sessionBackup(
+        projectRoot: URL, operation: SessionBackupOperation
+    ) async -> Result<SessionBackupReceipt, ScreeInspectionError> {
+        guard let execution = await Task.detached(priority: .userInitiated, operation: {
+            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
+        }).value else {
+            return .failure(.init(message: "서명된 실행 런타임을 확인하지 못했습니다."))
+        }
+        return await sessionBackup(execution: execution, operation: operation)
+    }
+
+    static func sessionBackup(
+        execution: RuntimeExecutionContext, operation: SessionBackupOperation,
+        homeOverride: URL? = nil
+    ) async -> Result<SessionBackupReceipt, ScreeInspectionError> {
+        var arguments = operation.arguments
+        if case .create = operation, let homeOverride {
+            arguments += ["--home", homeOverride.path]
+        }
+        switch await invoke(execution: execution, arguments: arguments, timeout: 300) {
+        case .timedOut:
+            return .failure(.init(message: "5분 안에 검증을 마치지 못했습니다. 백업·복원 성공으로 표시하지 않습니다."))
+        case .failure(let message):
+            return .failure(.init(message: message))
+        case .success(let output):
+            guard let data = output.data(using: .utf8),
+                  let receipt = try? JSONDecoder().decode(SessionBackupReceipt.self, from: data),
+                  receipt.schemaVersion == 1, receipt.status == operation.expectedStatus,
+                  receipt.fileCount > 0 else {
+                return .failure(.init(message: "백업 검증 결과를 해석하지 못했습니다."))
+            }
+            return .success(receipt)
+        }
+    }
+
     static func run(projectRoot: URL) async -> ScreeOutcome {
         switch await invoke(projectRoot: projectRoot, arguments: ["report", "--json"], timeout: 180) {
         case .failure(let message):
@@ -66,7 +151,7 @@ enum ScreeService {
         case .failure(let message):
             return .failure(message)
         case .timedOut:
-            return .failure("보존 내보내기가 1분 안에 끝나지 않았습니다.")
+            return .failure("대화 내보내기가 1분 안에 끝나지 않았습니다.")
         case .success:
             return .success(destination)
         }
@@ -673,6 +758,12 @@ extension ScreeService {
             return .timedOut
         }
         guard result.status == 0, result.endState == .exited else {
+            if arguments.first?.hasPrefix("backup") == true,
+               let data = result.output.data(using: .utf8),
+               let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let message = payload["error"] as? String {
+                return .failure("백업 작업을 중단했습니다: \(message)")
+            }
             return .failure("scree 실행이 실패했습니다 (status \(result.status)).")
         }
         return .success(result.output)
@@ -719,8 +810,8 @@ extension ScanModel {
             switch await ScreeService.preserve(projectRoot: root, tool: tool, source: source) {
             case .success(let url):
                 NSWorkspace.shared.activateFileViewerSelecting([url])
-                appendLog("세션 보존: \(url.lastPathComponent)")
-                AccessibilityAnnouncer.announce("세션을 보존했습니다")
+                appendLog("대화 텍스트 내보내기: \(url.lastPathComponent)")
+                AccessibilityAnnouncer.announce("대화 텍스트를 내보냈습니다")
             case .failure(let message):
                 errorMessage = message
             }
@@ -785,8 +876,8 @@ extension ScanModel {
             switch await ScreeService.preserve(projectRoot: root, tool: tool, source: source) {
             case .success(let url):
                 NSWorkspace.shared.activateFileViewerSelecting([url])
-                appendLog("세션 보존: \(url.lastPathComponent)")
-                AccessibilityAnnouncer.announce("세션을 보존했습니다")
+                appendLog("대화 텍스트 내보내기: \(url.lastPathComponent)")
+                AccessibilityAnnouncer.announce("대화 텍스트를 내보냈습니다")
             case .failure(let message):
                 errorMessage = message
             }

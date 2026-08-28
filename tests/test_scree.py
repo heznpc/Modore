@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -1284,7 +1285,7 @@ def test_content_reading_commands_are_all_declared_in_the_module_contract():
     있는지 고정한다."""
     doc = scree.__doc__ or ""
     for command in ("preserve", "title", "titles", "bind", "inspect",
-                    "search", "evidence"):
+                    "search", "evidence", "backup", "backup-verify", "backup-restore"):
         assert command in doc, f"{command}가 no-content 계약 설명에 없다"
     assert "never" in doc and "names" in doc
 
@@ -2316,3 +2317,210 @@ def test_evidence_cli_emits_json(tmp_path, capsys):
                        "--home", str(_evidence_home(tmp_path))]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["providerToolInvocations"]
+
+
+# Original backup/restore: bytes, not the rendered conversation, are the unit
+# of preservation. Keep fixtures here beside the existing preserve contract.
+def _backup_fixture(tmp_path):
+    home = tmp_path.resolve() / "home"
+    relative = ".claude/projects/project/session-1.jsonl"
+    contents = {
+        relative: _jsonl({"type": "user", "message": {"content": "owner@example.com"}}).encode(),
+        ".claude/projects/project/session-1/subagents/agent-x.jsonl": b'{"raw":true}\n',
+        ".claude/projects/project/session-1/tool-results/tool-1.txt": b"complete\xff\x00output\n",
+        ".claude/file-history/session-1/file@v1": b"original code\n",
+        ".claude/image-cache/session-1/image.png": b"\x89PNG\r\n",
+        ".claude/uploads/session-1/attachment.txt": b"attachment\n",
+    }
+    for name, body in contents.items():
+        path = home / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+    _write(home / ".claude/projects/project/other.jsonl", "unrelated conversation")
+    _write(home / ".claude/projects/project/memory/MEMORY.md", "shared project memory")
+    _write(home / ".claude/.credentials.json", "must never be copied")
+    return home, home / relative, contents
+
+
+def test_backup_and_restore_preserve_full_session_bytes_and_private_permissions(tmp_path):
+    home, source, contents = _backup_fixture(tmp_path)
+    before = {name: (home / name).stat().st_mtime_ns for name in contents}
+    archive = tmp_path / "backup.zip"
+    receipt = scree.build_session_backup(source, home, archive, include_sensitive=True)
+    assert receipt["status"] == "verified"
+    assert receipt["fileCount"] == len(contents)
+    assert receipt["masked"] is False and receipt["encrypted"] is False
+    assert archive.stat().st_mode & 0o777 == 0o600
+    with zipfile.ZipFile(archive) as bundle:
+        assert set(bundle.namelist()) == {"manifest.json", *["payload/" + name for name in contents]}
+        for name, expected in contents.items():
+            assert bundle.read("payload/" + name) == expected
+    restored = tmp_path / "restored"
+    result = scree.restore_session_backup(archive, restored)
+    assert result["status"] == "restored"
+    assert result["restoredSource"] == str(restored / source.relative_to(home))
+    assert restored.stat().st_mode & 0o777 == 0o700
+    for name, expected in contents.items():
+        assert (restored / name).read_bytes() == expected
+        assert (restored / name).stat().st_mode & 0o777 == 0o600
+        assert (home / name).read_bytes() == expected
+        assert (home / name).stat().st_mtime_ns == before[name]
+
+
+def test_backup_requires_explicit_raw_consent(tmp_path):
+    home, source, _ = _backup_fixture(tmp_path)
+    with pytest.raises(ValueError, match="include-sensitive"):
+        scree.build_session_backup(source, home, tmp_path / "backup.zip")
+    assert not (tmp_path / "backup.zip").exists()
+
+
+@pytest.mark.parametrize("store", ["sessions/2026/08/28", "archived_sessions"])
+def test_codex_backup_is_explicitly_transcript_only(tmp_path, store):
+    home = tmp_path.resolve() / "home"
+    source = home / ".codex" / store / "rollout-1.jsonl"
+    _write(source, _jsonl({"type": "response_item", "payload": {"content": "raw"}}))
+    result = scree.build_session_backup(source, home, tmp_path / "backup.zip", include_sensitive=True)
+    assert result["provider"] == "Codex"
+    assert result["categories"] == ["transcript"]
+
+
+def test_backup_never_overwrites_archive_or_restoration_directory(tmp_path):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    scree.build_session_backup(source, home, archive, include_sensitive=True)
+    original = archive.read_bytes()
+    with pytest.raises(ValueError, match="already exists"):
+        scree.build_session_backup(source, home, archive, include_sensitive=True)
+    assert archive.read_bytes() == original
+    restored = tmp_path / "restored"
+    _write(restored / "keep.txt", "keep")
+    with pytest.raises(ValueError, match="NEW directory"):
+        scree.restore_session_backup(archive, restored)
+    assert list(restored.iterdir()) == [restored / "keep.txt"]
+    assert (restored / "keep.txt").read_text() == "keep"
+
+
+@pytest.mark.parametrize("symlink_kind", ["source", "file", "directory"])
+def test_backup_refuses_symlinks_in_source_and_sidecars(tmp_path, symlink_kind):
+    home, source, _ = _backup_fixture(tmp_path)
+    if symlink_kind == "source":
+        source = source.with_name("linked.jsonl")
+        source.symlink_to(home / ".claude/.credentials.json")
+    else:
+        target = home / ".claude/projects/project/session-1/tool-results/link"
+        target.symlink_to(home / ".claude" if symlink_kind == "directory"
+                          else home / ".claude/.credentials.json")
+    with pytest.raises(ValueError, match="symlink"):
+        scree.build_session_backup(source, home, tmp_path / "backup.zip", include_sensitive=True)
+    assert not (tmp_path / "backup.zip").exists()
+
+
+def test_backup_rejects_live_store_destination_and_unsupported_source(tmp_path):
+    home, source, _ = _backup_fixture(tmp_path)
+    with pytest.raises(ValueError, match="outside the live"):
+        scree.build_session_backup(source, home, source.parent / "backup.zip", include_sensitive=True)
+    with pytest.raises(ValueError, match="supported"):
+        scree.build_session_backup(home / ".claude/.credentials.json", home,
+                                   tmp_path / "backup.zip", include_sensitive=True)
+
+
+def test_backup_allows_separate_codex_outputs_but_not_codex_transcript_storage(tmp_path):
+    home, source, _ = _backup_fixture(tmp_path)
+    outputs = home / ".codex/outputs"
+    outputs.mkdir(parents=True)
+    receipt = scree.build_session_backup(source, home, outputs / "backup.zip", include_sensitive=True)
+    assert receipt["status"] == "verified"
+    sessions = home / ".codex/sessions"
+    sessions.mkdir()
+    with pytest.raises(ValueError, match="outside the live"):
+        scree.build_session_backup(source, home, sessions / "backup.zip", include_sensitive=True)
+
+
+def test_backup_detects_source_changes_during_copy(tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    original = scree._backup_read_file
+    def append_during_copy(path, target=None):
+        result = original(path, target)
+        if path == source and target is not None:
+            with path.open("ab") as output:
+                output.write(b'{"new":"turn"}\n')
+        return result
+    monkeypatch.setattr(scree, "_backup_read_file", append_during_copy)
+    with pytest.raises(ValueError, match="changed during backup"):
+        scree.build_session_backup(source, home, tmp_path / "backup.zip", include_sensitive=True)
+    assert not (tmp_path / "backup.zip").exists()
+    assert not list(tmp_path.glob(".modore-backup-*"))
+
+
+def test_backup_detects_new_sidecars_during_copy(tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    original = scree._backup_read_file
+    def add_sidecar(path, target=None):
+        result = original(path, target)
+        if target is not None:
+            _write(source.parent / source.stem / "tool-results/new.txt", "new output")
+        return result
+    monkeypatch.setattr(scree, "_backup_read_file", add_sidecar)
+    with pytest.raises(ValueError, match="files changed"):
+        scree.build_session_backup(source, home, tmp_path / "backup.zip", include_sensitive=True)
+
+
+def test_backup_enforces_size_bound_before_creating_archive(tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    monkeypatch.setattr(scree, "BACKUP_MAX_BYTES", 1)
+    with pytest.raises(ValueError, match="size limit"):
+        scree.build_session_backup(source, home, tmp_path / "backup.zip", include_sensitive=True)
+
+
+@pytest.mark.parametrize("attack", ["checksum", "traversal", "absolute", "credentials",
+                                   "duplicate", "symlink", "unexpected", "size"])
+def test_verify_and_restore_reject_corrupt_or_unsafe_archives(tmp_path, attack):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    scree.build_session_backup(source, home, archive, include_sensitive=True)
+    with zipfile.ZipFile(archive) as bundle:
+        files = {info.filename: bundle.read(info) for info in bundle.infolist()}
+    manifest = json.loads(files["manifest.json"])
+    entry = manifest["files"][0]
+    if attack == "checksum":
+        entry["sha256"] = "0" * 64
+    elif attack in ("traversal", "absolute", "credentials"):
+        name = {"traversal": "../outside", "absolute": "/outside",
+                "credentials": ".claude/.credentials.json"}[attack]
+        files["payload/" + name] = files.pop("payload/" + entry["path"])
+        entry["path"] = name
+    elif attack == "size":
+        entry["size"] = scree.BACKUP_MAX_BYTES + 1
+    elif attack == "unexpected":
+        files["payload/unexpected"] = b"unexpected"
+    files["manifest.json"] = json.dumps(manifest).encode()
+    bad = tmp_path / "bad.zip"
+    with zipfile.ZipFile(bad, "w") as bundle:
+        for name, body in files.items():
+            info = zipfile.ZipInfo(name)
+            if attack == "symlink" and name.startswith("payload/"):
+                info.external_attr = 0o120777 << 16
+            bundle.writestr(info, body)
+        if attack == "duplicate":
+            with pytest.warns(UserWarning, match="Duplicate"):
+                bundle.writestr("manifest.json", files["manifest.json"])
+    with pytest.raises(ValueError):
+        scree.verify_session_backup(bad)
+    with pytest.raises(ValueError):
+        scree.restore_session_backup(bad, tmp_path / "restored")
+    assert not (tmp_path / "restored").exists()
+    assert not (tmp_path / "outside").exists()
+
+
+def test_backup_cli_round_trip_and_failure_receipts(tmp_path, capsys):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    args = ["backup", str(source), "--home", str(home), "--out", str(archive)]
+    assert scree.main(args) == 1
+    assert "include-sensitive" in json.loads(capsys.readouterr().out)["error"]
+    assert scree.main(args + ["--include-sensitive"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "verified"
+    assert scree.main(["backup-verify", str(archive)]) == 0
+    assert json.loads(capsys.readouterr().out)["fileCount"] == 6
+    assert scree.main(["backup-restore", str(archive), "--out", str(tmp_path / "restored")]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "restored"

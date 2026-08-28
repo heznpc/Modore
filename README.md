@@ -22,7 +22,7 @@ On a Mac where Claude Code, Codex, Gemini, or an AI IDE has been working, the ma
 
 ```bash
 python3 scripts/scree.py                          # join · retention forecast · orphans · sole-copy verdicts · lineage
-python3 scripts/scree.py preserve <session-file>  # masked single-session export before it expires
+python3 scripts/scree.py preserve <session-file>  # masked conversation text, not an original backup
 python3 scripts/scree.py bind <workspace> --deep  # which AI sessions a delete would strand
 python3 scripts/scree.py title <session-file>     # one masked line: what that session was about
 ```
@@ -32,7 +32,30 @@ python3 scripts/scree.py title <session-file>     # one masked line: what that s
 - **Sole-copy judgment** — agent worktrees *and* primary checkouts stranded off main: protected (dirty or unpushed commits) versus rebuildable, from read-only git evidence, every verdict preview-grade with an explicit revalidation duty.
 - **Orphans & lineage** — sessions pointing at vanished workspaces (`orphan_basis: path_missing`), and every remembered work path classified alive+git / alive+plain / vanished, with macOS case-variant ghosts merged.
 - **Not a uniqueness claim about the primitive** — an agent IDE that creates worktrees can and does compute the same unpushed-work verdict for the worktrees it manages (Orca's workspace cleanup runs the same `rev-list --not --remotes` check). scree's coverage is the difference: it sweeps every agent worktree on the machine regardless of which tool created it, plus primary checkouts stranded off main and registry entries whose directory is gone.
-- **Contract** — leading JSONL lines are decoded in memory but message content is never retained or emitted; nested transcripts are attributed by `stat()` without being opened; pinned by tests. Four commands deliberately read inside a conversation, and all four act on one target the caller names — never on anything discovered automatically, never during a scan: `preserve` exports one masked transcript (mask-by-default, `--raw` opts out, no bulk export); `title` returns one masked line for display beside a deletion decision, capped short and never an input to a safety judgement; `bind --deep` reads transcript bodies to find file-access evidence and emits only whether such evidence exists; `inspect` returns one session's conversation for display — masked, per-turn capped, recent-window only — because judgment staying metadata-only was never a reason the owner couldn't look at what the machine already holds. Nothing any of them return is an input to a verdict.
+- **Contract** — ordinary audits retain only metadata; nested transcripts are attributed by `stat()` without being opened. Explicit `preserve`, `title`, `titles`, `inspect`, `search`, `evidence`, and `bind --deep` commands may read content as documented in `scree.py`. Raw backup operations below are a separate opt-in exception. None of these outputs grants deletion permission, and scans never create backups automatically.
+
+### Currently implemented — Original session backups (Mac)
+
+In **작업**, select a Claude or Codex conversation and choose **원본 백업…**.
+The separate **대화 내보내기…** action still produces masked Markdown text;
+it does not preserve structured tool calls or results.
+
+- **Scope:** one transcript from the default Claude or Codex session store. Claude backups also include existing session-scoped `subagents/`, `tool-results/`, `file-history/`, `image-cache/`, and `uploads/` files. Codex backups contain the selected transcript only. Workspace code, shared project memory, settings/credential files, other sessions, and externally referenced files are excluded.
+- **Integrity:** a ZIP with a versioned manifest, file sizes, and SHA-256 digests. Creation detects source changes, verifies the archive, and refuses to overwrite a destination. Limits are 10,000 files and 2 GiB of uncompressed data per session.
+- **Restore:** **백업 확인·복원…** opens an existing backup even when its original session is gone. All entries are checked before extraction; restore creates a new directory and verifies the extracted bytes. Existing directories, unsafe archive paths, and symlink entries are rejected. Restore does not register or resume the session inside a provider app.
+- **Privacy:** raw backups require acknowledgement. They are **not masked or encrypted** and can contain secrets already present in transcripts. ZIPs and restored files are owner-only (0600), restored directories 0700. No upload or model call occurs. Keep a separate protected copy off the source disk for disk-failure protection; do not publish raw backups in a public Git repository.
+
+```bash
+python3 scripts/scree.py backup <session-file> --out <new-backup.zip> --include-sensitive
+python3 scripts/scree.py backup-verify <backup.zip>
+python3 scripts/scree.py backup-restore <backup.zip> --out <new-directory>
+```
+
+**Design intent:** inspect what matters, preserve original evidence, and test
+restoration before deciding how to manage local storage. **Non-goals:** automatic
+deletion, full machine backup, provider migration, or a guarantee that a provider
+can resume an archived session. A successful byte comparison is not a cleanup
+authorization.
 
 **friction**, scree's sibling, reads the same four session stores for the opposite question — not what the agents left behind, but where the operator stopped them:
 

@@ -57,6 +57,12 @@ default:
   display commands imply: judgment stays metadata-only, but the owner can
   always look at what the machine already holds. Never an input to any
   verdict.
+Raw backup commands are a separate, explicit exception: `backup` copies one
+named Claude/Codex transcript and its supported session sidecars byte-for-byte
+only with --include-sensitive. `backup-verify` hashes an explicitly named
+archive; `backup-restore` writes it to a NEW directory, never over live state.
+These commands do not mask or encrypt the archive, contact a model, delete a
+source, or grant permission to reclaim anything. No audit invokes them.
 Everything above this line in the module never calls any of them.
 """
 from __future__ import annotations
@@ -64,12 +70,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
@@ -2228,6 +2239,307 @@ def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
     return "\n".join(lines)
 
 
+# Original session backups are deliberately separate from the lossy Markdown
+# export. Keep them in this sealed script so the app's pinned invocation does
+# not load an unverified helper from a mutable Python search path.
+BACKUP_MAX_BYTES = 2 * 1024 * 1024 * 1024
+BACKUP_MAX_FILES = 10000
+BACKUP_MANIFEST_MAX_BYTES = 4 * 1024 * 1024
+BACKUP_CHUNK_BYTES = 1024 * 1024
+BACKUP_EXCLUSIONS = [
+    "workspace-code", "project-memory", "settings-and-credentials",
+    "other-sessions", "external-referenced-files",
+]
+
+
+def _backup_relative(value: str) -> PurePosixPath:
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        raise ValueError("invalid archive path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(p in ("", ".", "..") for p in value.split("/")):
+        raise ValueError("unsafe archive path")
+    return path
+
+
+def _backup_scope(source_relative: str) -> tuple[str, list[PurePosixPath]]:
+    source = _backup_relative(source_relative)
+    parts = source.parts
+    if (len(parts) == 4 and parts[:2] == (".claude", "projects")
+            and source.suffix == ".jsonl"):
+        session = source.stem
+        if not session or session in (".", ".."):
+            raise ValueError("invalid session name")
+        return "Claude", [
+            source.parent / session / "subagents",
+            source.parent / session / "tool-results",
+            *[PurePosixPath(".claude") / kind / session
+              for kind in ("file-history", "image-cache", "uploads")],
+        ]
+    if (len(parts) >= 3 and parts[0] == ".codex"
+            and parts[1] in ("sessions", "archived_sessions")
+            and source.suffix == ".jsonl"):
+        return "Codex", []
+    raise ValueError("only Claude projects and Codex session JSONL stores are supported")
+
+
+def _backup_check_path(path: Path) -> None:
+    # Resolve the caller's home/temp anchor before this check (macOS /var is a
+    # system symlink), but never resolve away symlinks inside a session store.
+    for item in (path, *path.parents):
+        if item.is_symlink():
+            raise ValueError("symlinks are not supported in session backups")
+
+
+def _backup_inventory(home: Path, source_relative: str) -> dict[str, Path]:
+    _, roots = _backup_scope(source_relative)
+    result: dict[str, Path] = {}
+
+    def add(path: Path) -> None:
+        _backup_check_path(path)
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("session backups require regular files")
+        result[path.relative_to(home).as_posix()] = path
+        if len(result) > BACKUP_MAX_FILES:
+            raise ValueError("session backup has too many files")
+
+    add(home / source_relative)
+    for relative in roots:
+        root = home / relative
+        _backup_check_path(root)
+        if not root.exists():
+            continue
+        if not root.is_dir():
+            raise ValueError("session sidecar root is not a directory")
+        for current, dirs, files in os.walk(root, followlinks=False):
+            for name in dirs:
+                _backup_check_path(Path(current) / name)
+            for name in sorted(files):
+                add(Path(current) / name)
+    if sum(p.stat().st_size for p in result.values()) > BACKUP_MAX_BYTES:
+        raise ValueError("session backup exceeds the size limit")
+    return dict(sorted(result.items()))
+
+
+def _backup_stream(source, target=None, *, limit: int = BACKUP_MAX_BYTES) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size = 0
+    while True:
+        chunk = source.read(BACKUP_CHUNK_BYTES)
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > limit:
+            raise ValueError("session backup exceeds the size limit")
+        digest.update(chunk)
+        if target is not None:
+            target.write(chunk)
+    return size, digest.hexdigest()
+
+
+def _backup_read_file(path: Path, target=None) -> tuple[int, str]:
+    _backup_check_path(path)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("session backups require regular files")
+        result = _backup_stream(source, target)
+        after = os.fstat(source.fileno())
+    current = path.stat()
+    identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+    if identity(before) != identity(after) or identity(after) != identity(current):
+        raise ValueError("session changed during backup; retry after it stops writing")
+    return result
+
+
+def _backup_manifest(archive: zipfile.ZipFile) -> dict:
+    infos = archive.infolist()
+    if not infos or len(infos) > BACKUP_MAX_FILES + 1:
+        raise ValueError("invalid archive file count")
+    names = [info.filename for info in infos]
+    if len(names) != len(set(names)) or "manifest.json" not in names:
+        raise ValueError("duplicate entries or missing backup manifest")
+    for info in infos:
+        _backup_relative(info.filename)
+        mode = info.external_attr >> 16
+        if (info.is_dir() or (stat.S_IFMT(mode) not in (0, stat.S_IFREG))
+                or info.flag_bits & 1
+                or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)):
+            raise ValueError("unsupported archive entry")
+    manifest_info = archive.getinfo("manifest.json")
+    if manifest_info.file_size > BACKUP_MANIFEST_MAX_BYTES:
+        raise ValueError("backup manifest exceeds the size limit")
+    manifest = json.loads(archive.read(manifest_info))
+    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1:
+        raise ValueError("unsupported backup manifest")
+    source = manifest.get("sourceRelative")
+    provider, roots = _backup_scope(source)
+    if manifest.get("provider") != provider:
+        raise ValueError("backup provider does not match its source")
+    entries = manifest.get("files")
+    if not isinstance(entries, list) or not entries or len(entries) > BACKUP_MAX_FILES:
+        raise ValueError("invalid backup manifest files")
+    expected = {"manifest.json"}
+    total = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("invalid backup file entry")
+        relative = _backup_relative(entry.get("path"))
+        if str(relative) != source and not any(root in relative.parents for root in roots):
+            raise ValueError("backup entry is outside this session's scope")
+        name = "payload/" + str(relative)
+        if name in expected:
+            raise ValueError("duplicate backup file path")
+        expected.add(name)
+        size, digest = entry.get("size"), entry.get("sha256")
+        if (type(size) is not int or size < 0 or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+            raise ValueError("invalid backup file size or digest")
+        total += size
+        if total > BACKUP_MAX_BYTES:
+            raise ValueError("session backup exceeds the size limit")
+        if name not in names or archive.getinfo(name).file_size != size:
+            raise ValueError("backup file is missing or has the wrong size")
+    if expected != set(names) or "payload/" + source not in expected:
+        raise ValueError("backup has unexpected files or no primary transcript")
+    return manifest
+
+
+def _backup_verify_open(archive: zipfile.ZipFile) -> dict:
+    manifest = _backup_manifest(archive)
+    for entry in manifest["files"]:
+        with archive.open("payload/" + entry["path"]) as source:
+            size, digest = _backup_stream(source, limit=entry["size"])
+        if (size, digest) != (entry["size"], entry["sha256"]):
+            raise ValueError("backup checksum mismatch")
+    return manifest
+
+
+def _backup_result(archive: Path, manifest: dict, restored: Path | None = None) -> dict:
+    return {
+        "schemaVersion": 1, "status": "restored" if restored else "verified",
+        "archive": str(archive), "provider": manifest["provider"],
+        "sourceRelative": manifest["sourceRelative"],
+        "fileCount": len(manifest["files"]),
+        "totalBytes": sum(e["size"] for e in manifest["files"]),
+        "categories": sorted(set(e["category"] for e in manifest["files"]
+                                 if isinstance(e.get("category"), str))),
+        "excluded": BACKUP_EXCLUSIONS,
+        "masked": False, "encrypted": False,
+        "restoredRoot": str(restored) if restored else None,
+        "restoredSource": str(restored / manifest["sourceRelative"]) if restored else None,
+    }
+
+
+def verify_session_backup(archive: Path) -> dict:
+    archive = archive.expanduser().absolute()
+    # A caller may select a symlink to a ZIP; reading it is harmless. Entries
+    # themselves never get this treatment, and extraction never follows links.
+    with zipfile.ZipFile(archive) as bundle:
+        return _backup_result(archive, _backup_verify_open(bundle))
+
+
+def build_session_backup(source: Path, home: Path, destination: Path, *,
+                         include_sensitive: bool = False) -> dict:
+    if not include_sensitive:
+        raise ValueError("raw backup includes private content; --include-sensitive is required")
+    original_home = home.expanduser().absolute()
+    home = original_home.resolve(strict=True)
+    source = source.expanduser().absolute()
+    # Preserve the store-relative spelling, including any symlink to reject.
+    try:
+        relative = source.relative_to(home).as_posix()
+    except ValueError:
+        # macOS callers can name a canonical home through /var rather than
+        # /private/var. Resolve only the home prefix, not the session itself.
+        relative = source.relative_to(original_home).as_posix()
+    provider, _ = _backup_scope(relative)
+    inventory = _backup_inventory(home, relative)
+    parent = destination.expanduser().absolute().parent.resolve(strict=True)
+    destination = parent / destination.name
+    if any(root == parent or root in parent.parents for root in
+           (home / ".claude", home / ".codex/sessions", home / ".codex/archived_sessions")):
+        raise ValueError("keep the backup outside the live session store")
+    if os.path.lexists(destination):
+        raise ValueError("backup destination already exists; choose a new filename")
+    manifest = {"schemaVersion": 1, "provider": provider, "sourceRelative": relative,
+                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "files": []}
+    fd, temporary = tempfile.mkstemp(prefix=".modore-backup-", dir=parent)
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            total = 0
+            for name, path in inventory.items():
+                with bundle.open("payload/" + name, "w", force_zip64=True) as target:
+                    size, digest = _backup_read_file(path, target)
+                total += size
+                if total > BACKUP_MAX_BYTES:
+                    raise ValueError("session backup exceeds the size limit")
+                category = ("transcript" if name == relative else
+                            next((kind for kind in ("subagents", "tool-results", "file-history",
+                                                   "image-cache", "uploads")
+                                  if kind in PurePosixPath(name).parts), "sidecar"))
+                manifest["files"].append({"path": name, "size": size,
+                                          "sha256": digest, "category": category})
+            # Detect files appearing/disappearing, and earlier files appended
+            # while later sidecars were being copied. Never publish a success
+            # receipt for a source set that changed under us.
+            if inventory.keys() != _backup_inventory(home, relative).keys():
+                raise ValueError("session files changed during backup; retry when idle")
+            for entry in manifest["files"]:
+                if _backup_read_file(home / entry["path"]) != (entry["size"], entry["sha256"]):
+                    raise ValueError("session changed during backup; retry when idle")
+            bundle.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        with open(temporary, "rb") as handle:
+            os.fsync(handle.fileno())
+        verify_session_backup(Path(temporary))
+        # Atomic no-clobber publish; unlike replace(), this cannot overwrite a
+        # file created while copying. mkstemp's 0600 permissions are retained.
+        os.link(temporary, destination)
+        return _backup_result(destination, manifest)
+    finally:
+        os.unlink(temporary)
+
+
+def restore_session_backup(archive: Path, destination: Path) -> dict:
+    archive = archive.expanduser().absolute()
+    parent = destination.expanduser().absolute().parent.resolve(strict=True)
+    destination = parent / destination.name
+    # Validate all entries before creating anything. Keep the same ZIP open
+    # for verification and extraction; do not reopen a path another process
+    # could swap after validation.
+    with zipfile.ZipFile(archive) as bundle:
+        manifest = _backup_verify_open(bundle)
+        if os.path.lexists(destination):
+            raise ValueError("restore requires a NEW directory; existing data is never overwritten")
+        destination.mkdir(mode=0o700)
+        try:
+            for entry in manifest["files"]:
+                target = destination / entry["path"]
+                # Only directories beneath the private, newly created root.
+                current = destination
+                for component in PurePosixPath(entry["path"]).parts[:-1]:
+                    current = current / component
+                    current.mkdir(mode=0o700, exist_ok=True)
+                    _backup_check_path(current)
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as output, bundle.open("payload/" + entry["path"]) as source:
+                    result = _backup_stream(source, output, limit=entry["size"])
+                    output.flush()
+                    os.fsync(output.fileno())
+                if result != (entry["size"], entry["sha256"]):
+                    raise ValueError("backup changed during restore")
+                if _backup_read_file(target) != result:
+                    raise ValueError("restored file checksum mismatch")
+            return _backup_result(archive, manifest, destination)
+        except BaseException:
+            # This root was created exclusively by this call. Never remove a
+            # pre-existing directory, source session, or original workspace.
+            shutil.rmtree(destination)
+            raise
+
+
 SEARCH_DEFAULT_LIMIT = 200
 SEARCH_MATCHES_PER_SESSION = 3
 SEARCH_SNIPPET_CHARS = 240
@@ -2905,6 +3217,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                           help="disable masking (explicit opt-out, off by default)")
     preserve.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    backup = sub.add_parser("backup", help="back up one original Claude/Codex session and supported sidecars")
+    backup.add_argument("source", type=Path)
+    backup.add_argument("--out", type=Path, required=True, help="new private ZIP outside the session store")
+    backup.add_argument("--include-sensitive", action="store_true",
+                        help="acknowledge that originals are neither masked nor encrypted")
+    backup.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+    verify_backup = sub.add_parser("backup-verify", help="verify every file in a session backup")
+    verify_backup.add_argument("archive", type=Path)
+    restore_backup = sub.add_parser("backup-restore", help="restore and verify into a NEW directory only")
+    restore_backup.add_argument("archive", type=Path)
+    restore_backup.add_argument("--out", type=Path, required=True)
+
     bind = sub.add_parser(
         "bind", help="list the AI sessions bound to ONE named workspace (explicit, never automatic)")
     bind.add_argument("workspace", type=Path,
@@ -3008,6 +3332,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
     args = parser.parse_args(argv)
+
+    if args.command in ("backup", "backup-verify", "backup-restore"):
+        try:
+            if args.command == "backup":
+                result = build_session_backup(args.source, args.home, args.out,
+                                              include_sensitive=args.include_sensitive)
+            elif args.command == "backup-verify":
+                result = verify_session_backup(args.archive)
+            else:
+                result = restore_session_backup(args.archive, args.out)
+        except (OSError, ValueError, zipfile.BadZipFile, RuntimeError, EOFError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+            return 1
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     if args.command == "preserve":
         try:
