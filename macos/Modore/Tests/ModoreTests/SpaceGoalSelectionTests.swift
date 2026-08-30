@@ -71,7 +71,7 @@ final class SpaceGoalSelectionTests: XCTestCase {
         XCTAssertEqual(selected.map(\.label), ["supported"])
     }
 
-    func testExcludesTimedOutMeasurements() {
+    func testTimedOutMeasurementIsUnknownAndAppendedOnlyWhenKnownTotalIsShort() {
         let items = [
             item(label: "stale", sizeGB: 50, measureStatus: "timed_out"),
             item(label: "measured", sizeGB: 1),
@@ -79,7 +79,8 @@ final class SpaceGoalSelectionTests: XCTestCase {
 
         let selected = SpaceGoalSelection.select(from: items, targetGB: 10)
 
-        XCTAssertEqual(selected.map(\.label), ["measured"])
+        XCTAssertEqual(selected.map(\.label), ["measured", "stale"])
+        XCTAssertEqual(SpaceGoalSelection.planningSizeGB(items[0]), 0)
     }
 
     // Same-size items must resolve to the same order regardless of scan

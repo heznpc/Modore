@@ -18,6 +18,7 @@ struct CleanupPreview: Identifiable {
     let blockedReason: String
     let runningProcesses: String
     let approvalToken: String
+    let approvalExpiresAt: Date?
     let targets: [String]
     let stagedRemainders: [String]
     let sharedResidue: [String]
@@ -43,6 +44,9 @@ struct CleanupPreview: Identifiable {
         blockedReason = payload.blockedReason
         runningProcesses = payload.runningProcesses
         approvalToken = payload.approvalToken
+        approvalExpiresAt = payload.approvalExpiresEpoch > 0
+            ? Date(timeIntervalSince1970: TimeInterval(payload.approvalExpiresEpoch))
+            : nil
         targets = payload.targets
         stagedRemainders = payload.stagedRemainders
         sharedResidue = payload.sharedResidue
@@ -59,6 +63,14 @@ struct CleanupPreview: Identifiable {
             }
     }
     var isComplete: Bool { status == "complete" }
+
+    func approvalIsFresh(
+        at date: Date = Date(),
+        minimumRemaining: TimeInterval = 0
+    ) -> Bool {
+        guard canExecute, let approvalExpiresAt else { return false }
+        return approvalExpiresAt.timeIntervalSince(date) >= minimumRemaining
+    }
 
     var recoveryPathMessages: [String] {
         var messages = stagedRemainders.map { "격리 보존 경로: \($0)" }
@@ -131,6 +143,7 @@ private struct CleanupProtocolPayload {
     let blockedReason: String
     let runningProcesses: String
     let approvalToken: String
+    let approvalExpiresEpoch: Int64
     let targets: [String]
     let stagedRemainders: [String]
     let sharedResidue: [String]
@@ -164,6 +177,7 @@ private struct CleanupProtocolPayload {
             blockedReason: values["blockedReason"] ?? "",
             runningProcesses: values["runningProcesses"] ?? "",
             approvalToken: values["approvalToken"] ?? "",
+            approvalExpiresEpoch: integer(values["approvalExpiresEpoch"]),
             targets: parsed.targets,
             stagedRemainders: parsed.stagedRemainders,
             sharedResidue: parsed.sharedResidue,

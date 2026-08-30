@@ -12,6 +12,7 @@ struct StorageSnapshotComponents {
     /// treated as measured only when a real total is present.
     let volumeMeasured: Bool
     let cleanupCandidates: [StorageItem]
+    let recoveryCandidates: [StorageItem]
     let reviewCandidates: [StorageItem]
     let developerToolchains: [StorageItem]
     let applications: [StorageItem]
@@ -36,6 +37,11 @@ struct StorageSnapshotComponents {
             volumeMeasured = StorageSnapshotParser.double(volume["totalGB"]) > 0
         }
         cleanupCandidates = StorageSnapshotParser.items(json["cleanupCandidates"])
+        if json["recoveryCandidates"] != nil {
+            recoveryCandidates = StorageSnapshotParser.items(json["recoveryCandidates"])
+        } else {
+            recoveryCandidates = cleanupCandidates
+        }
         reviewCandidates = StorageSnapshotParser.items(json["reviewCandidates"])
         developerToolchains = StorageSnapshotParser.items(json["developerToolchains"])
         applications = StorageSnapshotParser.items(json["applications"])
@@ -50,6 +56,7 @@ struct StorageSnapshotComponents {
 
 struct StorageSnapshotTotals {
     let reclaimableGB: Double
+    let recoveryGB: Double
     let developerGB: Double
     let reviewGB: Double
     let applicationsGB: Double
@@ -59,6 +66,9 @@ struct StorageSnapshotTotals {
     init(components: StorageSnapshotComponents) {
         reclaimableGB = StorageSnapshotParser.uniqueSize(
             components.cleanupCandidates.filter(\.canCleanup)
+        )
+        recoveryGB = StorageSnapshotParser.uniqueSize(
+            components.recoveryCandidates.filter(\.canCleanup)
         )
         reviewGB = StorageSnapshotParser.uniqueSize(components.reviewCandidates)
         developerGB = StorageSnapshotParser.uniqueSize(

@@ -3,6 +3,8 @@ import XCTest
 @testable import Modore
 
 final class LiveStateTests: XCTestCase {
+    private let gibibyte: Int64 = 1_073_741_824
+
     func testFreeSpaceObservationCarriesValueTimeAndSource() throws {
         let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
         let observation = try XCTUnwrap(
@@ -72,5 +74,45 @@ final class LiveStateTests: XCTestCase {
 
         XCTAssertEqual(state.freeSpace, observation)
         XCTAssertEqual(state.freeSpaceStatus, .healthy)
+    }
+
+    func testStoragePressureUsesExactFiveAndTwentyGBBoundaries() {
+        XCTAssertEqual(
+            StoragePressure.classify(freeBytes: 5 * gibibyte - 1),
+            .danger
+        )
+        XCTAssertEqual(
+            StoragePressure.classify(freeBytes: 5 * gibibyte),
+            .warning
+        )
+        XCTAssertEqual(
+            StoragePressure.classify(freeBytes: 20 * gibibyte - 1),
+            .warning
+        )
+        XCTAssertEqual(
+            StoragePressure.classify(freeBytes: 20 * gibibyte),
+            .normal
+        )
+    }
+
+    func testLiveStatePressureComesFromLatestSuccessfulObservation() {
+        let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        var state = LiveState.unobserved
+
+        XCTAssertNil(state.storagePressure)
+
+        state.recordFreeSpaceAttempt(
+            Observation(
+                value: LiveFreeSpace(
+                    freeBytes: 4 * gibibyte,
+                    totalBytes: 100 * gibibyte
+                ),
+                observedAt: observedAt,
+                source: .systemVolume
+            ),
+            attemptedAt: observedAt
+        )
+
+        XCTAssertEqual(state.storagePressure, .danger)
     }
 }
