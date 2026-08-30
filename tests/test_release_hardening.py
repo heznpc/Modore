@@ -788,6 +788,9 @@ def test_mac_builder_embeds_release_identity_without_local_path(project_root):
     assert "build_macos_icon.sh" in source
     assert 'Contents/Resources/LICENSE' in source
     assert "CFBundleIconFile" in source
+    assert "CFBundleURLTypes" in source
+    assert "CFBundleURLSchemes:0 string modore" in source
+    assert "CFBundleURLName string $IDENTIFIER" in source
     assert "project-root.txt" not in source
     assert source.startswith("#!/bin/bash -p")
     assert "run_clean /usr/bin/xcrun swift build" in source
