@@ -77,6 +77,8 @@ struct ModernRootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+        .onOpenURL(perform: openURL)
         .alert(
             "Modore",
             isPresented: Binding(
@@ -100,9 +102,24 @@ struct ModernRootView: View {
     }
 
     private func openStorageRecovery() {
-        openStorage(.goal)
-        if model.storage == nil, !model.isBusy {
-            model.runScan()
+        apply(.storageRecovery)
+    }
+
+    private func openURL(_ url: URL) {
+        guard let route = ModoreRoute(url: url) else { return }
+        apply(route)
+    }
+
+    private func apply(_ route: ModoreRoute) {
+        switch route {
+        case .storageRecovery:
+            openStorage(.goal)
+            if route.shouldStartStorageScan(
+                hasStorageData: model.storage != nil,
+                isBusy: model.isBusy
+            ) {
+                model.runScan()
+            }
         }
     }
 

@@ -62,6 +62,7 @@ struct ModoreApp: App {
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1100, height: 760)
+        .handlesExternalEvents(matching: ["*"])
         .commands {
             CommandGroup(after: .newItem) {
                 Button(model.isRunning ? "정밀 검사 취소" : "정밀 검사") {
