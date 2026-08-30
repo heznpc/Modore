@@ -12,6 +12,9 @@ final class ScanModel: ObservableObject {
     @Published var reportRevision = 0
     @Published var virusTotalEnabled = false
     @Published var cleanupPreview: CleanupPreview?
+    @Published var cleanupRecoveryPlan: CleanupRecoveryPlan?
+    @Published var cleanupRecoveryProgress: CleanupRecoveryProgress?
+    @Published var cleanupRecoveryResult: CleanupRecoveryResult?
     @Published var cleanupInFlight = false
     @Published var cleanupIsExecuting = false
     @Published var browserAutomationStopPreview: BrowserAutomationStopPreview?
@@ -154,6 +157,9 @@ final class ScanModel: ObservableObject {
     var collectionIsIncomplete: Bool { collectionCoverage?.complete == false }
     var macOSSecurity: MacOSSecurityStatus? { content.macOSSecurity }
     var storage: StorageSnapshot? { content.storage }
+    var currentFreeGB: Double? {
+        liveState.freeSpace?.value.freeGB ?? storage?.freeGB
+    }
     var findings: [ScanFinding] { content.findings }
     var securityFindings: [ScanFinding] { content.securityAttentionFindings }
     var storageAttentionFindings: [ScanFinding] { content.storageAttentionFindings }
@@ -262,6 +268,13 @@ final class ScanModel: ObservableObject {
             LiveStateService.observeFreeSpace(observedAt: date)
         }.value
         liveState.recordFreeSpaceAttempt(freeSpace, attemptedAt: date)
+    }
+
+    func recordLiveFreeSpaceObservation(
+        _ observation: Observation<LiveFreeSpace>,
+        attemptedAt: Date = Date()
+    ) {
+        liveState.recordFreeSpaceAttempt(observation, attemptedAt: attemptedAt)
     }
 
     private func startScan(at date: Date) {
