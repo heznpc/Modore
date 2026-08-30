@@ -8,6 +8,7 @@ import Foundation
 /// free.
 public enum SessionProvider: String, Codable, Sendable, Hashable, CaseIterable {
     case claude
+    case claudeDesktop = "claude-desktop"
     case codex
     case gemini
     case vscode
@@ -23,7 +24,7 @@ public enum SessionProvider: String, Codable, Sendable, Hashable, CaseIterable {
     /// are not the same warning.
     public var keepsTranscripts: Bool {
         switch self {
-        case .claude, .codex, .gemini: return true
+        case .claude, .claudeDesktop, .codex, .gemini: return true
         case .vscode, .kiro, .cursor, .windsurf, .antigravity: return false
         }
     }
@@ -31,6 +32,7 @@ public enum SessionProvider: String, Codable, Sendable, Hashable, CaseIterable {
     public var displayName: String {
         switch self {
         case .claude: return "Claude"
+        case .claudeDesktop: return "Claude Desktop"
         case .codex: return "Codex"
         case .gemini: return "Gemini"
         case .vscode: return "VS Code"
@@ -54,6 +56,12 @@ public enum BindingEvidence: String, Codable, Sendable, Hashable {
 
     /// The session's recorded working directory was the repo path.
     case workingDirectory = "working-directory"
+
+    /// The provider recorded the repository (or one of its ancestors or
+    /// descendants) as a folder the owner explicitly selected for the
+    /// conversation. Claude Desktop Code emits this independently of its
+    /// sandbox cwd; it carries the same medium-confidence path semantics.
+    case selectedFolder = "selected-folder"
 
     /// Paths under the repo appear in the transcript's tool activity.
     /// The weakest signal on its own: reading a file proves a visit, not

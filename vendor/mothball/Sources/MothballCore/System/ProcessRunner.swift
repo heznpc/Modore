@@ -13,32 +13,16 @@ public enum ProcessError: Error, Sendable {
     case timedOut(after: Duration)
 }
 
-/// Async wrapper around `Foundation.Process`.
+/// Bounded subprocess execution in a private process group.
 ///
-/// Three non-obvious things this gets right:
-///
-/// 1. **Pipe-buffer deadlock**: a child writing more than the kernel pipe
-///    buffer (~64KB on macOS) blocks until the parent drains the pipe.
-///    If the parent only reads after `waitUntilExit` returns, the child
-///    hangs and so does the parent. We read both pipes concurrently with
-///    waiting for exit using `async let`.
-///
-/// 2. **Timeout with SIGKILL escalation**: `Process` has no built-in
-///    timeout. We launch a cancellable Task that sleeps for the timeout
-///    duration, sends SIGTERM, waits a short grace, then sends SIGKILL
-///    if the child still hasn't exited. Without the SIGKILL fallback a
-///    SIGTERM-ignoring child (e.g. `git fetch` stuck in some network
-///    states) would leave us in the `for await exitStream` loop forever.
-///
-/// 3. **Spawn-failure leak**: `async let` for the pipe readers is started
-///    AFTER `process.run()` succeeds — kicking them off beforehand would
-///    leave detached Tasks blocked on pipes with no writer if spawn
-///    throws, since `Pipe` doesn't close on the synchronous failure path.
+/// Git can start helpers through repository configuration. Killing only the
+/// direct PID leaves those descendants alive and lets them keep stdout/stderr
+/// open forever. This runner therefore creates a process group atomically in
+/// `posix_spawn`, terminates the whole group on timeout/cancellation, and puts a
+/// final deadline on pipe draining even if a child deliberately escapes it.
 public enum ProcessRunner {
-    /// Grace period between SIGTERM and SIGKILL when a timeout fires.
-    /// Long enough for a well-behaved child to flush + exit, short enough
-    /// that a misbehaving child can't stall the UI for the user.
     private static let terminateToKillGrace: Duration = .seconds(5)
+    private static let postTerminationDrainLimit: Duration = .seconds(2)
 
     public static func run(
         executable: URL,
@@ -46,96 +30,82 @@ public enum ProcessRunner {
         workingDirectory: URL? = nil,
         timeout: Duration = .seconds(10)
     ) async throws -> ProcessResult {
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = arguments
-        process.currentDirectoryURL = workingDirectory
+        let controller = ProcessGroupController(
+            terminateToKillGrace: terminateToKillGrace
+        )
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
 
-        // Install the termination handler BEFORE process.run(). Foundation
-        // fires the handler exactly once at termination time and does not
-        // re-invoke it for handlers attached after the fact, so a process
-        // that exits between run() and a later attachment would hang us.
-        // AsyncStream lets us hand the handler a continuation that already
-        // exists synchronously by the time we call run().
-        let exitStream = AsyncStream<Void> { continuation in
-            process.terminationHandler = { _ in continuation.finish() }
-        }
-
-        do {
-            try process.run()
-        } catch {
-            throw ProcessError.spawnFailed(underlying: error)
-        }
-
-        // Pipe readers are started AFTER successful spawn so a spawn
-        // failure can't strand detached Tasks on writerless pipes.
-        async let stdoutBytes: Data = readAll(stdoutPipe.fileHandleForReading)
-        async let stderrBytes: Data = readAll(stderrPipe.fileHandleForReading)
-
-        // Returns true only if it actually fired terminate(); false if
-        // it was cancelled because the process exited normally first.
-        // SIGTERM first; if the child ignores it (some `git fetch` paths
-        // do), escalate to SIGKILL after a grace period so we never hang.
-        let timeoutTask = Task<Bool, Never> {
+            let spawned: SpawnedProcess
             do {
-                try await Task.sleep(for: timeout)
+                spawned = try PosixSpawner.spawn(
+                    executable: executable,
+                    arguments: arguments,
+                    workingDirectory: workingDirectory
+                )
+                controller.didSpawn(processGroupID: spawned.processID)
             } catch {
-                return false
+                if Task.isCancelled { throw CancellationError() }
+                throw ProcessError.spawnFailed(underlying: error)
             }
-            guard process.isRunning else { return false }
-            process.terminate()
-            do {
-                try await Task.sleep(for: terminateToKillGrace)
-            } catch {
+
+            let stdoutReader = BoundedPipeReader(descriptor: spawned.stdoutDescriptor)
+            let stderrReader = BoundedPipeReader(descriptor: spawned.stderrDescriptor)
+            let stdoutTask = Task { await stdoutReader.readAll() }
+            let stderrTask = Task { await stderrReader.readAll() }
+
+            let timeoutTask = Task<Bool, Never> {
+                do {
+                    try await Task.sleep(for: timeout)
+                } catch {
+                    return false
+                }
+                controller.requestTermination()
                 return true
             }
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
+
+            // Observe exit without reaping first. Keeping the leader as a
+            // zombie pins its PID/PGID while we cancel any delayed escalation
+            // and kill residual descendants. Reaping first would let a delayed
+            // `kill(-pgid, ...)` hit an unrelated, newly reused process group.
+            let didObserveExit = await waitForExitWithoutReaping(of: spawned.processID)
+            timeoutTask.cancel()
+            let didTimeOut = await timeoutTask.value
+            let rawStatus: Int32
+            if didObserveExit {
+                controller.finishGroupBeforeReaping()
+                rawStatus = await reap(spawned.processID)
+            } else {
+                // An unexpected ECHILD/error means the identity anchor is gone.
+                // Cancel escalation instead of ever signalling a reusable PGID.
+                controller.abandonLostLeader()
+                rawStatus = Int32(127 << 8)
             }
-            return true
+
+            let drainStopper = Task<Void, Never> {
+                try? await Task.sleep(for: postTerminationDrainLimit)
+                guard !Task.isCancelled else { return }
+                stdoutReader.stop()
+                stderrReader.stop()
+            }
+            let stdoutBytes = await stdoutTask.value
+            let stderrBytes = await stderrTask.value
+            drainStopper.cancel()
+
+            if Task.isCancelled { throw CancellationError() }
+            if didTimeOut { throw ProcessError.timedOut(after: timeout) }
+
+            return ProcessResult(
+                stdout: String(decoding: stdoutBytes, as: UTF8.self),
+                stderr: String(decoding: stderrBytes, as: UTF8.self),
+                exitCode: decodedExitCode(rawStatus)
+            )
+        } onCancel: {
+            controller.requestTermination()
         }
-
-        // Block until the stream finishes (no values are ever yielded;
-        // finish() is the only signal). Yields control of the cooperative
-        // pool, unlike process.waitUntilExit(). Bounded by the SIGKILL
-        // escalation above — even an uncooperative child gets reaped.
-        for await _ in exitStream { /* drained */ }
-
-        // terminationHandler can fire a hair before NSTask flips its
-        // internal "running" flag, and terminationStatus throws
-        // NSInvalidArgumentException ("task still running") in that window.
-        // The process is already dead here, so this returns immediately —
-        // it only synchronizes NSTask's state, it does not wait on the child.
-        process.waitUntilExit()
-
-        // Cancel BEFORE awaiting value, otherwise we'd block until the
-        // sleep naturally completes.
-        timeoutTask.cancel()
-        let didTimeOut = await timeoutTask.value
-
-        let stdoutStr = String(data: await stdoutBytes, encoding: .utf8) ?? ""
-        let stderrStr = String(data: await stderrBytes, encoding: .utf8) ?? ""
-
-        if didTimeOut {
-            throw ProcessError.timedOut(after: timeout)
-        }
-
-        return ProcessResult(
-            stdout: stdoutStr,
-            stderr: stderrStr,
-            exitCode: process.terminationStatus
-        )
     }
 
-    /// Convenience overload that wraps `ProcessError` into a domain
-    /// error before throwing. Eliminates the `do { try await run } catch
-    /// let err as ProcessError { throw .process(err) }` boilerplate at
-    /// every call site that has its own error type.
     public static func run<E: Error>(
         executable: URL,
         arguments: [String],
@@ -150,28 +120,362 @@ public enum ProcessRunner {
                 workingDirectory: workingDirectory,
                 timeout: timeout
             )
-        } catch let err as ProcessError {
-            throw wrapping(err)
+        } catch let error as ProcessError {
+            throw wrapping(error)
         }
     }
 
-    /// Reads up to `capBytes` and discards anything beyond. Always
-    /// drains the pipe to EOF so the child never blocks on a full
-    /// pipe buffer, but caps memory regardless of how chatty stderr
-    /// gets — `tar` warnings or `git` progress can otherwise balloon
-    /// to hundreds of MB during a long-running operation.
-    private static func readAll(_ handle: FileHandle, capBytes: Int = 4 * 1024 * 1024) async -> Data {
-        await Task.detached {
-            var collected = Data()
-            while true {
-                let chunk = handle.availableData
-                if chunk.isEmpty { return collected }   // EOF
-                let remaining = capBytes - collected.count
-                if remaining > 0 {
-                    collected.append(remaining < chunk.count ? chunk.prefix(remaining) : chunk)
+    private static func waitForExitWithoutReaping(of processID: pid_t) async -> Bool {
+        await Task.detached(priority: .utility) {
+            var info = siginfo_t()
+            var result: Int32
+            repeat {
+                result = Darwin.waitid(P_PID, id_t(processID), &info, WEXITED | WNOWAIT)
+            } while result == -1 && errno == EINTR
+            return result == 0
+        }.value
+    }
+
+    private static func reap(_ processID: pid_t) async -> Int32 {
+        await Task.detached(priority: .utility) {
+            var status: Int32 = 0
+            var result: pid_t
+            repeat {
+                result = Darwin.waitpid(processID, &status, 0)
+            } while result == -1 && errno == EINTR
+            return result == processID ? status : Int32(127 << 8)
+        }.value
+    }
+
+    private static func decodedExitCode(_ status: Int32) -> Int32 {
+        let signal = status & 0x7f
+        if signal == 0 { return (status >> 8) & 0xff }
+        return 128 + signal
+    }
+}
+
+private struct SpawnedProcess: Sendable {
+    let processID: pid_t
+    let stdoutDescriptor: Int32
+    let stderrDescriptor: Int32
+}
+
+private enum PosixSpawner {
+    static func spawn(
+        executable: URL,
+        arguments: [String],
+        workingDirectory: URL?
+    ) throws -> SpawnedProcess {
+        guard executable.isFileURL, executable.path.hasPrefix("/"),
+              arguments.allSatisfy({ !$0.utf8.contains(0) }) else {
+            throw posixError(EINVAL)
+        }
+
+        var stdoutPipe: [Int32] = [-1, -1]
+        var stderrPipe: [Int32] = [-1, -1]
+        guard Darwin.pipe(&stdoutPipe) == 0 else { throw posixError(errno) }
+        guard Darwin.pipe(&stderrPipe) == 0 else {
+            Darwin.close(stdoutPipe[0]); Darwin.close(stdoutPipe[1])
+            throw posixError(errno)
+        }
+        var didSpawn = false
+        defer {
+            Darwin.close(stdoutPipe[1])
+            Darwin.close(stderrPipe[1])
+            if !didSpawn {
+                Darwin.close(stdoutPipe[0])
+                Darwin.close(stderrPipe[0])
+            }
+        }
+        try makeNonblockingAndCloseOnExec(stdoutPipe[0])
+        try makeNonblockingAndCloseOnExec(stderrPipe[0])
+
+        var actions: posix_spawn_file_actions_t? = nil
+        try check(posix_spawn_file_actions_init(&actions))
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        try check(posix_spawn_file_actions_adddup2(&actions, stdoutPipe[1], STDOUT_FILENO))
+        try check(posix_spawn_file_actions_adddup2(&actions, stderrPipe[1], STDERR_FILENO))
+        try check(posix_spawn_file_actions_addclose(&actions, stdoutPipe[0]))
+        try check(posix_spawn_file_actions_addclose(&actions, stdoutPipe[1]))
+        try check(posix_spawn_file_actions_addclose(&actions, stderrPipe[0]))
+        try check(posix_spawn_file_actions_addclose(&actions, stderrPipe[1]))
+        if let workingDirectory {
+            guard workingDirectory.isFileURL, !workingDirectory.path.utf8.contains(0) else {
+                throw posixError(EINVAL)
+            }
+            try workingDirectory.path.withCString { path in
+                try check(posix_spawn_file_actions_addchdir_np(&actions, path))
+            }
+        }
+
+        var attributes: posix_spawnattr_t? = nil
+        try check(posix_spawnattr_init(&attributes))
+        defer { posix_spawnattr_destroy(&attributes) }
+        var defaultSignals = sigset_t()
+        sigemptyset(&defaultSignals)
+        for signal in [SIGTERM, SIGINT, SIGHUP, SIGPIPE, SIGQUIT] {
+            sigaddset(&defaultSignals, signal)
+        }
+        var emptyMask = sigset_t()
+        sigemptyset(&emptyMask)
+        try check(posix_spawnattr_setsigdefault(&attributes, &defaultSignals))
+        try check(posix_spawnattr_setsigmask(&attributes, &emptyMask))
+        // A pgroup of zero means "use the spawned child's PID" and avoids the
+        // race inherent in calling setpgid() from the parent after launch.
+        try check(posix_spawnattr_setpgroup(&attributes, 0))
+        let flags = Int16(
+            POSIX_SPAWN_SETPGROUP
+                | POSIX_SPAWN_SETSIGDEF
+                | POSIX_SPAWN_SETSIGMASK
+                | POSIX_SPAWN_CLOEXEC_DEFAULT
+        )
+        try check(posix_spawnattr_setflags(&attributes, flags))
+
+        let command = [executable.path] + arguments
+        let environment = cleanEnvironment()
+        var processID: pid_t = 0
+        let spawnStatus = try withMutableCStringArray(command) { argv in
+            try withMutableCStringArray(environment) { envp in
+                executable.path.withCString { path in
+                    posix_spawn(&processID, path, &actions, &attributes, argv, envp)
                 }
-                // else: pipe still drains to keep child unblocked, output discarded
+            }
+        }
+        try check(spawnStatus)
+        didSpawn = true
+        return SpawnedProcess(
+            processID: processID,
+            stdoutDescriptor: stdoutPipe[0],
+            stderrDescriptor: stderrPipe[0]
+        )
+    }
+
+    private static func cleanEnvironment() -> [String] {
+        [
+            "HOME=\(FileManager.default.homeDirectoryForCurrentUser.path)",
+            // bsdtar delegates zstd compression to an external executable on
+            // macOS. Keep PATH deterministic, but include the two conventional
+            // package-manager prefixes used by release and development hosts.
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
+            "LANG=en_US.UTF-8",
+            "LC_ALL=en_US.UTF-8",
+            "GIT_CONFIG_NOSYSTEM=1",
+            "GIT_OPTIONAL_LOCKS=0",
+            "GIT_TERMINAL_PROMPT=0",
+        ]
+    }
+
+    private static func makeNonblockingAndCloseOnExec(_ descriptor: Int32) throws {
+        let descriptorFlags = Darwin.fcntl(descriptor, F_GETFD)
+        guard descriptorFlags >= 0,
+              Darwin.fcntl(descriptor, F_SETFD, descriptorFlags | FD_CLOEXEC) >= 0 else {
+            throw posixError(errno)
+        }
+        let statusFlags = Darwin.fcntl(descriptor, F_GETFL)
+        guard statusFlags >= 0,
+              Darwin.fcntl(descriptor, F_SETFL, statusFlags | O_NONBLOCK) >= 0 else {
+            throw posixError(errno)
+        }
+    }
+
+    private static func check(_ status: Int32) throws {
+        guard status == 0 else { throw posixError(status) }
+    }
+
+    private static func posixError(_ code: Int32) -> Error {
+        NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+    }
+
+    private static func withMutableCStringArray<Result>(
+        _ strings: [String],
+        body: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) throws -> Result
+    ) throws -> Result {
+        var storage: [UnsafeMutablePointer<CChar>] = []
+        storage.reserveCapacity(strings.count)
+        for string in strings {
+            guard let pointer = strdup(string) else { throw posixError(ENOMEM) }
+            storage.append(pointer)
+        }
+        defer { storage.forEach { free($0) } }
+        var pointers: [UnsafeMutablePointer<CChar>?] = storage
+        pointers.append(nil)
+        return try pointers.withUnsafeMutableBufferPointer { buffer in
+            try body(buffer.baseAddress)
+        }
+    }
+}
+
+private final class ProcessGroupController: @unchecked Sendable {
+    private let terminateToKillGrace: Duration
+    private let lock = NSLock()
+    private let escalationQueue = DispatchQueue(label: "app.mothball.process-group")
+    private var processGroupID: pid_t?
+    private var terminationRequested = false
+    private var escalationWorkItem: DispatchWorkItem?
+    private var finished = false
+
+    init(terminateToKillGrace: Duration) {
+        self.terminateToKillGrace = terminateToKillGrace
+    }
+
+    func didSpawn(processGroupID: pid_t) {
+        lock.lock()
+        self.processGroupID = processGroupID
+        let shouldStart = terminationRequested && !finished
+        lock.unlock()
+        if shouldStart { requestTermination() }
+    }
+
+    func requestTermination() {
+        lock.lock()
+        terminationRequested = true
+        guard !finished,
+              let group = processGroupID,
+              escalationWorkItem == nil else {
+            lock.unlock()
+            return
+        }
+        _ = Darwin.kill(-group, SIGTERM)
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.escalateIfCurrent(group)
+        }
+        escalationWorkItem = workItem
+        lock.unlock()
+        escalationQueue.asyncAfter(
+            deadline: .now() + terminateToKillGrace.timeInterval,
+            execute: workItem
+        )
+    }
+
+    /// Called only after `waitid(..., WNOWAIT)` observed leader exit. The
+    /// unreaped leader still owns the PGID, so this final group kill cannot
+    /// target a reused identity. Legitimate helpers should have exited with
+    /// their leader; any remainder is precisely the detached work this runner
+    /// promises not to leak.
+    func finishGroupBeforeReaping() {
+        lock.lock()
+        guard !finished, let group = processGroupID else {
+            lock.unlock()
+            return
+        }
+        escalationWorkItem?.cancel()
+        escalationWorkItem = nil
+        _ = Darwin.kill(-group, SIGKILL)
+        processGroupID = nil
+        finished = true
+        lock.unlock()
+    }
+
+    /// If the child was reaped elsewhere, its numeric identity is unsafe to
+    /// use. Drop every pending signal rather than guessing.
+    func abandonLostLeader() {
+        lock.lock()
+        escalationWorkItem?.cancel()
+        escalationWorkItem = nil
+        processGroupID = nil
+        finished = true
+        lock.unlock()
+    }
+
+    private func escalateIfCurrent(_ group: pid_t) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished, processGroupID == group else { return }
+        // The leader has not been reaped: either it is still running or is a
+        // waitid-observed zombie, so this PGID cannot have been reused.
+        _ = Darwin.kill(-group, SIGKILL)
+    }
+}
+
+private final class BoundedPipeReader: @unchecked Sendable {
+    private let capBytes: Int
+    private let lock = NSLock()
+    private var descriptor: Int32
+
+    init(descriptor: Int32, capBytes: Int = 4 * 1024 * 1024) {
+        self.descriptor = descriptor
+        self.capBytes = capBytes
+    }
+
+    deinit { stop() }
+
+    func stop() {
+        lock.lock()
+        let openDescriptor = descriptor
+        descriptor = -1
+        if openDescriptor >= 0 { Darwin.close(openDescriptor) }
+        lock.unlock()
+    }
+
+    func readAll() async -> Data {
+        await Task.detached(priority: .utility) { [self] in
+            var collected = Data()
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            defer { stop() }
+
+            while true {
+                let current = descriptorSnapshot()
+                guard current >= 0 else { return collected }
+
+                var item = pollfd(fd: current, events: Int16(POLLIN | POLLHUP), revents: 0)
+                let pollStatus = Darwin.poll(&item, 1, 100)
+                if pollStatus < 0 {
+                    if errno == EINTR { continue }
+                    return collected
+                }
+                if pollStatus == 0 { continue }
+                if item.revents & Int16(POLLERR | POLLNVAL) != 0 { return collected }
+
+                while true {
+                    let (count, readError) = readChunk(
+                        from: current,
+                        into: &buffer
+                    )
+
+                    if count > 0 {
+                        let remaining = capBytes - collected.count
+                        if remaining > 0 {
+                            collected.append(contentsOf: buffer.prefix(min(remaining, count)))
+                        }
+                        continue
+                    }
+                    if count == -2 { return collected }
+                    if count == 0 { return collected }
+                    if readError == EINTR { continue }
+                    if readError == EAGAIN || readError == EWOULDBLOCK { break }
+                    return collected
+                }
             }
         }.value
+    }
+
+    private func descriptorSnapshot() -> Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+        return descriptor
+    }
+
+    /// Returns -2 when `stop()` won the race before this read. Keeping the
+    /// lock around the nonblocking syscall prevents a closed descriptor from
+    /// being reused for an unrelated file between the identity check and read.
+    private func readChunk(
+        from expectedDescriptor: Int32,
+        into buffer: inout [UInt8]
+    ) -> (count: Int, error: Int32) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard descriptor == expectedDescriptor else { return (-2, 0) }
+        let count = buffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(expectedDescriptor, bytes.baseAddress, bytes.count)
+        }
+        return (count, count < 0 ? errno : 0)
+    }
+}
+
+private extension Duration {
+    var timeInterval: TimeInterval {
+        let parts = components
+        return TimeInterval(parts.seconds)
+            + TimeInterval(parts.attoseconds) / 1_000_000_000_000_000_000
     }
 }

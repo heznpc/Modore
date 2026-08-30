@@ -227,9 +227,9 @@ final class BoundSessionRowTests: XCTestCase {
 
     func test_allEvidenceTypesAreLabelled() {
         let text = RetirementPresentation.evidenceText(
-            binding(evidence: [.remoteURL, .workingDirectory, .fileAccess])
+            binding(evidence: [.remoteURL, .workingDirectory, .selectedFolder, .fileAccess])
         )
-        for fragment in ["원격 URL", "작업 디렉터리", "파일 접근"] {
+        for fragment in ["원격 URL", "작업 디렉터리", "사용자 선택 폴더", "파일 접근"] {
             XCTAssertTrue(text.contains(fragment), "\(fragment) missing from \(text)")
         }
     }
