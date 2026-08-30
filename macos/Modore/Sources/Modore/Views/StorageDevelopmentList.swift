@@ -243,7 +243,7 @@ private struct DevelopmentAssetsSection: View {
         } header: {
             NativeSectionHeader(
                 title: "설치된 개발 자산",
-                subtitle: "프로젝트 요구 버전을 확인하기 전에는 삭제하지 않습니다.",
+                subtitle: "프로젝트 빌드 산출물은 재생성 근거를 다시 검증한 뒤 확보 계획에 넣을 수 있습니다.",
                 value: storage.developerText
             )
         }
@@ -258,7 +258,9 @@ private struct DevelopmentAssetRow: View {
         WorkspaceStorageItemRow(
             item: item,
             fallbackSymbol: developmentSymbol,
-            status: item.measureStatus == "timed_out" ? nil : "자동 정리 안 함",
+            status: item.measureStatus == "timed_out"
+                ? nil
+                : (item.cleanupTier == .rebuild ? "확보 계획 가능" : "개별 판단"),
             actionTitle: item.measureStatus == "timed_out" ? "다시 측정" : nil
         ) {
             model.runScan()

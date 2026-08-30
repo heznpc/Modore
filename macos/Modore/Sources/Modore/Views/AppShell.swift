@@ -44,12 +44,23 @@ struct ModernRootView: View {
             ModernSidebar(selection: selection, onSelect: navigate)
                 .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 240)
         } detail: {
-            ModernDetailView(
-                destination: selection,
-                storageSection: $storageSection,
-                onOpenStorage: openStorage,
-                onNavigate: navigate
-            )
+            VStack(spacing: 0) {
+                if let freeSpace = model.liveState.freeSpace,
+                   freeSpace.value.pressure.needsRecovery {
+                    StoragePressureBanner(
+                        freeSpace: freeSpace.value,
+                        openRecovery: openStorageRecovery
+                    )
+                    Divider()
+                }
+
+                ModernDetailView(
+                    destination: selection,
+                    storageSection: $storageSection,
+                    onOpenStorage: openStorage,
+                    onNavigate: navigate
+                )
+            }
             .navigationTitle(selection.title)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -88,6 +99,13 @@ struct ModernRootView: View {
         selection = .storage
     }
 
+    private func openStorageRecovery() {
+        openStorage(.goal)
+        if model.storage == nil, !model.isBusy {
+            model.runScan()
+        }
+    }
+
     private func performPrimaryAction() {
         if model.isRunning {
             model.cancelScan()
@@ -122,6 +140,58 @@ struct ModernRootView: View {
         if model.isRunning { return "현재 정밀 검사를 안전하게 중단합니다" }
         if model.storageWatchInFlight { return "감시 설정을 적용하고 있습니다" }
         return "캐시·보안·자동 실행을 한 시점의 증거로 다시 평가합니다"
+    }
+}
+
+private struct StoragePressureBanner: View {
+    let freeSpace: LiveFreeSpace
+    let openRecovery: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: freeSpace.pressure == .danger
+                ? "exclamationmark.triangle.fill"
+                : "internaldrive.fill")
+                .font(.title3)
+                .foregroundStyle(tint)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 16)
+
+            Button("확보 계획 열기", action: openRecovery)
+                .buttonStyle(.borderedProminent)
+                .tint(tint)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .background(tint.opacity(0.09))
+    }
+
+    private var title: String {
+        switch freeSpace.pressure {
+        case .danger: return "저장공간을 지금 확보해야 합니다"
+        case .warning: return "저장공간 확보를 권장합니다"
+        case .normal: return "저장공간이 충분합니다"
+        }
+    }
+
+    private var detail: String {
+        String(
+            format: "현재 %.1fGB 남았습니다. 정리 후보를 검토한 뒤 한 번 승인해 목표 용량을 확보할 수 있습니다.",
+            freeSpace.freeGB
+        )
+    }
+
+    private var tint: Color {
+        freeSpace.pressure == .danger ? .red : .secondary
     }
 }
 
@@ -171,17 +241,33 @@ private struct SidebarDestinationRow: View {
                     Text("\(model.securityAttentionCount)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(model.securityHasDanger ? Color.red : Color.secondary)
+                } else if destination == .storage,
+                          let pressure = model.liveState.storagePressure,
+                          pressure.needsRecovery {
+                    Text(pressure == .danger ? "위험" : "부족")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(storagePressureColor(pressure))
                 }
             }
         } icon: {
             Image(systemName: destination.symbol)
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(
-                    destination == .security && model.securityHasDanger
-                        ? Color.red
-                        : Color.secondary
-                )
+                .foregroundStyle(destinationColor)
         }
+    }
+
+    private var destinationColor: Color {
+        if destination == .security, model.securityHasDanger { return .red }
+        if destination == .storage,
+           let pressure = model.liveState.storagePressure,
+           pressure.needsRecovery {
+            return storagePressureColor(pressure)
+        }
+        return .secondary
+    }
+
+    private func storagePressureColor(_ pressure: StoragePressure) -> Color {
+        pressure == .danger ? .red : .secondary
     }
 }
 
@@ -228,16 +314,24 @@ private struct SidebarScanStatus: View {
 
     private func statusTitle(at date: Date) -> String {
         if model.isRunning { return "정밀 검사 중" }
+        if model.cleanupIsExecuting {
+            return model.cleanupRecoveryProgress.map {
+                "\($0.currentLabel) 정리 중"
+            } ?? "정리 중"
+        }
+        if model.cleanupRecoveryProgress != nil { return "공간 확보 계획 준비 중" }
         if model.cleanupInFlight { return "정리 대상 확인 중" }
         if model.browserAutomationStopInFlight { return "자동화 브라우저 확인 중" }
         if model.storageWatchInFlight { return "감시 설정 적용 중" }
+        if model.liveState.storagePressure == .danger { return "저장공간 즉시 확보 필요" }
         if model.state == .failed { return "정밀 검사 실패" }
-        if model.summary == nil { return "정밀 검사 필요" }
         if model.securityHasDanger {
             return model.securityAttentionCount > 0
                 ? "위험 신호 \(model.securityAttentionCount)건"
                 : "위험 신호 확인"
         }
+        if model.liveState.storagePressure == .warning { return "저장공간 확보 권장" }
+        if model.summary == nil { return "정밀 검사 필요" }
         if model.collectionIsIncomplete { return "안전 판단 보류" }
         if model.deepScanSnapshotNeedsRefresh(at: date) { return "정밀 검사 필요" }
         if model.securityAttentionCount > 0 { return "확인 항목 \(model.securityAttentionCount)건" }
@@ -245,8 +339,10 @@ private struct SidebarScanStatus: View {
     }
 
     private func statusSymbol(at date: Date) -> String {
+        if model.liveState.storagePressure == .danger { return "exclamationmark.triangle.fill" }
         if model.securityHasDanger { return "exclamationmark.shield" }
         if model.state == .failed { return "exclamationmark.circle" }
+        if model.liveState.storagePressure == .warning { return "internaldrive.fill" }
         if model.summary == nil { return "questionmark.circle" }
         if model.collectionIsIncomplete { return "questionmark.shield" }
         if model.deepScanSnapshotNeedsRefresh(at: date) { return "clock" }
@@ -255,7 +351,10 @@ private struct SidebarScanStatus: View {
     }
 
     private var statusColor: Color {
-        model.state == .failed || model.securityHasDanger ? .red : .secondary
+        if model.liveState.storagePressure == .danger { return .red }
+        if model.state == .failed || model.securityHasDanger { return .red }
+        if model.liveState.storagePressure == .warning { return .secondary }
+        return .secondary
     }
 }
 

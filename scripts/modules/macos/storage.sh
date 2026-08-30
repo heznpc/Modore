@@ -239,9 +239,9 @@ _pch_collect_storage_simulators() {
 
 # 개발 프로젝트 내부의 재생성 가능한 빌드 산출물 행 1개를 기록한다.
 # add_du_path와 같은 안전 규칙(절대경로, 제어문자 거부, 경로 dedup, du 예산)을 따르되
-# 성공 측정 시에도 공식 재생성 명령 안내를 note로 싣는다. 탐지 전용이며 cleanup_id는
-# 의도적으로 비워 둔다: 프로젝트 경로는 임의라서 recipe-ID 원칙과 충돌하므로
-# 이 도구는 "무엇이 왜 큰지 + 어떤 공식 명령으로 재생성되는지"까지만 책임진다.
+# 성공 측정 시에도 공식 재생성 명령 안내를 note로 싣는다. cleanup_id는 고정 ID인
+# project_residue만 싣고 동적 경로는 별도 FD 요청서로 전달한다. cleanup.sh가 바로 위
+# 프로젝트 표식·lockfile·Git index를 다시 검증하므로 경로 자체가 recipe ID가 되지 않는다.
 _pch_add_project_residue_row() {
     local target_path="$1"
     local label="$2"
@@ -271,7 +271,7 @@ _pch_add_project_residue_row() {
     # 4MB 미만 잔여물은 노이즈만 만들므로 생략한다 (측정 보류 행은 정직하게 남긴다).
     [[ "$size_kb" -ge 4096 || "$measure_status" == "timed_out" ]] || return 0
     /usr/bin/printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-        "project_residue" "$label" "$target_path" "$size_kb" "$measure_status" "$measure_note" "" \
+        "project_residue" "$label" "$target_path" "$size_kb" "$measure_status" "$measure_note" "project_residue" \
         >> "$TMP_DIR/storage_paths.tsv"
 }
 
@@ -286,13 +286,11 @@ _pch_collect_project_residue() {
     case "$max_projects" in ''|*[!0-9]*) max_projects=32 ;; esac
     local seen_projects="|"
     local found=0
-    local old_ifs="$IFS"
     local root marker_file project_dir project_name
+    local -a scan_root_list=()
 
-    IFS=':'
-    set -- $scan_roots
-    IFS="$old_ifs"
-    for root in "$@"; do
+    IFS=':' read -r -a scan_root_list <<< "$scan_roots"
+    for root in "${scan_root_list[@]}"; do
         [[ -d "$root" && ! -L "$root" ]] || continue
         while IFS= read -r marker_file; do
             [[ -n "$marker_file" ]] || continue
