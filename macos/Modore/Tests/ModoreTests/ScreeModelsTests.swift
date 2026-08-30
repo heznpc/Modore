@@ -2,6 +2,46 @@ import XCTest
 @testable import Modore
 
 final class ScreeModelsTests: XCTestCase {
+    func testSessionIndexDecodesIncompleteStoreCoverageWithoutDroppingRows() throws {
+        let data = Data("""
+        {
+          "total": 1,
+          "sessions": [],
+          "coverage": {
+            "complete": false,
+            "stores": [
+              {"store":"Claude Desktop","status":"unreadable","count":0,"unrecognized":0},
+              {"store":"Codex","status":"ok","count":1,"unrecognized":2}
+            ]
+          }
+        }
+        """.utf8)
+
+        let index = try JSONDecoder().decode(SessionIndex.self, from: data)
+
+        XCTAssertEqual(index.total, 1)
+        XCTAssertEqual(index.coverage.stores.count, 2)
+        XCTAssertEqual(
+            index.coverage.warningText,
+            "일부 로컬 대화 저장소를 끝까지 확인하지 못했습니다: Claude Desktop 읽기 실패 · Codex 형식 미인식 2개. 현재 목록을 전체 기록으로 단정하지 않습니다."
+        )
+    }
+
+    func testCompleteSessionIndexCoverageHasNoWarning() {
+        let coverage = SessionIndexCoverage(
+            complete: true,
+            stores: [
+                SessionIndexStoreCoverage(
+                    store: "Claude",
+                    status: "ok",
+                    count: 3,
+                    unrecognized: 0
+                )
+            ]
+        )
+
+        XCTAssertNil(coverage.warningText)
+    }
     private func expiringJson(ownerDeleted: Any? = nil) -> [String: Any] {
         var session: [String: Any] = [
             "tool": "Claude",
@@ -141,6 +181,55 @@ final class ScreeModelsTests: XCTestCase {
 
         XCTAssertNotEqual(item.reasonText, "clean")
         XCTAssertTrue(item.reasonText.contains("재검사") || item.reasonText.contains("실패"))
+    }
+
+    func testWorktreeDiscoveryDecodesBoundedMetadataCoverageHonestly() throws {
+        let report = try XCTUnwrap(ScreeReport(json: [
+            "worktrees": [
+                "items": [],
+                "scope": "session-metadata",
+                "global_complete": false,
+                "observed_workspaces": 454,
+                "unreadable": 3,
+                "truncated": true,
+            ],
+        ]))
+
+        XCTAssertEqual(report.worktreeDiscovery.scope, "session-metadata")
+        XCTAssertFalse(report.worktreeDiscovery.globalComplete)
+        XCTAssertEqual(report.worktreeDiscovery.observedWorkspaces, 454)
+        XCTAssertEqual(report.worktreeDiscovery.unreadable, 3)
+        XCTAssertTrue(report.worktreeDiscovery.truncated)
+        XCTAssertTrue(report.worktreeDiscovery.coverageText.contains("454"))
+        XCTAssertTrue(report.worktreeDiscovery.coverageText.contains("디스크 전체 검색 결과가 아닙니다"))
+        XCTAssertTrue(report.worktreeDiscovery.coverageText.contains("3곳"))
+        XCTAssertFalse(report.worktreeDiscovery.emptyStateText.contains("등록된"))
+    }
+
+    func testUnknownRegistrationAndVanishedRegistryEntriesRemainDistinct() throws {
+        var unknown = worktreeJson(verdict: "protected")
+        unknown["registered"] = NSNull()
+        let report = try XCTUnwrap(ScreeReport(json: [
+            "worktrees": [
+                "items": [unknown],
+                "registered_missing": [[
+                    "repo": "/Users/test/repo",
+                    "path": "/Users/test/repo/.claude/worktrees/vanished",
+                ]],
+            ],
+        ]))
+
+        let item = try XCTUnwrap(report.worktreeItems.first)
+        XCTAssertNil(item.registered)
+        XCTAssertTrue(item.reasonText.contains("등록 여부 확인 실패"))
+        XCTAssertEqual(report.registeredMissing.first?.displayLabel, "vanished")
+    }
+
+    func testMissingWorktreeCoverageNeverDefaultsToGlobalCompleteness() throws {
+        let report = try XCTUnwrap(ScreeReport(json: ["worktrees": ["items": []]]))
+
+        XCTAssertFalse(report.worktreeDiscovery.globalComplete)
+        XCTAssertTrue(report.worktreeDiscovery.coverageText.contains("제한"))
     }
 
     // scree.py's build_lineage already casefold-deduplicates and reports

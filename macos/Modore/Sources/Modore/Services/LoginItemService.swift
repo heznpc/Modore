@@ -142,11 +142,14 @@ extension ScanModel {
     // and the second run isn't held in `scanTask`, so 검사 취소 could not
     // stop it. prepareCleanup already guards this way.
     func previewLoginItemRemoval(_ name: String) {
-        guard !isBusy, loginItemActionInFlight == nil else { return }
+        guard !applicationTerminationStarted,
+              !isBusy,
+              loginItemActionInFlight == nil else { return }
         loginItemActionInFlight = name
         errorMessage = nil
         let root = projectRoot
-        Task {
+        startTrackedApplicationTask { [weak self] in
+            guard let self else { return }
             defer { loginItemActionInFlight = nil }
             switch await LoginItemService.preview(projectRoot: root, name: name) {
             case .ready(let confirmedName, let token):
@@ -160,23 +163,54 @@ extension ScanModel {
     }
 
     func confirmLoginItemRemoval() {
-        guard !isBusy, let pending = pendingLoginItemRemoval, loginItemActionInFlight == nil else { return }
+        let root = projectRoot
+        confirmLoginItemRemoval(
+            using: { pending in
+                await LoginItemService.execute(
+                    projectRoot: root,
+                    name: pending.name,
+                    approvalToken: pending.approvalToken
+                )
+            },
+            rescan: { [weak self] in self?.runScan() }
+        )
+    }
+
+    /// Approval means the script may have changed the system even when its
+    /// final status line is lost to timeout or parse failure. Always refresh
+    /// the snapshot after an execute attempt; preserve the failure message so
+    /// the refresh does not pretend the action was confirmed successful.
+    func confirmLoginItemRemoval(
+        using execute: @escaping (PendingLoginItemRemoval) async -> LoginItemExecuteOutcome,
+        rescan: @escaping @MainActor () -> Void
+    ) {
+        guard !applicationTerminationStarted,
+              !isBusy,
+              let pending = pendingLoginItemRemoval,
+              loginItemActionInFlight == nil else { return }
         pendingLoginItemRemoval = nil
         loginItemActionInFlight = pending.name
-        let root = projectRoot
-        Task {
-            defer { loginItemActionInFlight = nil }
-            switch await LoginItemService.execute(projectRoot: root, name: pending.name, approvalToken: pending.approvalToken) {
+        beginApplicationDestructiveTransaction()
+        loginItemActionTask = Task {
+            var executeFailure: String?
+            defer {
+                loginItemActionInFlight = nil
+                loginItemActionTask = nil
+                finishApplicationDestructiveTransaction()
+                rescan()
+                // runScan intentionally clears an earlier generic error at
+                // the start of a new scan. This message belongs to the
+                // approved destructive attempt itself, so restore it after
+                // scheduling that refresh instead of laundering an unknown
+                // execute result into apparent success.
+                if let executeFailure { errorMessage = executeFailure }
+            }
+            switch await execute(pending) {
             case .ok(let name), .alreadyGone(let name):
                 appendLog("로그인 항목 제거: \(name)")
                 AccessibilityAnnouncer.announce("로그인 항목을 제거했습니다")
-                state = .running
-                let result = await ScanPipeline.run(projectRoot: root) { line in
-                    Task { @MainActor in self.appendLog(line) }
-                }
-                await finishRun(result: result)
             case .failure(let message, _):
-                errorMessage = message
+                executeFailure = message
             }
         }
     }

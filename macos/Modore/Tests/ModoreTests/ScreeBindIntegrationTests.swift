@@ -323,6 +323,17 @@ final class IncompleteScanReasonTests: XCTestCase {
         XCTAssertFalse(reason.contains("Codex"), reason)
     }
 
+    func test_namesClaudeDesktopWhenItsConversationStoreWasIncomplete() {
+        let reason = ScreeService.incompleteScanReason(data("""
+        {"workspace":"/w","repoUrl":null,"assessed":true,"deep":true,
+         "coverage":"truncated","bindings":[],
+         "coverageDetail":{"claude":"complete","claudeDesktop":"incomplete",
+                           "codex":"complete","unboundStores":[]}}
+        """))
+        XCTAssertTrue(reason.contains("Claude Desktop"), reason)
+        XCTAssertFalse(reason.contains("Codex"), reason)
+    }
+
     /// A store nobody looked at outranks one that was read imperfectly:
     /// closing the second still leaves the first unexamined.
     func test_unboundStoresOutrankPartialReads() {

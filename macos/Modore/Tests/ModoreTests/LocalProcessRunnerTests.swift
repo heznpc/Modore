@@ -208,6 +208,83 @@ final class LocalProcessRunnerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 
+    func testCleanupGraceCanFinishAfterTheOrdinaryForceKillDeadline() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("local-process-cleanup-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let result = await LocalProcessRunner.capture(
+            executable: "/bin/bash",
+            arguments: [
+                "-c",
+                "trap '/bin/sleep 1.5; printf cleaned > \"$1\"; exit 143' TERM; while :; do /bin/sleep 30; done",
+                "cleanup-grace-test",
+                marker.path,
+            ],
+            currentDirectory: FileManager.default.temporaryDirectory,
+            timeout: 0.1,
+            forceKillAfterTermination: 5
+        )
+
+        XCTAssertEqual(result.status, LocalProcessRunner.timeoutStatus)
+        XCTAssertEqual(result.endState, .timedOut)
+        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "cleaned")
+    }
+
+    func testForceKillDeadlineOutlivesBoundedResultDelivery() async {
+        let started = Date()
+        let result = await LocalProcessRunner.capture(
+            executable: "/bin/bash",
+            arguments: [
+                "-c",
+                "trap '' TERM; printf 'root=%s\\n' \"$$\"; while :; do /bin/sleep 30; done",
+            ],
+            currentDirectory: FileManager.default.temporaryDirectory,
+            timeout: 0.1,
+            forceKillAfterTermination: 4.5
+        )
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertEqual(result.status, LocalProcessRunner.timeoutStatus)
+        XCTAssertEqual(result.endState, .timedOut)
+        XCTAssertGreaterThan(elapsed, 2.8)
+        XCTAssertLessThan(elapsed, 4.25)
+        guard let rootPID = processID(named: "root", in: result.output) else {
+            XCTFail("루트 PID가 출력되지 않았습니다: \(result.output)")
+            return
+        }
+
+        errno = 0
+        XCTAssertEqual(Darwin.kill(rootPID, 0), 0, "결과 반환 시점에는 정리 유예가 남아 있어야 합니다.")
+        await assertProcessDisappears(rootPID)
+    }
+
+    func testCleanupBarrierKeepsCallerUntilForcedGroupExit() async {
+        let started = Date()
+        let result = await LocalProcessRunner.capture(
+            executable: "/bin/bash",
+            arguments: [
+                "-c",
+                "trap '' TERM; printf 'root=%s\\n' \"$$\"; while :; do /bin/sleep 30; done",
+            ],
+            currentDirectory: FileManager.default.temporaryDirectory,
+            timeout: 0.1,
+            forceKillAfterTermination: 4.5,
+            waitForCleanupOnStop: true
+        )
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertEqual(result.endState, .timedOut)
+        XCTAssertGreaterThan(elapsed, 4.2)
+        XCTAssertLessThan(elapsed, 6)
+        guard let rootPID = processID(named: "root", in: result.output) else {
+            XCTFail("루트 PID가 출력되지 않았습니다: \(result.output)")
+            return
+        }
+        errno = 0
+        XCTAssertEqual(Darwin.kill(rootPID, 0), -1)
+        XCTAssertEqual(errno, ESRCH)
+    }
+
     func testRootExitKillsSIGTERMIgnoringChildHoldingTheOutputPipe() async {
         let started = Date()
         let result = await LocalProcessRunner.capture(
@@ -215,6 +292,29 @@ final class LocalProcessRunnerTests: XCTestCase {
             arguments: [
                 "-c",
                 "trap '' TERM; /bin/sleep 30 & child=$!; printf 'child=%s\\n' \"$child\"; exit 0",
+            ],
+            currentDirectory: FileManager.default.temporaryDirectory,
+            timeout: 5
+        )
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.endState, .exited)
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 0.8)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        guard let childPID = processID(named: "child", in: result.output) else {
+            XCTFail("자손 PID가 출력되지 않았습니다: \(result.output)")
+            return
+        }
+        await assertProcessDisappears(childPID)
+    }
+
+    func testRootExitAlsoKillsSIGTERMIgnoringChildThatClosedTheOutputPipe() async {
+        let started = Date()
+        let result = await LocalProcessRunner.capture(
+            executable: "/bin/bash",
+            arguments: [
+                "-c",
+                "(trap '' TERM; exec >/dev/null 2>&1; while :; do /bin/sleep 30; done) & child=$!; printf 'child=%s\\n' \"$child\"; exit 0",
             ],
             currentDirectory: FileManager.default.temporaryDirectory,
             timeout: 5

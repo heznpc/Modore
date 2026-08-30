@@ -58,8 +58,8 @@ default:
   always look at what the machine already holds. Never an input to any
   verdict.
 Raw backup commands are a separate, explicit exception: `backup` copies one
-named Claude/Codex transcript and its supported session sidecars byte-for-byte
-only with --include-sensitive. `backup-verify` hashes an explicitly named
+named Claude Code/Codex transcript or one Claude Desktop conversation unit and
+its owned sidecars byte-for-byte only with --include-sensitive. `backup-verify` hashes an explicitly named
 archive; `backup-restore` writes it to a NEW directory, never over live state.
 These commands do not mask or encrypt the archive, contact a model, delete a
 source, or grant permission to reclaim anything. No audit invokes them.
@@ -68,21 +68,42 @@ Everything above this line in the module never calls any of them.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
 import hashlib
+import io
 import json
+import math
 import os
 import re
+import select
 import shutil
+import signal
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlparse
+
+# ``json.JSONDecodeError`` is only one ValueError shape from json.loads.
+# Python's integer conversion guard and deeply nested provider data raise
+# ValueError/RecursionError instead; every local-data parser must treat those
+# as damaged input rather than aborting an entire inspect/search/backup run.
+JSON_PARSE_ERRORS = (ValueError, UnicodeDecodeError, RecursionError)
+JSON_FILE_ERRORS = (OSError, ValueError, UnicodeDecodeError, RecursionError)
+
+
+def _is_utf8_text(value: str) -> bool:
+    """Whether provider text is a Unicode scalar sequence usable on the wire."""
+    try:
+        value.encode("utf-8")
+        return True
+    except UnicodeEncodeError:
+        return False
 
 # The only keys ever copied out of a session line. Everything else is dropped
 # unread so prompts, code, and command content can never reach the output.
@@ -90,6 +111,33 @@ CLAUDE_META_KEYS = ("cwd", "gitBranch", "sessionId")
 CODEX_META_KEYS = ("id", "cwd")
 CLAUDE_SCAN_LINES = 25
 MAX_LINE_BYTES = 65536
+
+# Claude Desktop's Code surface is a separate store from Claude Code.  One
+# conversation is a metadata JSON beside a same-named directory; the hundreds
+# of JSONL files below that directory are its transcript, audit trail, queues,
+# and subagents, not hundreds of conversations.  Keep the path spelling in one
+# place so listing, inspection, search, and original backup cannot drift.
+CLAUDE_DESKTOP_LOCAL_SESSIONS = (
+    "Library", "Application Support", "Claude", "local-agent-mode-sessions",
+)
+CLAUDE_DESKTOP_PROVIDER = "claude-desktop"
+CLAUDE_DESKTOP_TOOL = "Claude Desktop"
+CLAUDE_DESKTOP_METADATA_MAX_BYTES = 4 * 1024 * 1024
+CLAUDE_DESKTOP_METADATA_TOTAL_BYTES = 64 * 1024 * 1024
+CLAUDE_DESKTOP_METADATA_MAX_FILES = 4096
+CLAUDE_DESKTOP_SELECTED_FOLDERS_MAX = 64
+CLAUDE_DESKTOP_LOCATION_MAX_CHARS = 4096
+CLAUDE_DESKTOP_ID_MAX_CHARS = 256
+CLAUDE_DESKTOP_TITLE_MAX_CHARS = 4096
+# Desktop stores Unix epoch milliseconds. Values outside this deliberately
+# generous range are damaged metadata, not dates: Python can serialize an
+# arbitrary-size integer that Foundation's JSON parser cannot represent.
+CLAUDE_DESKTOP_TIMESTAMP_MAX_MS = 4_102_444_800_000  # 2100-01-01 UTC
+CLAUDE_DESKTOP_NAMESPACE_MAX_ENTRIES = 50000
+CLAUDE_DESKTOP_PRIMARY_SCAN_MAX_ENTRIES = 50000
+CLAUDE_DESKTOP_BIND_MAX_FILES = 50000
+CLAUDE_DESKTOP_WORKSPACE_PROBE_SECONDS = 0.50
+CLAUDE_DESKTOP_WORKSPACE_PROBE_MAX_BYTES = 4 * 1024 * 1024
 
 # Retention judgment thresholds (observation-based estimates, never vendor claims).
 RETENTION_MIN_SESSIONS = 5      # below this a window cannot be inferred honestly
@@ -122,7 +170,10 @@ def _read_json_line(handle) -> Optional[dict]:
         return None
     try:
         parsed = json.loads(line)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    # Python's JSON integer conversion can raise ValueError for an attacker-
+    # sized numeric literal. Deeply nested input can similarly raise
+    # RecursionError. A damaged record must never abort the whole local index.
+    except JSON_PARSE_ERRORS:
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
@@ -166,6 +217,1009 @@ def _record(tool: str, kind: str, source: Path, workspace: Optional[str], *,
         "last_active": stat.st_mtime,
         "weight": weight,
     }
+
+
+def _claude_desktop_root(home: Path) -> Path:
+    return home.joinpath(*CLAUDE_DESKTOP_LOCAL_SESSIONS)
+
+
+@dataclass(frozen=True)
+class _ClaudeDesktopMetadataSnapshot:
+    path: Path
+    raw: bytes
+    metadata_info: os.stat_result
+    unit_info: os.stat_result
+
+
+def _claude_desktop_metadata_scan(
+        home: Path) -> tuple[list[_ClaudeDesktopMetadataSnapshot], dict]:
+    """Read bounded Desktop metadata through one no-follow descriptor walk."""
+    original_home = home.expanduser().absolute()
+    store = {
+        "store": CLAUDE_DESKTOP_TOOL,
+        "status": "ok",
+        "count": 0,
+        "unrecognized": 0,
+    }
+    directory_flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+
+    descriptor = -1
+    try:
+        # Resolve only the caller-supplied home spelling. macOS commonly
+        # presents the same home through aliases such as /var -> /private/var;
+        # every store component below the canonical home remains no-follow.
+        canonical_home = original_home.resolve(strict=True)
+        descriptor = _open_directory_nofollow(canonical_home)
+        home_device = os.fstat(descriptor).st_dev
+    except FileNotFoundError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        store["status"] = "missing"
+        return ([], store)
+    except OSError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        store["status"] = "unreadable"
+        return ([], store)
+
+    root = _claude_desktop_root(canonical_home)
+    # Open the fixed store root one component at a time. No later operation
+    # reopens any namespace path, so swapping a parent for a symlink cannot
+    # redirect discovery or metadata reads.
+    try:
+        for component in CLAUDE_DESKTOP_LOCAL_SESSIONS:
+            child = -1
+            try:
+                child = os.open(
+                    component, directory_flags, dir_fd=descriptor)
+                child_info = os.fstat(child)
+                named_child = os.stat(
+                    component, dir_fd=descriptor,
+                    follow_symlinks=False)
+                if (not stat.S_ISDIR(child_info.st_mode)
+                        or child_info.st_dev != home_device
+                        or _stat_identity(child_info)
+                        != _stat_identity(named_child)):
+                    os.close(child)
+                    store["status"] = "unrecognized"
+                    store["unrecognized"] = 1
+                    os.close(descriptor)
+                    return ([], store)
+            except FileNotFoundError:
+                if child >= 0:
+                    os.close(child)
+                store["status"] = "missing"
+                os.close(descriptor)
+                return ([], store)
+            except OSError:
+                if child >= 0:
+                    os.close(child)
+                try:
+                    named = os.stat(
+                        component, dir_fd=descriptor,
+                        follow_symlinks=False)
+                except OSError:
+                    store["status"] = "unreadable"
+                else:
+                    store["status"] = (
+                        "unrecognized"
+                        if stat.S_ISLNK(named.st_mode)
+                        else "unreadable"
+                    )
+                    if store["status"] == "unrecognized":
+                        store["unrecognized"] = 1
+                os.close(descriptor)
+                return ([], store)
+            os.close(descriptor)
+            descriptor = child
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+    snapshots: list[_ClaudeDesktopMetadataSnapshot] = []
+    unreadable = False
+    truncated = False
+    unrecognized = int(store["unrecognized"])
+    attempted_bytes = 0
+    candidates_seen = 0
+    entries_seen = 0
+    budget_exhausted = False
+    metadata_unit_paths: set[tuple[str, ...]] = set()
+    conversation_unit_paths: set[tuple[str, ...]] = set()
+    directory_signatures: dict[tuple[str, ...], tuple[int, int, int, int, int, int, int]] = {
+        (): _stat_signature(os.fstat(descriptor)),
+    }
+
+    def read_candidate(
+            parent_descriptor: int, relative_parts: tuple[str, ...],
+            name: str, remaining_bytes: int
+            ) -> tuple[Optional[_ClaudeDesktopMetadataSnapshot], str, int]:
+        path = root.joinpath(*relative_parts, name)
+        try:
+            file_descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                dir_fd=parent_descriptor,
+            )
+        except FileNotFoundError:
+            return (None, "unrecognized", 0)
+        except OSError:
+            try:
+                named = os.stat(
+                    name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+            except OSError:
+                return (None, "unreadable", 0)
+            return (None, "unrecognized"
+                    if stat.S_ISLNK(named.st_mode) else "unreadable", 0)
+        try:
+            before = os.fstat(file_descriptor)
+            if (not stat.S_ISREG(before.st_mode)
+                    or before.st_dev != home_device
+                    or before.st_nlink != 1
+                    or before.st_size > CLAUDE_DESKTOP_METADATA_MAX_BYTES):
+                return (None, "unrecognized", 0)
+            if before.st_size > remaining_bytes:
+                return (None, "truncated", 0)
+            with os.fdopen(os.dup(file_descriptor), "rb") as handle:
+                raw = handle.read(CLAUDE_DESKTOP_METADATA_MAX_BYTES + 1)
+            after = os.fstat(file_descriptor)
+            try:
+                named = os.stat(
+                    name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+            except OSError:
+                return (None, "unrecognized", len(raw))
+            if (len(raw) > CLAUDE_DESKTOP_METADATA_MAX_BYTES
+                    or _stat_signature(before) != _stat_signature(after)
+                    or _stat_signature(after) != _stat_signature(named)):
+                return (None, "unrecognized", len(raw))
+        finally:
+            os.close(file_descriptor)
+
+        unit_name = Path(name).stem
+        try:
+            unit_descriptor = os.open(
+                unit_name, directory_flags, dir_fd=parent_descriptor)
+        except FileNotFoundError:
+            return (None, "unrecognized", len(raw))
+        except OSError:
+            try:
+                named_unit = os.stat(
+                    unit_name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+            except OSError:
+                return (None, "unreadable", len(raw))
+            return (None, "unrecognized"
+                    if stat.S_ISLNK(named_unit.st_mode) else "unreadable",
+                    len(raw))
+        try:
+            unit_info = os.fstat(unit_descriptor)
+            named_unit = os.stat(
+                unit_name, dir_fd=parent_descriptor,
+                follow_symlinks=False)
+            if (not stat.S_ISDIR(unit_info.st_mode)
+                    or unit_info.st_dev != home_device
+                    or _stat_identity(unit_info) != _stat_identity(named_unit)):
+                return (None, "unrecognized", len(raw))
+        except OSError:
+            return (None, "unreadable", len(raw))
+        finally:
+            os.close(unit_descriptor)
+        return (
+            _ClaudeDesktopMetadataSnapshot(
+                path, raw, after, unit_info),
+            "ok",
+            len(raw),
+        )
+
+    def scan_directory(
+            current_descriptor: int, relative_parts: tuple[str, ...],
+            depth: int) -> None:
+        nonlocal attempted_bytes, budget_exhausted, candidates_seen
+        nonlocal entries_seen, truncated, unreadable, unrecognized
+        try:
+            entries_context = os.scandir(current_descriptor)
+        except OSError:
+            unreadable = True
+            return
+        with entries_context as entries:
+            # Output is sorted after the walk. Streaming here keeps a corrupt
+            # namespace from materialising all entries, and immediate recursion
+            # holds only one descriptor per depth rather than per sibling.
+            for entry in entries:
+                entries_seen += 1
+                if entries_seen > CLAUDE_DESKTOP_NAMESPACE_MAX_ENTRIES:
+                    truncated = True
+                    budget_exhausted = True
+                    return
+                if budget_exhausted:
+                    return
+                name = entry.name
+                path_parts = (*relative_parts, name)
+                try:
+                    if name.startswith("local_"):
+                        if name.endswith(".json"):
+                            metadata_unit_paths.add(
+                                (*relative_parts, Path(name).stem))
+                            candidates_seen += 1
+                            if (candidates_seen
+                                    > CLAUDE_DESKTOP_METADATA_MAX_FILES):
+                                truncated = True
+                                budget_exhausted = True
+                                return
+                            snapshot, status, bytes_read = read_candidate(
+                                current_descriptor, relative_parts, name,
+                                CLAUDE_DESKTOP_METADATA_TOTAL_BYTES
+                                - attempted_bytes)
+                            attempted_bytes += bytes_read
+                            if status == "truncated":
+                                truncated = True
+                                budget_exhausted = True
+                                return
+                            if status == "ok" and snapshot is not None:
+                                snapshots.append(snapshot)
+                            elif status == "unreadable":
+                                unreadable = True
+                            else:
+                                unrecognized += 1
+                        elif entry.is_dir(follow_symlinks=False):
+                            # Same-named local_* directories are conversation
+                            # bodies, never metadata namespaces. Record them so
+                            # an orphaned body cannot disappear as a complete
+                            # zero-session scan after its metadata is deleted.
+                            conversation_unit_paths.add(path_parts)
+                        else:
+                            unrecognized += 1
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth >= 3:
+                            truncated = True
+                            continue
+                        child_descriptor = -1
+                        try:
+                            child_descriptor = os.open(
+                                name, directory_flags,
+                                dir_fd=current_descriptor)
+                            child_info = os.fstat(child_descriptor)
+                            named_child = os.stat(
+                                name, dir_fd=current_descriptor,
+                                follow_symlinks=False)
+                            if (_stat_identity(child_info)
+                                    != _stat_identity(named_child)
+                                    or child_info.st_dev != home_device):
+                                unreadable = True
+                                continue
+                            directory_signatures[path_parts] = _stat_signature(
+                                child_info)
+                            scan_directory(
+                                child_descriptor, path_parts, depth + 1)
+                        except OSError:
+                            unreadable = True
+                        finally:
+                            if child_descriptor >= 0:
+                                os.close(child_descriptor)
+                    elif entry.is_symlink():
+                        unrecognized += 1
+                except OSError:
+                    unreadable = True
+
+    def namespace_is_stable() -> bool:
+        """Revalidate every scanned namespace, unit, file, and visible root."""
+        for relative_parts, expected in directory_signatures.items():
+            current = os.dup(descriptor)
+            try:
+                for component in relative_parts:
+                    child = -1
+                    try:
+                        child = os.open(
+                            component, directory_flags, dir_fd=current)
+                        opened = os.fstat(child)
+                        named = os.stat(
+                            component, dir_fd=current,
+                            follow_symlinks=False)
+                    except BaseException:
+                        if child >= 0:
+                            os.close(child)
+                        raise
+                    os.close(current)
+                    current = child
+                    if (not stat.S_ISDIR(opened.st_mode)
+                            or opened.st_dev != home_device
+                            or _stat_identity(opened)
+                            != _stat_identity(named)):
+                        return False
+                if _stat_signature(os.fstat(current)) != expected:
+                    return False
+            finally:
+                os.close(current)
+
+        # A metadata file can be rewritten in place without changing its
+        # parent directory's mtime.  Directory-only revalidation would then
+        # publish a stale workspace while claiming complete coverage.  Reopen
+        # every metadata/unit pair below the pinned store fd and require the
+        # same identities and full signatures that produced the snapshot.
+        for snapshot in snapshots:
+            try:
+                relative = snapshot.path.relative_to(root)
+            except ValueError:
+                return False
+            current = os.dup(descriptor)
+            metadata_descriptor = -1
+            unit_descriptor = -1
+            try:
+                for component in relative.parts[:-1]:
+                    child = -1
+                    try:
+                        child = os.open(
+                            component, directory_flags, dir_fd=current)
+                        opened = os.fstat(child)
+                        named = os.stat(
+                            component, dir_fd=current,
+                            follow_symlinks=False)
+                    except BaseException:
+                        if child >= 0:
+                            os.close(child)
+                        raise
+                    os.close(current)
+                    current = child
+                    if (not stat.S_ISDIR(opened.st_mode)
+                            or opened.st_dev != home_device
+                            or _stat_identity(opened)
+                            != _stat_identity(named)):
+                        return False
+                metadata_descriptor = os.open(
+                    relative.name,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                    | os.O_CLOEXEC,
+                    dir_fd=current,
+                )
+                metadata_opened = os.fstat(metadata_descriptor)
+                metadata_named = os.stat(
+                    relative.name, dir_fd=current,
+                    follow_symlinks=False)
+                if (not stat.S_ISREG(metadata_opened.st_mode)
+                        or metadata_opened.st_dev != home_device
+                        or metadata_opened.st_nlink != 1
+                        or _stat_signature(metadata_opened)
+                        != _stat_signature(snapshot.metadata_info)
+                        or _stat_signature(metadata_named)
+                        != _stat_signature(snapshot.metadata_info)):
+                    return False
+                unit_descriptor = os.open(
+                    relative.stem, directory_flags, dir_fd=current)
+                unit_opened = os.fstat(unit_descriptor)
+                unit_named = os.stat(
+                    relative.stem, dir_fd=current,
+                    follow_symlinks=False)
+                if (not stat.S_ISDIR(unit_opened.st_mode)
+                        or unit_opened.st_dev != home_device
+                        or _stat_signature(unit_opened)
+                        != _stat_signature(snapshot.unit_info)
+                        or _stat_identity(unit_named)
+                        != _stat_identity(snapshot.unit_info)):
+                    return False
+            finally:
+                for opened_descriptor in (
+                        unit_descriptor, metadata_descriptor, current):
+                    if opened_descriptor >= 0:
+                        os.close(opened_descriptor)
+
+        visible = _open_directory_nofollow(canonical_home)
+        try:
+            for component in CLAUDE_DESKTOP_LOCAL_SESSIONS:
+                child = -1
+                try:
+                    child = os.open(
+                        component, directory_flags, dir_fd=visible)
+                    opened = os.fstat(child)
+                    named = os.stat(
+                        component, dir_fd=visible,
+                        follow_symlinks=False)
+                except BaseException:
+                    if child >= 0:
+                        os.close(child)
+                    raise
+                os.close(visible)
+                visible = child
+                if (not stat.S_ISDIR(opened.st_mode)
+                        or opened.st_dev != home_device
+                        or _stat_identity(opened) != _stat_identity(named)):
+                    return False
+            return (_stat_signature(os.fstat(visible))
+                    == directory_signatures[()])
+        finally:
+            os.close(visible)
+
+    try:
+        scan_directory(descriptor, (), 0)
+        try:
+            stable = namespace_is_stable()
+        except OSError:
+            stable = False
+            unreadable = True
+        if not stable:
+            truncated = True
+            snapshots.clear()
+    finally:
+        os.close(descriptor)
+
+    unrecognized += len(conversation_unit_paths - metadata_unit_paths)
+    store["unrecognized"] = unrecognized
+    store["status"] = (
+        "unreadable" if unreadable else
+        "truncated" if truncated else
+        "unrecognized" if unrecognized else
+        "ok"
+    )
+    return (sorted(snapshots, key=lambda item: str(item.path)), store)
+
+
+def _claude_desktop_metadata_files(home: Path) -> list[Path]:
+    """Compatibility view for callers that need candidates but no coverage."""
+    return [snapshot.path
+            for snapshot in _claude_desktop_metadata_scan(home)[0]]
+
+
+def _claude_desktop_metadata_for_path(path: Path) -> Optional[Path]:
+    """The conversation metadata owning ``path``, without opening anything.
+
+    A UI normally passes the top-level ``local_<id>.json``.  Accepting a path
+    inside the matching directory as well keeps identity stable for callers
+    that already hold the primary transcript: its id is still ``local_<id>``,
+    never the especially collision-prone ``audit`` filename.
+    """
+    candidates = []
+    if path.name.startswith("local_") and path.suffix == ".json":
+        candidates.append(path)
+    for parent in path.parents:
+        if parent.name.startswith("local_"):
+            candidates.append(parent.with_suffix(".json"))
+    for metadata in candidates:
+        if not any(parent.name == "local-agent-mode-sessions"
+                   for parent in metadata.parents):
+            continue
+        if metadata.name.startswith("local_"):
+            return metadata
+    return None
+
+
+def _claude_desktop_layout(
+        path: Path, home: Optional[Path] = None
+        ) -> tuple[Optional[Path], Optional[str], Optional[Path], str]:
+    """Canonical home, store-relative metadata name, and canonical path."""
+    metadata = _claude_desktop_metadata_for_path(path.expanduser().absolute())
+    if metadata is None:
+        return (None, None, None, "not-desktop")
+    fixed = CLAUDE_DESKTOP_LOCAL_SESSIONS
+    absolute = metadata.expanduser().absolute()
+    relative: Optional[Path] = None
+    canonical_home: Optional[Path] = None
+    if home is not None:
+        original_home = home.expanduser().absolute()
+        try:
+            canonical_home = original_home.resolve(strict=True)
+        except OSError:
+            return (None, None, None, "unreadable")
+        for base in (original_home, canonical_home):
+            try:
+                candidate = absolute.relative_to(base)
+            except ValueError:
+                continue
+            if candidate.parts[:len(fixed)] == fixed:
+                relative = candidate
+                break
+    else:
+        parts = absolute.parts
+        for position in range(0, len(parts) - len(fixed) + 1):
+            if tuple(parts[position:position + len(fixed)]) != fixed:
+                continue
+            home_parts = parts[:position]
+            if not home_parts:
+                continue
+            try:
+                canonical_home = Path(*home_parts).resolve(strict=True)
+            except OSError:
+                return (None, None, None, "unreadable")
+            relative = Path(*parts[position:])
+            break
+    if canonical_home is None or relative is None:
+        return (None, None, None, "unrecognized")
+    if (relative.parts[:len(fixed)] != fixed
+            or len(relative.parts) <= len(fixed)
+            or relative.name != metadata.name):
+        return (None, None, None, "unrecognized")
+    relative_text = relative.as_posix()
+    return (
+        canonical_home,
+        relative_text,
+        canonical_home / relative,
+        "ok",
+    )
+
+
+def _read_claude_desktop_metadata(
+        path: Path, home: Optional[Path] = None) -> tuple[Optional[dict], str]:
+    """Read the dedicated metadata object, returning no unfiltered fields.
+
+    Callers copy only the explicit whitelist below.  The source object also
+    contains account email, prompts, and remote MCP configuration; returning a
+    status separately prevents a malformed object from being mistaken for an
+    empty conversation.
+    """
+    canonical_home, relative, metadata, layout_status = (
+        _claude_desktop_layout(path, home))
+    if layout_status != "ok" or canonical_home is None or relative is None \
+            or metadata is None:
+        return (None, layout_status)
+    home_descriptor = -1
+    parent_descriptor = -1
+    descriptor = -1
+    try:
+        home_descriptor = _open_directory_nofollow(canonical_home)
+        home_info = os.fstat(home_descriptor)
+        parent_descriptor = os.dup(home_descriptor)
+        for component in Path(relative).parts[:-1]:
+            child = -1
+            try:
+                child = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_descriptor,
+                )
+                opened = os.fstat(child)
+                named = os.stat(
+                    component, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                if (not stat.S_ISDIR(opened.st_mode)
+                        or opened.st_dev != home_info.st_dev
+                        or _stat_identity(opened) != _stat_identity(named)):
+                    os.close(child)
+                    child = -1
+                    return (None, "unrecognized")
+            except BaseException:
+                if child >= 0:
+                    os.close(child)
+                raise
+            os.close(parent_descriptor)
+            parent_descriptor = child
+            child = -1
+        descriptor = os.open(
+            Path(relative).name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=parent_descriptor,
+        )
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode)
+                or before.st_dev != home_info.st_dev
+                or before.st_nlink != 1
+                or before.st_size > CLAUDE_DESKTOP_METADATA_MAX_BYTES):
+            return (None, "unrecognized")
+        with os.fdopen(os.dup(descriptor), "rb") as handle:
+            if (not stat.S_ISREG(before.st_mode)
+                    or before.st_size > CLAUDE_DESKTOP_METADATA_MAX_BYTES):
+                return (None, "unrecognized")
+            raw = handle.read(CLAUDE_DESKTOP_METADATA_MAX_BYTES + 1)
+        after = os.fstat(descriptor)
+        current = os.stat(
+            Path(relative).name, dir_fd=parent_descriptor,
+            follow_symlinks=False)
+    except FileNotFoundError:
+        return (None, "missing")
+    except OSError:
+        return (None, "unreadable")
+    finally:
+        for opened_descriptor in (descriptor, parent_descriptor, home_descriptor):
+            if opened_descriptor >= 0:
+                try:
+                    os.close(opened_descriptor)
+                except OSError:
+                    pass
+    if (len(raw) > CLAUDE_DESKTOP_METADATA_MAX_BYTES
+            or _stat_signature(before) != _stat_signature(after)
+            or _stat_signature(after) != _stat_signature(current)):
+        return (None, "unrecognized")
+    payload = _parse_claude_desktop_metadata(raw, metadata.stem)
+    return ((payload, "ok") if payload is not None
+            else (None, "unrecognized"))
+
+
+def _open_claude_desktop_primary(
+        path: Path, home: Optional[Path] = None
+        ) -> tuple[Optional[int], Optional[Path], str]:
+    """Open the primary transcript through the pinned home directory."""
+    canonical_home, relative, metadata, status = _claude_desktop_layout(
+        path, home)
+    if status != "ok" or canonical_home is None or relative is None \
+            or metadata is None:
+        return (None, None, status)
+    home_descriptor = -1
+    parent_descriptor = -1
+    metadata_descriptor = -1
+    unit_descriptor = -1
+    primary_descriptor = -1
+    try:
+        home_descriptor = _open_directory_nofollow(canonical_home)
+        home_info = os.fstat(home_descriptor)
+        parent_descriptor = os.dup(home_descriptor)
+        relative_path = Path(relative)
+        for component in relative_path.parts[:-1]:
+            child = -1
+            try:
+                child = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_descriptor,
+                )
+                opened = os.fstat(child)
+                named = os.stat(
+                    component, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                if (not stat.S_ISDIR(opened.st_mode)
+                        or opened.st_dev != home_info.st_dev
+                        or _stat_identity(opened) != _stat_identity(named)):
+                    os.close(child)
+                    child = -1
+                    return (None, None, "unrecognized")
+            except BaseException:
+                if child >= 0:
+                    os.close(child)
+                raise
+            os.close(parent_descriptor)
+            parent_descriptor = child
+            child = -1
+
+        metadata_descriptor = os.open(
+            relative_path.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=parent_descriptor,
+        )
+        metadata_before = os.fstat(metadata_descriptor)
+        if (not stat.S_ISREG(metadata_before.st_mode)
+                or metadata_before.st_dev != home_info.st_dev
+                or metadata_before.st_nlink != 1
+                or metadata_before.st_size
+                > CLAUDE_DESKTOP_METADATA_MAX_BYTES):
+            return (None, None, "unrecognized")
+        with os.fdopen(os.dup(metadata_descriptor), "rb") as handle:
+            raw = handle.read(CLAUDE_DESKTOP_METADATA_MAX_BYTES + 1)
+        metadata_after = os.fstat(metadata_descriptor)
+        metadata_named = os.stat(
+            relative_path.name, dir_fd=parent_descriptor,
+            follow_symlinks=False)
+        if (len(raw) > CLAUDE_DESKTOP_METADATA_MAX_BYTES
+                or _stat_signature(metadata_before)
+                != _stat_signature(metadata_after)
+                or _stat_signature(metadata_after)
+                != _stat_signature(metadata_named)):
+            return (None, None, "unrecognized")
+        payload = _parse_claude_desktop_metadata(raw, metadata.stem)
+        if payload is None:
+            return (None, None, "unrecognized")
+        cli_session_id = payload["cliSessionId"]
+        if re.fullmatch(r"[A-Za-z0-9_-]+", cli_session_id) is None:
+            return (None, None, "unrecognized")
+        unit_name = relative_path.stem
+        unit_descriptor = os.open(
+            unit_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_descriptor,
+        )
+        unit_info = os.fstat(unit_descriptor)
+        named_unit = os.stat(
+            unit_name, dir_fd=parent_descriptor,
+            follow_symlinks=False)
+        if (not stat.S_ISDIR(unit_info.st_mode)
+                or unit_info.st_dev != home_info.st_dev
+                or _stat_identity(unit_info) != _stat_identity(named_unit)):
+            return (None, None, "unrecognized")
+
+        entries_seen = 0
+        primary_relative: Optional[Path] = None
+        wanted_name = f"{cli_session_id}.jsonl"
+
+        def scan_unit(current_descriptor: int, unit_parts: tuple[str, ...],
+                      depth: int) -> bool:
+            """Locate the unique primary with at most one fd per depth."""
+            nonlocal entries_seen, primary_descriptor, primary_relative
+            with os.scandir(current_descriptor) as entries:
+                for entry in entries:
+                    entries_seen += 1
+                    if entries_seen > CLAUDE_DESKTOP_PRIMARY_SCAN_MAX_ENTRIES:
+                        return False
+                    name = entry.name
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth >= BACKUP_MAX_DEPTH:
+                            return False
+                        child = -1
+                        try:
+                            child = os.open(
+                                name,
+                                os.O_RDONLY | os.O_DIRECTORY
+                                | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=current_descriptor,
+                            )
+                            child_info = os.fstat(child)
+                            named_child = os.stat(
+                                name, dir_fd=current_descriptor,
+                                follow_symlinks=False)
+                            if (not stat.S_ISDIR(child_info.st_mode)
+                                    or child_info.st_dev != home_info.st_dev
+                                    or _stat_identity(child_info)
+                                    != _stat_identity(named_child)):
+                                return False
+                            if not scan_unit(
+                                    child, (*unit_parts, name), depth + 1):
+                                return False
+                        finally:
+                            if child >= 0:
+                                os.close(child)
+                        continue
+                    if name != wanted_name:
+                        continue
+                    candidate = -1
+                    try:
+                        candidate = os.open(
+                            name,
+                            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                            | os.O_CLOEXEC,
+                            dir_fd=current_descriptor,
+                        )
+                        opened = os.fstat(candidate)
+                        named = os.stat(
+                            name, dir_fd=current_descriptor,
+                            follow_symlinks=False)
+                        if (not stat.S_ISREG(opened.st_mode)
+                                or opened.st_dev != home_info.st_dev
+                                or opened.st_nlink != 1
+                                or _stat_signature(opened)
+                                != _stat_signature(named)):
+                            return False
+                        if primary_descriptor >= 0:
+                            return False
+                        primary_descriptor = candidate
+                        candidate = -1
+                        primary_relative = Path(*unit_parts, name)
+                    finally:
+                        if candidate >= 0:
+                            os.close(candidate)
+            return True
+
+        if not scan_unit(unit_descriptor, (), 0):
+            return (None, None, "unrecognized")
+        if primary_descriptor < 0 or primary_relative is None:
+            return (None, None, "missing")
+        metadata_final = os.fstat(metadata_descriptor)
+        metadata_named_final = os.stat(
+            relative_path.name, dir_fd=parent_descriptor,
+            follow_symlinks=False)
+        unit_named_final = os.stat(
+            unit_name, dir_fd=parent_descriptor,
+            follow_symlinks=False)
+        if (_stat_signature(metadata_final)
+                != _stat_signature(metadata_after)
+                or _stat_signature(metadata_named_final)
+                != _stat_signature(metadata_after)
+                or not stat.S_ISDIR(unit_named_final.st_mode)
+                or _stat_identity(unit_named_final)
+                != _stat_identity(unit_info)):
+            return (None, None, "unrecognized")
+        result_descriptor = primary_descriptor
+        primary_descriptor = -1
+        return (
+            result_descriptor,
+            canonical_home / relative_path.with_suffix("") / primary_relative,
+            "ok",
+        )
+    except FileNotFoundError:
+        return (None, None, "missing")
+    except (OSError, ValueError):
+        return (None, None, "unreadable")
+    finally:
+        for opened_descriptor in (
+                primary_descriptor, unit_descriptor, metadata_descriptor,
+                parent_descriptor, home_descriptor):
+            if opened_descriptor >= 0:
+                try:
+                    os.close(opened_descriptor)
+                except OSError:
+                    pass
+
+
+def _parse_claude_desktop_metadata(raw: bytes, session_id: str) -> Optional[dict]:
+    """Validate the stable Desktop conversation-unit identity shape.
+
+    This pure parser is shared by the live store reader and ZIP verification.
+    A backup is not complete merely because it contains a file named
+    ``local_*.json``; the metadata must identify the unit and the one primary
+    transcript that a person can actually resume.
+    """
+    if len(raw) > CLAUDE_DESKTOP_METADATA_MAX_BYTES:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8-sig"))
+    # json.loads raises ValueError (including JSONDecodeError) when a numeric
+    # literal exceeds Python's conversion guard, before the schema check below.
+    except JSON_PARSE_ERRORS:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    # A dedicated schema check is what keeps an arbitrary local_*.json plus a
+    # directory from becoming an indexed conversation.  Extra fields are
+    # expected and ignored; these identity/time/location fields are the stable
+    # shape observed across every current unit.
+    cli_session_id = payload.get("cliSessionId")
+    cwd = payload.get("cwd")
+    selected = payload.get("userSelectedFolders")
+    title = payload.get("title")
+    if (payload.get("sessionId") != session_id
+            or len(session_id) > CLAUDE_DESKTOP_ID_MAX_CHARS
+            or not _is_utf8_text(session_id)
+            or re.fullmatch(r"local_[A-Za-z0-9_-]+", session_id) is None
+            or not isinstance(cli_session_id, str)
+            or not cli_session_id
+            or len(cli_session_id) > CLAUDE_DESKTOP_ID_MAX_CHARS
+            or not _is_utf8_text(cli_session_id)
+            or re.fullmatch(r"[A-Za-z0-9_-]+", cli_session_id) is None
+            or not isinstance(cwd, str)
+            or not cwd
+            or len(cwd) > CLAUDE_DESKTOP_LOCATION_MAX_CHARS
+            or not _is_utf8_text(cwd)
+            or type(payload.get("createdAt")) is not int
+            or type(payload.get("lastActivityAt")) is not int
+            or not 0 <= payload["createdAt"] <= CLAUDE_DESKTOP_TIMESTAMP_MAX_MS
+            or not 0 <= payload["lastActivityAt"] <= CLAUDE_DESKTOP_TIMESTAMP_MAX_MS
+            or not isinstance(selected, list)
+            or len(selected) > CLAUDE_DESKTOP_SELECTED_FOLDERS_MAX
+            or not all(isinstance(value, str)
+                       and 0 < len(value) <= CLAUDE_DESKTOP_LOCATION_MAX_CHARS
+                       and _is_utf8_text(value)
+                       for value in selected)
+            or (title is not None
+                and (not isinstance(title, str)
+                     or len(title) > CLAUDE_DESKTOP_TITLE_MAX_CHARS
+                     or not _is_utf8_text(title)))):
+        return None
+    return payload
+
+
+def _claude_desktop_primary_transcript(
+        path: Path, home: Optional[Path] = None) -> tuple[Optional[Path], str]:
+    """Resolve one Desktop conversation to its one person-visible JSONL.
+
+    ``audit.jsonl``, subagent transcripts, queues, and every output remain
+    sidecars.  The metadata's ``cliSessionId`` names the primary transcript;
+    matching by that identity is what turns 423 JSONL files into the 94 actual
+    conversations observed on this machine.
+    """
+    descriptor, primary, status = _open_claude_desktop_primary(path, home)
+    if descriptor is not None:
+        os.close(descriptor)
+    return (primary, status)
+
+
+def _safe_location(value: Any) -> Optional[dict]:
+    """A path-shaped metadata value reduced to a bounded basename.
+
+    The descriptor itself never stats an arbitrary provider path: a selected
+    folder can be a sleeping network mount or a TCC-protected path. Existence
+    remains unknown here; the one Work representative is checked separately in
+    a timeout-isolated child process.
+    """
+    if (not isinstance(value, str) or not value or "\x00" in value
+            or len(value) > CLAUDE_DESKTOP_LOCATION_MAX_CHARS):
+        return None
+    path = Path(value)
+    return {"basename": path.name or path.anchor or "/", "exists": None}
+
+
+def _desktop_epoch(value: Any, fallback: float) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Claude Desktop records milliseconds since epoch.
+        try:
+            result = float(value) / 1000.0
+            if not math.isfinite(result):
+                return fallback
+            # build_sessions formats this value with localtime. Validate here
+            # so one corrupted metadata integer cannot abort the whole index.
+            time.localtime(result)
+            return result
+        except (OverflowError, OSError, ValueError):
+            return fallback
+    return fallback
+
+
+def _collect_claude_desktop_sessions_with_coverage(
+        home: Path) -> tuple[list[dict], dict]:
+    """Return Desktop conversations plus explicit discovery completeness."""
+    records: list[dict] = []
+    metadata_snapshots, store = _claude_desktop_metadata_scan(home)
+    unreadable = store["status"] == "unreadable"
+    truncated = store["status"] == "truncated"
+    unrecognized = int(store["unrecognized"])
+    parsed_snapshots: list[tuple[_ClaudeDesktopMetadataSnapshot, dict]] = []
+    workspace_locations: list[str] = []
+    for snapshot in metadata_snapshots:
+        payload = _parse_claude_desktop_metadata(
+            snapshot.raw, snapshot.path.stem)
+        if payload is None:
+            unrecognized += 1
+            continue
+        parsed_snapshots.append((snapshot, payload))
+        cwd, selected_folders, _ = _desktop_binding_locations(payload)
+        workspace_locations.extend(selected_folders or (() if cwd is None else (cwd,)))
+
+    location_status, probe_complete = _desktop_location_statuses_isolated(
+        workspace_locations)
+    if not probe_complete:
+        truncated = True
+
+    for snapshot, payload in parsed_snapshots:
+        metadata = snapshot.path
+        metadata_info = snapshot.metadata_info
+        unit_info = snapshot.unit_info
+        fallback = max(metadata_info.st_mtime, unit_info.st_mtime)
+        cwd = _safe_location(payload.get("cwd"))
+        selected = [location for value in payload.get("userSelectedFolders", [])
+                    for location in [_safe_location(value)] if location]
+        workspace, workspace_exists = _desktop_index_workspace(
+            payload, location_status)
+        last_activity = _desktop_epoch(payload.get("lastActivityAt"), fallback)
+        session_id = payload.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            session_id = metadata.stem
+        title = payload.get("title") if isinstance(payload.get("title"), str) else None
+        records.append({
+            "kind": "session",
+            "tool": CLAUDE_DESKTOP_TOOL,
+            "provider": CLAUDE_DESKTOP_PROVIDER,
+            "session_id": session_id,
+            # The metadata JSON is the stable conversation-unit handle.  The
+            # primary JSONL is an implementation detail resolved only by an
+            # explicit content read.
+            "source": str(metadata),
+            # One representative provider-selected folder lets Work group the
+            # conversation with its project. Other selected folders remain
+            # binder-only so one conversation is never duplicated across Work
+            # projects. The display descriptors below remain basename-only.
+            "workspace": workspace,
+            "workspace_exists": workspace_exists,
+            # Listing must never recurse through a 2 GB sandbox. The exact
+            # owned-unit byte count is produced by the explicit backup receipt;
+            # this metadata byte count is intentionally marked incomplete.
+            "size_bytes": metadata_info.st_size,
+            "size_complete": False,
+            "last_active": last_activity,
+            "repo_url": None,
+            "branch": None,
+            "weight": 1,
+            "desktop_metadata": {
+                "title": mask_text(title, home) if title is not None else None,
+                "createdAt": payload.get("createdAt")
+                             if type(payload.get("createdAt")) is int else None,
+                "lastActivityAt": payload.get("lastActivityAt")
+                                  if type(payload.get("lastActivityAt")) is int else None,
+                "cwd": cwd,
+                "userSelectedFolders": selected,
+            },
+        })
+    store.update({
+        "status": (
+            "unreadable" if unreadable else
+            "truncated" if truncated else
+            "unrecognized" if unrecognized else
+            store["status"]
+        ),
+        "count": len(records),
+        "unrecognized": unrecognized,
+    })
+    return (records, store)
+
+
+def collect_claude_desktop_sessions(home: Path) -> list[dict]:
+    """One whitelisted metadata record per Claude Desktop Code conversation."""
+    return _collect_claude_desktop_sessions_with_coverage(home)[0]
 
 
 def collect_codex(home: Path) -> tuple[list[dict], dict]:
@@ -214,7 +1268,8 @@ def _encode_claude_project_dir(path: str) -> str:
     return _CLAUDE_BUCKET_UNSAFE.sub("-", path)[:CLAUDE_BUCKET_CAP]
 
 
-def _decode_claude_project_dir(name: str) -> Optional[str]:
+def _decode_claude_project_dir(
+        name: str, *, allow_directory_listing: bool = True) -> Optional[str]:
     """Resolve '-Users-ren-my-proj' back to the directory it was encoded from.
 
     Segmenting the name on hyphens and testing each candidate for existence is
@@ -235,6 +1290,11 @@ def _decode_claude_project_dir(name: str) -> Optional[str]:
     bucket that resolves to more than one directory is ambiguous by
     construction and is left unresolved: scree reports an unresolved workspace
     as unresolved, and that is the honest answer here.
+
+    Automatic app indexing passes ``allow_directory_listing=False``. That
+    preserves exact ASCII path resolution without opening arbitrary folders
+    below ``/`` in the GUI's TCC context. The full ambiguity resolver remains
+    available to explicit callers and its isolated contract tests.
     """
     if not name.startswith("-"):
         return None
@@ -246,6 +1306,8 @@ def _decode_claude_project_dir(name: str) -> Optional[str]:
         return budget[kind] >= 0
 
     def enumerate_matches(current: Path, rest: str) -> list[Path]:
+        if not allow_directory_listing:
+            return []
         if not spend("listings"):
             return []
         try:
@@ -295,50 +1357,139 @@ def _decode_claude_project_dir(name: str) -> Optional[str]:
 def collect_claude(home: Path) -> tuple[list[dict], dict]:
     records: list[dict] = []
     root = home / ".claude" / "projects"
-    if not root.is_dir():
-        return records, {"store": "Claude", "status": "missing", "count": 0, "unrecognized": 0}
+    # Do not let a relocated Claude root or one linked bucket turn a local
+    # metadata scan into an arbitrary protected/network directory walk.
+    claude_root = home / ".claude"
+    try:
+        claude_info = claude_root.lstat()
+        root_info = root.lstat()
+    except FileNotFoundError:
+        return records, {
+            "store": "Claude", "status": "missing",
+            "count": 0, "unrecognized": 0,
+        }
+    except OSError:
+        return records, {
+            "store": "Claude", "status": "unreadable",
+            "count": 0, "unrecognized": 0,
+        }
+    if (not stat.S_ISDIR(claude_info.st_mode)
+            or not stat.S_ISDIR(root_info.st_mode)):
+        return records, {
+            "store": "Claude", "status": "unrecognized",
+            "count": 0, "unrecognized": 1,
+        }
+    try:
+        with os.scandir(root) as entries:
+            project_dirs = sorted(
+                Path(entry.path) for entry in entries
+                if entry.is_dir(follow_symlinks=False)
+            )
+    except OSError:
+        return records, {
+            "store": "Claude", "status": "unreadable",
+            "count": 0, "unrecognized": 0,
+        }
     unresolved = 0
     sessions = 0
     subtranscripts = 0
-    for project_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        fallback = _decode_claude_project_dir(project_dir.name)
-        project_workspace = fallback
-        for path in sorted(project_dir.glob("*.jsonl")):
+    for project_dir in project_dirs:
+        # The transcript's own cwd is stronger evidence than Claude's lossy
+        # bucket name and avoids filesystem-wide reverse lookup. Read every
+        # top-level session first, then use a no-directory-listing fallback
+        # only when the bucket contains no explicit cwd at all.
+        pending_sessions: list[
+            tuple[Path, Optional[str], Optional[str], set[str]]
+        ] = []
+        for path in sorted(
+                candidate for candidate in project_dir.glob("*.jsonl")
+                if not candidate.is_symlink() and candidate.is_file()):
             workspace = None
             branch = None
+            identifiers = {path.stem}
             try:
                 with path.open("r", encoding="utf-8", errors="replace") as handle:
                     for _ in range(CLAUDE_SCAN_LINES):
                         line = _read_json_line(handle)
                         if line is None:
                             break
+                        if isinstance(line.get("sessionId"), str) and line["sessionId"]:
+                            identifiers.add(line["sessionId"])
                         if not workspace and isinstance(line.get("cwd"), str):
                             workspace = line["cwd"]
                             branch = line.get("gitBranch") if isinstance(line.get("gitBranch"), str) else None
                             break
             except OSError:
                 pass
-            if not workspace:
-                workspace = fallback
+            pending_sessions.append((path, workspace, branch, identifiers))
+
+        # Never borrow one session's cwd for a different session that did not
+        # record one. Distinct non-ASCII paths can share the same lossy bucket;
+        # an explicit cwd proves only that session's location. A bucket-derived
+        # fallback is admissible only when the bucket has no explicit cwd and
+        # the restricted decoder independently identifies one exact path.
+        fallback = None
+        if pending_sessions and not any(workspace for _, workspace, _, _ in pending_sessions):
+            fallback = _decode_claude_project_dir(
+                project_dir.name, allow_directory_listing=False)
+
+        owner_workspaces: dict[str, set[str]] = {}
+        for path, workspace, branch, identifiers in pending_sessions:
+            workspace = workspace or fallback
             if not workspace:
                 unresolved += 1
-            elif not project_workspace:
-                project_workspace = workspace
+            else:
+                for identifier in identifiers:
+                    owner_workspaces.setdefault(identifier, set()).add(workspace)
             records.append(_record("Claude", "session", path, workspace, branch=branch))
             sessions += 1
-        # Nested files are per-session subagent/workflow transcripts. They are
-        # never opened: their bytes and mtimes are attributed via stat() only.
-        nested = [p for p in sorted(project_dir.rglob("*.jsonl")) if p.parent != project_dir]
-        if nested and project_workspace:
-            subtranscripts += len(nested)
+
+        # Nested files are per-session subagent/workflow transcripts. Walk
+        # without following links and attribute each subtree by its owning
+        # session id. One lossy bucket may legitimately contain sessions from
+        # different cwd values, so a bucket-wide first-cwd aggregate is unsafe.
+        nested_by_workspace: dict[str, list[os.stat_result]] = {}
+        observed_nested = 0
+        for current, dirs, files in os.walk(project_dir, followlinks=False):
+            current_path = Path(current)
+            dirs[:] = sorted(
+                name for name in dirs
+                if not (current_path / name).is_symlink()
+            )
+            if current_path == project_dir:
+                continue
+            try:
+                owner = current_path.relative_to(project_dir).parts[0]
+            except (ValueError, IndexError):
+                continue
+            candidates = owner_workspaces.get(owner, set())
+            owner_workspace = fallback or (
+                next(iter(candidates)) if len(candidates) == 1 else None
+            )
+            for name in sorted(files):
+                nested = current_path / name
+                if not name.endswith(".jsonl") or nested.is_symlink():
+                    continue
+                try:
+                    nested_info = nested.lstat()
+                    if not stat.S_ISREG(nested_info.st_mode):
+                        continue
+                except OSError:
+                    continue
+                observed_nested += 1
+                if owner_workspace:
+                    nested_by_workspace.setdefault(owner_workspace, []).append(nested_info)
+
+        subtranscripts += observed_nested
+        for workspace, nested_info in sorted(nested_by_workspace.items()):
             records.append({
                 "tool": "Claude",
                 "kind": "subtranscripts",
-                "workspace": _canon_workspace(project_workspace),
+                "workspace": _canon_workspace(workspace),
                 "repo_url": None,
                 "branch": None,
-                "size_bytes": sum(p.stat().st_size for p in nested),
-                "last_active": max(p.stat().st_mtime for p in nested),
+                "size_bytes": sum(info.st_size for info in nested_info),
+                "last_active": max(info.st_mtime for info in nested_info),
                 "weight": 0,
             })
     return records, {"store": "Claude", "status": "ok", "count": sessions,
@@ -358,7 +1509,10 @@ def collect_vscode_forks(home: Path) -> tuple[list[dict], list[dict]]:
         for meta_path in sorted(root.glob("*/workspace.json")):
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
-            except (OSError, json.JSONDecodeError):
+            except JSON_FILE_ERRORS:
+                unrecognized += 1
+                continue
+            if not isinstance(meta, dict):
                 unrecognized += 1
                 continue
             target = meta.get("folder") or meta.get("workspace")
@@ -379,47 +1533,491 @@ def collect_gemini(home: Path) -> tuple[list[dict], dict]:
         return [], {"store": "Gemini", "status": "missing", "count": 0, "unrecognized": 0}
     try:
         data = json.loads(registry.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
+    except JSON_FILE_ERRORS:
         return [], {"store": "Gemini", "status": "unrecognized", "count": 0, "unrecognized": 1}
-    projects = data.get("projects") if isinstance(data.get("projects"), dict) else {}
+    if not isinstance(data, dict):
+        return [], {"store": "Gemini", "status": "unrecognized", "count": 0, "unrecognized": 1}
+    if not isinstance(data.get("projects"), dict):
+        return [], {"store": "Gemini", "status": "unrecognized", "count": 0, "unrecognized": 1}
+    projects = data["projects"]
     records = [_record("Gemini", "project_state", registry, workspace)
                for workspace in sorted(projects)]
     return records, {"store": "Gemini", "status": "ok", "count": len(records), "unrecognized": 0}
 
 
-WORKTREE_SCAN_SKIP = {"node_modules", ".git", ".build", "build", "dist", "Pods",
-                      "DerivedData", "__pycache__", ".venv", "venv", "target"}
+WORKTREE_ANCESTOR_PROBE_LIMIT = 16
+WORKTREE_GIT_BUDGET_SECONDS = 8.0
+WORKTREE_GIT_COMMAND_TIMEOUT_SECONDS = 0.75
+WORKTREE_DISCOVERY_ISOLATION_SECONDS = 10.0
+WORKTREE_DISCOVERY_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 
 
-def _git(args: list[str], cwd: Path) -> Optional[str]:
+def _git(args: list[str], cwd: Path, *,
+         timeout: float = WORKTREE_GIT_COMMAND_TIMEOUT_SECONDS) -> Optional[str]:
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
-                              text=True, timeout=15)
+        cwd_fd = _open_directory_nofollow(cwd)
+    except (OSError, ValueError):
+        return None
+    try:
+        before = os.fstat(cwd_fd)
+        before_identity = (before.st_dev, before.st_ino)
+        # subprocess does not accept a directory fd as cwd on macOS, and
+        # /dev/fd/N cannot be chdir'd there. This CLI is single-threaded, so its
+        # child can safely fchdir to the inherited, no-follow-opened descriptor
+        # immediately before exec. The git process never traverses cwd's path.
+        def chdir_to_verified_directory() -> None:
+            os.fchdir(cwd_fd)
+
+        proc = subprocess.run(
+            ["git", *args], pass_fds=(cwd_fd,),
+            preexec_fn=chdir_to_verified_directory,
+            capture_output=True, text=True, timeout=timeout,
+        )
     except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        os.close(cwd_fd)
+    try:
+        current_fd = _open_directory_nofollow(cwd)
+        try:
+            current = os.fstat(current_fd)
+        finally:
+            os.close(current_fd)
+    except (OSError, ValueError):
+        return None
+    if (current.st_dev, current.st_ino) != before_identity:
         return None
     return proc.stdout if proc.returncode == 0 else None
 
 
-def _find_worktree_containers(root: Path, max_depth: int = 5) -> list[Path]:
-    found: list[Path] = []
-    stack: list[tuple[Path, int]] = [(root, 0)]
-    while stack:
-        current, depth = stack.pop()
-        candidate = current / ".claude" / "worktrees"
-        if candidate.is_dir():
-            found.append(candidate)
-        if depth >= max_depth:
+def _lexical_abspath(value: str) -> Path:
+    """Normalize spelling only; never resolve symlinks or touch the disk."""
+    return Path(os.path.abspath(os.path.normpath(value)))
+
+
+def _worktree_containers_from_records(
+        records: list[dict]) -> tuple[list[Path], int, bool, dict[Path, set[Path]]]:
+    """Build exact container probes from recorded workspaces only.
+
+    The old implementation walked every directory below ``~/IdeaProjects``
+    and ``~/Documents`` to depth five. Besides being outside the metadata
+    scope claimed by the report, one slow or TCC-blocked directory could keep
+    the GUI spinner alive for minutes. A session already records its cwd, so
+    probe that path and at most 15 of its ancestors for the exact
+    ``.claude/worktrees`` suffix. A cwd already inside
+    ``<repo>/.claude/worktrees/<name>`` names its container lexically and needs
+    no ancestor search.
+    """
+    workspaces: dict[str, Path] = {}
+    for record in records:
+        raw = record.get("workspace")
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        workspace = _lexical_abspath(raw)
+        workspaces.setdefault(str(workspace), workspace)
+
+    candidates: dict[str, Path] = {}
+    metadata_children: dict[Path, set[Path]] = {}
+    probe_truncated = False
+    for workspace in sorted(workspaces.values(), key=str):
+        parts = workspace.parts
+        lexical_containers: list[Path] = []
+        for index in range(len(parts) - 2):
+            if (parts[index] == ".claude" and parts[index + 1] == "worktrees"
+                    and index + 2 < len(parts)):
+                lexical_containers.append(Path(*parts[:index + 2]))
+                container = Path(*parts[:index + 2])
+                child = Path(*parts[:index + 3])
+                metadata_children.setdefault(container, set()).add(child)
+        if lexical_containers:
+            for container in lexical_containers:
+                candidates.setdefault(str(container), container)
+            continue
+
+        current = workspace
+        reached_root = False
+        for _ in range(WORKTREE_ANCESTOR_PROBE_LIMIT):
+            candidate = current / ".claude" / "worktrees"
+            candidates.setdefault(str(candidate), candidate)
+            parent = current.parent
+            if parent == current:
+                reached_root = True
+                break
+            current = parent
+        if not reached_root:
+            probe_truncated = True
+    return (sorted(candidates.values(), key=str), len(workspaces), probe_truncated,
+            metadata_children)
+
+
+def _open_directory_nofollow(path: Path) -> int:
+    """Open every lexical path component without crossing a symlink."""
+    normalized = _lexical_abspath(str(path))
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(os.sep, flags)
+    try:
+        for component in normalized.parts[1:]:
+            next_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _open_or_create_owned_output_parent(path: Path) -> tuple[int, Path]:
+    """Open/create an export parent without following any path component."""
+    normalized = _lexical_abspath(str(path))
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(os.sep, flags)
+    try:
+        for component in normalized.parts[1:]:
+            child = -1
+            try:
+                try:
+                    child = os.open(component, flags, dir_fd=descriptor)
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(component, 0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                    child = os.open(component, flags, dir_fd=descriptor)
+                opened = os.fstat(child)
+                named = os.stat(
+                    component, dir_fd=descriptor,
+                    follow_symlinks=False)
+                if (not stat.S_ISDIR(opened.st_mode)
+                        or _stat_identity(opened) != _stat_identity(named)):
+                    raise ValueError("export directory changed while opening")
+            except BaseException:
+                if child >= 0:
+                    os.close(child)
+                raise
+            os.close(descriptor)
+            descriptor = child
+        parent_info = os.fstat(descriptor)
+        if parent_info.st_uid != os.geteuid():
+            raise PermissionError("export directory is not owned by the current user")
+        return (descriptor, normalized)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _wire_text(value: str) -> str:
+    """Replace non-scalar surrogate code points at the output boundary.
+
+    JSON permits lone surrogate escapes, but the resulting Python string cannot
+    be encoded as UTF-8. One damaged provider record must not turn an entire
+    JSON API (or a Markdown export) into an empty response. Preserve every
+    valid character and make only those invalid scalar values explicit.
+    """
+    try:
+        value.encode("utf-8")
+        return value
+    except UnicodeEncodeError:
+        return "".join(
+            "\N{REPLACEMENT CHARACTER}" if 0xD800 <= ord(character) <= 0xDFFF
+            else character
+            for character in value
+        )
+
+
+def _print_wire(value: str) -> None:
+    print(_wire_text(value))
+
+
+def _filesystem_name_units(value: str) -> int:
+    """Return APFS/HFS+'s UTF-16 code-unit count for one filename."""
+    return len(value.encode("utf-16-le")) // 2
+
+
+def _truncate_name_to_units(value: str, maximum: int) -> str:
+    """Take a Unicode-scalar prefix within a macOS filename budget."""
+    if maximum <= 0:
+        return ""
+    result: list[str] = []
+    used = 0
+    for character in value:
+        units = _filesystem_name_units(character)
+        if used + units > maximum:
+            break
+        result.append(character)
+        used += units
+    return "".join(result)
+
+
+def _write_preserve_output(destination: Path, text: str) -> Path:
+    """Create one private export without replacing any existing name."""
+    requested = _lexical_abspath(str(destination))
+    requested_name = _validated_leaf_name(requested.name)
+    parent_descriptor, parent = _open_or_create_owned_output_parent(
+        requested.parent)
+    parent_identity = _stat_identity(os.fstat(parent_descriptor))
+    descriptor = -1
+    created_name: Optional[str] = None
+    created_identity: Optional[tuple[int, int]] = None
+    try:
+        suffix = "".join(Path(requested_name).suffixes)
+        stem = (requested_name[:-len(suffix)] if suffix
+                else requested_name)
+        try:
+            name_max = int(os.fpathconf(parent_descriptor, "PC_NAME_MAX"))
+        except (OSError, ValueError):
+            name_max = 255
+        for attempt in range(65):
+            if attempt == 0:
+                candidate = requested_name
+            else:
+                random_tail = "-" + os.urandom(16).hex()
+                suffix_units = _filesystem_name_units(suffix)
+                tail_units = _filesystem_name_units(random_tail)
+                # Keep the requested extension when it fits, and shorten only
+                # the stem by filesystem bytes. A valid NAME_MAX-sized first
+                # choice must still have a valid create-only collision sibling.
+                collision_suffix = (
+                    suffix if suffix_units + tail_units <= name_max else "")
+                budget = (name_max - tail_units
+                          - _filesystem_name_units(collision_suffix))
+                collision_stem = _truncate_name_to_units(stem, budget)
+                candidate = collision_stem + random_tail + collision_suffix
+            _validated_leaf_name(candidate)
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL
+                    | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
+            except FileExistsError:
+                continue
+            created_name = candidate
+            break
+        if descriptor < 0 or created_name is None:
+            raise ValueError("could not allocate a private export filename")
+        created = os.fstat(descriptor)
+        created_identity = _stat_identity(created)
+        if (not stat.S_ISREG(created.st_mode)
+                or created.st_nlink != 1
+                or created.st_uid != os.geteuid()):
+            raise ValueError("export output is not a private regular file")
+        os.fchmod(descriptor, 0o600)
+        encoded = _wire_text(text).encode("utf-8")
+        expected_digest = hashlib.sha256(encoded).hexdigest()
+        with os.fdopen(os.dup(descriptor), "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+        os.fsync(descriptor)
+        # Resolve the name before reading the held inode back. A same-user
+        # process can open our 0600 file, and previously a mutation triggered
+        # at this namespace check still received a success receipt.
+        named_after = os.stat(
+            created_name, dir_fd=parent_descriptor,
+            follow_symlinks=False)
+        before_read = os.fstat(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        actual_size = 0
+        with os.fdopen(os.dup(descriptor), "rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                actual_size += len(chunk)
+                digest.update(chunk)
+        after_read = os.fstat(descriptor)
+        named_final = os.stat(
+            created_name, dir_fd=parent_descriptor,
+            follow_symlinks=False)
+        opened_final = os.fstat(descriptor)
+        if (not stat.S_ISREG(named_after.st_mode)
+                or not stat.S_ISREG(named_final.st_mode)
+                or named_final.st_nlink != 1
+                or named_final.st_uid != os.geteuid()
+                or stat.S_IMODE(named_final.st_mode) != 0o600
+                or stat.S_IMODE(opened_final.st_mode) != 0o600
+                or actual_size != len(encoded)
+                or digest.hexdigest() != expected_digest
+                or _content_signature(before_read)
+                != _content_signature(after_read)
+                or _stat_signature(after_read) != _stat_signature(opened_final)
+                or _stat_signature(named_final) != _stat_signature(opened_final)
+                or _stat_identity(opened_final) != created_identity
+                or _stat_identity(named_after) != created_identity):
+            raise ValueError("export output changed during creation")
+        visible_parent = _open_directory_nofollow(parent)
+        try:
+            if _stat_identity(os.fstat(visible_parent)) != parent_identity:
+                raise ValueError("export directory changed during creation")
+        finally:
+            os.close(visible_parent)
+        named_return = os.stat(
+            created_name, dir_fd=parent_descriptor,
+            follow_symlinks=False)
+        opened_return = os.fstat(descriptor)
+        if (_stat_signature(named_return) != _stat_signature(opened_return)
+                or _stat_signature(opened_return)
+                != _stat_signature(opened_final)):
+            raise ValueError("export output changed during creation")
+        return parent / created_name
+    except BaseException:
+        if created_name is not None and created_identity is not None:
+            try:
+                named = os.stat(
+                    created_name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                if (_stat_identity(named) == created_identity
+                        and stat.S_ISREG(named.st_mode)):
+                    os.unlink(created_name, dir_fd=parent_descriptor)
+            except OSError:
+                pass
+        raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent_descriptor)
+
+
+def _existing_worktree_containers(
+        candidates: list[Path]) -> tuple[list[Path], int, dict[Path, Path]]:
+    """Accept real directories and collapse lexical aliases by opened inode."""
+    containers: list[Path] = []
+    unreadable = 0
+    aliases: dict[Path, Path] = {}
+    by_identity: dict[tuple[int, int], Path] = {}
+    for candidate in candidates:
+        try:
+            fd = _open_directory_nofollow(candidate)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            unreadable += 1
             continue
         try:
-            children = list(current.iterdir())
-        except OSError:
-            continue
-        for child in children:
-            if (child.is_dir() and not child.is_symlink()
-                    and not child.name.startswith(".")
-                    and child.name not in WORKTREE_SCAN_SKIP):
-                stack.append((child, depth + 1))
-    return found
+            info = os.fstat(fd)
+        finally:
+            os.close(fd)
+        identity = (info.st_dev, info.st_ino)
+        representative = by_identity.get(identity)
+        if representative is None:
+            representative = candidate
+            by_identity[identity] = representative
+            containers.append(representative)
+        aliases[candidate] = representative
+    return containers, unreadable, aliases
+
+
+def _remap_metadata_children(
+        children: dict[Path, set[Path]], aliases: dict[Path, Path]
+        ) -> dict[Path, set[Path]]:
+    remapped: dict[Path, set[Path]] = {}
+    for container, paths in children.items():
+        representative = aliases.get(container, container)
+        for child in paths:
+            remapped.setdefault(representative, set()).add(representative / child.name)
+    return remapped
+
+
+def _container_aliases_by_representative(
+        aliases: dict[Path, Path]) -> dict[Path, set[Path]]:
+    result: dict[Path, set[Path]] = {}
+    for alias, representative in aliases.items():
+        result.setdefault(representative, set()).add(alias)
+    return result
+
+
+def _relative_below_aliases(path: str, parents: set[Path]) -> Optional[str]:
+    for parent in sorted(parents, key=str):
+        if _path_is_below(path, parent):
+            return os.path.relpath(path, str(parent))
+    return None
+
+
+def _has_worktree_registry_nofollow(repo: Path) -> bool:
+    """Whether an exact candidate repo has a local linked-worktree registry."""
+    try:
+        repo_fd = _open_directory_nofollow(repo)
+    except (OSError, ValueError):
+        return False
+    try:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        git_fd = os.open(".git", flags, dir_fd=repo_fd)
+    except (OSError, ValueError):
+        return False
+    finally:
+        os.close(repo_fd)
+    try:
+        registry_fd = os.open("worktrees", flags, dir_fd=git_fd)
+    except (OSError, ValueError):
+        return False
+    finally:
+        os.close(git_fd)
+    os.close(registry_fd)
+    return True
+
+
+@dataclass
+class _WorktreeGitBudget:
+    """One monotonic ceiling shared by every git query in a report."""
+
+    deadline: float
+    exhausted: bool = False
+
+    @classmethod
+    def start(cls) -> "_WorktreeGitBudget":
+        return cls(time.monotonic() + max(0.0, WORKTREE_GIT_BUDGET_SECONDS))
+
+    def run(self, args: list[str], cwd: Path) -> Optional[str]:
+        remaining = self.deadline - time.monotonic()
+        if self.exhausted or remaining <= 0.001:
+            self.exhausted = True
+            return None
+        output = _git(
+            args, cwd,
+            timeout=min(WORKTREE_GIT_COMMAND_TIMEOUT_SECONDS, remaining),
+        )
+        if time.monotonic() >= self.deadline:
+            # The completed command's output is still valid, but no later
+            # command may extend the report beyond the shared budget.
+            self.exhausted = True
+        return output
+
+
+def _normalized_git_path(value: str) -> str:
+    """Git porcelain paths are compared lexically; never call resolve()."""
+    return str(_lexical_abspath(value))
+
+
+def _path_is_below(path: str, parent: Path) -> bool:
+    parent_text = str(parent)
+    try:
+        return os.path.commonpath((path, parent_text)) == parent_text and path != parent_text
+    except ValueError:
+        return False
+
+
+def _direct_worktree_children(container: Path) -> tuple[list[Path], bool]:
+    """List one descriptor-bound directory level and reject symlink children."""
+    try:
+        fd = _open_directory_nofollow(container)
+    except (OSError, ValueError):
+        return [], False
+    try:
+        with os.scandir(fd) as entries:
+            children = []
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        children.append(container / entry.name)
+                except OSError:
+                    continue
+    except (OSError, ValueError):
+        return [], False
+    finally:
+        os.close(fd)
+    return sorted(children, key=str), True
 
 
 def _worktree_verdict(dirty: Optional[bool], unpushed: Optional[int]) -> str:
@@ -437,32 +2035,107 @@ def _worktree_verdict(dirty: Optional[bool], unpushed: Optional[int]) -> str:
     return "rebuildable"
 
 
-def collect_worktrees(home: Path) -> dict:
+def _worktree_item_identity(item: dict) -> tuple:
+    path = Path(item["path"])
+    try:
+        fd = _open_directory_nofollow(path)
+        try:
+            info = os.fstat(fd)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        # Missing/unreadable paths have no proof of identity. Preserve exact
+        # spellings: a case-sensitive APFS/external volume may hold both.
+        return ("path", str(path), bool(item.get("stray_checkout")))
+    return ("inode", info.st_dev, info.st_ino, bool(item.get("stray_checkout")))
+
+
+def _dedupe_worktree_items(items: list[dict]) -> list[dict]:
+    """One row per opened directory, even when metadata casing differs."""
+    by_identity: dict[tuple, dict] = {}
+    verdict_rank = {"rebuildable": 0, "unreadable": 1, "protected": 2}
+    for item in items:
+        key = _worktree_item_identity(item)
+        existing = by_identity.get(key)
+        if existing is None:
+            by_identity[key] = item
+            continue
+        if verdict_rank.get(item["verdict"], 1) > verdict_rank.get(existing["verdict"], 1):
+            representative, other = item, existing
+        else:
+            representative, other = existing, item
+        merged = dict(representative)
+        registrations = (representative.get("registered"), other.get("registered"))
+        merged["registered"] = (True if True in registrations
+                                else None if None in registrations else False)
+        if merged["verdict"] != "rebuildable":
+            merged.pop("requires_revalidation", None)
+        by_identity[key] = merged
+    return list(by_identity.values())
+
+
+def _dedupe_registered_missing(entries: list[dict]) -> list[dict]:
+    seen: set[tuple[str, str]] = set()
+    result: list[dict] = []
+    for entry in entries:
+        key = (entry["repo"], entry["path"])
+        if key not in seen:
+            seen.add(key)
+            result.append(entry)
+    return result
+
+
+def collect_worktrees(home: Path, records: Optional[list[dict]] = None) -> dict:
     """Anchor judgment for agent-created git worktrees, via read-only git queries.
 
     A worktree is unique work ("protected") while it is dirty or carries commits
     unreachable from every remote; only a clean, fully pushed worktree is judged
     "rebuildable". Registration in the parent repo and registry entries whose
-    directory disappeared are reported as anchor breaks.
+    directory disappeared are reported as anchor breaks. Discovery is deliberately
+    partial: only workspaces recorded by a local agent store are observed. ``home``
+    is retained for API compatibility and to make that scope explicit; it is never
+    recursively enumerated.
     """
-    containers: list[Path] = []
-    for root in (home / "IdeaProjects", home / "Documents"):
-        if root.is_dir():
-            containers.extend(_find_worktree_containers(root))
+    del home
+    records = records or []
+    candidates, observed_workspaces, probe_truncated, metadata_children = (
+        _worktree_containers_from_records(records)
+    )
+    containers, discovery_unreadable, container_aliases = (
+        _existing_worktree_containers(candidates)
+    )
+    metadata_children = _remap_metadata_children(metadata_children, container_aliases)
+    aliases_by_container = _container_aliases_by_representative(container_aliases)
+    # A repo-root session can outlive its entire `.claude/worktrees` directory.
+    # Its exact `.git` anchor still lets `git worktree list` recover registered
+    # children, so do not require the container itself to remain readable.
+    registry_candidates = {
+        container_aliases.get(candidate, candidate)
+        for candidate in candidates
+        if _has_worktree_registry_nofollow(candidate.parent.parent)
+    }
+    container_paths = sorted(
+        set(containers) | set(metadata_children) | registry_candidates, key=str,
+    )
+    readable_containers = set(containers)
+    budget = _WorktreeGitBudget.start()
+    registry_unreadable = 0
     items: list[dict] = []
     registered_missing: list[dict] = []
-    for container in sorted(set(containers)):
+    for container in container_paths:
+        container_spellings = aliases_by_container.get(container, {container})
         repo = container.parent.parent
         # The primary checkout itself can be stranded on a non-default branch by
         # an agent session that never opened a PR — the same unique-work risk as
         # a worktree, but invisible to worktree listing. Judge it with the same
         # protected/rebuildable rules and mark it stray_checkout.
-        repo_branch_raw = _git(["symbolic-ref", "--short", "HEAD"], repo)
+        repo_branch_raw = budget.run(["symbolic-ref", "--short", "HEAD"], repo)
         repo_branch = repo_branch_raw.strip() if repo_branch_raw else None
         if repo_branch and repo_branch not in ("main", "master"):
-            status = _git(["status", "--porcelain"], repo)
-            unpushed_raw = _git(["rev-list", "--count", "HEAD", "--not", "--remotes"], repo)
-            commit_raw = _git(["log", "-1", "--format=%ct"], repo)
+            status = budget.run(["status", "--porcelain"], repo)
+            unpushed_raw = budget.run(
+                ["rev-list", "--count", "HEAD", "--not", "--remotes"], repo)
+            commit_raw = budget.run(["log", "-1", "--format=%ct"], repo)
             dirty = bool(status.strip()) if status is not None else None
             unpushed = None
             if unpushed_raw and unpushed_raw.strip().isdigit():
@@ -487,21 +2160,62 @@ def collect_worktrees(home: Path) -> dict:
             if verdict == "rebuildable":
                 stray["requires_revalidation"] = True
             items.append(stray)
-        listed: set[str] = set()
-        porcelain = _git(["worktree", "list", "--porcelain"], repo)
-        for line in (porcelain or "").splitlines():
-            if line.startswith("worktree "):
-                listed.add(str(Path(line.split(" ", 1)[1]).resolve()))
-        container_prefix = str(container.resolve()) + "/"
-        for path in sorted(listed):
-            if path.startswith(container_prefix) and not Path(path).exists():
-                registered_missing.append({"repo": str(repo), "path": path})
-        for worktree in sorted(p for p in container.iterdir() if p.is_dir()):
-            status = _git(["status", "--porcelain"], worktree)
-            unpushed_raw = _git(["rev-list", "--count", "HEAD", "--not", "--remotes"],
-                                worktree)
-            branch_raw = _git(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
-            commit_raw = _git(["log", "-1", "--format=%ct"], worktree)
+        porcelain = budget.run(["worktree", "list", "--porcelain"], repo)
+        listed: Optional[set[str]] = None
+        registered_children: set[Path] = set()
+        unreadable_registered_children: set[Path] = set()
+        if porcelain is not None:
+            listed = set()
+            for line in porcelain.splitlines():
+                if line.startswith("worktree "):
+                    listed.add(_normalized_git_path(line.split(" ", 1)[1]))
+            for path in sorted(listed):
+                relative = _relative_below_aliases(path, container_spellings)
+                if relative is None:
+                    continue
+                is_direct_child = os.sep not in relative and relative not in (".", "..")
+                canonical_child = container / relative
+                if is_direct_child:
+                    # The registry itself establishes this worktree even when
+                    # its directory later vanished or became unreadable.
+                    registered_children.add(canonical_child)
+                try:
+                    registered_fd = _open_directory_nofollow(Path(path))
+                except FileNotFoundError:
+                    registered_missing.append(
+                        {"repo": str(repo), "path": str(canonical_child)})
+                    if is_direct_child:
+                        unreadable_registered_children.add(canonical_child)
+                except (OSError, ValueError):
+                    discovery_unreadable += 1
+                    if is_direct_child:
+                        unreadable_registered_children.add(canonical_child)
+                else:
+                    os.close(registered_fd)
+        else:
+            registry_unreadable += 1
+
+        if container in readable_containers:
+            children, readable = _direct_worktree_children(container)
+            if not readable:
+                discovery_unreadable += 1
+        else:
+            children, readable = [], False
+        # A registry entry is already a known worktree. If directory enumeration
+        # races or is unreadable, retain that known item instead of silently
+        # dropping it; the git signals below will make it unreadable as needed.
+        observed_children = set(children) | registered_children
+        metadata_only_children = metadata_children.get(container, set()) - observed_children
+        unreadable_children = metadata_only_children | unreadable_registered_children
+        children = sorted(
+            observed_children | metadata_children.get(container, set()), key=str,
+        )
+        for worktree in children:
+            status = budget.run(["status", "--porcelain"], worktree)
+            unpushed_raw = budget.run(
+                ["rev-list", "--count", "HEAD", "--not", "--remotes"], worktree)
+            branch_raw = budget.run(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
+            commit_raw = budget.run(["log", "-1", "--format=%ct"], worktree)
             dirty = bool(status.strip()) if status is not None else None
             unpushed = None
             if unpushed_raw and unpushed_raw.strip().isdigit():
@@ -515,18 +2229,326 @@ def collect_worktrees(home: Path) -> dict:
                 "path": str(worktree),
                 "repo": str(repo),
                 "branch": branch_raw.strip() if branch_raw else None,
-                "registered": str(worktree.resolve()) in listed,
+                # A failed/budgeted registry query establishes neither true nor
+                # false. ``null`` keeps that uncertainty intact for consumers.
+                "registered": (
+                    True if worktree in unreadable_registered_children
+                    else None if worktree in metadata_only_children or listed is None
+                    else worktree in registered_children
+                ),
                 "dirty": dirty,
                 "unpushed_commits": unpushed,
                 "last_commit": last_commit,
                 "verdict": verdict,
                 "evidence": "preview",
             }
-            if verdict == "rebuildable":
+            if worktree in unreadable_children:
+                # Never allow stale git output from a raced path to upgrade a
+                # metadata/registry-known but unreadable item.
+                item.update({
+                    "branch": None,
+                    "dirty": None,
+                    "unpushed_commits": None,
+                    "last_commit": None,
+                    "verdict": "unreadable",
+                })
+            if item["verdict"] == "rebuildable":
                 item["requires_revalidation"] = True
             items.append(item)
+    items = _dedupe_worktree_items(items)
+    registered_missing = _dedupe_registered_missing(registered_missing)
     items.sort(key=lambda w: (w["verdict"], w["last_commit"] or "", w["path"]))
-    return {"items": items, "registered_missing": registered_missing}
+    item_unreadable = sum(
+        1 for item in items
+        if item["verdict"] == "unreadable" or item.get("registered") is None
+    )
+    return {
+        "items": items,
+        "registered_missing": registered_missing,
+        "scope": "session-metadata",
+        "global_complete": False,
+        "observed_workspaces": observed_workspaces,
+        "unreadable": item_unreadable + discovery_unreadable + registry_unreadable,
+        "truncated": probe_truncated or budget.exhausted,
+    }
+
+
+def _metadata_worktree_fallback(records: list[dict]) -> dict:
+    """No-I/O answer used when the isolated discovery cannot finish."""
+    _, observed_workspaces, _, metadata_children = _worktree_containers_from_records(records)
+    known: dict[str, tuple[Path, Path]] = {}
+    for container, children in metadata_children.items():
+        for child in children:
+            known.setdefault(str(child), (container, child))
+    items = [{
+        "path": str(child),
+        "repo": str(container.parent.parent),
+        "branch": None,
+        "registered": None,
+        "dirty": None,
+        "unpushed_commits": None,
+        "last_commit": None,
+        "verdict": "unreadable",
+        "evidence": "preview",
+    } for container, child in sorted(known.values(), key=lambda pair: str(pair[1]))]
+    return {
+        "items": items,
+        "registered_missing": [],
+        "scope": "session-metadata",
+        "global_complete": False,
+        "observed_workspaces": observed_workspaces,
+        # One discovery failure plus every metadata-known row whose state could
+        # not be read. No filesystem call is made while constructing this.
+        "unreadable": len(items) + 1,
+        "truncated": True,
+    }
+
+
+def _signal_worktree_worker(
+        pid: int, signal_number: int, *, process_group: bool = False) -> None:
+    try:
+        if process_group:
+            os.killpg(pid, signal_number)
+        else:
+            os.kill(pid, signal_number)
+    except OSError:
+        pass
+
+
+def _waitpid_until(pid: int, deadline: float) -> tuple[bool, Optional[int]]:
+    while True:
+        try:
+            waited, status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return True, None
+        if waited == pid:
+            return True, status
+        if time.monotonic() >= deadline:
+            return False, None
+        time.sleep(0.01)
+
+
+def _worktree_group_exists(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _terminate_worktree_worker(pid: int, *, process_group: bool = False) -> None:
+    """Terminate the isolated worker and every git process it started."""
+    _signal_worktree_worker(
+        pid, signal.SIGTERM, process_group=process_group)
+    deadline = time.monotonic() + 0.20
+    stopped = False
+    while time.monotonic() < deadline:
+        if not stopped:
+            stopped, _ = _waitpid_until(pid, time.monotonic())
+        group_gone = not process_group or not _worktree_group_exists(pid)
+        if stopped and group_gone:
+            return
+        time.sleep(0.01)
+    _signal_worktree_worker(
+        pid, signal.SIGKILL, process_group=process_group)
+    _waitpid_until(pid, time.monotonic() + 0.20)
+    if process_group:
+        deadline = time.monotonic() + 0.20
+        while _worktree_group_exists(pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+
+def collect_worktrees_isolated(
+        home: Path, records: list[dict], *,
+        timeout_seconds: float = WORKTREE_DISCOVERY_ISOLATION_SECONDS) -> dict:
+    """Run every potentially blocking worktree filesystem read in a child.
+
+    macOS GUI/TCC context can leave even one exact ``openat`` blocked despite
+    the same path returning instantly in a shell. A process boundary is the
+    only hard timeout around such a syscall. The child deliberately remains in
+    the report's existing process group: Modore's root group cancellation and
+    force-kill therefore always reaches the parent. The worker is its own
+    process group so this function's timeout can terminate every live git
+    descendant; while it is supervised, SIGTERM to the parent is forwarded to
+    that group before the parent exits.
+    """
+    fallback = _metadata_worktree_fallback(records)
+    setup_signal_mask = None
+    setup_sigterm_blocked = False
+    read_fd = -1
+    write_fd = -1
+    try:
+        read_fd, write_fd = os.pipe()
+        # Close the only cancellation gap before creating the worker.  A
+        # SIGTERM delivered after fork but before ``forward_sigterm`` was
+        # installed used to kill only this parent, leaving the worker and its
+        # git descendant behind.  The child inherits the blocked mask, enters
+        # its private process group, then restores the caller's mask before it
+        # performs any discovery.  The parent restores its mask only after the
+        # forwarding handler is live, so a pending termination is delivered
+        # through that handler.
+        if hasattr(signal, "pthread_sigmask"):
+            try:
+                setup_signal_mask = signal.pthread_sigmask(
+                    signal.SIG_BLOCK, {signal.SIGTERM})
+                setup_sigterm_blocked = True
+            except (OSError, ValueError):
+                # The normal app CLI supports pthread masks. A constrained
+                # embedding still gets the pre-existing timeout cleanup and
+                # must not leak the pipe merely because masking is unavailable.
+                setup_signal_mask = None
+        try:
+            pid = os.fork()
+        except OSError:
+            os.close(read_fd)
+            os.close(write_fd)
+            if setup_sigterm_blocked:
+                signal.pthread_sigmask(
+                    signal.SIG_SETMASK, setup_signal_mask)
+            raise
+    except OSError:
+        return fallback
+
+    if pid == 0:
+        try:
+            os.setpgid(0, 0)
+            if setup_sigterm_blocked:
+                signal.pthread_sigmask(
+                    signal.SIG_SETMASK, setup_signal_mask)
+                setup_sigterm_blocked = False
+            os.close(read_fd)
+            result = collect_worktrees(home, records)
+            payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
+            offset = 0
+            while offset < len(payload):
+                offset += os.write(write_fd, payload[offset:])
+        except BaseException:
+            pass
+        finally:
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+        os._exit(0)
+
+    process_group = False
+    previous_sigterm = None
+    sigterm_installed = False
+
+    def forward_sigterm(signal_number, frame):
+        _signal_worktree_worker(
+            pid, signal_number, process_group=process_group)
+        if callable(previous_sigterm):
+            previous_sigterm(signal_number, frame)
+        elif previous_sigterm == signal.SIG_IGN:
+            return
+        else:
+            raise SystemExit(128 + signal_number)
+
+    try:
+        try:
+            # Doing this in both processes closes the fork race: whichever
+            # runs first establishes the private group before
+            # collect_worktrees can spawn git.
+            os.setpgid(pid, pid)
+            process_group = True
+        except OSError:
+            try:
+                process_group = os.getpgid(pid) == pid
+            except OSError:
+                process_group = False
+
+        os.close(write_fd)
+        write_fd = -1
+        os.set_blocking(read_fd, False)
+        chunks: list[bytes] = []
+        total_bytes = 0
+        eof = False
+        child_status: Optional[int] = None
+        deadline = time.monotonic() + max(0.01, timeout_seconds)
+        try:
+            previous_sigterm = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, forward_sigterm)
+            sigterm_installed = True
+        except (OSError, ValueError):
+            # signal handlers are main-thread only. The normal CLI path is the
+            # main thread; a library caller still gets internal group cleanup.
+            pass
+    except BaseException:
+        _terminate_worktree_worker(pid, process_group=process_group)
+        if read_fd >= 0:
+            os.close(read_fd)
+            read_fd = -1
+        if write_fd >= 0:
+            os.close(write_fd)
+            write_fd = -1
+        raise
+    finally:
+        if setup_sigterm_blocked:
+            signal.pthread_sigmask(signal.SIG_SETMASK, setup_signal_mask)
+            setup_sigterm_blocked = False
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_worktree_worker(pid, process_group=process_group)
+                return fallback
+            ready, _, _ = select.select([read_fd], [], [], min(0.05, remaining))
+            if ready:
+                try:
+                    chunk = os.read(read_fd, 65536)
+                except BlockingIOError:
+                    chunk = None
+                if chunk is None:
+                    pass
+                elif chunk:
+                    total_bytes += len(chunk)
+                    if total_bytes > WORKTREE_DISCOVERY_MAX_OUTPUT_BYTES:
+                        _terminate_worktree_worker(pid, process_group=process_group)
+                        return fallback
+                    chunks.append(chunk)
+                else:
+                    eof = True
+            if child_status is None:
+                try:
+                    waited, status = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    waited, status = pid, 0
+                if waited == pid:
+                    child_status = status
+            if eof and child_status is not None:
+                break
+    except BaseException:
+        _terminate_worktree_worker(pid, process_group=process_group)
+        raise
+    finally:
+        if sigterm_installed:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+        if read_fd >= 0:
+            os.close(read_fd)
+
+    if child_status is None or not os.WIFEXITED(child_status):
+        return fallback
+    try:
+        result = json.loads(b"".join(chunks).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return fallback
+    required = {
+        "items": list,
+        "registered_missing": list,
+        "scope": str,
+        "global_complete": bool,
+        "observed_workspaces": int,
+        "unreadable": int,
+        "truncated": bool,
+    }
+    if (not isinstance(result, dict)
+            or any(not isinstance(result.get(key), expected)
+                   for key, expected in required.items())):
+        return fallback
+    return result
 
 
 def build_lineage(records: list[dict]) -> dict:
@@ -754,11 +2776,15 @@ def collect_all(home: Path) -> tuple[list[dict], list[dict]]:
     """
     codex_records, codex_status = collect_codex(home)
     claude_records, claude_status = collect_claude(home)
+    desktop_records, desktop_status = (
+        _collect_claude_desktop_sessions_with_coverage(home))
     fork_records, fork_statuses = collect_vscode_forks(home)
     gemini_records, gemini_status = collect_gemini(home)
     return (
-        codex_records + claude_records + fork_records + gemini_records,
-        [codex_status, claude_status, gemini_status] + fork_statuses,
+        codex_records + claude_records + desktop_records
+        + fork_records + gemini_records,
+        [codex_status, claude_status, desktop_status, gemini_status]
+        + fork_statuses,
     )
 
 
@@ -790,9 +2816,14 @@ def collect_gemini_chats(home: Path) -> list[dict]:
     if registry.is_file():
         try:
             payload = json.loads(registry.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
+        except JSON_FILE_ERRORS:
             payload = {}
-        for path in (payload.get("projects") or {}):
+        if not isinstance(payload, dict):
+            payload = {}
+        project_map = payload.get("projects")
+        if not isinstance(project_map, dict):
+            project_map = {}
+        for path in project_map:
             if isinstance(path, str):
                 known[hashlib.sha256(path.encode("utf-8")).hexdigest()] = path
 
@@ -805,7 +2836,7 @@ def collect_gemini_chats(home: Path) -> list[dict]:
         for probe in chats:
             try:
                 head = json.loads(probe.read_text(encoding="utf-8-sig"))
-            except (OSError, json.JSONDecodeError):
+            except JSON_FILE_ERRORS:
                 continue
             if isinstance(head, dict):
                 workspace = known.get(str(head.get("projectHash")), "")
@@ -849,7 +2880,7 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
     # lineage want; the browser wants the chats, which live elsewhere. So
     # the shared walk supplies everything except Gemini, whose registry
     # records are dropped in favour of the conversations themselves.
-    shared, _ = collect_all(home)
+    shared, store_coverage = collect_all(home)
     records = [item for item in shared if item["tool"] != "Gemini"]
     records += collect_gemini_chats(home)
     sessions = []
@@ -865,14 +2896,17 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
         if not item.get("source"):
             continue
         workspace = item.get("workspace") or ""
-        sessions.append({
+        workspace_exists = (item["workspace_exists"]
+                            if "workspace_exists" in item
+                            else bool(workspace) and Path(workspace).exists())
+        session = {
             "tool": item["tool"],
             "source": item["source"],
             "workspace": workspace,
             # Stated, not implied by an empty string: a session whose
             # workspace is gone and one that never recorded a workspace
             # are different things to a person deciding what to keep.
-            "workspaceExists": bool(workspace) and Path(workspace).exists(),
+            "workspaceExists": workspace_exists,
             # Editors keep per-workspace state, not a transcript; saying
             # "대화" for both overstates what a `workspace.json` is.
             "kind": item["kind"],
@@ -880,13 +2914,39 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
             "lastActive": time.strftime(
                 "%Y-%m-%d %H:%M", time.localtime(item["last_active"])),
             "lastActiveEpoch": item["last_active"],
-        })
+        }
+        if item.get("provider") == CLAUDE_DESKTOP_PROVIDER:
+            # Dedicated metadata files contain many private fields.  Only this
+            # whitelist crosses the index boundary; no catch-all copy or
+            # dictionary merge may be introduced here.
+            session.update({
+                "provider": CLAUDE_DESKTOP_PROVIDER,
+                "sessionId": item["session_id"],
+                "sizeComplete": item["size_complete"],
+                **item["desktop_metadata"],
+            })
+        sessions.append(session)
     sessions.sort(key=lambda s: (-s["lastActiveEpoch"], s["source"]))
     # `total` is the count before the cap, so a caller can say what it is
     # not showing rather than presenting a truncated list as the whole.
+    coverage_stores = [
+        {
+            "store": entry["store"],
+            "status": entry["status"],
+            "count": entry["count"],
+            "unrecognized": entry.get("unrecognized", 0),
+        }
+        for entry in store_coverage
+    ]
+    complete = all(
+        entry["status"] in ("ok", "missing")
+        and entry["unrecognized"] == 0
+        for entry in coverage_stores
+    )
     return {
         "total": len(sessions),
         "sessions": sessions[:limit] if limit > 0 else sessions,
+        "coverage": {"complete": complete, "stores": coverage_stores},
     }
 
 
@@ -960,7 +3020,7 @@ def build_scree(home: Path) -> dict:
         "unresolved_sessions": unresolved_count,
         "lineage": build_lineage(records),
         "retention": build_retention(records, time.time(), home),
-        "worktrees": collect_worktrees(home),
+        "worktrees": collect_worktrees_isolated(home, records),
     }
 
 
@@ -992,7 +3052,7 @@ def _binding_confidence(evidence: list[str]) -> str:
     """
     if "remote-url" in evidence:
         return "high"
-    if "working-directory" in evidence:
+    if "working-directory" in evidence or "selected-folder" in evidence:
         return "medium"
     return "low"
 
@@ -1014,7 +3074,341 @@ def _under(path: str, root: str) -> bool:
     """
     root = _canon_workspace(root).casefold()
     path = path.casefold()
+    if root == "/":
+        return path.startswith("/")
     return path == root or path.startswith(root + "/")
+
+
+@dataclass(frozen=True)
+class _ClaudeDesktopBindingCandidate:
+    source: Path
+    session_id: str
+    cwd: Optional[str]
+    selected_folders: tuple[str, ...]
+    subtranscripts: tuple[Path, ...]
+    artifact_root: Path
+    size: int
+
+
+@dataclass(frozen=True)
+class _ClaudeDesktopBindingState:
+    metadata_snapshots: tuple[_ClaudeDesktopMetadataSnapshot, ...]
+    coverage: dict
+    artifact_snapshots: tuple[tuple[str, tuple], ...]
+    complete: bool
+
+
+def _desktop_binding_location(value: Any) -> Optional[str]:
+    """Validate one provider path lexically, without touching that path."""
+    if (not isinstance(value, str) or not value or "\x00" in value
+            or len(value) > CLAUDE_DESKTOP_LOCATION_MAX_CHARS):
+        return None
+    path = PurePosixPath(value)
+    if not path.is_absolute():
+        return None
+    # normpath is lexical.  In particular this never resolves a symlink,
+    # probes a sleeping network mount, expands another user's home, or asks
+    # TCC for access to the provider-supplied location.
+    normalized = os.path.normpath(value)
+    if not PurePosixPath(normalized).is_absolute():
+        return None
+    return _canon_workspace(normalized)
+
+
+def _desktop_binding_locations(
+        payload: dict,
+        ) -> tuple[Optional[str], tuple[str, ...], bool]:
+    """Classify Desktop workspace fields without opening provider paths."""
+    complete = True
+    cwd = _desktop_binding_location(payload.get("cwd"))
+    if cwd is None:
+        complete = False
+    selected: list[str] = []
+    for value in payload.get("userSelectedFolders", []):
+        location = _desktop_binding_location(value)
+        if location is None:
+            complete = False
+            continue
+        selected.append(location)
+    return (cwd, tuple(dict.fromkeys(selected)), complete)
+
+
+def _desktop_location_statuses_isolated(
+        locations: list[str],
+        ) -> tuple[dict[str, Optional[bool]], bool]:
+    """Probe provider paths behind one hard process timeout.
+
+    A selected folder can be a dead network mount or TCC-protected location.
+    Opening it in the index process would let one provider value hang every
+    sessions/search/evidence refresh. The child emits only one integer status
+    per lexical location; no path is copied back through the pipe.
+    """
+    unique = list(dict.fromkeys(locations))
+    if not unique:
+        return ({}, True)
+    try:
+        read_descriptor, write_descriptor = os.pipe()
+        try:
+            pid = os.fork()
+        except OSError:
+            os.close(read_descriptor)
+            os.close(write_descriptor)
+            raise
+    except OSError:
+        return ({location: None for location in unique}, False)
+
+    if pid == 0:
+        try:
+            os.close(read_descriptor)
+            statuses: list[int] = []
+            for location in unique:
+                try:
+                    info = os.stat(location)
+                except (FileNotFoundError, NotADirectoryError):
+                    statuses.append(0)
+                except OSError:
+                    statuses.append(-1)
+                else:
+                    statuses.append(1 if stat.S_ISDIR(info.st_mode) else 0)
+            payload = json.dumps(statuses, separators=(",", ":")).encode("ascii")
+            offset = 0
+            while offset < len(payload):
+                offset += os.write(write_descriptor, payload[offset:])
+        except BaseException:
+            pass
+        finally:
+            try:
+                os.close(write_descriptor)
+            except OSError:
+                pass
+        os._exit(0)
+
+    os.close(write_descriptor)
+    os.set_blocking(read_descriptor, False)
+    chunks: list[bytes] = []
+    total = 0
+    eof = False
+    child_status: Optional[int] = None
+    deadline = time.monotonic() + CLAUDE_DESKTOP_WORKSPACE_PROBE_SECONDS
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_worktree_worker(pid)
+                return ({location: None for location in unique}, False)
+            ready, _, _ = select.select(
+                [read_descriptor], [], [], min(0.05, remaining))
+            if ready:
+                try:
+                    chunk = os.read(read_descriptor, 65536)
+                except BlockingIOError:
+                    chunk = None
+                if chunk:
+                    total += len(chunk)
+                    if total > CLAUDE_DESKTOP_WORKSPACE_PROBE_MAX_BYTES:
+                        _terminate_worktree_worker(pid)
+                        return ({location: None for location in unique}, False)
+                    chunks.append(chunk)
+                elif chunk == b"":
+                    eof = True
+            if child_status is None:
+                try:
+                    waited, wait_status = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    waited, wait_status = pid, 0
+                if waited == pid:
+                    child_status = wait_status
+            if eof and child_status is not None:
+                break
+    except BaseException:
+        _terminate_worktree_worker(pid)
+        raise
+    finally:
+        os.close(read_descriptor)
+
+    try:
+        statuses = json.loads(b"".join(chunks))
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        statuses = None
+    if (child_status is None or not os.WIFEXITED(child_status)
+            or not isinstance(statuses, list)
+            or len(statuses) != len(unique)
+            or any(type(value) is not int or value not in (-1, 0, 1)
+                   for value in statuses)):
+        return ({location: None for location in unique}, False)
+    result = {
+        location: (None if value == -1 else value == 1)
+        for location, value in zip(unique, statuses)
+    }
+    return (result, all(value is not None for value in result.values()))
+
+
+def _desktop_index_workspace(
+        payload: dict,
+        location_status: dict[str, Optional[bool]],
+        ) -> tuple[str, bool]:
+    """Choose one Work group while keeping every other folder binder-only.
+
+    ``userSelectedFolders`` is ordered by the provider. Prefer its first
+    currently existing canonical directory. If every selected folder is now
+    missing, retain the first as a useful lost-workspace identity. Only a unit
+    with no selected folders falls back to ``cwd``; Desktop's cwd can be its
+    own sandbox, so it must not displace an explicit project selection.
+    """
+    cwd, selected, _ = _desktop_binding_locations(payload)
+    if selected:
+        for location in selected:
+            if location_status.get(location) is True:
+                return (location, True)
+        if any(location_status.get(location) is None for location in selected):
+            return ("", False)
+        return (selected[0], False)
+    if cwd is not None:
+        exists = location_status.get(cwd)
+        return ((cwd, exists) if exists is not None else ("", False))
+    return ("", False)
+
+
+def _claude_desktop_binding_scan(
+        home: Path,
+        ) -> tuple[
+            list[_ClaudeDesktopBindingCandidate], bool,
+            _ClaudeDesktopBindingState,
+        ]:
+    """Read Desktop workspace metadata once for single or batch binding.
+
+    Raw ``cwd`` and ``userSelectedFolders`` values stay inside this function.
+    The wire result carries only the caller-named workspace, the provider's
+    session id, and the evidence type.
+    """
+    snapshots, store = _claude_desktop_metadata_scan(home)
+    complete = (
+        store["status"] in ("ok", "missing")
+        and int(store.get("unrecognized", 0)) == 0
+    )
+    candidates: list[_ClaudeDesktopBindingCandidate] = []
+    artifact_snapshots: list[tuple[str, tuple]] = []
+    enumerated_files = 0
+    home_descriptor = -1
+    try:
+        canonical_home = home.expanduser().absolute().resolve(strict=True)
+        home_descriptor = _open_directory_nofollow(canonical_home)
+    except FileNotFoundError:
+        canonical_home = home.expanduser().absolute()
+        if snapshots:
+            complete = False
+    except OSError:
+        canonical_home = home.expanduser().absolute()
+        complete = False
+
+    try:
+        for snapshot in snapshots:
+            payload = _parse_claude_desktop_metadata(
+                snapshot.raw, snapshot.path.stem)
+            if payload is None or home_descriptor < 0:
+                complete = False
+                continue
+            cwd, selected_folders, locations_complete = (
+                _desktop_binding_locations(payload))
+            if not locations_complete:
+                # A relative or otherwise unclassifiable provider location
+                # cannot establish absence for any repo.
+                complete = False
+
+            try:
+                source_relative = snapshot.path.relative_to(
+                    canonical_home).as_posix()
+                first = _backup_inventory(
+                    home_descriptor, source_relative)
+                second = _backup_inventory(
+                    home_descriptor, source_relative)
+                source_entry = first.entries.get(source_relative)
+                unit_relative = PurePosixPath(source_relative).with_suffix("")
+                unit_signature = first.directories.get(str(unit_relative))
+                if (source_entry is None
+                        or source_entry.signature
+                        != _stat_signature(snapshot.metadata_info)
+                        or unit_signature
+                        != _stat_identity(snapshot.unit_info)
+                        or first.snapshot() != second.snapshot()):
+                    raise ValueError(
+                        "Desktop conversation changed during binding")
+            except (OSError, ValueError):
+                complete = False
+                continue
+
+            enumerated_files += len(first.entries)
+            if enumerated_files > CLAUDE_DESKTOP_BIND_MAX_FILES:
+                complete = False
+                break
+            artifact_snapshots.append(
+                (source_relative, first.snapshot()))
+            regular_unit_files = tuple(
+                canonical_home / entry.relative
+                for entry in first.entries.values()
+                if entry.kind == "file"
+                and entry.relative != source_relative
+                and unit_relative in PurePosixPath(entry.relative).parents
+            )
+            size = source_entry.size + sum(
+                first.entries[path.relative_to(canonical_home).as_posix()].size
+                for path in regular_unit_files)
+            candidates.append(_ClaudeDesktopBindingCandidate(
+                source=snapshot.path,
+                session_id=payload["sessionId"],
+                cwd=cwd,
+                selected_folders=selected_folders,
+                subtranscripts=regular_unit_files,
+                artifact_root=canonical_home / unit_relative,
+                size=size,
+            ))
+    finally:
+        if home_descriptor >= 0:
+            os.close(home_descriptor)
+
+    state = _ClaudeDesktopBindingState(
+        metadata_snapshots=tuple(snapshots),
+        coverage=dict(store),
+        artifact_snapshots=tuple(artifact_snapshots),
+        complete=complete,
+    )
+    return (candidates, complete, state)
+
+
+def _bind_claude_desktop_candidates(
+        candidates: list[_ClaudeDesktopBindingCandidate],
+        workspace: str) -> list[dict]:
+    bindings: list[dict] = []
+    for candidate in candidates:
+        evidence: list[str] = []
+        if candidate.cwd is not None and _under(candidate.cwd, workspace):
+            evidence.append("working-directory")
+        # A selected folder is an access root, so both relationships matter:
+        # selecting `/work` can strand a conversation that accessed
+        # `/work/repo`, while selecting `/work/repo/subdir` also belongs to
+        # the repo being retired.
+        if any(_under(selected, workspace) or _under(workspace, selected)
+               for selected in candidate.selected_folders):
+            evidence.append("selected-folder")
+        if not evidence:
+            continue
+        bindings.append({
+            "provider": CLAUDE_DESKTOP_PROVIDER,
+            "sessionId": candidate.session_id,
+            "source": str(candidate.source),
+            "subtranscripts": [str(path) for path in candidate.subtranscripts],
+            "artifactRoot": str(candidate.artifact_root),
+            "evidence": evidence,
+            "confidence": _binding_confidence(evidence),
+            "sizeBytes": candidate.size,
+        })
+    return bindings
+
+
+def bind_claude_desktop(
+        home: Path, workspace: str) -> tuple[list[dict], bool]:
+    candidates, complete, _ = _claude_desktop_binding_scan(home)
+    return (_bind_claude_desktop_candidates(candidates, workspace), complete)
 
 
 def _claude_subtranscripts(project_dir: Path, session_id: str) -> list[Path]:
@@ -1181,7 +3575,10 @@ def bind_vscode_forks(home: Path, workspace: str) -> tuple[list[dict], bool]:
         for meta_path in sorted(root.glob("*/workspace.json")):
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
-            except (OSError, json.JSONDecodeError):
+            except JSON_FILE_ERRORS:
+                complete = False
+                continue
+            if not isinstance(meta, dict):
                 complete = False
                 continue
             target = meta.get("folder") or meta.get("workspace")
@@ -1253,12 +3650,19 @@ def bind_gemini(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
     if registry.is_file():
         try:
             projects = json.loads(registry.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
+        except JSON_FILE_ERRORS:
             # Without the registry only the workspace itself can be
             # hashed, so its subdirectories and worktrees go unchecked.
             complete = False
             projects = {}
-        for path in (projects.get("projects") or {}):
+        if not isinstance(projects, dict):
+            complete = False
+            projects = {}
+        project_map = projects.get("projects")
+        if not isinstance(project_map, dict):
+            complete = False
+            project_map = {}
+        for path in project_map:
             if isinstance(path, str) and _under(_canon_workspace(path), workspace):
                 remember(_canon_workspace(path))
 
@@ -1266,7 +3670,7 @@ def bind_gemini(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
     for path in chats:
         try:
             payload = json.loads(path.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
+        except JSON_FILE_ERRORS:
             complete = False
             continue
         if not isinstance(payload, dict):
@@ -1358,9 +3762,12 @@ def bind_claude(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
 # A store present on disk with no binder is the loudest kind of
 # incompleteness: the scan never looked there at all, so "no sessions"
 # would be a claim about two stores made on behalf of five.
-BINDABLE_STORES = {"Claude", "Codex", "Gemini"} | set(VSCODE_PROVIDER_IDS)
+BINDABLE_STORES = {
+    "Claude", CLAUDE_DESKTOP_TOOL, "Codex", "Gemini",
+} | set(VSCODE_PROVIDER_IDS)
 KNOWN_STORE_ROOTS = {
     "Claude": (".claude/projects",),
+    CLAUDE_DESKTOP_TOOL: ("/".join(CLAUDE_DESKTOP_LOCAL_SESSIONS),),
     "Codex": (".codex/sessions", ".codex/archived_sessions"),
     "Gemini": (".gemini/tmp",),
 }
@@ -1374,16 +3781,31 @@ def unbound_stores_present(home: Path) -> list[str]:
     future binder only has to be added in one place.
     """
     present: list[str] = []
+
+    def may_exist(root: Path) -> bool:
+        # Binding coverage is a safety claim.  Never follow a store-root
+        # symlink merely to decide whether that claim is complete, and never
+        # turn an unreadable or malformed root into "absent".  Any named
+        # object (or an access failure while looking for it) means the store
+        # still needs a binder before coverage can be complete.
+        try:
+            root.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        return True
+
     for store, roots in KNOWN_STORE_ROOTS.items():
         if store in BINDABLE_STORES:
             continue
-        if any((home / root).is_dir() for root in roots):
+        if any(may_exist(home / root) for root in roots):
             present.append(store)
     support = home / "Library" / "Application Support"
     for label, folder in VSCODE_FORKS:
         if label in BINDABLE_STORES:
             continue
-        if (support / folder).is_dir():
+        if may_exist(support / folder):
             present.append(label)
     return sorted(set(present))
 
@@ -1409,6 +3831,8 @@ def build_bindings_many(home: Path, targets: list[dict], *, deep: bool = False) 
 
     per_workspace: dict[str, list[dict]] = {w: [] for w in workspaces}
     claude_complete = codex_complete = gemini_complete = forks_complete = True
+    desktop_candidates, desktop_complete, desktop_state = (
+        _claude_desktop_binding_scan(home))
 
     for workspace in workspaces:
         # The cheap, per-workspace parts stay per-workspace: they are
@@ -1422,7 +3846,9 @@ def build_bindings_many(home: Path, targets: list[dict], *, deep: bool = False) 
         gemini_complete = gemini_complete and ok
         forks, ok = bind_vscode_forks(home, workspace)
         forks_complete = forks_complete and ok
-        per_workspace[workspace] = claude + codex + gemini + forks
+        desktop = _bind_claude_desktop_candidates(
+            desktop_candidates, workspace)
+        per_workspace[workspace] = claude + desktop + codex + gemini + forks
 
     if deep:
         bound_sources = {w: {b["source"] for b in per_workspace[w]} for w in workspaces}
@@ -1449,17 +3875,18 @@ def build_bindings_many(home: Path, targets: list[dict], *, deep: bool = False) 
                 )
 
     unbound_stores = unbound_stores_present(home)
-    scanned_fully = (claude_complete and codex_complete and gemini_complete
-                     and forks_complete and not unbound_stores)
-    fingerprint = store_fingerprint(home)
+    scanned_fully = (
+        claude_complete and desktop_complete and codex_complete
+        and gemini_complete and forks_complete and not unbound_stores)
+    fingerprint = store_fingerprint(home, desktop_state=desktop_state)
     results = {}
     for workspace in workspaces:
         bindings = sorted(per_workspace[workspace],
                           key=lambda b: (b["provider"], b["sessionId"]))
         results[workspace] = _binding_result(
             workspace, repo_urls[workspace], deep, bindings, fingerprint,
-            claude_complete, codex_complete, gemini_complete, forks_complete,
-            unbound_stores, scanned_fully,
+            claude_complete, desktop_complete, codex_complete,
+            gemini_complete, forks_complete, unbound_stores, scanned_fully,
         )
     return {"results": results}
 
@@ -1476,7 +3903,8 @@ def _deep_scan_candidates(home: Path):
         yield ("gemini", path)
 
 
-def _file_access_session_id(provider: str, path: Path) -> str:
+def _file_access_session_id(
+        provider: str, path: Path, home: Optional[Path] = None) -> str:
     """The id each store's own binder would have used.
 
     Falling back to the filename would give the same session two
@@ -1484,6 +3912,18 @@ def _file_access_session_id(provider: str, path: Path) -> str:
     manifest would then record a session the provider cannot be asked
     about.
     """
+    if provider == CLAUDE_DESKTOP_PROVIDER:
+        metadata = _claude_desktop_metadata_for_path(path)
+        payload, status = _read_claude_desktop_metadata(
+            metadata or path, home)
+        if status == "ok" and payload is not None:
+            session_id = payload.get("sessionId")
+            if isinstance(session_id, str) and session_id:
+                return session_id
+        # Never let ``audit.jsonl`` collapse every Desktop conversation to
+        # the same id even if its metadata was temporarily unreadable.
+        if metadata is not None:
+            return metadata.stem
     if provider == "claude":
         return path.stem
     try:
@@ -1497,7 +3937,7 @@ def _file_access_session_id(provider: str, path: Path) -> str:
             payload = (first or {}).get("payload")
             if isinstance(payload, dict) and payload.get("id"):
                 return str(payload["id"])
-    except (OSError, json.JSONDecodeError):
+    except JSON_FILE_ERRORS:
         pass
     return path.stem
 
@@ -1514,7 +3954,10 @@ def _file_access_binding(provider: str, path: Path) -> dict:
     }
 
 
-def store_fingerprint(home: Path) -> dict:
+def store_fingerprint(
+        home: Path, *,
+        desktop_state: Optional[_ClaudeDesktopBindingState] = None,
+        ) -> dict:
     """Digest over every candidate file in every bindable store.
 
     An assessment is a statement about a moment. Sealing hundreds of
@@ -1525,10 +3968,60 @@ def store_fingerprint(home: Path) -> dict:
     of candidates I judged", which a rewritten or removed file changes
     just as much as an added one.
 
-    Metadata only: paths, sizes, mtimes. Nothing here opens a file.
+    Transcript content is never retained. Ordinary stores contribute paths,
+    sizes, and mtimes; Desktop contributes its already-read metadata snapshot
+    plus the no-follow conversation-unit inventory used by its binder.
     """
     hasher = hashlib.sha256()
     count = 0
+    # Bind coverage also depends on every known store root. Its absent/present
+    # state must participate in the revalidation token or a
+    # stale "complete, zero sessions" assessment can survive a newly-created
+    # Desktop store. lstat deliberately does not follow a leaf symlink.
+    for store, roots in sorted(KNOWN_STORE_ROOTS.items()):
+        for relative in sorted(roots):
+            root = home / relative
+            try:
+                info = root.lstat()
+            except FileNotFoundError:
+                state = "missing"
+            except OSError as exc:
+                state = f"unreadable:{exc.errno}"
+            else:
+                state = "\0".join(str(value) for value in _stat_signature(info))
+            hasher.update(
+                f"store-root\0{store}\0{relative}\0{state}\n".encode("utf-8"))
+    if desktop_state is None:
+        _, _, desktop_state = _claude_desktop_binding_scan(home)
+    desktop_snapshots = desktop_state.metadata_snapshots
+    desktop_coverage = desktop_state.coverage
+    hasher.update((
+        "desktop-coverage\0"
+        + json.dumps(desktop_coverage, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8"))
+    hasher.update(
+        f"desktop-binding-complete\0{int(desktop_state.complete)}\n".encode(
+            "utf-8"))
+    for snapshot in sorted(desktop_snapshots, key=lambda item: str(item.path)):
+        hasher.update((
+            f"{snapshot.path}\0"
+            + "\0".join(str(value) for value in
+                          _stat_signature(snapshot.metadata_info))
+            + "\n"
+        ).encode("utf-8"))
+        count += 1
+    for source_relative, artifact_snapshot in desktop_state.artifact_snapshots:
+        hasher.update((
+            "desktop-unit\0" + source_relative + "\0"
+            + json.dumps(
+                artifact_snapshot, ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8"))
+        # Metadata itself was counted above; the inventory also contains it.
+        count += max(0, len(artifact_snapshot[0]) - 1)
     for path in sorted(
         list((home / ".claude" / "projects").glob("*/*.jsonl"))
         + list((home / ".codex" / "sessions").rglob("*.jsonl"))
@@ -1539,14 +4032,15 @@ def store_fingerprint(home: Path) -> dict:
                         / "User" / "workspaceStorage").glob("*/workspace.json")]
     ):
         try:
-            stat = path.stat()
+            info = path.stat()
         except OSError:
             # A file that vanished between listing and stat is itself a
             # change, and folding its path in keeps that visible.
             hasher.update(f"{path}\0missing\n".encode("utf-8"))
             count += 1
             continue
-        hasher.update(f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode("utf-8"))
+        hasher.update(
+            f"{path}\0{info.st_size}\0{info.st_mtime_ns}\n".encode("utf-8"))
         count += 1
     return {"digest": hasher.hexdigest(), "fileCount": count}
 
@@ -1563,22 +4057,29 @@ def build_bindings(home: Path, workspace: str, *, repo_url: Optional[str] = None
     """
     workspace = _canon_workspace(workspace)
     claude_bindings, claude_complete = bind_claude(home, workspace, deep=deep)
+    desktop_candidates, desktop_complete, desktop_state = (
+        _claude_desktop_binding_scan(home))
+    desktop_bindings = _bind_claude_desktop_candidates(
+        desktop_candidates, workspace)
     codex_bindings, codex_complete = bind_codex(home, workspace, repo_url, deep=deep)
     gemini_bindings, gemini_complete = bind_gemini(home, workspace, deep=deep)
     fork_bindings, forks_complete = bind_vscode_forks(home, workspace)
-    bindings = claude_bindings + codex_bindings + gemini_bindings + fork_bindings
+    bindings = (claude_bindings + desktop_bindings + codex_bindings
+                + gemini_bindings + fork_bindings)
     unbound = unbound_stores_present(home)
     # Completeness is a property of the whole machine, not of the store
     # that happened to be scanned last. One unreadable rollout, one
     # unrecognised header, or one store with no binder is enough to make
     # "this workspace has no conversations" an assertion nobody checked.
-    scanned_fully = (claude_complete and codex_complete and gemini_complete
-                     and forks_complete and not unbound)
+    scanned_fully = (
+        claude_complete and desktop_complete and codex_complete
+        and gemini_complete and forks_complete and not unbound)
     bindings.sort(key=lambda b: (b["provider"], b["sessionId"]))
     return _binding_result(
-        workspace, repo_url, deep, bindings, store_fingerprint(home),
-        claude_complete, codex_complete, gemini_complete, forks_complete,
-        unbound, scanned_fully,
+        workspace, repo_url, deep, bindings,
+        store_fingerprint(home, desktop_state=desktop_state),
+        claude_complete, desktop_complete, codex_complete,
+        gemini_complete, forks_complete, unbound, scanned_fully,
     )
 
 
@@ -1607,8 +4108,9 @@ SNAPSHOT_SCHEMA_VERSION = 1
 
 
 def _binding_result(workspace, repo_url, deep, bindings, fingerprint,
-                    claude_complete, codex_complete, gemini_complete,
-                    forks_complete, unbound, scanned_fully) -> dict:
+                    claude_complete, desktop_complete, codex_complete,
+                    gemini_complete, forks_complete, unbound,
+                    scanned_fully) -> dict:
     """One workspace's answer, assembled the same way whichever path
     produced it -- single or batch. Kept in one place so the two cannot
     drift into reporting coverage differently."""
@@ -1641,6 +4143,8 @@ def _binding_result(workspace, repo_url, deep, bindings, fingerprint,
         "coverage": ("complete" if scanned_fully else "truncated") if deep else "shallow",
         "coverageDetail": {
             "claude": "complete" if claude_complete else "incomplete",
+            "claudeDesktop": (
+                "complete" if desktop_complete else "incomplete"),
             "codex": "complete" if codex_complete else "incomplete",
             "gemini": "complete" if gemini_complete else "incomplete",
             "editors": "complete" if forks_complete else "incomplete",
@@ -1653,7 +4157,10 @@ def _binding_result(workspace, repo_url, deep, bindings, fingerprint,
             "total": len(bindings),
             "byProvider": {
                 p: sum(1 for b in bindings if b["provider"] == p)
-                for p in ("claude", "codex", "gemini", *sorted(VSCODE_PROVIDER_IDS.values()))
+                for p in (
+                    "claude", CLAUDE_DESKTOP_PROVIDER, "codex", "gemini",
+                    *sorted(VSCODE_PROVIDER_IDS.values()),
+                )
             },
             "byConfidence": {
                 c: sum(1 for b in bindings if b["confidence"] == c)
@@ -1756,7 +4263,8 @@ def render_report(scree: dict, limit: int) -> str:
         lines.append(f"  total {len(items)} — protected (sole-copy) {counts.get('protected', 0)}"
                      f" · rebuildable {counts.get('rebuildable', 0)}"
                      f" · unreadable {counts.get('unreadable', 0)}"
-                     f" · unregistered {sum(1 for i in items if not i['registered'])}"
+                     f" · unregistered {sum(1 for i in items if i['registered'] is False)}"
+                     f" · registration unknown {sum(1 for i in items if i['registered'] is None)}"
                      f" · stray checkouts {len(strays)}")
         for item in strays:
             lines.append(f"    stray checkout: {item['path']} @ {item['branch']}"
@@ -1844,7 +4352,7 @@ def _extract_turn(line: dict) -> Optional[VisibleTurn]:
     if not isinstance(container, dict):
         return None
     role = container.get("role") or line.get("type")
-    at = _event_string(line, "timestamp", "createdAt", "created_at") \
+    at = _event_string(line, "timestamp", "createdAt", "created_at", "_audit_timestamp") \
         or _event_string(container, "timestamp", "createdAt", "created_at")
     event_id = _event_string(line, "uuid", "eventId", "event_id") \
         or _event_string(container, "id", "uuid", "eventId", "event_id")
@@ -1899,7 +4407,28 @@ TITLE_BOILERPLATE = {
 }
 
 
-def _read_session_turns(source: Path) -> tuple[list[VisibleTurn], str]:
+def _read_jsonl_turns(handle) -> tuple[list[VisibleTurn], bool]:
+    """Decode visible records from an already-open text stream."""
+    turns: list[VisibleTurn] = []
+    decoded_any = False
+    for line in handle:
+        if len(line) > MAX_LINE_BYTES:
+            continue
+        try:
+            parsed = json.loads(line)
+        except JSON_PARSE_ERRORS:
+            continue
+        decoded_any = True
+        if isinstance(parsed, dict):
+            turn = _extract_turn(parsed)
+            if turn:
+                turns.append(turn)
+    return (turns, decoded_any)
+
+
+def _read_session_turns(
+        source: Path, home: Optional[Path] = None
+        ) -> tuple[list[VisibleTurn], str]:
     """`(turns, status)` for one session.
 
     The status is the half that matters. A transcript that vanished
@@ -1912,6 +4441,26 @@ def _read_session_turns(source: Path) -> tuple[list[VisibleTurn], str]:
 
     Status is one of `ok`, `missing`, `unreadable`, `unrecognized`.
     """
+    desktop_descriptor, _, desktop_status = _open_claude_desktop_primary(
+        source, home)
+    if desktop_status != "not-desktop":
+        if desktop_status != "ok" or desktop_descriptor is None:
+            return ([], desktop_status)
+        try:
+            before = os.fstat(desktop_descriptor)
+            with os.fdopen(os.dup(desktop_descriptor), "r", encoding="utf-8",
+                           errors="replace") as handle:
+                turns, decoded_any = _read_jsonl_turns(handle)
+            after = os.fstat(desktop_descriptor)
+        except OSError:
+            return ([], "unreadable")
+        finally:
+            os.close(desktop_descriptor)
+        if _stat_signature(before) != _stat_signature(after):
+            return ([], "unreadable")
+        if not decoded_any and before.st_size > 0:
+            return ([], "unrecognized")
+        return (turns, "ok")
     if not source.exists():
         return ([], "missing")
     turns: list[VisibleTurn] = []
@@ -1920,7 +4469,7 @@ def _read_session_turns(source: Path) -> tuple[list[VisibleTurn], str]:
             payload = json.loads(source.read_text(encoding="utf-8-sig"))
         except OSError:
             return ([], "unreadable")
-        except json.JSONDecodeError:
+        except JSON_PARSE_ERRORS:
             return ([], "unrecognized")
         if not isinstance(payload, dict):
             return ([], "unrecognized")
@@ -1944,21 +4493,9 @@ def _read_session_turns(source: Path) -> tuple[list[VisibleTurn], str]:
                 turns.append(turn)
         return (turns, "ok")
 
-    decoded_any = False
     try:
         with source.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                if len(line) > MAX_LINE_BYTES:
-                    continue
-                try:
-                    parsed = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                decoded_any = True
-                if isinstance(parsed, dict):
-                    turn = _extract_turn(parsed)
-                    if turn:
-                        turns.append(turn)
+            turns, decoded_any = _read_jsonl_turns(handle)
     except OSError:
         return ([], "unreadable")
     # A JSONL file none of whose lines parsed is not an empty
@@ -1968,7 +4505,28 @@ def _read_session_turns(source: Path) -> tuple[list[VisibleTurn], str]:
     return (turns, "ok")
 
 
-def visible_turns(source: Path) -> tuple[list[VisibleTurn], str]:
+def _canonical_visible_turns(turns: list[VisibleTurn]) -> list[VisibleTurn]:
+    """Collapse provider duplicates and remove harness-only roles."""
+    deduped: list[VisibleTurn] = []
+    for turn in turns:
+        if (deduped and deduped[-1].role == turn.role
+                and deduped[-1].text == turn.text):
+            previous = deduped[-1]
+            deduped[-1] = VisibleTurn(
+                previous.role,
+                previous.text,
+                previous.at or turn.at,
+                previous.event_id or turn.event_id,
+            )
+            continue
+        deduped.append(turn)
+    return [turn for turn in deduped
+            if turn.role.lower() not in ("developer", "system")]
+
+
+def visible_turns(
+        source: Path, home: Optional[Path] = None
+        ) -> tuple[list[VisibleTurn], str]:
     """`(turns, status)` for one session, as a person would read it.
 
     The single definition of what counts as the conversation. It lived
@@ -1990,36 +4548,21 @@ def visible_turns(source: Path) -> tuple[list[VisibleTurn], str]:
     not the conversation. They are the longest thing in a Codex rollout,
     and treating them as content pushes the actual exchange off screen.
     """
-    turns, status = _read_session_turns(source)
+    turns, status = _read_session_turns(source, home)
     if status != "ok":
         return ([], status)
-    deduped: list[VisibleTurn] = []
-    for turn in turns:
-        if (deduped and deduped[-1].role == turn.role
-                and deduped[-1].text == turn.text):
-            # Codex emits the same reply in two adjacent record shapes.
-            # Keep the richer provenance if only one spelling has it.
-            previous = deduped[-1]
-            deduped[-1] = VisibleTurn(
-                previous.role,
-                previous.text,
-                previous.at or turn.at,
-                previous.event_id or turn.event_id,
-            )
-            continue
-        deduped.append(turn)
-    return ([turn for turn in deduped
-             if turn.role.lower() not in ("developer", "system")], "ok")
+    return (_canonical_visible_turns(turns), "ok")
 
 
-def _turns_from_session(source: Path) -> list[VisibleTurn]:
+def _turns_from_session(
+        source: Path, home: Optional[Path] = None) -> list[VisibleTurn]:
     """Turns only, for callers that already treat absence as absence.
 
     `title` is one: a session it cannot read gets a date-shaped fallback,
     which is honest on its own terms. `inspect` needs the status and uses
     `_read_session_turns` directly.
     """
-    return visible_turns(source)[0]
+    return visible_turns(source, home)[0]
 
 
 def _is_user_role(role: str) -> bool:
@@ -2061,7 +4604,15 @@ def build_title(source: Path, home: Path, *, raw: bool = False,
     things, and only the caller showing them can decide whether to admit
     the difference.
     """
-    turns = _turns_from_session(source)
+    desktop_payload, desktop_status = _read_claude_desktop_metadata(
+        source, home)
+    if desktop_status == "ok" and desktop_payload is not None:
+        desktop_title = desktop_payload.get("title")
+        if isinstance(desktop_title, str) and desktop_title.strip():
+            title = desktop_title if raw else mask_text(desktop_title, home)
+            return {"title": _clip(title), "titleSource": "provider-metadata"}
+
+    turns = _turns_from_session(source, home)
     requests = [candidate for role, text in turns if _is_user_role(role)
                 for candidate in [_meaningful_request(text)] if candidate]
 
@@ -2117,6 +4668,8 @@ INSPECT_DEFAULT_TURNS = 20
 def _session_provider(source: Path, home: Path) -> str:
     """Which store a transcript lives in, from its path alone."""
     text = str(source)
+    if _claude_desktop_metadata_for_path(source) is not None:
+        return CLAUDE_DESKTOP_PROVIDER
     if "/.claude/" in text or text.startswith(str(home / ".claude")):
         return "claude"
     if "/.codex/" in text:
@@ -2128,9 +4681,21 @@ def _session_provider(source: Path, home: Path) -> str:
     return "unknown"
 
 
-def _session_workspace(provider: str, source: Path) -> Optional[str]:
+def _session_workspace(
+        provider: str, source: Path,
+        home: Optional[Path] = None) -> Optional[str]:
     """The workspace the session itself recorded, when the store keeps one."""
     try:
+        if provider == CLAUDE_DESKTOP_PROVIDER:
+            payload, status = _read_claude_desktop_metadata(source, home)
+            if status != "ok" or payload is None:
+                return None
+            for value in payload.get("userSelectedFolders", []):
+                location = _safe_location(value)
+                if location:
+                    return location["basename"]
+            location = _safe_location(payload.get("cwd"))
+            return location["basename"] if location else None
         if provider == "claude":
             with source.open("r", encoding="utf-8", errors="replace") as handle:
                 for _ in range(CLAUDE_SCAN_LINES):
@@ -2165,7 +4730,7 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
     its own explicit act.
     """
     provider = _session_provider(source, home)
-    turns, status = visible_turns(source)
+    turns, status = visible_turns(source, home)
 
     def clip(text: str) -> str:
         cleaned = " ".join(text.split())
@@ -2185,8 +4750,10 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
         "status": status,
         "provider": provider,
         "sessionId": _file_access_session_id(
-            provider if provider in ("claude", "codex", "gemini") else "claude", source),
-        "workspace": _session_workspace(provider, source),
+            provider if provider in ("claude", "codex", "gemini",
+                                     CLAUDE_DESKTOP_PROVIDER) else "claude",
+            source, home),
+        "workspace": _session_workspace(provider, source, home),
         "messageCount": len(turns),
         "userTurnCount": sum(1 for role, _ in turns if _is_user_role(role)),
         "firstUserTurn": first_user,
@@ -2204,36 +4771,63 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
 
 
 def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
-    if not source.is_file():
-        raise FileNotFoundError(f"no such session file: {source}")
-    if source.stat().st_size > MAX_PRESERVE_BYTES:
-        raise ValueError(f"refusing to export {source}: exceeds {MAX_PRESERVE_BYTES} bytes "
-                         "(single-session exports are meant to be reviewed, not bulk-dumped)")
+    requested_source = source
+    desktop_descriptor, desktop_source, desktop_status = (
+        _open_claude_desktop_primary(source, home))
+    if desktop_status != "not-desktop":
+        if (desktop_status != "ok" or desktop_source is None
+                or desktop_descriptor is None):
+            raise ValueError(f"cannot resolve Desktop conversation: {desktop_status}")
+        source = desktop_source
     lines = ["# Preserved session export", "",
-             f"Source: `{source if raw else str(source).replace(str(home), '~')}`",
+             f"Source: `{requested_source if raw else str(requested_source).replace(str(home), '~')}`",
              f"Masking: {'DISABLED (--raw)' if raw else 'default-on (email/JWT/API-key/private-key/home-path)'}",
              ""]
     turns = 0
-    for raw_line in source.read_text(encoding="utf-8", errors="replace").splitlines():
-        if not raw_line.strip():
-            continue
+
+    def consume(handle) -> None:
+        nonlocal turns
+        for raw_line in handle:
+            if not raw_line.strip():
+                continue
+            try:
+                parsed = json.loads(raw_line)
+            except JSON_PARSE_ERRORS:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            turn = _extract_turn(parsed)
+            if turn is None:
+                continue
+            role, text = turn
+            if not raw:
+                text = mask_text(text, home)
+            lines.extend((f"## {role}", "", text, ""))
+            turns += 1
+
+    if desktop_descriptor is not None:
         try:
-            parsed = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(parsed, dict):
-            continue
-        turn = _extract_turn(parsed)
-        if turn is None:
-            continue
-        role, text = turn
-        if not raw:
-            text = mask_text(text, home)
-        lines.append(f"## {role}")
-        lines.append("")
-        lines.append(text)
-        lines.append("")
-        turns += 1
+            before = os.fstat(desktop_descriptor)
+            if before.st_size > MAX_PRESERVE_BYTES:
+                raise ValueError(
+                    f"refusing to export {source}: exceeds {MAX_PRESERVE_BYTES} bytes "
+                    "(single-session exports are meant to be reviewed, not bulk-dumped)")
+            with os.fdopen(os.dup(desktop_descriptor), "r", encoding="utf-8",
+                           errors="replace") as handle:
+                consume(handle)
+            if _stat_signature(before) != _stat_signature(
+                    os.fstat(desktop_descriptor)):
+                raise ValueError("Desktop conversation changed during export")
+        finally:
+            os.close(desktop_descriptor)
+    else:
+        if not source.is_file():
+            raise FileNotFoundError(f"no such session file: {source}")
+        if source.stat().st_size > MAX_PRESERVE_BYTES:
+            raise ValueError(f"refusing to export {source}: exceeds {MAX_PRESERVE_BYTES} bytes "
+                             "(single-session exports are meant to be reviewed, not bulk-dumped)")
+        with source.open("r", encoding="utf-8", errors="replace") as handle:
+            consume(handle)
     if turns == 0:
         lines.append("_(no recognizable turns — file kept in its original session-store format)_")
     return "\n".join(lines)
@@ -2244,11 +4838,24 @@ def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
 # not load an unverified helper from a mutable Python search path.
 BACKUP_MAX_BYTES = 2 * 1024 * 1024 * 1024
 BACKUP_MAX_FILES = 10000
+BACKUP_MAX_DEPTH = 128
+RESTORE_MAX_DIRECTORIES = 192
 BACKUP_MANIFEST_MAX_BYTES = 4 * 1024 * 1024
 BACKUP_CHUNK_BYTES = 1024 * 1024
+# APFS/HFS+ expose NAME_MAX=255 UTF-16 code units (not UTF-8 bytes). Every
+# payload path is restored one component at a time, so reject a forged ZIP
+# name the shipped filesystem cannot create before calling it "verified".
+RESTORE_NAME_MAX_UNITS = 255
+# macOS reports PATH_MAX=1024 and symlink(2) reserves one byte for NUL: a
+# 1,024-byte target is already ENAMETOOLONG. Verification must never approve a
+# payload restore cannot create on the shipped platform.
+BACKUP_SYMLINK_MAX_BYTES = 1023
 BACKUP_EXCLUSIONS = [
     "workspace-code", "project-memory", "settings-and-credentials",
     "other-sessions", "external-referenced-files",
+]
+BACKUP_DESKTOP_EXCLUSIONS = [
+    "other-conversation-units", "external-referenced-files",
 ]
 
 
@@ -2258,6 +4865,14 @@ def _backup_relative(value: str) -> PurePosixPath:
     path = PurePosixPath(value)
     if path.is_absolute() or any(p in ("", ".", "..") for p in value.split("/")):
         raise ValueError("unsafe archive path")
+    if len(path.parts) > BACKUP_MAX_DEPTH:
+        raise ValueError("archive path is too deep")
+    try:
+        if any(_filesystem_name_units(component) > RESTORE_NAME_MAX_UNITS
+               for component in path.parts):
+            raise ValueError("archive path component is too long")
+    except UnicodeEncodeError as exc:
+        raise ValueError("archive path is not a filesystem name") from exc
     return path
 
 
@@ -2279,46 +4894,322 @@ def _backup_scope(source_relative: str) -> tuple[str, list[PurePosixPath]]:
             and parts[1] in ("sessions", "archived_sessions")
             and source.suffix == ".jsonl"):
         return "Codex", []
-    raise ValueError("only Claude projects and Codex session JSONL stores are supported")
+    desktop_prefix = CLAUDE_DESKTOP_LOCAL_SESSIONS
+    if (len(parts) >= len(desktop_prefix) + 3
+            and parts[:len(desktop_prefix)] == desktop_prefix
+            and source.suffix == ".json"
+            and re.fullmatch(r"local_[A-Za-z0-9_-]+", source.stem)):
+        # The metadata JSON plus its same-named directory is the complete
+        # owned unit.  userSelectedFolders may point anywhere on disk, but no
+        # path from metadata is ever turned into a backup root.
+        return CLAUDE_DESKTOP_TOOL, [source.with_suffix("")]
+    raise ValueError(
+        "only Claude projects, Claude Desktop conversation units, and Codex session stores are supported")
 
 
-def _backup_check_path(path: Path) -> None:
-    # Resolve the caller's home/temp anchor before this check (macOS /var is a
-    # system symlink), but never resolve away symlinks inside a session store.
-    for item in (path, *path.parents):
-        if item.is_symlink():
+def _backup_scope_name(source_relative: str) -> str:
+    provider, _ = _backup_scope(source_relative)
+    if provider == CLAUDE_DESKTOP_TOOL:
+        return "claude-desktop-conversation-unit"
+    if provider == "Claude":
+        return "claude-code-session"
+    return "codex-session"
+
+
+def _stat_identity(value: os.stat_result) -> tuple[int, int]:
+    return (value.st_dev, value.st_ino)
+
+
+def _stat_signature(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode), value.st_size,
+        value.st_mtime_ns, value.st_ctime_ns, value.st_nlink,
+    )
+
+
+def _content_signature(value: os.stat_result) -> tuple[int, int, int]:
+    return (value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _validated_leaf_name(value: str) -> str:
+    if (not isinstance(value, str) or not value or value in (".", "..")
+            or "/" in value or "\x00" in value):
+        raise ValueError("invalid filesystem name")
+    return value
+
+
+def _relative_components(value: str | PurePosixPath) -> tuple[str, ...]:
+    relative = _backup_relative(str(value))
+    for component in relative.parts:
+        _validated_leaf_name(component)
+    return relative.parts
+
+
+def _open_directory_component(
+        parent_descriptor: int, name: str, *,
+        expected: Optional[tuple[int, int]] = None
+        ) -> tuple[int, tuple[int, int]]:
+    """Open one directory component without a pathname check/use gap."""
+    _validated_leaf_name(name)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    except OSError as exc:
+        try:
+            named = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except OSError:
+            named = None
+        if exc.errno == errno.ELOOP or (
+                named is not None and stat.S_ISLNK(named.st_mode)):
+            raise ValueError("symlinks are not supported in session backups") from exc
+        raise
+    try:
+        info = os.fstat(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    # Directory mtimes/ctimes change when unrelated names are created in the
+    # same directory (for example, publishing a backup beside a synthetic
+    # HOME in an integration test).  The security boundary is the opened
+    # component's inode, device, and no-follow traversal; entry identities are
+    # inventoried separately and the entire scoped tree is walked again before
+    # publication.
+    signature = _stat_identity(info)
+    if (not stat.S_ISDIR(info.st_mode)
+            or (expected is not None and signature != expected)):
+        os.close(descriptor)
+        raise ValueError("session path changed during backup")
+    return descriptor, signature
+
+
+@dataclass(frozen=True)
+class _BackupEntry:
+    relative: str
+    kind: str
+    signature: tuple[int, int, int, int, int, int, int]
+
+    @property
+    def size(self) -> int:
+        return self.signature[3]
+
+
+@dataclass
+class _BackupInventory:
+    entries: dict[str, _BackupEntry]
+    directories: dict[str, tuple[int, int]]
+    device: int
+
+    def snapshot(self) -> tuple:
+        return (
+            tuple(sorted((key, entry.kind, entry.signature)
+                         for key, entry in self.entries.items())),
+            tuple(sorted(self.directories.items())),
+        )
+
+
+def _backup_open_parent(
+        home_descriptor: int, relative: str | PurePosixPath,
+        directories: dict[str, tuple[int, int]], *,
+        record: bool) -> tuple[int, str]:
+    parts = _relative_components(relative)
+    descriptor = os.dup(home_descriptor)
+    prefix: list[str] = []
+    try:
+        home_identity = _stat_identity(os.fstat(descriptor))
+        if record:
+            directories.setdefault("", home_identity)
+        elif directories.get("") != home_identity:
+            raise ValueError("session home changed during backup")
+        for component in parts[:-1]:
+            prefix.append(component)
+            key = "/".join(prefix)
+            expected = None if record else directories.get(key)
+            if not record and expected is None:
+                raise ValueError("session directory was not inventoried")
+            next_descriptor, identity = _open_directory_component(
+                descriptor, component, expected=expected)
+            os.close(descriptor)
+            descriptor = next_descriptor
+            if record:
+                previous = directories.setdefault(key, identity)
+                if previous != identity:
+                    raise ValueError("session path changed during inventory")
+        return descriptor, parts[-1]
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _backup_open_directory(
+        home_descriptor: int, relative: PurePosixPath,
+        directories: dict[str, tuple[int, int]], *,
+        record: bool,
+        missing_ok: bool = False) -> Optional[int]:
+    parent_descriptor, name = _backup_open_parent(
+        home_descriptor, relative, directories, record=record)
+    try:
+        key = str(relative)
+        expected = None if record else directories.get(key)
+        if not record and expected is None:
+            raise ValueError("session directory was not inventoried")
+        try:
+            descriptor, identity = _open_directory_component(
+                parent_descriptor, name, expected=expected)
+        except FileNotFoundError:
+            if missing_ok:
+                return None
+            raise
+        if record:
+            previous = directories.setdefault(key, identity)
+            if previous != identity:
+                os.close(descriptor)
+                raise ValueError("session path changed during inventory")
+        return descriptor
+    finally:
+        os.close(parent_descriptor)
+
+
+def _backup_inventory(home_descriptor: int, source_relative: str) -> _BackupInventory:
+    """Inventory one session below an already-open canonical home directory.
+
+    Every later read reopens components beneath this descriptor and requires
+    the exact directory/file identities recorded here. A parent renamed and
+    replaced by a symlink can therefore never redirect the copy outside home.
+    """
+    provider, roots = _backup_scope(source_relative)
+    allow_owned_links = provider == CLAUDE_DESKTOP_TOOL
+    entries: dict[str, _BackupEntry] = {}
+    directories: dict[str, tuple[int, int]] = {
+        "": _stat_identity(os.fstat(home_descriptor)),
+    }
+    source_device: Optional[int] = None
+
+    def require_device(info: os.stat_result) -> None:
+        if source_device is not None and info.st_dev != source_device:
+            raise ValueError("session scope crosses a filesystem boundary")
+
+    def add(relative: PurePosixPath, *, allow_link: bool = False) -> None:
+        nonlocal source_device
+        parent_descriptor, name = _backup_open_parent(
+            home_descriptor, relative, directories, record=True)
+        try:
+            info = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        finally:
+            os.close(parent_descriptor)
+        kind = "symlink" if stat.S_ISLNK(info.st_mode) else "file"
+        if kind == "symlink" and not allow_link:
             raise ValueError("symlinks are not supported in session backups")
-
-
-def _backup_inventory(home: Path, source_relative: str) -> dict[str, Path]:
-    _, roots = _backup_scope(source_relative)
-    result: dict[str, Path] = {}
-
-    def add(path: Path) -> None:
-        _backup_check_path(path)
-        info = path.stat()
-        if not stat.S_ISREG(info.st_mode):
+        if kind == "file" and not stat.S_ISREG(info.st_mode):
             raise ValueError("session backups require regular files")
-        result[path.relative_to(home).as_posix()] = path
-        if len(result) > BACKUP_MAX_FILES:
+        if kind == "file" and info.st_nlink != 1:
+            raise ValueError("hard-linked files are not supported in session backups")
+        if source_device is None:
+            source_device = info.st_dev
+            if any(identity[0] != source_device for identity in directories.values()):
+                raise ValueError("session scope crosses a filesystem boundary")
+        require_device(info)
+        key = str(relative)
+        entries[key] = _BackupEntry(key, kind, _stat_signature(info))
+        if len(entries) > BACKUP_MAX_FILES:
             raise ValueError("session backup has too many files")
 
-    add(home / source_relative)
+    def walk(relative: PurePosixPath) -> None:
+        try:
+            descriptor = _backup_open_directory(
+                home_descriptor, relative, directories, record=True, missing_ok=True)
+        except FileNotFoundError:
+            return
+        if descriptor is None:
+            return
+        try:
+            require_device(os.fstat(descriptor))
+            if len(directories) > BACKUP_MAX_FILES:
+                raise ValueError("session backup has too many directories")
+            try:
+                entries_context = os.scandir(descriptor)
+            except OSError as exc:
+                raise ValueError("session sidecar directory is unreadable") from exc
+            with entries_context as directory_entries:
+                for directory_entry in directory_entries:
+                    name = directory_entry.name
+                    _validated_leaf_name(name)
+                    child = relative / name
+                    try:
+                        info = os.stat(
+                            name, dir_fd=descriptor,
+                            follow_symlinks=False)
+                    except FileNotFoundError as exc:
+                        raise ValueError(
+                            "session files changed during inventory") from exc
+                    require_device(info)
+                    if stat.S_ISDIR(info.st_mode):
+                        child_descriptor, identity = _open_directory_component(
+                            descriptor, name, expected=_stat_identity(info))
+                        try:
+                            key = str(child)
+                            previous = directories.setdefault(key, identity)
+                            if previous != identity:
+                                raise ValueError(
+                                    "session path changed during inventory")
+                        finally:
+                            os.close(child_descriptor)
+                        walk(child)
+                    elif stat.S_ISLNK(info.st_mode):
+                        add(child, allow_link=allow_owned_links)
+                    elif stat.S_ISREG(info.st_mode):
+                        add(child)
+                    else:
+                        raise ValueError(
+                            "session backups require regular files")
+        finally:
+            os.close(descriptor)
+
+    add(PurePosixPath(source_relative))
     for relative in roots:
-        root = home / relative
-        _backup_check_path(root)
-        if not root.exists():
-            continue
-        if not root.is_dir():
-            raise ValueError("session sidecar root is not a directory")
-        for current, dirs, files in os.walk(root, followlinks=False):
-            for name in dirs:
-                _backup_check_path(Path(current) / name)
-            for name in sorted(files):
-                add(Path(current) / name)
-    if sum(p.stat().st_size for p in result.values()) > BACKUP_MAX_BYTES:
+        walk(relative)
+
+    if source_device is None:
+        raise ValueError("session source is missing")
+    if any(identity[0] != source_device for identity in directories.values()):
+        raise ValueError("session scope crosses a filesystem boundary")
+    inventory = _BackupInventory(
+        dict(sorted(entries.items())), directories, source_device)
+    if sum(entry.size for entry in inventory.entries.values()) > BACKUP_MAX_BYTES:
         raise ValueError("session backup exceeds the size limit")
-    return dict(sorted(result.items()))
+    restore_directories: set[PurePosixPath] = set()
+    for name in inventory.entries:
+        parent = PurePosixPath(name).parent
+        while str(parent) != ".":
+            restore_directories.add(parent)
+            parent = parent.parent
+        if len(restore_directories) > RESTORE_MAX_DIRECTORIES:
+            # Restore has a deliberately bounded descriptor/cleanup ledger.
+            # Reject before reading payload bytes or allocating a temporary
+            # ZIP, rather than doing gigabytes of work for an archive the
+            # verifier is guaranteed to reject.
+            raise ValueError("backup has too many restore directories")
+
+    if provider == CLAUDE_DESKTOP_TOOL:
+        metadata_entry = inventory.entries[source_relative]
+        metadata = _backup_read_bytes(
+            home_descriptor, inventory, metadata_entry,
+            limit=CLAUDE_DESKTOP_METADATA_MAX_BYTES)
+        payload = _parse_claude_desktop_metadata(metadata, PurePosixPath(source_relative).stem)
+        if payload is None:
+            raise ValueError("invalid Claude Desktop conversation metadata")
+        cli_session_id = payload["cliSessionId"]
+        if re.fullmatch(r"[A-Za-z0-9_-]+", cli_session_id) is None:
+            raise ValueError("invalid Claude Desktop primary transcript identity")
+        unit = PurePosixPath(source_relative).with_suffix("")
+        primary = [
+            entry for entry in inventory.entries.values()
+            if PurePosixPath(entry.relative).name == f"{cli_session_id}.jsonl"
+            and unit in PurePosixPath(entry.relative).parents
+            and entry.kind == "file"
+        ]
+        if len(primary) != 1:
+            raise ValueError("Claude Desktop conversation has no unique primary transcript")
+    return inventory
 
 
 def _backup_stream(source, target=None, *, limit: int = BACKUP_MAX_BYTES) -> tuple[int, str]:
@@ -2337,20 +5228,85 @@ def _backup_stream(source, target=None, *, limit: int = BACKUP_MAX_BYTES) -> tup
     return size, digest.hexdigest()
 
 
-def _backup_read_file(path: Path, target=None) -> tuple[int, str]:
-    _backup_check_path(path)
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, "rb") as source:
-        before = os.fstat(source.fileno())
-        if not stat.S_ISREG(before.st_mode):
-            raise ValueError("session backups require regular files")
-        result = _backup_stream(source, target)
-        after = os.fstat(source.fileno())
-    current = path.stat()
-    identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
-    if identity(before) != identity(after) or identity(after) != identity(current):
-        raise ValueError("session changed during backup; retry after it stops writing")
-    return result
+def _backup_read_file(
+        home_descriptor: int, inventory: _BackupInventory,
+        entry: _BackupEntry, target=None, *,
+        limit: int = BACKUP_MAX_BYTES) -> tuple[int, str]:
+    parent_descriptor, name = _backup_open_parent(
+        home_descriptor, entry.relative, inventory.directories, record=False)
+    try:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                dir_fd=parent_descriptor,
+            )
+        except OSError as exc:
+            raise ValueError(
+                "session changed during backup; retry after it stops writing") from exc
+        try:
+            before = os.fstat(descriptor)
+            if (not stat.S_ISREG(before.st_mode)
+                    or before.st_dev != inventory.device
+                    or before.st_nlink != 1
+                    or _stat_signature(before) != entry.signature):
+                raise ValueError("session changed during backup; retry after it stops writing")
+            with os.fdopen(os.dup(descriptor), "rb") as source:
+                result = _backup_stream(source, target, limit=limit)
+            after = os.fstat(descriptor)
+            named = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+            if (_stat_signature(before) != _stat_signature(after)
+                    or _stat_signature(after) != _stat_signature(named)):
+                raise ValueError("session changed during backup; retry after it stops writing")
+            return result
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(parent_descriptor)
+
+
+def _backup_read_bytes(
+        home_descriptor: int, inventory: _BackupInventory,
+        entry: _BackupEntry, *, limit: int) -> bytes:
+    target = io.BytesIO()
+    size, _ = _backup_read_file(
+        home_descriptor, inventory, entry, target, limit=limit)
+    if size > limit:
+        raise ValueError("session backup exceeds the size limit")
+    return target.getvalue()
+
+
+def _backup_read_symlink(
+        home_descriptor: int, inventory: _BackupInventory,
+        entry: _BackupEntry, target=None) -> tuple[int, str]:
+    """Copy a Desktop-owned link as link text, never its referent.
+
+    Desktop sandboxes commonly leave ``.claude/debug/latest`` pointing at a
+    now-vanished VM path.  Rejecting it made an otherwise valid conversation
+    impossible to preserve; following it could escape the conversation unit.
+    The ZIP payload therefore stores only ``readlink(2)`` bytes and restore
+    recreates the link after every regular file has been written.
+    """
+    parent_descriptor, name = _backup_open_parent(
+        home_descriptor, entry.relative, inventory.directories, record=False)
+    try:
+        before = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (not stat.S_ISLNK(before.st_mode)
+                or _stat_signature(before) != entry.signature):
+            raise ValueError("session changed during backup; retry after it stops writing")
+        value = os.fsencode(os.readlink(name, dir_fd=parent_descriptor))
+        if len(value) > BACKUP_SYMLINK_MAX_BYTES:
+            raise ValueError("session backup symlink target is too large")
+        after = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        current = os.fsencode(os.readlink(name, dir_fd=parent_descriptor))
+        if _stat_signature(before) != _stat_signature(after) or current != value:
+            raise ValueError("session changed during backup; retry after it stops writing")
+        digest = hashlib.sha256(value).hexdigest()
+        if target is not None:
+            target.write(value)
+        return len(value), digest
+    finally:
+        os.close(parent_descriptor)
 
 
 def _backup_manifest(archive: zipfile.ZipFile) -> dict:
@@ -2370,17 +5326,27 @@ def _backup_manifest(archive: zipfile.ZipFile) -> dict:
     manifest_info = archive.getinfo("manifest.json")
     if manifest_info.file_size > BACKUP_MANIFEST_MAX_BYTES:
         raise ValueError("backup manifest exceeds the size limit")
-    manifest = json.loads(archive.read(manifest_info))
+    try:
+        manifest = json.loads(archive.read(manifest_info))
+    except JSON_PARSE_ERRORS as exc:
+        raise ValueError("invalid backup manifest") from exc
     if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1:
         raise ValueError("unsupported backup manifest")
     source = manifest.get("sourceRelative")
     provider, roots = _backup_scope(source)
     if manifest.get("provider") != provider:
         raise ValueError("backup provider does not match its source")
+    expected_scope = _backup_scope_name(source)
+    if manifest.get("scope", expected_scope) != expected_scope:
+        raise ValueError("backup scope does not match its source")
     entries = manifest.get("files")
     if not isinstance(entries, list) or not entries or len(entries) > BACKUP_MAX_FILES:
         raise ValueError("invalid backup manifest files")
     expected = {"manifest.json"}
+    entries_by_path = {}
+    payload_paths: set[str] = set()
+    payload_ancestors: set[str] = set()
+    restore_directories: set[PurePosixPath] = set()
     total = 0
     for entry in entries:
         if not isinstance(entry, dict):
@@ -2391,11 +5357,44 @@ def _backup_manifest(archive: zipfile.ZipFile) -> dict:
         name = "payload/" + str(relative)
         if name in expected:
             raise ValueError("duplicate backup file path")
+        relative_text = str(relative)
+        parents = {
+            str(parent) for parent in relative.parents
+            if str(parent) != "."
+        }
+        # ZIP has no filesystem type constraints between payload entries. A
+        # symlink/file can therefore be declared at `a` while another payload
+        # lives at `a/b`; verification used to approve that impossible tree
+        # and restore then failed after partial work. Every payload entry is a
+        # leaf, so neither an earlier nor a later path may be its ancestor.
+        if (relative_text in payload_ancestors
+                or any(parent in payload_paths for parent in parents)):
+            raise ValueError("backup payload paths have an ancestor conflict")
         expected.add(name)
+        entries_by_path[relative_text] = entry
+        payload_paths.add(relative_text)
+        payload_ancestors.update(parents)
+        parent = relative.parent
+        while str(parent) != ".":
+            restore_directories.add(parent)
+            parent = parent.parent
+        if len(restore_directories) > RESTORE_MAX_DIRECTORIES:
+            raise ValueError("backup has too many restore directories")
         size, digest = entry.get("size"), entry.get("sha256")
+        kind = entry.get("kind", "file")
+        expected_category = _backup_category(
+            provider, source, str(relative))
         if (type(size) is not int or size < 0 or not isinstance(digest, str)
-                or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
-            raise ValueError("invalid backup file size or digest")
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                or kind not in ("file", "symlink")
+                or entry.get("category") != expected_category
+                or (kind == "symlink" and size > BACKUP_SYMLINK_MAX_BYTES)):
+            raise ValueError("invalid backup file metadata")
+        if kind == "symlink" and not (
+                provider == CLAUDE_DESKTOP_TOOL
+                and str(relative) != source
+                and any(root in relative.parents for root in roots)):
+            raise ValueError("backup symlinks are limited to Claude Desktop sidecars")
         total += size
         if total > BACKUP_MAX_BYTES:
             raise ValueError("session backup exceeds the size limit")
@@ -2403,6 +5402,28 @@ def _backup_manifest(archive: zipfile.ZipFile) -> dict:
             raise ValueError("backup file is missing or has the wrong size")
     if expected != set(names) or "payload/" + source not in expected:
         raise ValueError("backup has unexpected files or no primary transcript")
+    if provider == CLAUDE_DESKTOP_TOOL:
+        metadata_info = archive.getinfo("payload/" + source)
+        metadata_entry = entries_by_path.get(source)
+        if (metadata_entry is None or metadata_entry.get("kind", "file") != "file"
+                or metadata_info.file_size > CLAUDE_DESKTOP_METADATA_MAX_BYTES):
+            raise ValueError("invalid Claude Desktop conversation metadata")
+        payload = _parse_claude_desktop_metadata(
+            archive.read(metadata_info), PurePosixPath(source).stem)
+        if payload is None:
+            raise ValueError("invalid Claude Desktop conversation metadata")
+        cli_session_id = payload["cliSessionId"]
+        if re.fullmatch(r"[A-Za-z0-9_-]+", cli_session_id) is None:
+            raise ValueError("invalid Claude Desktop primary transcript identity")
+        unit = PurePosixPath(source).with_suffix("")
+        primary = [
+            path for path, entry in entries_by_path.items()
+            if PurePosixPath(path).name == f"{cli_session_id}.jsonl"
+            and unit in PurePosixPath(path).parents
+            and entry.get("kind", "file") == "file"
+        ]
+        if len(primary) != 1:
+            raise ValueError("Claude Desktop backup has no unique primary transcript")
     return manifest
 
 
@@ -2410,22 +5431,36 @@ def _backup_verify_open(archive: zipfile.ZipFile) -> dict:
     manifest = _backup_manifest(archive)
     for entry in manifest["files"]:
         with archive.open("payload/" + entry["path"]) as source:
-            size, digest = _backup_stream(source, limit=entry["size"])
+            if entry.get("kind", "file") == "symlink":
+                value = source.read(BACKUP_SYMLINK_MAX_BYTES + 1)
+                size = len(value)
+                digest = hashlib.sha256(value).hexdigest()
+                if not value or b"\x00" in value:
+                    raise ValueError("backup symlink target is invalid")
+            else:
+                size, digest = _backup_stream(source, limit=entry["size"])
         if (size, digest) != (entry["size"], entry["sha256"]):
             raise ValueError("backup checksum mismatch")
     return manifest
 
 
 def _backup_result(archive: Path, manifest: dict, restored: Path | None = None) -> dict:
+    # A Desktop conversation unit is archived recursively without filtering
+    # names. It can contain copied code, settings, tokens, or credentials, so
+    # claiming those categories were excluded would be a false safety receipt.
+    exclusions = (BACKUP_DESKTOP_EXCLUSIONS
+                  if manifest["provider"] == CLAUDE_DESKTOP_TOOL
+                  else BACKUP_EXCLUSIONS)
     return {
         "schemaVersion": 1, "status": "restored" if restored else "verified",
         "archive": str(archive), "provider": manifest["provider"],
+        "scope": manifest.get("scope") or _backup_scope_name(manifest["sourceRelative"]),
         "sourceRelative": manifest["sourceRelative"],
         "fileCount": len(manifest["files"]),
         "totalBytes": sum(e["size"] for e in manifest["files"]),
         "categories": sorted(set(e["category"] for e in manifest["files"]
                                  if isinstance(e.get("category"), str))),
-        "excluded": BACKUP_EXCLUSIONS,
+        "excluded": list(exclusions),
         "masked": False, "encrypted": False,
         "restoredRoot": str(restored) if restored else None,
         "restoredSource": str(restored / manifest["sourceRelative"]) if restored else None,
@@ -2434,10 +5469,179 @@ def _backup_result(archive: Path, manifest: dict, restored: Path | None = None) 
 
 def verify_session_backup(archive: Path) -> dict:
     archive = archive.expanduser().absolute()
-    # A caller may select a symlink to a ZIP; reading it is harmless. Entries
-    # themselves never get this treatment, and extraction never follows links.
-    with zipfile.ZipFile(archive) as bundle:
+    with _open_backup_bundle(archive) as bundle:
         return _backup_result(archive, _backup_verify_open(bundle))
+
+
+@contextlib.contextmanager
+def _open_backup_bundle(archive: Path):
+    """Open one selected archive inode without blocking on special files."""
+    descriptor = os.open(
+        archive,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValueError("backup archive is not a regular file")
+        visible_before = os.lstat(archive)
+        referent_before = os.stat(archive)
+        if _stat_identity(referent_before) != _stat_identity(opened):
+            raise ValueError("backup archive path changed before verification")
+        before = _content_signature(opened)
+        with os.fdopen(os.dup(descriptor), "rb") as handle:
+            with zipfile.ZipFile(handle) as bundle:
+                yield bundle
+        after = os.fstat(descriptor)
+        try:
+            visible_after = os.lstat(archive)
+            referent_after = os.stat(archive)
+        except OSError as exc:
+            raise ValueError(
+                "backup archive path changed during verification") from exc
+        if (_content_signature(after) != before
+                or _stat_signature(visible_after)
+                != _stat_signature(visible_before)
+                or _stat_identity(referent_after) != _stat_identity(after)):
+            raise ValueError("backup archive changed during verification")
+    finally:
+        os.close(descriptor)
+
+
+def _install_sigterm_cleanup(cleanup: Callable[[], None]) -> Any:
+    """Run operation-owned cleanup before LocalProcessRunner's hard kill.
+
+    The app terminates a timed-out process group with SIGTERM, then SIGKILL one
+    second later. Python's default SIGTERM action skips ``finally`` blocks, so
+    a backup could otherwise leave a multi-gigabyte partial ZIP and a restore
+    could leave its partial output tree. The handler exits through SystemExit,
+    which also lets ordinary context managers finish closing their handles.
+    """
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def handle(signum, _frame) -> None:
+        try:
+            cleanup()
+        finally:
+            raise SystemExit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, handle)
+    except ValueError:
+        # Signal handlers may only be installed on Python's main thread. The
+        # shipped CLI always runs there; keeping library calls functional on a
+        # worker thread does not weaken the app-owned execution path.
+        return None
+    return previous
+
+
+def _restore_sigterm_handler(previous: Any) -> None:
+    if previous is not None:
+        signal.signal(signal.SIGTERM, previous)
+
+
+@contextlib.contextmanager
+def _blocked_sigterm():
+    """Make one filesystem mutation and its ownership record indivisible."""
+    if not hasattr(signal, "pthread_sigmask"):
+        yield
+        return
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+def _directory_path_identity(path: Path, expected: tuple[int, int]) -> bool:
+    """Validate a visible directory path without ever following a link."""
+    try:
+        descriptor = _open_directory_nofollow(path)
+    except OSError:
+        return False
+    try:
+        info = os.fstat(descriptor)
+        return stat.S_ISDIR(info.st_mode) and _stat_identity(info) == expected
+    finally:
+        os.close(descriptor)
+
+
+def _unlink_same_file_at(
+        parent_descriptor: int, name: str, identity: tuple[int, int]) -> None:
+    """Best-effort cleanup inside an already-open parent directory."""
+    try:
+        current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if _stat_identity(current) == identity and stat.S_ISREG(current.st_mode):
+            os.unlink(name, dir_fd=parent_descriptor)
+    except OSError:
+        pass
+
+
+def _rollback_new_entry_at(
+        parent_descriptor: int, name: str, identity: tuple[int, int], *,
+        directory: bool) -> None:
+    """Undo a created name only while it still names the known inode."""
+    try:
+        current = os.stat(
+            name, dir_fd=parent_descriptor, follow_symlinks=False)
+        expected_kind = (stat.S_ISDIR(current.st_mode) if directory
+                         else not stat.S_ISDIR(current.st_mode))
+        if _stat_identity(current) != identity or not expected_kind:
+            return
+        if directory:
+            os.rmdir(name, dir_fd=parent_descriptor)
+        else:
+            os.unlink(name, dir_fd=parent_descriptor)
+    except OSError:
+        pass
+
+
+def _remove_same_file(path: Path, identity: tuple[int, int]) -> None:
+    """Compatibility wrapper for descriptor-anchored temporary cleanup."""
+    try:
+        parent_descriptor = _open_directory_nofollow(path.parent)
+    except OSError:
+        return
+    try:
+        _unlink_same_file_at(parent_descriptor, path.name, identity)
+    finally:
+        os.close(parent_descriptor)
+
+
+def _backup_verify_descriptor(descriptor: int) -> dict:
+    """Verify the exact opened ZIP inode, independent of its visible name."""
+    with os.fdopen(os.dup(descriptor), "rb") as handle:
+        handle.seek(0)
+        with zipfile.ZipFile(handle) as bundle:
+            return _backup_verify_open(bundle)
+
+
+def _backup_category(provider: str, source_relative: str, name: str) -> str:
+    path = PurePosixPath(name)
+    path_parts = path.parts
+    if provider == CLAUDE_DESKTOP_TOOL:
+        unit = PurePosixPath(source_relative).with_suffix("")
+        inside = PurePosixPath(name).relative_to(unit).parts if name != source_relative else ()
+        return (
+            "metadata" if name == source_relative else
+            "audit" if inside == ("audit.jsonl",) else
+            "subagents" if "subagents" in inside else
+            "queue" if "sessions" in inside and name.endswith(".jsonl") else
+            "transcript" if name.endswith(".jsonl") else
+            "uploads" if inside and inside[0] == "uploads" else
+            "outputs" if inside and inside[0] == "outputs" else
+            "sidecar"
+        )
+    if name == source_relative:
+        return "transcript"
+    if provider == "Claude":
+        _, roots = _backup_scope(source_relative)
+        for category, root in zip(
+                ("subagents", "tool-results", "file-history", "image-cache", "uploads"),
+                roots):
+            if path == root or root in path.parents:
+                return category
+    return "sidecar"
 
 
 def build_session_backup(source: Path, home: Path, destination: Path, *,
@@ -2455,90 +5659,882 @@ def build_session_backup(source: Path, home: Path, destination: Path, *,
         # /private/var. Resolve only the home prefix, not the session itself.
         relative = source.relative_to(original_home).as_posix()
     provider, _ = _backup_scope(relative)
-    inventory = _backup_inventory(home, relative)
     parent = destination.expanduser().absolute().parent.resolve(strict=True)
-    destination = parent / destination.name
+    destination_name = _validated_leaf_name(destination.name)
+    destination = parent / destination_name
     if any(root == parent or root in parent.parents for root in
-           (home / ".claude", home / ".codex/sessions", home / ".codex/archived_sessions")):
+           (home / ".claude", home / ".codex/sessions", home / ".codex/archived_sessions",
+            _claude_desktop_root(home))):
         raise ValueError("keep the backup outside the live session store")
-    if os.path.lexists(destination):
-        raise ValueError("backup destination already exists; choose a new filename")
-    manifest = {"schemaVersion": 1, "provider": provider, "sourceRelative": relative,
-                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "files": []}
-    fd, temporary = tempfile.mkstemp(prefix=".modore-backup-", dir=parent)
-    os.close(fd)
+    manifest = {
+        "schemaVersion": 1,
+        "provider": provider,
+        "scope": _backup_scope_name(relative),
+        "sourceRelative": relative,
+        "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "files": [],
+    }
+
+    home_descriptor = _open_directory_nofollow(home)
     try:
-        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-            total = 0
-            for name, path in inventory.items():
-                with bundle.open("payload/" + name, "w", force_zip64=True) as target:
-                    size, digest = _backup_read_file(path, target)
-                total += size
-                if total > BACKUP_MAX_BYTES:
-                    raise ValueError("session backup exceeds the size limit")
-                category = ("transcript" if name == relative else
-                            next((kind for kind in ("subagents", "tool-results", "file-history",
-                                                   "image-cache", "uploads")
-                                  if kind in PurePosixPath(name).parts), "sidecar"))
-                manifest["files"].append({"path": name, "size": size,
-                                          "sha256": digest, "category": category})
-            # Detect files appearing/disappearing, and earlier files appended
-            # while later sidecars were being copied. Never publish a success
-            # receipt for a source set that changed under us.
-            if inventory.keys() != _backup_inventory(home, relative).keys():
-                raise ValueError("session files changed during backup; retry when idle")
-            for entry in manifest["files"]:
-                if _backup_read_file(home / entry["path"]) != (entry["size"], entry["sha256"]):
-                    raise ValueError("session changed during backup; retry when idle")
-            bundle.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-        with open(temporary, "rb") as handle:
-            os.fsync(handle.fileno())
-        verify_session_backup(Path(temporary))
-        # Atomic no-clobber publish; unlike replace(), this cannot overwrite a
-        # file created while copying. mkstemp's 0600 permissions are retained.
-        os.link(temporary, destination)
+        parent_descriptor = _open_directory_nofollow(parent)
+    except BaseException:
+        os.close(home_descriptor)
+        raise
+    parent_identity = _stat_identity(os.fstat(parent_descriptor))
+    try:
+        os.stat(
+            destination_name, dir_fd=parent_descriptor,
+            follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    except BaseException:
+        os.close(parent_descriptor)
+        os.close(home_descriptor)
+        raise
+    else:
+        os.close(parent_descriptor)
+        os.close(home_descriptor)
+        raise ValueError(
+            "backup destination already exists; choose a new filename")
+    temporary_name = ".modore-backup-" + os.urandom(16).hex()
+    temporary_descriptor = -1
+    temporary_identity: Optional[tuple[int, int]] = None
+    state = {"published": False, "completed": False}
+
+    def cleanup() -> None:
+        if temporary_identity is not None:
+            _unlink_same_file_at(
+                parent_descriptor, temporary_name, temporary_identity)
+        if (state["published"] and not state["completed"]
+                and temporary_identity is not None):
+            _unlink_same_file_at(
+                parent_descriptor, destination_name, temporary_identity)
+
+    previous_sigterm = _install_sigterm_cleanup(cleanup)
+    try:
+        inventory = _backup_inventory(home_descriptor, relative)
+        with _blocked_sigterm():
+            try:
+                temporary_descriptor = os.open(
+                    temporary_name,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
+            except FileExistsError as exc:
+                raise ValueError(
+                    "could not allocate a private backup filename") from exc
+            try:
+                temporary_info = os.fstat(temporary_descriptor)
+            except BaseException:
+                try:
+                    recovered = os.fstat(temporary_descriptor)
+                except OSError:
+                    recovered = None
+                if recovered is not None:
+                    _rollback_new_entry_at(
+                        parent_descriptor, temporary_name,
+                        _stat_identity(recovered), directory=False)
+                raise
+            if (not stat.S_ISREG(temporary_info.st_mode)
+                    or temporary_info.st_nlink != 1):
+                raise ValueError("backup temporary file is not private")
+            temporary_identity = _stat_identity(temporary_info)
+            os.fchmod(temporary_descriptor, 0o600)
+
+        # ZipFile receives a duplicate of the already-open inode. It never
+        # resolves the random temporary name.
+        with os.fdopen(os.dup(temporary_descriptor), "r+b") as handle:
+            handle.seek(0)
+            handle.truncate()
+            with zipfile.ZipFile(
+                    handle, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+                total = 0
+                for name, inventory_entry in inventory.entries.items():
+                    with bundle.open(
+                            "payload/" + name, "w", force_zip64=True) as target:
+                        reader = (_backup_read_symlink
+                                  if inventory_entry.kind == "symlink"
+                                  else _backup_read_file)
+                        size, digest = reader(
+                            home_descriptor, inventory, inventory_entry, target)
+                    total += size
+                    if total > BACKUP_MAX_BYTES:
+                        raise ValueError("session backup exceeds the size limit")
+                    manifest["files"].append({
+                        "path": name,
+                        "size": size,
+                        "sha256": digest,
+                        "category": _backup_category(provider, relative, name),
+                        "kind": inventory_entry.kind,
+                    })
+
+                # Rewalk from the fixed home descriptor, then hash every exact
+                # inventoried inode again before making a success claim.
+                current = _backup_inventory(home_descriptor, relative)
+                if inventory.snapshot() != current.snapshot():
+                    raise ValueError(
+                        "session files changed during backup; retry when idle")
+                for manifest_entry in manifest["files"]:
+                    inventory_entry = inventory.entries[manifest_entry["path"]]
+                    reader = (_backup_read_symlink
+                              if inventory_entry.kind == "symlink"
+                              else _backup_read_file)
+                    if reader(
+                            home_descriptor, inventory, inventory_entry) != (
+                                manifest_entry["size"], manifest_entry["sha256"]):
+                        raise ValueError(
+                            "session changed during backup; retry when idle")
+                bundle.writestr(
+                    "manifest.json",
+                    json.dumps(manifest, ensure_ascii=False, indent=2),
+                )
+            handle.flush()
+        os.fsync(temporary_descriptor)
+
+        named_temp = os.stat(
+            temporary_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        opened_temp = os.fstat(temporary_descriptor)
+        if (_stat_identity(named_temp) != temporary_identity
+                or _stat_identity(opened_temp) != temporary_identity
+                or not stat.S_ISREG(named_temp.st_mode)
+                or named_temp.st_nlink != 1
+                or opened_temp.st_nlink != 1):
+            raise ValueError("backup temporary file changed during creation")
+        before_verify = os.fstat(temporary_descriptor)
+        verified_manifest = _backup_verify_descriptor(temporary_descriptor)
+        after_verify = os.fstat(temporary_descriptor)
+        if _content_signature(before_verify) != _content_signature(after_verify):
+            raise ValueError("backup ZIP changed during verification")
+        if verified_manifest != manifest:
+            raise ValueError("backup manifest changed during verification")
+        if not _directory_path_identity(parent, parent_identity):
+            raise ValueError(
+                "backup destination directory changed during creation")
+
+        # linkat is an atomic no-clobber publish from the exact named inode in
+        # the already-open parent. Never reopen the temporary ZIP by pathname.
+        with _blocked_sigterm():
+            named_temp = os.stat(
+                temporary_name, dir_fd=parent_descriptor,
+                follow_symlinks=False)
+            if (_stat_identity(named_temp) != temporary_identity
+                    or named_temp.st_nlink != 1
+                    or _stat_identity(os.fstat(
+                        temporary_descriptor)) != temporary_identity):
+                raise ValueError(
+                    "backup temporary file changed before publish")
+            try:
+                os.link(
+                    temporary_name,
+                    destination_name,
+                    src_dir_fd=parent_descriptor,
+                    dst_dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as exc:
+                raise ValueError(
+                    "backup destination already exists; choose a new filename") from exc
+            state["published"] = True
+        published = os.stat(
+            destination_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (_stat_identity(published) != temporary_identity
+                or not stat.S_ISREG(published.st_mode)
+                or published.st_nlink != 2
+                or os.fstat(temporary_descriptor).st_nlink != 2):
+            raise ValueError("published backup identity mismatch")
+        # Linking changes ctime/nlink, so take a fresh stable signature and
+        # verify the exact opened inode again after publication. A mutation in
+        # the gap after the first verify can never become a success receipt.
+        before_published_verify = os.fstat(temporary_descriptor)
+        if _backup_verify_descriptor(temporary_descriptor) != manifest:
+            raise ValueError("published backup manifest mismatch")
+        after_published_verify = os.fstat(temporary_descriptor)
+        if (_content_signature(before_published_verify)
+                != _content_signature(after_published_verify)):
+            raise ValueError("published backup changed during verification")
+        named_temp = os.stat(
+            temporary_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        published = os.stat(
+            destination_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (_stat_identity(named_temp) != temporary_identity
+                or _stat_identity(published) != temporary_identity
+                or named_temp.st_nlink != 2
+                or published.st_nlink != 2):
+            raise ValueError("published backup names changed during verification")
+        if not _directory_path_identity(parent, parent_identity):
+            raise ValueError(
+                "backup destination directory changed during publish")
+        state["completed"] = True
         return _backup_result(destination, manifest)
     finally:
-        os.unlink(temporary)
+        with _blocked_sigterm():
+            try:
+                cleanup()
+            finally:
+                if temporary_descriptor >= 0:
+                    try:
+                        os.close(temporary_descriptor)
+                    except OSError:
+                        pass
+                for descriptor in (parent_descriptor, home_descriptor):
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                _restore_sigterm_handler(previous_sigterm)
+
+@dataclass(frozen=True)
+class _RestoreOwnedEntry:
+    parent: str
+    name: str
+    kind: str
+    identity: tuple[int, int]
+    size: int
+    digest: str
+
+
+class _RestoreLedger:
+    """Own restore outputs by open descriptors, never by mutable paths."""
+
+    def __init__(self, parent: Path, parent_descriptor: int, root_name: str):
+        self.parent = parent
+        self.parent_descriptor = os.dup(parent_descriptor)
+        try:
+            parent_info = os.fstat(self.parent_descriptor)
+        except BaseException:
+            os.close(self.parent_descriptor)
+            raise
+        self.parent_identity = _stat_identity(parent_info)
+        self.parent_device = parent_info.st_dev
+        self.root_name = _validated_leaf_name(root_name)
+        self.root_descriptor: Optional[int] = None
+        self.root_identity: Optional[tuple[int, int]] = None
+        self.device: Optional[int] = None
+        # relative -> (held descriptor, identity, parent relative, leaf name)
+        self.directories: dict[
+            str, tuple[int, tuple[int, int], str, str]
+        ] = {}
+        self.owned: list[_RestoreOwnedEntry] = []
+
+    def create_root(self) -> None:
+        with _blocked_sigterm():
+            try:
+                os.stat(
+                    self.root_name,
+                    dir_fd=self.parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError(
+                    "restore requires a NEW directory; existing data is never overwritten")
+            try:
+                os.mkdir(self.root_name, 0o700, dir_fd=self.parent_descriptor)
+            except FileExistsError as exc:
+                raise ValueError(
+                    "restore requires a NEW directory; existing data is never overwritten") from exc
+            descriptor = -1
+            try:
+                descriptor = os.open(
+                    self.root_name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=self.parent_descriptor,
+                )
+                opened = os.fstat(descriptor)
+                identity = _stat_identity(opened)
+                # Ledger ownership before the namespace recheck: if that
+                # recheck fails, cleanup can remove only this exact inode.
+                self.root_identity = identity
+                observed = os.stat(
+                    self.root_name,
+                    dir_fd=self.parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except BaseException:
+                if descriptor >= 0:
+                    if self.root_identity is None:
+                        try:
+                            recovered = os.fstat(descriptor)
+                        except OSError:
+                            recovered = None
+                        if (recovered is not None
+                                and stat.S_ISDIR(recovered.st_mode)):
+                            self.root_identity = _stat_identity(recovered)
+                    os.close(descriptor)
+                raise
+            if (not stat.S_ISDIR(opened.st_mode)
+                    or _stat_identity(observed) != self.root_identity
+                    or observed.st_dev != self.parent_device
+                    or opened.st_dev != self.parent_device):
+                os.close(descriptor)
+                raise ValueError(
+                    "restore destination crossed a filesystem boundary")
+            self.root_descriptor = descriptor
+            self.device = opened.st_dev
+            os.fchmod(descriptor, 0o700)
+
+    def validate_root(self) -> None:
+        if self.root_descriptor is None or self.root_identity is None:
+            raise ValueError("restore destination was not created")
+        if not _directory_path_identity(self.parent, self.parent_identity):
+            raise ValueError("restore destination parent changed during restore")
+        try:
+            named = os.stat(
+                self.root_name,
+                dir_fd=self.parent_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise ValueError("restore destination changed during restore") from exc
+        if (not stat.S_ISDIR(named.st_mode)
+                or _stat_identity(named) != self.root_identity):
+            raise ValueError("restore destination changed during restore")
+
+    def open_directory(self, relative: str, *, create: bool) -> int:
+        self.validate_root()
+        assert self.root_descriptor is not None
+        descriptor = os.dup(self.root_descriptor)
+        if not relative:
+            return descriptor
+        prefix: list[str] = []
+        try:
+            for component in _relative_components(relative):
+                parent_key = "/".join(prefix)
+                prefix.append(component)
+                key = "/".join(prefix)
+                recorded = self.directories.get(key)
+                if recorded is None:
+                    if not create:
+                        raise ValueError(
+                            "restore directory changed during restore")
+                    with _blocked_sigterm():
+                        try:
+                            os.mkdir(component, 0o700, dir_fd=descriptor)
+                        except FileExistsError as exc:
+                            raise ValueError(
+                                "restore archive paths conflict with existing data") from exc
+                        child = -1
+                        try:
+                            child = os.open(
+                                component,
+                                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=descriptor,
+                            )
+                            opened = os.fstat(child)
+                            identity = _stat_identity(opened)
+                            # Record the opened inode before the fallible named
+                            # recheck, dup, or chmod.
+                            self.directories[key] = (
+                                -1, identity, parent_key, component)
+                            observed = os.stat(
+                                component,
+                                dir_fd=descriptor,
+                                follow_symlinks=False,
+                            )
+                            if (not stat.S_ISDIR(opened.st_mode)
+                                    or _stat_identity(observed) != identity
+                                    or opened.st_dev != self.device):
+                                raise ValueError(
+                                    "restore directory changed during creation")
+                            held = os.dup(child)
+                            try:
+                                self.directories[key] = (
+                                    held, identity, parent_key, component)
+                            except BaseException:
+                                os.close(held)
+                                raise
+                            os.fchmod(child, 0o700)
+                        except BaseException:
+                            if child >= 0:
+                                if key not in self.directories:
+                                    try:
+                                        recovered = os.fstat(child)
+                                    except OSError:
+                                        recovered = None
+                                    if (recovered is not None
+                                            and stat.S_ISDIR(
+                                                recovered.st_mode)):
+                                        self.directories[key] = (
+                                            -1, _stat_identity(recovered),
+                                            parent_key, component)
+                                os.close(child)
+                            raise
+                else:
+                    _, identity, recorded_parent, recorded_name = recorded
+                    if (recorded_parent != parent_key
+                            or recorded_name != component):
+                        raise ValueError("restore directory ledger mismatch")
+                    try:
+                        child = os.open(
+                            component,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=descriptor,
+                        )
+                    except OSError as exc:
+                        raise ValueError(
+                            "restore directory changed during restore") from exc
+                    try:
+                        opened = os.fstat(child)
+                    except BaseException:
+                        os.close(child)
+                        raise
+                    if (not stat.S_ISDIR(opened.st_mode)
+                            or _stat_identity(opened) != identity
+                            or opened.st_dev != self.device):
+                        os.close(child)
+                        raise ValueError(
+                            "restore directory changed during restore")
+                os.close(descriptor)
+                descriptor = child
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def record_owned(
+            self, parent: str, name: str, kind: str,
+            identity: tuple[int, int], size: int, digest: str, *,
+            descriptor: Optional[int] = None) -> None:
+        self.owned.append(_RestoreOwnedEntry(
+            parent, name, kind, identity, size, digest))
+
+    def validate_all(self) -> None:
+        self.validate_root()
+        for relative in sorted(
+                self.directories,
+                key=lambda value: (value.count("/"), value)):
+            descriptor = self.open_directory(relative, create=False)
+            os.close(descriptor)
+        for entry in self.owned:
+            parent_descriptor = self.open_directory(
+                entry.parent, create=False)
+            try:
+                try:
+                    named = os.stat(
+                        entry.name,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError as exc:
+                    raise ValueError(
+                        "restored file changed during restore") from exc
+                expected_kind = (
+                    stat.S_ISLNK(named.st_mode)
+                    if entry.kind == "symlink"
+                    else stat.S_ISREG(named.st_mode)
+                )
+                if (not expected_kind
+                        or _stat_identity(named) != entry.identity
+                        or named.st_dev != self.device):
+                    raise ValueError("restored file changed during restore")
+                if entry.kind == "symlink":
+                    value = os.fsencode(os.readlink(
+                        entry.name, dir_fd=parent_descriptor))
+                    named_after = os.stat(
+                        entry.name, dir_fd=parent_descriptor,
+                        follow_symlinks=False)
+                    if (not stat.S_ISLNK(named_after.st_mode)
+                            or named_after.st_dev != self.device
+                            or _stat_identity(named_after) != entry.identity
+                            or _stat_signature(named_after)
+                            != _stat_signature(named)):
+                        raise ValueError(
+                            "restored file changed during restore")
+                    final = (len(value), hashlib.sha256(value).hexdigest())
+                else:
+                    descriptor = os.open(
+                        entry.name,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                        | os.O_CLOEXEC,
+                        dir_fd=parent_descriptor,
+                    )
+                    try:
+                        opened = os.fstat(descriptor)
+                        if (_stat_identity(opened) != entry.identity
+                                or not stat.S_ISREG(opened.st_mode)
+                                or opened.st_nlink != 1
+                                or opened.st_dev != self.device):
+                            raise ValueError(
+                                "restored file changed during restore")
+                        with os.fdopen(os.dup(descriptor), "rb") as source:
+                            final = _backup_stream(source, limit=entry.size)
+                        after = os.fstat(descriptor)
+                        named_after = os.stat(
+                            entry.name, dir_fd=parent_descriptor,
+                            follow_symlinks=False)
+                        if (_stat_signature(opened)
+                                != _stat_signature(after)
+                                or _stat_identity(named_after)
+                                != entry.identity):
+                            raise ValueError(
+                                "restored file changed during restore")
+                    finally:
+                        os.close(descriptor)
+            finally:
+                os.close(parent_descriptor)
+            if final != (entry.size, entry.digest):
+                raise ValueError("restored file checksum mismatch")
+
+    def cleanup(self) -> None:
+        # Held parent descriptors still name operation-owned files even if an
+        # attacker moved a directory out of the visible restore tree.
+        for entry in reversed(self.owned):
+            if entry.parent:
+                recorded = self.directories.get(entry.parent)
+                parent_descriptor = (
+                    recorded[0] if recorded is not None else None)
+            else:
+                parent_descriptor = self.root_descriptor
+            if parent_descriptor is None:
+                continue
+            try:
+                named = os.stat(
+                    entry.name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if _stat_identity(named) == entry.identity:
+                    os.unlink(entry.name, dir_fd=parent_descriptor)
+            except OSError:
+                pass
+        for key in sorted(
+                self.directories,
+                key=lambda value: (value.count("/"), value),
+                reverse=True):
+            _, identity, parent_key, name = self.directories[key]
+            if parent_key:
+                parent_record = self.directories.get(parent_key)
+                parent_descriptor = (
+                    parent_record[0] if parent_record is not None else None)
+            else:
+                parent_descriptor = self.root_descriptor
+            if parent_descriptor is None:
+                continue
+            try:
+                named = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (stat.S_ISDIR(named.st_mode)
+                        and _stat_identity(named) == identity):
+                    os.rmdir(name, dir_fd=parent_descriptor)
+            except OSError:
+                pass
+        if self.root_identity is not None:
+            try:
+                named = os.stat(
+                    self.root_name,
+                    dir_fd=self.parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (stat.S_ISDIR(named.st_mode)
+                        and _stat_identity(named) == self.root_identity):
+                    os.rmdir(
+                        self.root_name, dir_fd=self.parent_descriptor)
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        self.owned.clear()
+        for descriptor, _, _, _ in self.directories.values():
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        self.directories.clear()
+        if self.root_descriptor is not None:
+            try:
+                os.close(self.root_descriptor)
+            except OSError:
+                pass
+            self.root_descriptor = None
+        try:
+            os.close(self.parent_descriptor)
+        except OSError:
+            pass
+
+
+def _restore_regular(
+        bundle: zipfile.ZipFile, entry: dict,
+        ledger: _RestoreLedger) -> tuple[int, str]:
+    relative = _backup_relative(entry["path"])
+    parent = "" if str(relative.parent) == "." else str(relative.parent)
+    name = _validated_leaf_name(relative.name)
+    parent_descriptor = ledger.open_directory(parent, create=True)
+    descriptor = -1
+    try:
+        with _blocked_sigterm():
+            descriptor = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+            try:
+                before = os.fstat(descriptor)
+                identity = _stat_identity(before)
+                ledger.record_owned(
+                    parent, name, "file", identity,
+                    entry["size"], entry["sha256"], descriptor=descriptor)
+            except BaseException:
+                try:
+                    recovered = os.fstat(descriptor)
+                except OSError:
+                    recovered = None
+                if recovered is not None:
+                    _rollback_new_entry_at(
+                        parent_descriptor, name, _stat_identity(recovered),
+                        directory=False)
+                raise
+            if (not stat.S_ISREG(before.st_mode)
+                    or before.st_nlink != 1
+                    or before.st_dev != ledger.device):
+                raise ValueError(
+                    "restore output is not a private regular file")
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(os.dup(descriptor), "wb") as output, bundle.open(
+                "payload/" + entry["path"]) as source:
+            result = _backup_stream(
+                source, output, limit=entry["size"])
+            output.flush()
+        os.fsync(descriptor)
+        after = os.fstat(descriptor)
+        named = os.stat(
+            name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (_stat_identity(after) != identity
+                or _stat_identity(named) != identity
+                or not stat.S_ISREG(named.st_mode)
+                or after.st_nlink != 1):
+            raise ValueError("restored file changed during restore")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        with os.fdopen(os.dup(descriptor), "rb") as restored:
+            confirmed = _backup_stream(
+                restored, limit=entry["size"])
+        if result != confirmed:
+            raise ValueError("restored file checksum mismatch")
+        return result
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent_descriptor)
+
+
+def _restore_symlink(
+        bundle: zipfile.ZipFile, entry: dict,
+        ledger: _RestoreLedger) -> tuple[int, str]:
+    relative = _backup_relative(entry["path"])
+    parent = "" if str(relative.parent) == "." else str(relative.parent)
+    name = _validated_leaf_name(relative.name)
+    with bundle.open("payload/" + entry["path"]) as source:
+        value = source.read(BACKUP_SYMLINK_MAX_BYTES + 1)
+    if len(value) > BACKUP_SYMLINK_MAX_BYTES:
+        raise ValueError("backup symlink target is too large")
+    result = (len(value), hashlib.sha256(value).hexdigest())
+    parent_descriptor = ledger.open_directory(parent, create=True)
+    try:
+        with _blocked_sigterm():
+            os.symlink(
+                value, os.fsencode(name), dir_fd=parent_descriptor)
+            try:
+                named = os.stat(
+                    name, dir_fd=parent_descriptor, follow_symlinks=False)
+            except BaseException:
+                # A symlink has no safely openable descriptor. Until the first
+                # no-follow stat succeeds, adopting the current name's inode
+                # could delete a user replacement installed in the gap.
+                raise
+            if (not stat.S_ISLNK(named.st_mode)
+                    or named.st_dev != ledger.device):
+                raise ValueError("restore output is not a symlink")
+            identity = _stat_identity(named)
+            try:
+                ledger.record_owned(
+                    parent, name, "symlink", identity,
+                    entry["size"], entry["sha256"])
+            except BaseException:
+                _rollback_new_entry_at(
+                    parent_descriptor, name, identity, directory=False)
+                raise
+        current = os.readlink(
+            os.fsencode(name), dir_fd=parent_descriptor)
+        named_after = os.stat(
+            name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (current != value
+                or _stat_identity(named_after) != identity
+                or not stat.S_ISLNK(named_after.st_mode)):
+            raise ValueError("restored symlink changed during restore")
+        return result
+    finally:
+        os.close(parent_descriptor)
+
+
+def _restore_live_store_roots() -> tuple[Path, ...]:
+    """Provider-owned roots where restored copies must never be written."""
+    home = Path.home().expanduser().absolute()
+    try:
+        home = home.resolve(strict=True)
+    except OSError:
+        # The lexical roots still catch the ordinary HOME spelling. Any
+        # existing symlink spelling is also considered below when possible.
+        pass
+    return (
+        home / ".claude",
+        home / ".codex",
+        _claude_desktop_root(home),
+    )
+
+
+def _restore_path_key(path: Path) -> str:
+    """macOS store spelling key; its default volumes ignore ASCII case."""
+    return os.path.normpath(str(path)).casefold()
+
+
+def _restore_spelling_is_under(path: Path, root: Path) -> bool:
+    path_key = _restore_path_key(path)
+    root_key = _restore_path_key(root).rstrip("/") or "/"
+    return (path_key == root_key
+            or (root_key == "/" and path_key.startswith("/"))
+            or path_key.startswith(root_key + "/"))
+
+
+def _restore_directory_identity(path: Path) -> Optional[tuple[int, int]]:
+    try:
+        descriptor = _open_directory_nofollow(path)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(descriptor)
+        return _stat_identity(info) if stat.S_ISDIR(info.st_mode) else None
+    finally:
+        os.close(descriptor)
+
+
+def _restore_ancestor_identities(path: Path) -> set[tuple[int, int]]:
+    identities: set[tuple[int, int]] = set()
+    current = path
+    while True:
+        identity = _restore_directory_identity(current)
+        if identity is not None:
+            identities.add(identity)
+        if current.parent == current:
+            break
+        current = current.parent
+    return identities
+
+
+def _reject_live_restore_destination(destination: Path) -> None:
+    """Keep a verified copy from becoming live provider state by placement."""
+    destination_candidates = [destination]
+    try:
+        os.lstat(destination)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        # The restore ledger will reject any existing/unreadable leaf without
+        # following it. There is no safely resolved alias to compare here.
+        pass
+    else:
+        try:
+            resolved_destination = destination.resolve(strict=True)
+        except OSError:
+            resolved_destination = None
+        if (resolved_destination is not None
+                and resolved_destination not in destination_candidates):
+            destination_candidates.append(resolved_destination)
+
+    root_candidates: list[Path] = []
+    root_identities: set[tuple[int, int]] = set()
+    for root in _restore_live_store_roots():
+        candidate = root.expanduser().absolute()
+        root_candidates.append(candidate)
+        try:
+            resolved = root.resolve(strict=False)
+        except OSError:
+            resolved = None
+        if resolved is not None and resolved not in root_candidates:
+            root_candidates.append(resolved)
+        for root_path in (candidate, resolved):
+            if root_path is None:
+                continue
+            identity = _restore_directory_identity(root_path)
+            if identity is not None:
+                root_identities.add(identity)
+
+    spelling_match = any(
+        _restore_spelling_is_under(path, root)
+        for path in destination_candidates
+        for root in root_candidates
+    )
+    # Identity catches aliases whose spelling bears no resemblance to the
+    # provider root. Case folding catches `.CLAUDE` before a not-yet-existing
+    # leaf has an inode, which is required on default case-insensitive APFS.
+    identity_match = bool(root_identities.intersection(
+        identity
+        for path in destination_candidates
+        for identity in _restore_ancestor_identities(path)
+    ))
+    if spelling_match or identity_match:
+        raise ValueError(
+            "restore destination must be outside live AI session stores")
 
 
 def restore_session_backup(archive: Path, destination: Path) -> dict:
     archive = archive.expanduser().absolute()
     parent = destination.expanduser().absolute().parent.resolve(strict=True)
-    destination = parent / destination.name
+    destination_name = _validated_leaf_name(destination.name)
+    destination = parent / destination_name
+    _reject_live_restore_destination(destination)
+    parent_descriptor = _open_directory_nofollow(parent)
+    try:
+        ledger = _RestoreLedger(
+            parent, parent_descriptor, destination_name)
+    finally:
+        os.close(parent_descriptor)
     # Validate all entries before creating anything. Keep the same ZIP open
     # for verification and extraction; do not reopen a path another process
     # could swap after validation.
-    with zipfile.ZipFile(archive) as bundle:
-        manifest = _backup_verify_open(bundle)
-        if os.path.lexists(destination):
-            raise ValueError("restore requires a NEW directory; existing data is never overwritten")
-        destination.mkdir(mode=0o700)
-        try:
-            for entry in manifest["files"]:
-                target = destination / entry["path"]
-                # Only directories beneath the private, newly created root.
-                current = destination
-                for component in PurePosixPath(entry["path"]).parts[:-1]:
-                    current = current / component
-                    current.mkdir(mode=0o700, exist_ok=True)
-                    _backup_check_path(current)
-                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-                with os.fdopen(fd, "wb") as output, bundle.open("payload/" + entry["path"]) as source:
-                    result = _backup_stream(source, output, limit=entry["size"])
-                    output.flush()
-                    os.fsync(output.fileno())
+    state = {"completed": False}
+
+    def cleanup() -> None:
+        if not state["completed"]:
+            ledger.cleanup()
+
+    previous_sigterm = _install_sigterm_cleanup(cleanup)
+    try:
+        with _open_backup_bundle(archive) as bundle:
+            manifest = _backup_verify_open(bundle)
+            ledger.create_root()
+            # A link is never allowed to become a parent of a later output.
+            # Extract every regular file first, then create leaf links only.
+            ordered = sorted(
+                manifest["files"],
+                key=lambda entry: entry.get("kind") == "symlink",
+            )
+            for entry in ordered:
+                result = (
+                    _restore_symlink(bundle, entry, ledger)
+                    if entry.get("kind") == "symlink"
+                    else _restore_regular(bundle, entry, ledger)
+                )
                 if result != (entry["size"], entry["sha256"]):
                     raise ValueError("backup changed during restore")
-                if _backup_read_file(target) != result:
-                    raise ValueError("restored file checksum mismatch")
-            return _backup_result(archive, manifest, destination)
-        except BaseException:
-            # This root was created exclusively by this call. Never remove a
-            # pre-existing directory, source session, or original workspace.
-            shutil.rmtree(destination)
-            raise
-
+            ledger.validate_all()
+            result = _backup_result(archive, manifest, destination)
+        # The archive context validates its held inode on exit. Publish a
+        # success state only after that final validation has completed.
+        state["completed"] = True
+        return result
+    finally:
+        with _blocked_sigterm():
+            try:
+                cleanup()
+            finally:
+                ledger.close()
+                _restore_sigterm_handler(previous_sigterm)
 
 SEARCH_DEFAULT_LIMIT = 200
 SEARCH_MATCHES_PER_SESSION = 3
@@ -2575,7 +6571,9 @@ def build_search(query: str, home: Path, *, raw: bool = False,
                 "definitive": False, "evidenceKind": "conversation_mention",
                 "masked": not raw}
 
-    sessions = build_sessions(home, limit=0)["sessions"]
+    session_index = build_sessions(home, limit=0)
+    sessions = session_index["sessions"]
+    discovery_complete = session_index["coverage"]["complete"] is True
     started = time.monotonic()
     matches: list[dict] = []
     scanned = unreadable = 0
@@ -2589,7 +6587,8 @@ def build_search(query: str, home: Path, *, raw: bool = False,
             truncated_reason = "time"
             break
         source = Path(session["source"])
-        found, ok = _search_one_session(source, needle, raw=raw)
+        found, ok = _search_one_session(
+            source, needle, raw=raw, home=home)
         scanned += 1
         if not ok:
             unreadable += 1
@@ -2600,7 +6599,10 @@ def build_search(query: str, home: Path, *, raw: bool = False,
                             "workspace": session["workspace"],
                             "lastActive": session["lastActive"]})
 
-    swept = truncated_reason is None and scanned == len(sessions)
+    swept = (truncated_reason is None and scanned == len(sessions)
+             and discovery_complete)
+    if truncated_reason is None and not discovery_complete:
+        truncated_reason = "discovery"
     return {
         "query": query,
         # Newest first: the recent time you solved this is the one worth
@@ -2654,6 +6656,21 @@ def _search_probes(needle: str) -> tuple[tuple[str, ...], ...]:
     return tuple(groups)
 
 
+def _file_might_contain_handle(
+        handle, probes: tuple[tuple[str, ...], ...]) -> bool:
+    if not probes:
+        return False
+    outstanding = set(range(len(probes)))
+    for line in handle:
+        folded = line.casefold()
+        for position in tuple(outstanding):
+            if any(probe in folded for probe in probes[position]):
+                outstanding.discard(position)
+        if not outstanding:
+            return True
+    return False
+
+
 def _file_might_contain(source: Path,
                         probes: tuple[tuple[str, ...], ...]) -> tuple[bool, bool]:
     """`(worth_parsing, readable)` from a raw byte scan of the file.
@@ -2664,40 +6681,61 @@ def _file_might_contain(source: Path,
     """
     if not probes:
         return (False, True)
-    outstanding = set(range(len(probes)))
     try:
         with source.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                folded = line.casefold()
-                for position in tuple(outstanding):
-                    if any(probe in folded for probe in probes[position]):
-                        outstanding.discard(position)
-                if not outstanding:
-                    return (True, True)
+            return (_file_might_contain_handle(handle, probes), True)
     except OSError:
         return (False, False)
-    return (False, True)
 
 
 def _search_one_session(source: Path, needle: str, *,
-                        raw: bool) -> tuple[list[dict], bool]:
+                        raw: bool, home: Optional[Path] = None
+                        ) -> tuple[list[dict], bool]:
     """Matching turns in one transcript, and whether it could be read.
 
     Reads through `visible_turns`, so a hit is something a person could
     have seen in the viewer: Codex's doubled replies are collapsed and
     the harness's own instructions are not searchable content.
     """
-    home = Path.home()
-    probes = _search_probes(needle)
-    worth_parsing, readable = _file_might_contain(source, probes)
-    if not readable:
-        return ([], False)
-    if not worth_parsing:
-        return ([], True)
+    desktop_descriptor, _, desktop_status = _open_claude_desktop_primary(
+        source, home)
+    if desktop_status != "not-desktop":
+        if desktop_status != "ok" or desktop_descriptor is None:
+            return ([], False)
+        try:
+            before = os.fstat(desktop_descriptor)
+            probes = _search_probes(needle)
+            with os.fdopen(os.dup(desktop_descriptor), "r", encoding="utf-8",
+                           errors="replace") as handle:
+                worth_parsing = _file_might_contain_handle(handle, probes)
+            if not worth_parsing:
+                return ([], _stat_signature(before) == _stat_signature(
+                    os.fstat(desktop_descriptor)))
+            os.lseek(desktop_descriptor, 0, os.SEEK_SET)
+            with os.fdopen(os.dup(desktop_descriptor), "r", encoding="utf-8",
+                           errors="replace") as handle:
+                turns, decoded_any = _read_jsonl_turns(handle)
+            after = os.fstat(desktop_descriptor)
+            if (_stat_signature(before) != _stat_signature(after)
+                    or (not decoded_any and before.st_size > 0)):
+                return ([], False)
+            turns = _canonical_visible_turns(turns)
+        except OSError:
+            return ([], False)
+        finally:
+            os.close(desktop_descriptor)
+    else:
+        probes = _search_probes(needle)
+        worth_parsing, readable = _file_might_contain(source, probes)
+        if not readable:
+            return ([], False)
+        if not worth_parsing:
+            return ([], True)
+        turns, status = visible_turns(source, home)
+        if status != "ok":
+            return ([], False)
 
-    turns, status = visible_turns(source)
-    if status != "ok":
-        return ([], False)
+    mask_home = home or Path.home()
 
     hits: list[dict] = []
     for position, turn in enumerate(turns):
@@ -2705,7 +6743,8 @@ def _search_one_session(source: Path, needle: str, *,
         # query had its whitespace collapsed and the transcript did not.
         if needle not in " ".join(turn.text.split()).casefold():
             continue
-        hits.append(_search_hit(position, turn, needle, raw=raw, home=home))
+        hits.append(_search_hit(
+            position, turn, needle, raw=raw, home=mask_home))
         if len(hits) >= SEARCH_MATCHES_PER_SESSION:
             break
     return (hits, True)
@@ -2741,7 +6780,7 @@ def _search_hit(position: int, turn: VisibleTurn, needle: str, *,
     }
     if include_identity:
         hit["_identity"] = hashlib.sha256(
-            f"{turn.role.casefold()}\0{flat}".encode("utf-8")
+            _wire_text(f"{turn.role.casefold()}\0{flat}").encode("utf-8")
         ).hexdigest()
     return hit
 
@@ -2798,7 +6837,7 @@ def _provider_invocations(record: dict, needle: str, *, raw: bool,
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments)
-            except json.JSONDecodeError:
+            except JSON_PARSE_ERRORS:
                 arguments = None
         if not isinstance(arguments, dict):
             action = payload.get("action")
@@ -2829,7 +6868,8 @@ def _provider_invocations(record: dict, needle: str, *, raw: bool,
             "at": invocation["at"],
             "callId": invocation["callId"],
             "status": _inline_invocation_status(invocation["inlineStatus"]),
-            "_identity": hashlib.sha256(flat.encode("utf-8")).hexdigest(),
+            "_identity": hashlib.sha256(
+                _wire_text(flat).encode("utf-8")).hexdigest(),
         })
     return matched
 
@@ -2873,7 +6913,7 @@ def _structured_exit_code(value: Any) -> Optional[int]:
     elif isinstance(value, str) and value.lstrip().startswith(("{", "[")):
         try:
             decoded = json.loads(value)
-        except json.JSONDecodeError:
+        except JSON_PARSE_ERRORS:
             return None
         return _structured_exit_code(decoded)
     return None
@@ -2932,7 +6972,8 @@ def _provider_outcomes(record: dict) -> list[tuple[str, str]]:
 
 
 def _session_evidence(source: Path, needle: str, *,
-                      raw: bool) -> tuple[list[dict], list[dict], bool]:
+                      raw: bool, home: Optional[Path] = None
+                      ) -> tuple[list[dict], list[dict], bool]:
     """`(mentions, invocations, readable)` for one session, in one read.
 
     One pass, not two. Invocation results can be on later lines, so the
@@ -2942,38 +6983,65 @@ def _session_evidence(source: Path, needle: str, *,
     the single walk, and the decode into turns happens only if the walk
     saw every word.
     """
-    home = Path.home()
+    desktop_descriptor, _, desktop_status = _open_claude_desktop_primary(
+        source, home)
+    if desktop_status != "not-desktop":
+        if desktop_status != "ok" or desktop_descriptor is None:
+            return ([], [], False)
+    mask_home = home or Path.home()
     probes = _search_probes(needle)
     if not probes:
+        if desktop_descriptor is not None:
+            os.close(desktop_descriptor)
         return ([], [], True)
     outstanding = set(range(len(probes)))
     invocations: list[dict] = []
     outcomes: dict[str, str] = {}
+    raw_turns: list[VisibleTurn] = []
+
+    def scan(handle) -> None:
+        for line in handle:
+            folded = line.casefold()
+            if outstanding:
+                for position in tuple(outstanding):
+                    if any(probe in folded for probe in probes[position]):
+                        outstanding.discard(position)
+            try:
+                record = json.loads(line)
+            except JSON_PARSE_ERRORS:
+                continue
+            if not isinstance(record, dict):
+                continue
+            turn = _extract_turn(record)
+            if turn is not None:
+                raw_turns.append(turn)
+            if not any(marker in folded for marker in PROVIDER_TOOL_MARKERS):
+                continue
+            for call_id, status in _provider_outcomes(record):
+                outcomes[call_id] = status
+            if (len(invocations) < SEARCH_MATCHES_PER_SESSION
+                    and all(any(probe in folded for probe in group)
+                            for group in probes)):
+                invocations.extend(_provider_invocations(
+                    record, needle, raw=raw, home=mask_home))
+
     try:
-        with source.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                folded = line.casefold()
-                if outstanding:
-                    for position in tuple(outstanding):
-                        if any(probe in folded for probe in probes[position]):
-                            outstanding.discard(position)
-                if not any(marker in folded for marker in PROVIDER_TOOL_MARKERS):
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(record, dict):
-                    continue
-                for call_id, status in _provider_outcomes(record):
-                    outcomes[call_id] = status
-                if (len(invocations) < SEARCH_MATCHES_PER_SESSION
-                        and all(any(probe in folded for probe in group)
-                                for group in probes)):
-                    invocations.extend(_provider_invocations(
-                        record, needle, raw=raw, home=home))
+        if desktop_descriptor is not None:
+            before = os.fstat(desktop_descriptor)
+            with os.fdopen(os.dup(desktop_descriptor), "r", encoding="utf-8",
+                           errors="replace") as handle:
+                scan(handle)
+            if _stat_signature(before) != _stat_signature(
+                    os.fstat(desktop_descriptor)):
+                return ([], [], False)
+        else:
+            with source.open("r", encoding="utf-8", errors="replace") as handle:
+                scan(handle)
     except OSError:
         return ([], [], False)
+    finally:
+        if desktop_descriptor is not None:
+            os.close(desktop_descriptor)
 
     for invocation in invocations:
         call_id = invocation.get("callId", "")
@@ -2986,15 +7054,14 @@ def _session_evidence(source: Path, needle: str, *,
     if outstanding:
         return ([], [], True)
 
-    turns, status = visible_turns(source)
-    if status != "ok":
-        return ([], invocations, False)
+    turns = _canonical_visible_turns(raw_turns)
     mentions: list[dict] = []
     for position, turn in enumerate(turns):
         if needle not in " ".join(turn.text.split()).casefold():
             continue
         mentions.append(_search_hit(
-            position, turn, needle, raw=raw, home=home, include_identity=True
+            position, turn, needle, raw=raw, home=mask_home,
+            include_identity=True
         ))
         if len(mentions) >= SEARCH_MATCHES_PER_SESSION:
             break
@@ -3090,7 +7157,9 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
     own lists so a consumer cannot present them as search matches.
     """
     needle = " ".join(query.split()).casefold()
-    sessions = build_sessions(home, limit=0)["sessions"] if needle else []
+    session_index = build_sessions(home, limit=0)
+    sessions = session_index["sessions"] if needle else []
+    discovery_complete = session_index["coverage"]["complete"] is True
     started = time.monotonic()
     mentions: list[dict] = []
     invocations: list[dict] = []
@@ -3107,7 +7176,7 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
             truncated_reason = "time"
             break
         found_mentions, found_invocations, ok = _session_evidence(
-            Path(session["source"]), needle, raw=raw)
+            Path(session["source"]), needle, raw=raw, home=home)
         scanned += 1
         if not ok:
             unreadable += 1
@@ -3152,7 +7221,10 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
             invocation_ids[identity] = len(invocations)
             invocations.append(candidate)
 
-    swept = truncated_reason is None and scanned == len(sessions)
+    swept = (bool(needle) and truncated_reason is None
+             and scanned == len(sessions) and discovery_complete)
+    if needle and truncated_reason is None and not discovery_complete:
+        truncated_reason = "discovery"
     return {
         "query": query,
         "conversationMentions": sorted(
@@ -3217,7 +7289,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                           help="disable masking (explicit opt-out, off by default)")
     preserve.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
-    backup = sub.add_parser("backup", help="back up one original Claude/Codex session and supported sidecars")
+    backup = sub.add_parser(
+        "backup", help="back up one original Claude/Codex session or Claude Desktop conversation unit")
     backup.add_argument("source", type=Path)
     backup.add_argument("--out", type=Path, required=True, help="new private ZIP outside the session store")
     backup.add_argument("--include-sensitive", action="store_true",
@@ -3343,9 +7416,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             else:
                 result = restore_session_backup(args.archive, args.out)
         except (OSError, ValueError, zipfile.BadZipFile, RuntimeError, EOFError) as exc:
-            print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+            _print_wire(json.dumps({"error": str(exc)}, ensure_ascii=False))
             return 1
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        _print_wire(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "preserve":
@@ -3356,14 +7429,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
         if args.out:
             try:
-                args.out.parent.mkdir(parents=True, exist_ok=True)
-                args.out.write_text(text, encoding="utf-8")
-            except OSError as exc:
+                output = _write_preserve_output(args.out, text)
+            except (OSError, ValueError) as exc:
                 print(f"preserve: {exc}", file=sys.stderr)
                 return 1
-            print(f"wrote {args.out}")
+            _print_wire(json.dumps({
+                "status": "preserved",
+                "output": str(output),
+                "masked": not args.raw,
+            }, ensure_ascii=False))
         else:
-            print(text)
+            _print_wire(text)
         return 0
 
     if args.command == "bind-all":
@@ -3374,15 +7450,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             raw = (args.targets.read_text(encoding="utf-8")
                    if args.targets else sys.stdin.read())
             targets = json.loads(raw)
-        except (OSError, json.JSONDecodeError) as exc:
+        except JSON_FILE_ERRORS as exc:
             print(f"bind-all: {exc}", file=sys.stderr)
             return 1
         if not isinstance(targets, list):
             print("bind-all: expected a JSON array of {workspace, repoUrl}", file=sys.stderr)
             return 1
-        payload = json.dumps(
+        payload = _wire_text(json.dumps(
             build_bindings_many(args.home, targets, deep=args.deep),
-            ensure_ascii=False, indent=2)
+            ensure_ascii=False, indent=2))
         if args.out:
             try:
                 args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -3392,7 +7468,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 1
             print(f"wrote {args.out}")
         else:
-            print(payload)
+            _print_wire(payload)
         return 0
 
     if args.command == "inspect":
@@ -3402,7 +7478,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         except OSError as exc:
             print(f"inspect: {exc}", file=sys.stderr)
             return 1
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        _print_wire(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
     if args.command in ("search", "evidence"):
@@ -3417,7 +7493,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"{args.command}: a query is required", file=sys.stderr)
             return 2
         if args.command == "evidence":
-            print(json.dumps(
+            _print_wire(json.dumps(
                 build_evidence(query, args.home, raw=args.raw, limit=args.limit,
                                budget_seconds=args.budget_seconds),
                 ensure_ascii=False, indent=2))
@@ -3427,7 +7503,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         # command whose contract is that it keeps nothing should not
         # leave the answer on disk to be tidied up afterwards -- a
         # `defer` does not run when the app is force quit.
-        print(json.dumps(
+        _print_wire(json.dumps(
             build_search(query, args.home, raw=args.raw, limit=args.limit,
                          budget_seconds=args.budget_seconds),
             ensure_ascii=False, indent=2))
@@ -3440,19 +7516,20 @@ def main(argv: Optional[list[str]] = None) -> int:
             raw_text = (args.sources.read_text(encoding="utf-8")
                         if args.sources else sys.stdin.read())
             sources = json.loads(raw_text)
-        except (OSError, json.JSONDecodeError) as exc:
+        except JSON_FILE_ERRORS as exc:
             print(f"titles: {exc}", file=sys.stderr)
             return 1
         if not isinstance(sources, list):
             print("titles: expected a JSON array of session paths", file=sys.stderr)
             return 1
-        print(json.dumps(build_titles_many(sources, args.home, raw=args.raw),
-                         ensure_ascii=False, indent=2))
+        _print_wire(json.dumps(build_titles_many(sources, args.home, raw=args.raw),
+                               ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "sessions":
-        payload = json.dumps(build_sessions(args.home, limit=args.limit),
-                             ensure_ascii=False, indent=2)
+        payload = _wire_text(json.dumps(
+            build_sessions(args.home, limit=args.limit),
+            ensure_ascii=False, indent=2))
         # The answer goes to a file when asked: a full index is 7,205
         # entries and several megabytes here, past the runner's output
         # ceiling -- and a limit that exists to stop a runaway subprocess
@@ -3467,11 +7544,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 1
             print(f"wrote {args.out}")
         else:
-            print(payload)
+            _print_wire(payload)
         return 0
 
     if args.command == "fingerprint":
-        print(json.dumps(store_fingerprint(args.home), ensure_ascii=False, indent=2))
+        _print_wire(json.dumps(
+            store_fingerprint(args.home), ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "title":
@@ -3481,14 +7559,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         except OSError as exc:
             print(f"title: {exc}", file=sys.stderr)
             return 1
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        _print_wire(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "bind":
         # Always JSON: the only consumer is a program deciding whether a
         # workspace may be retired, and that decision must not be parsed
         # out of a human-readable table.
-        print(json.dumps(
+        _print_wire(json.dumps(
             build_bindings(args.home, str(args.workspace),
                            repo_url=args.repo_url, deep=args.deep),
             ensure_ascii=False, indent=2))
@@ -3496,9 +7574,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     scree = build_scree(args.home)
     if args.json:
-        print(json.dumps(scree, ensure_ascii=False, indent=2))
+        _print_wire(json.dumps(scree, ensure_ascii=False, indent=2))
     else:
-        print(render_report(scree, args.limit))
+        _print_wire(render_report(scree, args.limit))
     return 0
 
 

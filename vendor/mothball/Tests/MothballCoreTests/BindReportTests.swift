@@ -94,17 +94,24 @@ final class BindReportTests: XCTestCase {
             "evidence":["remote-url"],"confidence":"high","sizeBytes":10},
            {"provider":"claude","sessionId":"a1","source":"/s/a1.jsonl",
             "subtranscripts":["/s/a1/sub/one.jsonl","/s/a1/sub/two.jsonl"],
-            "evidence":["working-directory"],"confidence":"medium","sizeBytes":20}
+            "evidence":["working-directory"],"confidence":"medium","sizeBytes":20},
+           {"provider":"claude-desktop","sessionId":"local_1","source":"/d/local_1.json",
+            "subtranscripts":["/d/local_1/session.jsonl"],"artifactRoot":"/d/local_1",
+            "evidence":["selected-folder"],"confidence":"medium","sizeBytes":30}
          ]}
         """
         guard case .bindings(let bindings, _) = ContinuityAssessment.fromBindReport(data(json)) else {
             return XCTFail("expected bindings")
         }
-        XCTAssertEqual(bindings.count, 2)
+        XCTAssertEqual(bindings.count, 3)
         let claude = bindings.first { $0.provider == .claude }
         XCTAssertEqual(claude?.subtranscripts.count, 2)
         XCTAssertEqual(claude?.confidence, .medium)
         XCTAssertEqual(bindings.first { $0.provider == .codex }?.evidence, [.remoteURL])
+        let desktop = bindings.first { $0.provider == .claudeDesktop }
+        XCTAssertEqual(desktop?.artifactRoot?.path, "/d/local_1")
+        XCTAssertEqual(desktop?.subtranscripts.map(\.lastPathComponent), ["session.jsonl"])
+        XCTAssertEqual(desktop?.evidence, [.selectedFolder])
     }
 
     /// A workspace with sessions must never come back looking session-free

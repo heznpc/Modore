@@ -5,8 +5,10 @@ import hashlib
 import io
 import json
 import os
+import signal
 import shutil
 import subprocess
+import sys
 import time
 import zipfile
 from pathlib import Path
@@ -145,6 +147,132 @@ def test_bucket_resolution_never_leaves_the_real_tree(tmp_path):
     assert scree._decode_claude_project_dir("no-leading-hyphen") is None
     assert scree._decode_claude_project_dir(
         scree._encode_claude_project_dir(str(tmp_path / "nope" / "gone"))) is None
+
+
+def test_claude_collection_prefers_transcript_cwd_without_bucket_reverse_lookup(
+        scree_home, monkeypatch):
+    home, ws1, _ = scree_home
+
+    def unexpected_decode(*_args, **_kwargs):
+        pytest.fail("explicit transcript cwd must bypass bucket reverse lookup")
+
+    monkeypatch.setattr(scree, "_decode_claude_project_dir", unexpected_decode)
+    records, _ = scree.collect_claude(home)
+    assert any(record.get("workspace") == str(ws1) for record in records)
+
+
+def test_claude_collection_never_lists_arbitrary_directories_for_bucket_fallback(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    bucket = home / ".claude" / "projects" / "-missing-workspace"
+    _write(bucket / "session.jsonl", _jsonl({"type": "summary"}))
+    calls = []
+    original = scree._decode_claude_project_dir
+
+    def observed_decode(name, **kwargs):
+        calls.append((name, kwargs))
+        return original(name, **kwargs)
+
+    monkeypatch.setattr(scree, "_decode_claude_project_dir", observed_decode)
+    records, status = scree.collect_claude(home)
+
+    assert calls == [("-missing-workspace", {"allow_directory_listing": False})]
+    assert records[0]["workspace"] is None
+    assert status["unrecognized"] == 1
+
+
+def test_missing_cwd_never_borrows_another_session_workspace_in_lossy_bucket(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    first_workspace = tmp_path / "Projects" / "집필"
+    second_workspace = tmp_path / "Projects" / "작업"
+    first_workspace.mkdir(parents=True)
+    second_workspace.mkdir()
+    bucket_name = scree._encode_claude_project_dir(str(first_workspace))
+    assert bucket_name == scree._encode_claude_project_dir(str(second_workspace))
+    bucket = home / ".claude" / "projects" / bucket_name
+    _write(bucket / "explicit.jsonl", _jsonl({"cwd": str(first_workspace)}))
+    _write(bucket / "missing.jsonl", _jsonl({"type": "summary"}))
+
+    def unexpected_decode(*_args, **_kwargs):
+        pytest.fail("an explicit cwd must not become a bucket-wide fallback")
+
+    monkeypatch.setattr(scree, "_decode_claude_project_dir", unexpected_decode)
+    records, status = scree.collect_claude(home)
+    by_name = {Path(record["source"]).name: record for record in records
+               if record["kind"] == "session"}
+
+    assert by_name["explicit.jsonl"]["workspace"] == str(first_workspace)
+    assert by_name["missing.jsonl"]["workspace"] is None
+    assert status["unrecognized"] == 1
+
+
+def test_restricted_bucket_fallback_also_owns_nested_transcript_aggregate(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    workspace = tmp_path / "plain" / "workspace"
+    workspace.mkdir(parents=True)
+    bucket = home / ".claude" / "projects" / "-plain-workspace"
+    _write(bucket / "session.jsonl", _jsonl({"type": "summary"}))
+    _write(bucket / "session" / "subagents" / "nested.jsonl", "{}\n")
+
+    def restricted_decode(name, **kwargs):
+        assert name == "-plain-workspace"
+        assert kwargs == {"allow_directory_listing": False}
+        return str(workspace)
+
+    monkeypatch.setattr(scree, "_decode_claude_project_dir", restricted_decode)
+    records, status = scree.collect_claude(home)
+    nested = [record for record in records if record["kind"] == "subtranscripts"]
+
+    assert len(nested) == 1
+    assert nested[0]["workspace"] == str(workspace)
+    assert status["subtranscripts"] == 1
+
+
+def test_nested_transcripts_follow_their_session_in_a_colliding_bucket(tmp_path):
+    home = tmp_path / "home"
+    first_workspace = tmp_path / "Projects" / "집필"
+    second_workspace = tmp_path / "Projects" / "작업"
+    first_workspace.mkdir(parents=True)
+    second_workspace.mkdir()
+    bucket_name = scree._encode_claude_project_dir(str(first_workspace))
+    assert bucket_name == scree._encode_claude_project_dir(str(second_workspace))
+    bucket = home / ".claude" / "projects" / bucket_name
+    _write(bucket / "session-a.jsonl", _jsonl({
+        "sessionId": "session-a", "cwd": str(first_workspace),
+    }))
+    _write(bucket / "session-b.jsonl", _jsonl({
+        "sessionId": "session-b", "cwd": str(second_workspace),
+    }))
+    first_nested = bucket / "session-a" / "subagents" / "a.jsonl"
+    second_nested = bucket / "session-b" / "subagents" / "b.jsonl"
+    _write(first_nested, "aaa\n")
+    _write(second_nested, "bbbbbbbbbbb\n")
+
+    records, status = scree.collect_claude(home)
+    nested = {record["workspace"]: record["size_bytes"] for record in records
+              if record["kind"] == "subtranscripts"}
+
+    assert nested == {
+        str(first_workspace): first_nested.stat().st_size,
+        str(second_workspace): second_nested.stat().st_size,
+    }
+    assert status["subtranscripts"] == 2
+
+
+def test_claude_collection_never_follows_a_linked_project_bucket(tmp_path):
+    home = tmp_path / "home"
+    projects = home / ".claude" / "projects"
+    outside = tmp_path / "outside-protected-store"
+    projects.mkdir(parents=True)
+    _write(outside / "external.jsonl", _jsonl({"cwd": str(outside)}))
+    (projects / "-linked").symlink_to(outside, target_is_directory=True)
+
+    records, status = scree.collect_claude(home)
+
+    assert records == []
+    assert status["count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -475,9 +603,13 @@ def worktree_home(tmp_path):
     return home, repo, git
 
 
+def _worktree_records(*workspaces):
+    return [{"workspace": str(workspace)} for workspace in workspaces]
+
+
 def test_worktree_protected_without_remote(worktree_home):
-    home, _, _ = worktree_home
-    items = scree.collect_worktrees(home)["items"]
+    home, repo, _ = worktree_home
+    items = scree.collect_worktrees(home, _worktree_records(repo))["items"]
     wt1 = next(i for i in items if i["path"].endswith("wt1"))
     assert wt1["verdict"] == "protected"  # 원격 어디에도 없는 커밋 = 유일본
     assert wt1["registered"] is True
@@ -490,13 +622,14 @@ def test_worktree_rebuildable_after_push_then_dirty_flips_back(worktree_home, tm
     git("init", "-q", "--bare", str(bare), cwd=tmp_path)
     git("remote", "add", "origin", str(bare))
     git("push", "-q", "origin", "--all")
-    items = scree.collect_worktrees(home)["items"]
+    records = _worktree_records(repo)
+    items = scree.collect_worktrees(home, records)["items"]
     wt1 = next(i for i in items if i["path"].endswith("wt1"))
     assert wt1["verdict"] == "rebuildable"  # 전부 푸시됨 + clean
     assert wt1["evidence"] == "preview"
     assert wt1["requires_revalidation"] is True  # 파괴적 소비자는 재검증 의무
     (repo / ".claude" / "worktrees" / "wt1" / "new.txt").write_text("d", encoding="utf-8")
-    items = scree.collect_worktrees(home)["items"]
+    items = scree.collect_worktrees(home, records)["items"]
     wt1 = next(i for i in items if i["path"].endswith("wt1"))
     assert wt1["verdict"] == "protected"  # dirty → 다시 유일본
     assert "requires_revalidation" not in wt1
@@ -504,10 +637,11 @@ def test_worktree_rebuildable_after_push_then_dirty_flips_back(worktree_home, tm
 
 def test_primary_checkout_stranded_on_feature_branch_is_judged(worktree_home):
     home, repo, git = worktree_home
-    items = scree.collect_worktrees(home)["items"]
+    records = _worktree_records(repo)
+    items = scree.collect_worktrees(home, records)["items"]
     assert not any(i.get("stray_checkout") for i in items)  # main 위에선 이탈 아님
     git("checkout", "-q", "-b", "feature/stranded")
-    items = scree.collect_worktrees(home)["items"]
+    items = scree.collect_worktrees(home, records)["items"]
     stray = next(i for i in items if i.get("stray_checkout"))
     assert stray["branch"] == "feature/stranded"
     assert stray["verdict"] == "protected"  # 원격에 없는 커밋 = 유일본
@@ -555,13 +689,13 @@ def test_worktree_partial_git_failure_is_unreadable_not_rebuildable(worktree_hom
 
     unpatched = scree._git
 
-    def selectively_failing_git(args, cwd):
+    def selectively_failing_git(args, cwd, **kwargs):
         if args and args[0] == "rev-list":
             return None
-        return unpatched(args, cwd)
+        return unpatched(args, cwd, **kwargs)
 
     monkeypatch.setattr(scree, "_git", selectively_failing_git)
-    items = scree.collect_worktrees(home)["items"]
+    items = scree.collect_worktrees(home, _worktree_records(repo))["items"]
     wt1 = next(i for i in items if i["path"].endswith("wt1"))
 
     assert wt1["dirty"] is False  # status still ran for real and confirmed clean
@@ -576,10 +710,460 @@ def test_worktree_anchor_breaks_are_reported(worktree_home):
     git("worktree", "add", "-q", str(repo / ".claude" / "worktrees" / "wt2"),
         "-b", "feat2")
     shutil.rmtree(repo / ".claude" / "worktrees" / "wt2")
-    result = scree.collect_worktrees(home)
+    result = scree.collect_worktrees(home, _worktree_records(repo))
     ghost = next(i for i in result["items"] if i["path"].endswith("ghost"))
     assert ghost["registered"] is False
     assert any(e["path"].endswith("wt2") for e in result["registered_missing"])
+    missing = next(i for i in result["items"] if i["path"].endswith("wt2"))
+    assert missing["registered"] is True
+    assert missing["verdict"] == "unreadable"
+
+
+def test_worktree_discovery_never_enumerates_broad_home_roots(worktree_home, monkeypatch):
+    home, repo, _ = worktree_home
+    broad_roots = {str(home / "IdeaProjects"), str(home / "Documents")}
+    original_scandir = os.scandir
+
+    def guarded_scandir(directory):
+        assert str(directory) not in broad_roots
+        return original_scandir(directory)
+
+    def forbidden_iterdir(_path):
+        raise AssertionError("worktree discovery must not use recursive iterdir")
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+    monkeypatch.setattr(Path, "iterdir", forbidden_iterdir)
+
+    result = scree.collect_worktrees(home, _worktree_records(repo))
+    assert any(item["path"].endswith("wt1") for item in result["items"])
+
+
+def test_worktree_discovery_accepts_repo_subdir_and_worktree_cwds(worktree_home):
+    home, repo, _ = worktree_home
+    subdir = repo / "sources" / "feature"
+    subdir.mkdir(parents=True)
+    worktree = repo / ".claude" / "worktrees" / "wt1"
+    nested_worktree_dir = worktree / "nested"
+    nested_worktree_dir.mkdir()
+
+    for workspace in (repo, subdir, worktree, nested_worktree_dir):
+        result = scree.collect_worktrees(home, _worktree_records(workspace))
+        matches = [item for item in result["items"] if item["path"] == str(worktree)]
+        assert len(matches) == 1
+        assert result["observed_workspaces"] == 1
+
+
+def test_worktree_discovery_deduplicates_case_aliases_by_container_inode(
+        worktree_home, monkeypatch):
+    home, repo, git = worktree_home
+    git("checkout", "-q", "-b", "feature/alias-proof")
+    alias_repo = repo.with_name(repo.name.upper())
+    original_open = scree._open_directory_nofollow
+
+    def alias_aware_open(path):
+        spelling = str(path)
+        mapped = Path(spelling.replace(str(alias_repo), str(repo), 1))
+        return original_open(mapped)
+
+    monkeypatch.setattr(scree, "_open_directory_nofollow", alias_aware_open)
+    result = scree.collect_worktrees(
+        home, _worktree_records(repo, alias_repo),
+    )
+
+    worktrees = [item for item in result["items"] if not item.get("stray_checkout")]
+    strays = [item for item in result["items"] if item.get("stray_checkout")]
+    assert len(worktrees) == 1
+    assert len(strays) == 1
+
+
+def test_unreadable_case_variants_are_not_deduplicated_without_inode_proof(
+        monkeypatch):
+    upper = {
+        "path": "/Volumes/CaseSensitive/Repo/WT", "repo": "/repo",
+        "branch": None, "registered": None, "dirty": None,
+        "unpushed_commits": None, "last_commit": None,
+        "verdict": "unreadable", "evidence": "preview",
+    }
+    lower = {**upper, "path": "/Volumes/CaseSensitive/Repo/wt"}
+    monkeypatch.setattr(
+        scree, "_open_directory_nofollow",
+        lambda _path: (_ for _ in ()).throw(PermissionError()),
+    )
+
+    assert len(scree._dedupe_worktree_items([upper, lower])) == 2
+    missing = scree._dedupe_registered_missing([
+        {"repo": "/repo", "path": upper["path"]},
+        {"repo": "/repo", "path": lower["path"]},
+    ])
+    assert len(missing) == 2
+
+
+def test_worktree_discovery_accepts_explicit_workspace_outside_home(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    outside_repo = tmp_path / "mounted-work" / "repo"
+    worktree = outside_repo / ".claude" / "worktrees" / "wt"
+    worktree.mkdir(parents=True)
+
+    result = scree.collect_worktrees(home, _worktree_records(outside_repo))
+
+    assert [item["path"] for item in result["items"]] == [str(worktree)]
+    assert result["observed_workspaces"] == 1
+
+
+def test_worktree_discovery_deduplicates_and_bounds_exact_probes(tmp_path, monkeypatch):
+    workspace = tmp_path.joinpath(*[f"part-{index}" for index in range(30)])
+    probes = []
+
+    def missing_open(path):
+        probes.append(str(path))
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(scree, "_open_directory_nofollow", missing_open)
+    records = _worktree_records(workspace, Path(str(workspace) + "/."), workspace)
+    result = scree.collect_worktrees(tmp_path, records)
+
+    assert result["observed_workspaces"] == 1
+    container_probes = [path for path in probes if path.endswith("/.claude/worktrees")]
+    repo_anchor_probes = [path for path in probes if not path.endswith("/.claude/worktrees")]
+    assert len(container_probes) == scree.WORKTREE_ANCESTOR_PROBE_LIMIT
+    assert len(repo_anchor_probes) == scree.WORKTREE_ANCESTOR_PROBE_LIMIT
+    assert len(probes) == len(set(probes))
+    assert result["truncated"] is True
+
+
+def test_worktree_discovery_reports_partial_metadata_scope(worktree_home):
+    home, repo, _ = worktree_home
+    result = scree.collect_worktrees(
+        home, _worktree_records(repo, repo, repo / "subdir"),
+    )
+
+    assert result["scope"] == "session-metadata"
+    assert result["global_complete"] is False
+    assert result["observed_workspaces"] == 2
+    assert isinstance(result["unreadable"], int)
+    assert result["truncated"] is False
+
+
+def test_worktree_discovery_ignores_symlink_container_and_child(tmp_path):
+    home = tmp_path / "home"
+    target = tmp_path / "relocated"
+    (target / "linked-wt").mkdir(parents=True)
+
+    linked_container_repo = home / "linked-container"
+    (linked_container_repo / ".claude").mkdir(parents=True)
+    (linked_container_repo / ".claude" / "worktrees").symlink_to(
+        target, target_is_directory=True,
+    )
+
+    linked_child_repo = home / "linked-child"
+    real_container = linked_child_repo / ".claude" / "worktrees"
+    real_container.mkdir(parents=True)
+    (real_container / "linked-wt").symlink_to(target / "linked-wt", target_is_directory=True)
+
+    result = scree.collect_worktrees(
+        home, _worktree_records(linked_container_repo, linked_child_repo),
+    )
+    assert result["items"] == []
+
+
+def test_worktree_discovery_does_not_cross_intermediate_symlink(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    real_repo = tmp_path / "real-repo"
+    (real_repo / ".claude" / "worktrees" / "wt").mkdir(parents=True)
+    alias = home / "repo-alias"
+    alias.symlink_to(real_repo, target_is_directory=True)
+
+    result = scree.collect_worktrees(home, _worktree_records(alias))
+
+    assert result["items"] == []
+    assert result["unreadable"] >= 1
+
+
+def test_metadata_known_missing_worktree_is_retained_as_unreadable(tmp_path):
+    home = tmp_path / "home"
+    repo = home / "repo"
+    repo.mkdir(parents=True)
+    missing = repo / ".claude" / "worktrees" / "missing"
+
+    result = scree.collect_worktrees(home, _worktree_records(missing / "sources"))
+    item = next(entry for entry in result["items"] if entry["path"] == str(missing))
+
+    assert item["registered"] is None
+    assert item["verdict"] == "unreadable"
+
+
+def test_repo_metadata_recovers_registered_child_after_container_disappears(
+        worktree_home):
+    home, repo, _ = worktree_home
+    worktree = repo / ".claude" / "worktrees" / "wt1"
+    shutil.rmtree(repo / ".claude" / "worktrees")
+
+    result = scree.collect_worktrees(home, _worktree_records(repo))
+    item = next(entry for entry in result["items"] if entry["path"] == str(worktree))
+
+    assert item["registered"] is True
+    assert item["verdict"] == "unreadable"
+    assert any(entry["path"] == str(worktree)
+               for entry in result["registered_missing"])
+
+
+def test_metadata_known_symlink_worktree_is_retained_but_never_followed(tmp_path):
+    home = tmp_path / "home"
+    repo = home / "repo"
+    container = repo / ".claude" / "worktrees"
+    container.mkdir(parents=True)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    linked = container / "linked"
+    linked.symlink_to(target, target_is_directory=True)
+
+    result = scree.collect_worktrees(home, _worktree_records(linked))
+    item = next(entry for entry in result["items"] if entry["path"] == str(linked))
+
+    assert item["registered"] is None
+    assert item["verdict"] == "unreadable"
+
+
+def test_git_cwd_identity_change_discards_query_output(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    moved = tmp_path / "repo-before-swap"
+
+    def swapping_run(*_args, **_kwargs):
+        repo.rename(moved)
+        repo.mkdir()
+        return subprocess.CompletedProcess([], 0, "apparently-valid", "")
+
+    monkeypatch.setattr(subprocess, "run", swapping_run)
+    assert scree._git(["status", "--porcelain"], repo) is None
+
+
+def test_worktree_budget_exhaustion_keeps_known_item_unreadable(
+        worktree_home, monkeypatch):
+    home, repo, _ = worktree_home
+    monkeypatch.setattr(scree, "WORKTREE_GIT_BUDGET_SECONDS", 0.0)
+
+    result = scree.collect_worktrees(home, _worktree_records(repo))
+    wt1 = next(item for item in result["items"] if item["path"].endswith("wt1"))
+
+    assert wt1["verdict"] == "unreadable"
+    assert wt1["registered"] is None
+    assert result["unreadable"] >= 1
+    assert result["truncated"] is True
+
+
+def test_worktree_command_timeout_never_exceeds_remaining_total_budget(monkeypatch):
+    ticks = iter((10.0, 14.9, 14.95))
+    observed = {}
+
+    def fake_git(args, cwd, *, timeout):
+        observed["timeout"] = timeout
+        return "ok"
+
+    monkeypatch.setattr(scree, "WORKTREE_GIT_BUDGET_SECONDS", 5.0)
+    monkeypatch.setattr(scree.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(scree, "_git", fake_git)
+
+    budget = scree._WorktreeGitBudget.start()
+    assert budget.run(["status"], Path("/repo")) == "ok"
+    assert observed["timeout"] == pytest.approx(0.1)
+
+
+def test_worktree_list_failure_keeps_registration_unknown(worktree_home, monkeypatch):
+    home, repo, _ = worktree_home
+    unpatched = scree._git
+
+    def fail_registry_only(args, cwd, **kwargs):
+        if args[:2] == ["worktree", "list"]:
+            return None
+        return unpatched(args, cwd, **kwargs)
+
+    monkeypatch.setattr(scree, "_git", fail_registry_only)
+    result = scree.collect_worktrees(home, _worktree_records(repo))
+    wt1 = next(item for item in result["items"] if item["path"].endswith("wt1"))
+
+    assert wt1["registered"] is None
+    assert wt1["verdict"] == "protected"
+    assert result["unreadable"] >= 1
+    assert result["truncated"] is False
+
+
+def test_empty_container_registry_failure_is_counted_unreadable(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    repo = home / "repo"
+    (repo / ".claude" / "worktrees").mkdir(parents=True)
+    monkeypatch.setattr(scree, "_git", lambda *_args, **_kwargs: None)
+
+    result = scree.collect_worktrees(home, _worktree_records(repo))
+
+    assert result["items"] == []
+    assert result["unreadable"] >= 1
+
+
+def test_isolated_worktree_discovery_returns_child_result(worktree_home):
+    home, repo, _ = worktree_home
+
+    result = scree.collect_worktrees_isolated(
+        home, _worktree_records(repo), timeout_seconds=3.0,
+    )
+
+    assert any(item["path"].endswith("wt1") for item in result["items"])
+    assert result["truncated"] is False
+
+
+def test_isolated_worker_uses_a_private_process_group(tmp_path, monkeypatch):
+    def report_process_group(_home, records):
+        result = scree._metadata_worktree_fallback(records)
+        result.update({"truncated": False, "unreadable": 0,
+                       "worker_pgid": os.getpgrp()})
+        return result
+
+    monkeypatch.setattr(scree, "collect_worktrees", report_process_group)
+    result = scree.collect_worktrees_isolated(
+        tmp_path, [], timeout_seconds=1.0,
+    )
+
+    assert result["worker_pgid"] != os.getpgrp()
+
+
+def test_isolated_worktree_timeout_returns_metadata_placeholders_without_waiting(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    known = home / "repo" / ".claude" / "worktrees" / "known"
+
+    def blocking_open(_path):
+        time.sleep(5)
+        raise AssertionError("isolated worker should have been terminated")
+
+    monkeypatch.setattr(scree, "_open_directory_nofollow", blocking_open)
+    started = time.monotonic()
+    result = scree.collect_worktrees_isolated(
+        home, _worktree_records(known / "src"), timeout_seconds=0.05,
+    )
+
+    assert time.monotonic() - started < 1.0
+    assert result["truncated"] is True
+    placeholder = next(item for item in result["items"] if item["path"] == str(known))
+    assert placeholder["registered"] is None
+    assert placeholder["verdict"] == "unreadable"
+
+
+def test_isolated_worktree_timeout_terminates_spawned_descendants(
+        tmp_path, monkeypatch):
+    child_pid_file = tmp_path / "descendant.pid"
+
+    def spawn_descendant_then_hang(_home, records):
+        child = subprocess.Popen(["/bin/sleep", "30"])
+        child_pid_file.write_text(str(child.pid), encoding="utf-8")
+        time.sleep(30)
+        return scree._metadata_worktree_fallback(records)
+
+    monkeypatch.setattr(scree, "collect_worktrees", spawn_descendant_then_hang)
+
+    result = scree.collect_worktrees_isolated(
+        tmp_path, [], timeout_seconds=0.10)
+
+    assert result["truncated"] is True
+    assert child_pid_file.exists()
+    descendant = int(child_pid_file.read_text())
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(descendant, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        try:
+            os.kill(descendant, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        pytest.fail("isolated timeout left its spawned descendant alive")
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="requires POSIX per-thread signal masks",
+)
+def test_isolated_worktree_sigterm_during_parent_setup_kills_worker_group(tmp_path):
+    """Cancellation in the post-fork setup window must reach git children.
+
+    The worker can already have spawned git while the parent is still making
+    its result pipe nonblocking.  Run the reproducer in a disposable process
+    group so the test can deliver the same group SIGTERM as
+    LocalProcessRunner without risking pytest's own group.
+    """
+    setup_marker = tmp_path / "parent-setup"
+    descendant_pid_file = tmp_path / "descendant.pid"
+    program = f"""
+import os
+import subprocess
+import time
+from pathlib import Path
+import scree
+
+setup_marker = Path({str(setup_marker)!r})
+descendant_pid_file = Path({str(descendant_pid_file)!r})
+real_set_blocking = os.set_blocking
+
+def delayed_set_blocking(fd, blocking):
+    setup_marker.write_text("ready", encoding="utf-8")
+    time.sleep(0.30)
+    return real_set_blocking(fd, blocking)
+
+def spawn_descendant_then_hang(_home, records):
+    child = subprocess.Popen(["/bin/sleep", "30"])
+    descendant_pid_file.write_text(str(child.pid), encoding="utf-8")
+    time.sleep(30)
+    return scree._metadata_worktree_fallback(records)
+
+os.set_blocking = delayed_set_blocking
+scree.collect_worktrees = spawn_descendant_then_hang
+scree.collect_worktrees_isolated(Path({str(tmp_path)!r}), [], timeout_seconds=30)
+"""
+    environment = dict(os.environ)
+    scripts = str(Path(scree.__file__).resolve().parent)
+    environment["PYTHONPATH"] = scripts
+    process = subprocess.Popen(
+        [os.environ.get("PYTHON", "python3"), "-c", program],
+        env=environment,
+        start_new_session=True,
+    )
+    descendant = None
+    try:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if setup_marker.exists() and descendant_pid_file.exists():
+                descendant = int(descendant_pid_file.read_text(encoding="utf-8"))
+                break
+            if process.poll() is not None:
+                pytest.fail(f"race reproducer exited early: {process.returncode}")
+            time.sleep(0.01)
+        assert descendant is not None, "worker did not reach the cancellation window"
+
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=3.0)
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(descendant, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("setup-window SIGTERM left the worker descendant alive")
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=1.0)
+        if descendant is not None:
+            try:
+                os.kill(descendant, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -680,8 +1264,13 @@ def test_cli_preserve_writes_masked_file(tmp_path, capsys):
     out = tmp_path / "out.md"
     rc = scree.main(["preserve", str(session), "--home", str(home), "--out", str(out)])
     assert rc == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt == {
+        "status": "preserved", "output": str(out), "masked": True,
+    }
     assert "ren@example.com" not in out.read_text(encoding="utf-8")
     assert "<email-redacted>" in out.read_text(encoding="utf-8")
+    assert out.stat().st_mode & 0o777 == 0o600
 
 
 def test_cli_preserve_creates_missing_output_directory(tmp_path, capsys):
@@ -697,8 +1286,116 @@ def test_cli_preserve_creates_missing_output_directory(tmp_path, capsys):
     out = tmp_path / "nested" / "does" / "not" / "exist" / "out.md"
     rc = scree.main(["preserve", str(session), "--home", str(home), "--out", str(out)])
     assert rc == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["output"] == str(out)
     assert out.is_file()
     assert "hi" in out.read_text(encoding="utf-8")
+    assert out.parent.stat().st_uid == os.geteuid()
+
+
+@pytest.mark.parametrize("collision", ["file", "symlink"])
+def test_cli_preserve_never_replaces_an_existing_output_name(
+        tmp_path, capsys, collision):
+    home = tmp_path / "home"
+    session = home / "s.jsonl"
+    _write(session, _jsonl(
+        {"type": "user", "message": {"role": "user", "content": "new export"}},
+    ))
+    requested = tmp_path / "out.md"
+    outside = tmp_path / "outside.md"
+    if collision == "file":
+        requested.write_text("KEEP_EXISTING", encoding="utf-8")
+    else:
+        outside.write_text("KEEP_TARGET", encoding="utf-8")
+        requested.symlink_to(outside)
+
+    rc = scree.main([
+        "preserve", str(session), "--home", str(home),
+        "--out", str(requested),
+    ])
+
+    assert rc == 0
+    receipt = json.loads(capsys.readouterr().out)
+    actual = Path(receipt["output"])
+    assert actual != requested
+    assert actual.parent == requested.parent
+    assert actual.read_text(encoding="utf-8").find("new export") >= 0
+    assert actual.stat().st_mode & 0o777 == 0o600
+    if collision == "file":
+        assert requested.read_text(encoding="utf-8") == "KEEP_EXISTING"
+    else:
+        assert requested.is_symlink()
+        assert outside.read_text(encoding="utf-8") == "KEEP_TARGET"
+
+
+def test_preserve_collision_at_name_max_creates_a_private_sibling(tmp_path):
+    parent = tmp_path.resolve()
+    requested = parent / (("a" * 252) + ".md")
+    requested.write_text("KEEP_EXISTING", encoding="utf-8")
+
+    actual = scree._write_preserve_output(requested, "new export")
+
+    assert actual != requested
+    assert actual.suffix == ".md"
+    assert scree._filesystem_name_units(actual.name) <= os.pathconf(
+        parent, "PC_NAME_MAX")
+    assert actual.read_text(encoding="utf-8") == "new export"
+    assert actual.stat().st_mode & 0o777 == 0o600
+    assert requested.read_text(encoding="utf-8") == "KEEP_EXISTING"
+
+
+@pytest.mark.parametrize("mutation", ["content", "mode"])
+def test_preserve_fails_if_its_open_inode_changes_before_success(
+        tmp_path, monkeypatch, mutation):
+    destination = tmp_path.resolve() / "out.md"
+    original_stat = os.stat
+    mutated = False
+
+    def mutate_at_namespace_check(path, *args, **kwargs):
+        nonlocal mutated
+        if (not mutated and path == destination.name
+                and kwargs.get("dir_fd") is not None):
+            mutated = True
+            if mutation == "content":
+                descriptor = os.open(
+                    path, os.O_WRONLY | os.O_TRUNC,
+                    dir_fd=kwargs["dir_fd"])
+                try:
+                    os.write(descriptor, b"ATTACKER CONTENT")
+                finally:
+                    os.close(descriptor)
+            else:
+                os.chmod(path, 0o644, dir_fd=kwargs["dir_fd"])
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", mutate_at_namespace_check)
+
+    with pytest.raises(ValueError, match="changed during creation"):
+        scree._write_preserve_output(destination, "EXPECTED CONTENT")
+
+    assert mutated is True
+    assert not destination.exists()
+
+
+def test_cli_preserve_rejects_output_parent_not_owned_by_current_user(
+        tmp_path, capsys, monkeypatch):
+    home = tmp_path / "home"
+    session = home / "s.jsonl"
+    _write(session, _jsonl(
+        {"type": "user", "message": {"role": "user", "content": "hello"}},
+    ))
+    parent = tmp_path / "exports"
+    parent.mkdir()
+    monkeypatch.setattr(os, "geteuid", lambda: parent.stat().st_uid + 1)
+
+    rc = scree.main([
+        "preserve", str(session), "--home", str(home),
+        "--out", str(parent / "out.md"),
+    ])
+
+    assert rc == 1
+    assert "not owned" in capsys.readouterr().err
+    assert list(parent.iterdir()) == []
 
 
 def test_cli_report_default_unchanged_without_subcommand(tmp_path, capsys):
@@ -1041,6 +1738,135 @@ def test_store_without_a_binder_blocks_completeness(bind_home, monkeypatch):
 
 def test_unbound_store_detection_ignores_stores_that_are_absent(only_bindable_stores):
     assert scree.unbound_stores_present(only_bindable_stores["home"]) == []
+
+
+def test_claude_desktop_metadata_binds_workspace_without_leaking_other_paths(
+        bind_home):
+    fixture = _desktop_session(bind_home["home"])
+    metadata = json.loads(fixture["metadata"].read_text())
+    private_location = bind_home["home"] / "private-selected-folder"
+    metadata["userSelectedFolders"] = [
+        str(bind_home["repo"]), str(private_location),
+    ]
+    fixture["metadata"].write_text(json.dumps(metadata), encoding="utf-8")
+
+    out = scree.build_bindings(
+        bind_home["home"], str(bind_home["repo"]), deep=True)
+
+    desktop = [binding for binding in out["bindings"]
+               if binding["provider"] == scree.CLAUDE_DESKTOP_PROVIDER]
+    assert len(desktop) == 1
+    binding = desktop[0]
+    regular_unit_files = {
+        str(path) for path in fixture["unit"].rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    assert binding == {
+        "provider": scree.CLAUDE_DESKTOP_PROVIDER,
+        "sessionId": "local_desktop-one",
+        "source": str(fixture["metadata"]),
+        "subtranscripts": binding["subtranscripts"],
+        "artifactRoot": str(fixture["unit"]),
+        "evidence": ["selected-folder"],
+        "confidence": "medium",
+        "sizeBytes": (
+            fixture["metadata"].stat().st_size
+            + sum(Path(path).stat().st_size for path in regular_unit_files)
+        ),
+    }
+    assert set(binding["subtranscripts"]) == regular_unit_files
+    assert str(fixture["debug_link"]) not in binding["subtranscripts"]
+    assert out["coverageDetail"]["claudeDesktop"] == "complete"
+    assert scree.CLAUDE_DESKTOP_TOOL not in out["coverageDetail"]["unboundStores"]
+    assert str(private_location) not in json.dumps(out, ensure_ascii=False)
+
+
+def test_claude_desktop_selected_parent_binds_nested_repo(bind_home):
+    fixture = _desktop_session(bind_home["home"])
+    metadata = json.loads(fixture["metadata"].read_text())
+    metadata["userSelectedFolders"] = [str(bind_home["repo"].parent)]
+    fixture["metadata"].write_text(json.dumps(metadata), encoding="utf-8")
+
+    out = scree.build_bindings(
+        bind_home["home"], str(bind_home["repo"]), deep=True)
+
+    desktop = next(binding for binding in out["bindings"]
+                   if binding["provider"] == scree.CLAUDE_DESKTOP_PROVIDER)
+    assert desktop["evidence"] == ["selected-folder"]
+    assert out["coverageDetail"]["claudeDesktop"] == "complete"
+    assert scree._under(str(bind_home["repo"]), "/") is True
+
+
+def test_claude_desktop_binding_rejects_unit_changed_during_inventory(
+        bind_home, monkeypatch):
+    fixture = _desktop_session(bind_home["home"])
+    metadata = json.loads(fixture["metadata"].read_text())
+    metadata["userSelectedFolders"] = [str(bind_home["repo"])]
+    fixture["metadata"].write_text(json.dumps(metadata), encoding="utf-8")
+    original = scree._backup_inventory
+    calls = 0
+
+    def inventory_then_mutate(home_descriptor, source_relative):
+        nonlocal calls
+        inventory = original(home_descriptor, source_relative)
+        calls += 1
+        if calls == 1:
+            _write(fixture["unit"] / "appeared-during-binding.txt", "changed")
+        return inventory
+
+    monkeypatch.setattr(scree, "_backup_inventory", inventory_then_mutate)
+
+    out = scree.build_bindings(
+        bind_home["home"], str(bind_home["repo"]), deep=True)
+
+    assert calls == 2
+    assert out["coverageDetail"]["claudeDesktop"] == "incomplete"
+    assert out["coverage"] == "truncated"
+    assert not any(binding["provider"] == scree.CLAUDE_DESKTOP_PROVIDER
+                   for binding in out["bindings"])
+
+
+def test_claude_desktop_binding_inventory_budget_fails_closed(
+        bind_home, monkeypatch):
+    fixture = _desktop_session(bind_home["home"])
+    metadata = json.loads(fixture["metadata"].read_text())
+    metadata["userSelectedFolders"] = [str(bind_home["repo"])]
+    fixture["metadata"].write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setattr(scree, "CLAUDE_DESKTOP_BIND_MAX_FILES", 1)
+
+    out = scree.build_bindings(
+        bind_home["home"], str(bind_home["repo"]), deep=True)
+
+    assert out["coverageDetail"]["claudeDesktop"] == "incomplete"
+    assert out["coverage"] == "truncated"
+    assert not any(binding["provider"] == scree.CLAUDE_DESKTOP_PROVIDER
+                   for binding in out["bindings"])
+
+
+def test_claude_desktop_metadata_can_conclusively_not_match_workspace(bind_home):
+    _desktop_session(bind_home["home"])
+
+    out = scree.build_bindings(
+        bind_home["home"], str(bind_home["repo"]), deep=True)
+
+    assert not any(binding["provider"] == scree.CLAUDE_DESKTOP_PROVIDER
+                   for binding in out["bindings"])
+    assert out["coverageDetail"]["claudeDesktop"] == "complete"
+    assert out["coverage"] == "complete"
+
+
+def test_claude_desktop_unclassifiable_location_blocks_completeness(bind_home):
+    fixture = _desktop_session(bind_home["home"])
+    metadata = json.loads(fixture["metadata"].read_text())
+    metadata["cwd"] = "relative/provider/sandbox"
+    metadata["userSelectedFolders"] = []
+    fixture["metadata"].write_text(json.dumps(metadata), encoding="utf-8")
+
+    out = scree.build_bindings(
+        bind_home["home"], str(bind_home["repo"]), deep=True)
+
+    assert out["coverageDetail"]["claudeDesktop"] == "incomplete"
+    assert out["coverage"] == "truncated"
 
 
 def test_bind_matches_a_workspace_recorded_with_different_casing(bind_home):
@@ -1395,6 +2221,30 @@ def test_fingerprint_covers_every_bindable_store(bind_home):
     assert scree.store_fingerprint(bind_home["home"])["digest"] != baseline
 
 
+def test_fingerprint_changes_when_desktop_store_appears(bind_home):
+    before = scree.store_fingerprint(bind_home["home"])
+
+    _desktop_session(bind_home["home"])
+
+    after = scree.store_fingerprint(bind_home["home"])
+    assert after["digest"] != before["digest"]
+    assert after["fileCount"] > before["fileCount"]
+    assert scree.CLAUDE_DESKTOP_TOOL not in scree.unbound_stores_present(
+        bind_home["home"])
+
+
+def test_fingerprint_changes_when_desktop_binding_metadata_changes(bind_home):
+    fixture = _desktop_session(bind_home["home"])
+    before = scree.store_fingerprint(bind_home["home"])
+    payload = json.loads(fixture["metadata"].read_text())
+    payload["userSelectedFolders"] = [str(bind_home["repo"])]
+    fixture["metadata"].write_text(json.dumps(payload), encoding="utf-8")
+
+    after = scree.store_fingerprint(bind_home["home"])
+
+    assert after["digest"] != before["digest"]
+
+
 def test_bind_carries_the_fingerprint_it_was_taken_with(bind_home):
     out = scree.build_bindings(bind_home["home"], str(bind_home["repo"]))
     assert out["storeFingerprint"] == scree.store_fingerprint(bind_home["home"])
@@ -1435,6 +2285,27 @@ def test_bind_all_finds_file_access_for_each_workspace_in_one_pass(bind_home):
     for target in targets:
         ids = {b["sessionId"] for b in results[target["workspace"]]["bindings"]}
         assert "both" in ids, target["workspace"]
+
+
+def test_bind_all_scans_claude_desktop_metadata_once(bind_home, monkeypatch):
+    _desktop_session(bind_home["home"])
+    original = scree._claude_desktop_binding_scan
+    calls = 0
+
+    def count_scan(home):
+        nonlocal calls
+        calls += 1
+        return original(home)
+
+    monkeypatch.setattr(scree, "_claude_desktop_binding_scan", count_scan)
+    targets = [
+        {"workspace": str(bind_home["repo"]), "repoUrl": None},
+        {"workspace": str(bind_home["other"]), "repoUrl": None},
+    ]
+
+    scree.build_bindings_many(bind_home["home"], targets, deep=True)
+
+    assert calls == 1
 
 
 def test_bind_all_carries_coverage_and_fingerprint_per_workspace(bind_home):
@@ -1538,6 +2409,65 @@ def test_fixture_contains_no_real_local_paths():
 
 
 # --- inspect: 표시용 대화 열람 (판단 입력 아님) ------------------------------
+
+
+def _desktop_session(home, *, session_id="local_desktop-one",
+                     cli_session_id="cli-desktop-one",
+                     title="Desktop 작업 someone@example.com",
+                     primary_text="Desktop의 주 대화를 찾아줘",
+                     audit_text="AUDIT_ONLY_MARKER",
+                     sidecar_text="SUBAGENT_ONLY_MARKER"):
+    """Claude Desktop Code의 실제 pair 구조를 작게 재현한다."""
+    namespace = (home / "Library" / "Application Support" / "Claude"
+                 / "local-agent-mode-sessions" / "account" / "org")
+    metadata = namespace / f"{session_id}.json"
+    unit = namespace / session_id
+    outputs = unit / "outputs"
+    uploads = unit / "uploads"
+    selected = home / "external-workspaces" / "project-one"
+    for path in (outputs, uploads, selected):
+        path.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "sessionId": session_id,
+        "cliSessionId": cli_session_id,
+        "title": title,
+        "createdAt": 1_700_000_000_000,
+        "lastActivityAt": 1_800_000_000_000,
+        "cwd": str(outputs),
+        "userSelectedFolders": [str(selected)],
+        # These exist in the real metadata object and must never cross the
+        # metadata index boundary.
+        "emailAddress": "private-owner@example.com",
+        "systemPrompt": "PRIVATE_SYSTEM_PROMPT",
+        "remoteMcpServersConfig": [{"url": "https://secret.invalid/mcp"}],
+    }
+    _write(metadata, json.dumps(payload))
+    primary = (unit / ".claude" / "projects" / "-sandbox"
+               / f"{cli_session_id}.jsonl")
+    _write(primary, _jsonl(
+        {"type": "user", "message": {"role": "user", "content": primary_text},
+         "_audit_timestamp": "2026-08-30T01:02:03Z", "sessionId": cli_session_id},
+        {"type": "assistant", "message": {"role": "assistant", "content": "찾았습니다"},
+         "timestamp": "2026-08-30T01:02:04Z", "sessionId": cli_session_id},
+    ))
+    audit = unit / "audit.jsonl"
+    _write(audit, _jsonl({"message": {"role": "user", "content": audit_text},
+                          "_audit_timestamp": "2026-08-29T01:02:03Z"}))
+    subagent = (primary.parent / cli_session_id / "subagents" / "agent-one.jsonl")
+    _write(subagent, _jsonl({"message": {"role": "user", "content": sidecar_text}}))
+    queue = unit / ".claude" / "sessions" / "queue.jsonl"
+    _write(queue, _jsonl({"operation": "enqueue", "content": "QUEUE_ONLY_MARKER"}))
+    debug_link = unit / ".claude" / "debug" / "latest"
+    debug_link.parent.mkdir(parents=True, exist_ok=True)
+    debug_link.symlink_to("/sessions/old-sandbox/.claude/debug/session.txt")
+    _write(uploads / "input.txt", "PRIVATE_UPLOAD")
+    _write(outputs / "result.txt", "PRIVATE_OUTPUT")
+    _write(selected / "must-not-be-followed.txt", "EXTERNAL_SELECTED_FOLDER")
+    return {
+        "metadata": metadata, "unit": unit, "primary": primary,
+        "audit": audit, "subagent": subagent, "queue": queue,
+        "selected": selected, "debug_link": debug_link,
+    }
 
 
 def test_inspect_returns_the_conversation_masked_and_capped(tmp_path):
@@ -1734,7 +2664,756 @@ def test_inspect_turns_carry_a_stable_ordinal(tmp_path):
     assert len(set(indices)) == len(out["turns"])
 
 
+def test_damaged_large_integer_line_does_not_abort_content_readers(tmp_path):
+    source = (tmp_path / ".claude" / "projects" / "project"
+              / "large-integer.jsonl")
+    healthy = "healthy recovery phrase"
+    _write(
+        source,
+        '{"n":' + ('9' * 5000) + '}\n'
+        + _jsonl({"message": {"role": "user", "content": healthy}}),
+    )
+
+    inspect = scree.build_inspect(source, tmp_path)
+    assert inspect["status"] == "ok"
+    assert inspect["turns"][0]["text"] == healthy
+    assert scree.build_title(source, tmp_path)["title"] == healthy
+    assert healthy in scree.render_preserve(source, tmp_path, raw=False)
+    assert scree.build_search(healthy, tmp_path)["matches"]
+    assert scree.build_evidence(healthy, tmp_path)["conversationMentions"]
+
+    gemini = tmp_path / "damaged-gemini.json"
+    gemini.write_text('{"n":' + ('9' * 5000) + '}', encoding="utf-8")
+    assert scree.build_inspect(gemini, tmp_path)["status"] == "unrecognized"
+
+
 # --- sessions: 메타데이터 전용 세션 색인 (브라우저용) ------------------------
+
+
+def test_claude_desktop_index_models_the_pair_as_one_conversation(tmp_path):
+    fixture = _desktop_session(tmp_path)
+    out = scree.build_sessions(tmp_path)
+    desktop = [session for session in out["sessions"]
+               if session.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER]
+
+    # primary + audit + subagent + queue are one conversation, not four rows.
+    assert len(desktop) == 1
+    session = desktop[0]
+    assert session["tool"] == "Claude Desktop"
+    assert session["source"] == str(fixture["metadata"])
+    assert session["sessionId"] == "local_desktop-one"
+    # The first existing selected folder is the one Work representative.
+    # Other selections remain available to the conservative binder only.
+    assert session["workspace"] == str(fixture["selected"])
+    assert session["workspaceExists"] is True
+    # Display descriptors never expose or synchronously probe raw paths. The
+    # one Work representative has a separate process-isolated existence bit.
+    assert session["cwd"] == {"basename": "outputs", "exists": None}
+    assert session["userSelectedFolders"] == [
+        {"basename": "project-one", "exists": None},
+    ]
+    assert session["createdAt"] == 1_700_000_000_000
+    assert session["lastActivityAt"] == 1_800_000_000_000
+    assert session["lastActiveEpoch"] == 1_800_000_000
+    assert session["sizeBytes"] == fixture["metadata"].stat().st_size
+    assert session["sizeComplete"] is False
+
+
+def test_claude_desktop_only_repo_reaches_report_lineage_and_scan_roots(
+        tmp_path):
+    fixture = _desktop_session(tmp_path)
+    (fixture["selected"] / ".git").mkdir()
+
+    report = scree.build_scree(tmp_path)
+
+    group = next(item for item in report["groups"]
+                 if item["workspaces"] == [str(fixture["selected"])])
+    assert group["tools"] == {scree.CLAUDE_DESKTOP_TOOL: 1}
+    lineage = next(item for item in report["lineage"]["paths"]
+                   if item["path"] == str(fixture["selected"]))
+    assert lineage["exists"] is True
+    assert lineage["has_git"] is True
+    desktop_store = next(item for item in report["stores"]
+                         if item["store"] == scree.CLAUDE_DESKTOP_TOOL)
+    assert desktop_store["status"] == "ok"
+    assert desktop_store["count"] == 1
+
+
+def test_claude_desktop_index_emits_only_the_metadata_whitelist(tmp_path):
+    fixture = _desktop_session(tmp_path)
+    session = next(s for s in scree.build_sessions(tmp_path)["sessions"]
+                   if s.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER)
+    allowed = {
+        "tool", "provider", "sessionId", "source", "workspace",
+        "workspaceExists", "kind", "sizeBytes", "lastActive",
+        "sizeComplete", "lastActiveEpoch", "title", "createdAt", "lastActivityAt", "cwd",
+        "userSelectedFolders",
+    }
+    assert set(session) == allowed
+    encoded = json.dumps(session, ensure_ascii=False)
+    assert "someone@example.com" not in encoded  # provider title is masked
+    assert "private-owner@example.com" not in encoded
+    assert "PRIVATE_SYSTEM_PROMPT" not in encoded
+    assert "secret.invalid" not in encoded
+    # The one Work representative is intentionally visible; no other raw
+    # Desktop metadata path or private field crosses the whitelist.
+    assert session["workspace"] == str(fixture["selected"])
+    assert session["title"] == "Desktop 작업 <email-redacted>"
+
+
+def test_claude_desktop_index_chooses_first_existing_selected_folder_only(
+        tmp_path):
+    fixture = _desktop_session(tmp_path)
+    metadata = json.loads(fixture["metadata"].read_text())
+    missing = tmp_path / "private" / "missing-workspace"
+    chosen = tmp_path / "work" / "chosen"
+    other = tmp_path / "private" / "other-workspace"
+    chosen.mkdir(parents=True)
+    other.mkdir(parents=True)
+    metadata["userSelectedFolders"] = [
+        str(missing), str(chosen), str(other),
+    ]
+    fixture["metadata"].write_text(json.dumps(metadata), encoding="utf-8")
+
+    session = next(s for s in scree.build_sessions(tmp_path)["sessions"]
+                   if s.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER)
+
+    assert session["workspace"] == str(chosen)
+    assert session["workspaceExists"] is True
+    encoded = json.dumps(session, ensure_ascii=False)
+    assert str(missing) not in encoded
+    assert str(other) not in encoded
+    assert session["userSelectedFolders"] == [
+        {"basename": "missing-workspace", "exists": None},
+        {"basename": "chosen", "exists": None},
+        {"basename": "other-workspace", "exists": None},
+    ]
+    # The non-representative selection is still a binding access root.
+    binding = scree.build_bindings(tmp_path, str(other), deep=True)
+    assert any(item["provider"] == scree.CLAUDE_DESKTOP_PROVIDER
+               for item in binding["bindings"])
+
+
+def test_claude_desktop_workspace_probe_timeout_keeps_index_responsive(
+        tmp_path, monkeypatch):
+    fixture = _desktop_session(tmp_path)
+    selected = str(fixture["selected"])
+    original_stat = os.stat
+
+    def block_provider_location(path, *args, **kwargs):
+        if os.fspath(path) == selected and not args and not kwargs:
+            time.sleep(5)
+            raise AssertionError("timed-out provider path should be terminated")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", block_provider_location)
+    monkeypatch.setattr(
+        scree, "CLAUDE_DESKTOP_WORKSPACE_PROBE_SECONDS", 0.05)
+    started = time.monotonic()
+
+    out = scree.build_sessions(tmp_path)
+
+    assert time.monotonic() - started < 1.0
+    session = next(s for s in out["sessions"]
+                   if s.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER)
+    assert session["workspace"] == ""
+    assert session["workspaceExists"] is False
+    assert out["coverage"]["complete"] is False
+    assert _desktop_coverage(out)["status"] == "truncated"
+
+
+def test_claude_desktop_index_marks_metadata_rewrite_incomplete(
+        tmp_path, monkeypatch):
+    fixture = _desktop_session(tmp_path)
+    root = tmp_path.joinpath(*scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    root_identity = (root.stat().st_dev, root.stat().st_ino)
+    original_dup = os.dup
+    mutated = False
+
+    def mutate_before_final_revalidation(descriptor):
+        nonlocal mutated
+        info = os.fstat(descriptor)
+        if not mutated and (info.st_dev, info.st_ino) == root_identity:
+            payload = json.loads(fixture["metadata"].read_text())
+            payload["userSelectedFolders"] = [str(tmp_path / "changed")]
+            replacement = fixture["metadata"].with_name("replacement.json")
+            replacement.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(replacement, fixture["metadata"])
+            mutated = True
+        return original_dup(descriptor)
+
+    monkeypatch.setattr(os, "dup", mutate_before_final_revalidation)
+
+    out = scree.build_sessions(tmp_path)
+
+    assert mutated is True
+    assert not any(s.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER
+                   for s in out["sessions"])
+    assert out["coverage"]["complete"] is False
+    assert _desktop_coverage(out)["status"] == "truncated"
+
+
+@pytest.mark.parametrize("damage", ["symlink", "oversize", "wrong-shape"])
+def test_claude_desktop_index_rejects_unsafe_or_unrecognized_metadata(
+        tmp_path, monkeypatch, damage):
+    fixture = _desktop_session(tmp_path)
+    metadata = fixture["metadata"]
+    if damage == "symlink":
+        outside = tmp_path / "metadata-outside-store.json"
+        outside.write_bytes(metadata.read_bytes())
+        metadata.unlink()
+        metadata.symlink_to(outside)
+    elif damage == "oversize":
+        monkeypatch.setattr(scree, "CLAUDE_DESKTOP_METADATA_MAX_BYTES", 8)
+    else:
+        metadata.write_text(json.dumps({"sessionId": metadata.stem}), encoding="utf-8")
+
+    assert scree.collect_claude_desktop_sessions(tmp_path) == []
+    status = scree.build_inspect(metadata, tmp_path)["status"]
+    assert status in {"unreadable", "unrecognized"}
+
+
+def test_claude_desktop_index_marks_lone_surrogate_metadata_unrecognized(tmp_path):
+    fixture = _desktop_session(tmp_path)
+    payload = json.loads(fixture["metadata"].read_text(encoding="utf-8"))
+    payload["title"] = "damaged\ud800title"
+    fixture["metadata"].write_text(
+        json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+
+    process = subprocess.run(
+        [sys.executable, str(Path(scree.__file__).resolve()),
+         "sessions", "--home", str(tmp_path)],
+        capture_output=True,
+        timeout=5,
+    )
+
+    assert process.returncode == 0, process.stderr.decode("utf-8", errors="replace")
+    result = json.loads(process.stdout)
+    assert not any(session.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER
+                   for session in result["sessions"])
+    assert _desktop_coverage(result)["status"] == "unrecognized"
+    assert result["coverage"]["complete"] is False
+
+
+@pytest.mark.parametrize("field", ["sessionId", "cliSessionId"])
+def test_claude_desktop_index_rejects_ids_other_apis_cannot_resolve(
+        tmp_path, field):
+    fixture = _desktop_session(tmp_path)
+    metadata = fixture["metadata"]
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    if field == "sessionId":
+        invalid_id = "local_désktop"
+        invalid_metadata = metadata.with_name(invalid_id + ".json")
+        invalid_unit = fixture["unit"].with_name(invalid_id)
+        metadata.rename(invalid_metadata)
+        fixture["unit"].rename(invalid_unit)
+        metadata = invalid_metadata
+        payload[field] = invalid_id
+    else:
+        payload[field] = "cli-désktop"
+    metadata.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = scree.build_sessions(tmp_path)
+
+    assert not any(session.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER
+                   for session in result["sessions"])
+    assert _desktop_coverage(result)["status"] == "unrecognized"
+    assert result["coverage"]["complete"] is False
+
+
+def test_claude_desktop_index_never_descends_into_conversation_units(tmp_path, monkeypatch):
+    fixture = _desktop_session(tmp_path)
+    real_scandir = os.scandir
+    unit_info = fixture["unit"].stat()
+    unit_identity = (unit_info.st_dev, unit_info.st_ino)
+
+    def bounded_scandir(path):
+        if isinstance(path, int):
+            info = os.fstat(path)
+            assert (info.st_dev, info.st_ino) != unit_identity
+        else:
+            candidate = Path(path)
+            assert candidate != fixture["unit"] and fixture["unit"] not in candidate.parents
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", bounded_scandir)
+    sessions = scree.collect_claude_desktop_sessions(tmp_path)
+    assert len(sessions) == 1
+
+
+def test_claude_desktop_index_rejects_a_relocated_symlink_store(tmp_path):
+    fixture = _desktop_session(tmp_path)
+    root = tmp_path.joinpath(*scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    outside = tmp_path / "outside-desktop-store"
+    root.rename(outside)
+    root.symlink_to(outside, target_is_directory=True)
+
+    assert fixture["metadata"].name.startswith("local_")
+    assert scree.collect_claude_desktop_sessions(tmp_path) == []
+
+
+def test_claude_desktop_index_accepts_canonical_macos_var_alias(tmp_path):
+    fixture = _desktop_session(tmp_path)
+    canonical = str(tmp_path)
+    if not canonical.startswith("/private/var/"):
+        pytest.skip("this host does not expose the macOS /var alias")
+    alias_home = Path(canonical.replace("/private/var/", "/var/", 1))
+
+    sessions = scree.build_sessions(alias_home)["sessions"]
+
+    desktop = next(session for session in sessions
+                   if session.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER)
+    assert desktop["source"] == str(fixture["metadata"])
+
+
+@pytest.mark.parametrize("field", ["createdAt", "lastActivityAt"])
+def test_claude_desktop_invalid_epoch_is_unrecognized_not_an_unsafe_json_number(
+        tmp_path, field):
+    fixture = _desktop_session(tmp_path)
+    payload = json.loads(fixture["metadata"].read_text())
+    payload[field] = 10 ** 400
+    fixture["metadata"].write_text(json.dumps(payload), encoding="utf-8")
+
+    result = scree.build_sessions(tmp_path)
+
+    assert not any(s.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER
+                   for s in result["sessions"])
+    assert _desktop_coverage(result)["status"] == "unrecognized"
+    assert result["coverage"]["complete"] is False
+
+
+def test_claude_desktop_oversized_integer_literal_is_skipped_not_fatal(tmp_path):
+    fixture = _desktop_session(tmp_path)
+    raw = fixture["metadata"].read_text(encoding="utf-8")
+    raw = raw.replace(
+        '"lastActivityAt": 1800000000000',
+        '"lastActivityAt": ' + ('9' * 5000),
+    )
+    fixture["metadata"].write_text(raw, encoding="utf-8")
+
+    assert scree.collect_claude_desktop_sessions(tmp_path) == []
+
+
+def _desktop_coverage(payload):
+    return next(
+        store for store in payload["coverage"]["stores"]
+        if store["store"] == scree.CLAUDE_DESKTOP_TOOL
+    )
+
+
+def test_session_index_reports_missing_desktop_store_as_complete_coverage(tmp_path):
+    payload = scree.build_sessions(tmp_path)
+    assert _desktop_coverage(payload) == {
+        "store": "Claude Desktop", "status": "missing",
+        "count": 0, "unrecognized": 0,
+    }
+    assert payload["coverage"]["complete"] is True
+    assert payload["total"] == len(payload["sessions"])
+
+
+def test_session_index_handles_an_absent_home_without_an_internal_error(tmp_path):
+    absent = tmp_path / "absent-home"
+
+    payload = scree.build_sessions(absent)
+
+    assert _desktop_coverage(payload)["status"] == "missing"
+
+
+def test_session_index_does_not_call_an_unreadable_claude_store_missing(
+        tmp_path, monkeypatch):
+    root = tmp_path / ".claude" / "projects"
+    root.mkdir(parents=True)
+    original = os.scandir
+
+    def deny_projects(path):
+        if not isinstance(path, int) and Path(path) == root:
+            raise PermissionError("TCC denied")
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", deny_projects)
+    payload = scree.build_sessions(tmp_path)
+    claude = next(store for store in payload["coverage"]["stores"]
+                  if store["store"] == "Claude")
+
+    assert claude["status"] == "unreadable"
+    assert payload["coverage"]["complete"] is False
+
+
+@pytest.mark.parametrize("damage", ["malformed", "oversize"])
+def test_session_index_exposes_unrecognized_desktop_metadata(
+        tmp_path, monkeypatch, damage):
+    fixture = _desktop_session(tmp_path)
+    if damage == "malformed":
+        fixture["metadata"].write_text("{broken", encoding="utf-8")
+    else:
+        monkeypatch.setattr(scree, "CLAUDE_DESKTOP_METADATA_MAX_BYTES", 8)
+
+    payload = scree.build_sessions(tmp_path)
+    assert _desktop_coverage(payload) == {
+        "store": "Claude Desktop", "status": "unrecognized",
+        "count": 0, "unrecognized": 1,
+    }
+    assert payload["coverage"]["complete"] is False
+
+
+def test_session_index_exposes_orphaned_desktop_conversation_unit(tmp_path):
+    root = tmp_path.joinpath(*scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    orphan = root / "account" / "org" / "local_orphan"
+    _write(orphan / ".claude" / "projects" / "-sandbox" / "orphan.jsonl",
+           _jsonl({"type": "user", "message": {"content": "still here"}}))
+
+    payload = scree.build_sessions(tmp_path)
+
+    assert _desktop_coverage(payload) == {
+        "store": "Claude Desktop", "status": "unrecognized",
+        "count": 0, "unrecognized": 1,
+    }
+    assert payload["coverage"]["complete"] is False
+
+
+def test_session_index_exposes_unreadable_desktop_namespace(tmp_path, monkeypatch):
+    fixture = _desktop_session(tmp_path)
+    root = tmp_path.joinpath(*scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    root_info = root.stat()
+    root_identity = (root_info.st_dev, root_info.st_ino)
+    original = os.scandir
+
+    def deny_desktop(path):
+        is_root = ((os.fstat(path).st_dev, os.fstat(path).st_ino) == root_identity
+                   if isinstance(path, int) else Path(path) == root)
+        if is_root:
+            raise PermissionError("TCC denied")
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", deny_desktop)
+    payload = scree.build_sessions(tmp_path)
+    assert fixture["metadata"].exists()
+    assert _desktop_coverage(payload)["status"] == "unreadable"
+    assert _desktop_coverage(payload)["count"] == 0
+    assert payload["coverage"]["complete"] is False
+
+
+def test_session_index_exposes_truncated_desktop_namespace(tmp_path):
+    root = tmp_path.joinpath(*scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    (root / "account" / "org" / "profile" / "deeper").mkdir(parents=True)
+
+    payload = scree.build_sessions(tmp_path)
+    assert _desktop_coverage(payload)["status"] == "truncated"
+    assert payload["coverage"]["complete"] is False
+
+
+def test_session_index_namespace_entry_budget_is_global_across_depth(
+        tmp_path, monkeypatch):
+    fixture = _desktop_session(tmp_path)
+    monkeypatch.setattr(scree, "CLAUDE_DESKTOP_NAMESPACE_MAX_ENTRIES", 2)
+
+    payload = scree.build_sessions(tmp_path)
+
+    assert fixture["metadata"].exists()
+    assert _desktop_coverage(payload)["status"] == "truncated"
+    assert payload["coverage"]["complete"] is False
+
+
+def test_session_index_caps_even_malformed_desktop_candidates(
+        tmp_path, monkeypatch):
+    root = tmp_path.joinpath(*scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    namespace = root / "account" / "org"
+    namespace.mkdir(parents=True)
+    for number in range(4):
+        _write(namespace / f"local_bad-{number}.json", "{broken")
+        (namespace / f"local_bad-{number}").mkdir()
+    monkeypatch.setattr(scree, "CLAUDE_DESKTOP_METADATA_MAX_FILES", 2)
+
+    payload = scree.build_sessions(tmp_path)
+
+    assert _desktop_coverage(payload)["status"] == "truncated"
+    assert payload["coverage"]["complete"] is False
+
+
+def test_session_index_does_not_probe_provider_selected_paths(
+        tmp_path, monkeypatch):
+    fixture = _desktop_session(tmp_path)
+    payload = json.loads(fixture["metadata"].read_text())
+    sleeping = tmp_path / "sleeping-network-mount" / "project"
+    payload["userSelectedFolders"] = [str(sleeping)]
+    fixture["metadata"].write_text(json.dumps(payload), encoding="utf-8")
+    original = Path.exists
+
+    def reject_probe(path):
+        if path == sleeping:
+            raise AssertionError("automatic index probed provider path")
+        return original(path)
+
+    monkeypatch.setattr(Path, "exists", reject_probe)
+    session = next(s for s in scree.build_sessions(tmp_path)["sessions"]
+                   if s.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER)
+    assert session["userSelectedFolders"] == [
+        {"basename": "project", "exists": None},
+    ]
+
+
+def test_safe_location_never_expands_a_provider_supplied_user_path(monkeypatch):
+    def reject_expand(_path):
+        raise AssertionError("provider path triggered user-directory lookup")
+
+    monkeypatch.setattr(Path, "expanduser", reject_expand)
+
+    assert scree._safe_location("~network-user/sleeping-share") == {
+        "basename": "sleeping-share", "exists": None,
+    }
+
+
+def test_session_index_rejects_unbounded_desktop_selected_folders(tmp_path):
+    fixture = _desktop_session(tmp_path)
+    payload = json.loads(fixture["metadata"].read_text())
+    payload["userSelectedFolders"] = [
+        f"/network/{number}"
+        for number in range(scree.CLAUDE_DESKTOP_SELECTED_FOLDERS_MAX + 1)
+    ]
+    fixture["metadata"].write_text(json.dumps(payload), encoding="utf-8")
+
+    result = scree.build_sessions(tmp_path)
+
+    assert _desktop_coverage(result)["status"] == "unrecognized"
+    assert result["coverage"]["complete"] is False
+
+
+def test_claude_desktop_inspect_and_search_read_only_the_primary_transcript(tmp_path):
+    fixture = _desktop_session(tmp_path, primary_text="Hydrojet 회수 기록을 찾아줘")
+
+    inspected = scree.build_inspect(fixture["metadata"], tmp_path)
+    assert inspected["provider"] == scree.CLAUDE_DESKTOP_PROVIDER
+    assert inspected["sessionId"] == "local_desktop-one"
+    assert inspected["firstUserTurn"] == "Hydrojet 회수 기록을 찾아줘"
+    # Desktop audit wrappers sometimes provide this when the inner event has
+    # no ordinary timestamp; it remains turn provenance, not another turn.
+    assert inspected["turns"][0]["at"] == "2026-08-30T01:02:03Z"
+
+    found = scree.build_search("Hydrojet 회수", tmp_path)
+    assert [match["source"] for match in found["matches"]] == [str(fixture["metadata"])]
+    assert found["totalSessions"] == 1
+
+    # Audit/subagent/queue JSONLs are preserved sidecars.  Searching them as
+    # separate conversations would both leak audit content and inflate count.
+    for marker in ("AUDIT_ONLY_MARKER", "SUBAGENT_ONLY_MARKER", "QUEUE_ONLY_MARKER"):
+        absent = scree.build_search(marker, tmp_path)
+        assert absent["matches"] == []
+        assert absent["totalSessions"] == 1
+        assert absent["definitive"] is True
+
+
+@pytest.mark.parametrize("command", ["inspect", "search", "evidence", "title", "preserve"])
+def test_content_cli_replaces_lone_surrogates_instead_of_losing_the_response(
+        tmp_path, command):
+    fixture = _desktop_session(
+        tmp_path, title=None, primary_text="damaged\ud800title")
+    source = str(fixture["metadata"])
+    arguments = {
+        "inspect": ["inspect", source],
+        "search": ["search", "damaged"],
+        "evidence": ["evidence", "damaged"],
+        "title": ["title", source],
+        "preserve": ["preserve", source],
+    }[command]
+
+    process = subprocess.run(
+        [sys.executable, str(Path(scree.__file__).resolve()),
+         *arguments, "--home", str(tmp_path)],
+        capture_output=True,
+        timeout=5,
+    )
+
+    assert process.returncode == 0, process.stderr.decode("utf-8", errors="replace")
+    decoded = process.stdout.decode("utf-8")
+    assert "damaged\N{REPLACEMENT CHARACTER}title" in decoded
+    if command != "preserve":
+        json.loads(decoded)
+
+
+def test_claude_desktop_search_fails_closed_after_store_root_swap(
+        tmp_path, monkeypatch):
+    fixture = _desktop_session(tmp_path, primary_text="SAFE_PRIMARY_CONTENT")
+    outside_home = tmp_path / "outside-home"
+    outside = _desktop_session(
+        outside_home, primary_text="EXTERNAL_SECRET_CONTENT")
+    root = tmp_path.joinpath(*scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    held = tmp_path / "desktop-root-held"
+    outside_root = outside_home.joinpath(
+        *scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    original = scree._collect_claude_desktop_sessions_with_coverage
+    swapped = False
+
+    def swap_after_snapshot(home):
+        nonlocal swapped
+        records, coverage = original(home)
+        if not swapped:
+            swapped = True
+            root.rename(held)
+            root.symlink_to(outside_root, target_is_directory=True)
+        return records, coverage
+
+    monkeypatch.setattr(
+        scree, "_collect_claude_desktop_sessions_with_coverage",
+        swap_after_snapshot)
+    try:
+        result = scree.build_search("EXTERNAL_SECRET_CONTENT", tmp_path)
+    finally:
+        if root.is_symlink():
+            root.unlink()
+        if held.exists():
+            held.rename(root)
+
+    assert swapped is True
+    assert result["matches"] == []
+    assert result["unreadableSessions"] == 1
+    assert result["definitive"] is False
+    assert fixture["metadata"].exists()
+
+
+def test_claude_desktop_search_withholds_absence_when_root_changes_during_scan(
+        tmp_path, monkeypatch):
+    root = tmp_path.joinpath(*scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    root.mkdir(parents=True)
+    held = tmp_path / "desktop-empty-root-held"
+    root_info = root.stat()
+    root_identity = (root_info.st_dev, root_info.st_ino)
+    original = os.scandir
+    swapped = False
+
+    def replace_empty_root_before_scan(path):
+        nonlocal swapped
+        if isinstance(path, int):
+            info = os.fstat(path)
+            if not swapped and (info.st_dev, info.st_ino) == root_identity:
+                swapped = True
+                root.rename(held)
+                _desktop_session(
+                    tmp_path, primary_text="NEW_SECRET_PHRASE")
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", replace_empty_root_before_scan)
+
+    result = scree.build_search("NEW_SECRET_PHRASE", tmp_path)
+
+    assert swapped is True
+    assert result["totalSessions"] == 0
+    assert result["coverage"] == "truncated"
+    assert result["truncatedReason"] == "discovery"
+    assert result["definitive"] is False
+
+
+def test_claude_desktop_binding_is_incomplete_when_store_changes_during_scan(
+        bind_home, monkeypatch):
+    root = bind_home["home"].joinpath(
+        *scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    root.mkdir(parents=True)
+    held = bind_home["home"] / "desktop-empty-root-held"
+    root_info = root.stat()
+    root_identity = (root_info.st_dev, root_info.st_ino)
+    original = os.scandir
+    swapped = False
+
+    def replace_empty_root_before_scan(path):
+        nonlocal swapped
+        if isinstance(path, int):
+            info = os.fstat(path)
+            if not swapped and (info.st_dev, info.st_ino) == root_identity:
+                swapped = True
+                root.rename(held)
+                fixture = _desktop_session(bind_home["home"])
+                metadata = json.loads(fixture["metadata"].read_text())
+                metadata["userSelectedFolders"] = [str(bind_home["repo"])]
+                fixture["metadata"].write_text(
+                    json.dumps(metadata), encoding="utf-8")
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", replace_empty_root_before_scan)
+
+    out = scree.build_bindings(
+        bind_home["home"], str(bind_home["repo"]), deep=True)
+
+    assert swapped is True
+    assert out["coverageDetail"]["claudeDesktop"] == "incomplete"
+    assert out["coverage"] == "truncated"
+    assert not any(binding["provider"] == scree.CLAUDE_DESKTOP_PROVIDER
+                   for binding in out["bindings"])
+
+
+def test_claude_desktop_search_rejects_metadata_changed_while_opening_primary(
+        tmp_path, monkeypatch):
+    fixture = _desktop_session(tmp_path, primary_text="SAFE_PRIMARY_CONTENT")
+    unit_info = fixture["unit"].stat()
+    unit_identity = (unit_info.st_dev, unit_info.st_ino)
+    original = os.scandir
+    mutated = False
+
+    def replace_metadata_before_unit_scan(path):
+        nonlocal mutated
+        if isinstance(path, int):
+            info = os.fstat(path)
+            if not mutated and (info.st_dev, info.st_ino) == unit_identity:
+                payload = json.loads(fixture["metadata"].read_text())
+                payload["cliSessionId"] = "cli-desktop-two"
+                replacement = fixture["metadata"].with_name("replacement.json")
+                replacement.write_text(json.dumps(payload), encoding="utf-8")
+                os.replace(replacement, fixture["metadata"])
+                mutated = True
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", replace_metadata_before_unit_scan)
+
+    result = scree.build_search("SAFE_PRIMARY_CONTENT", tmp_path)
+
+    assert mutated is True
+    assert result["matches"] == []
+    assert result["unreadableSessions"] == 1
+    assert result["definitive"] is False
+
+
+def test_claude_desktop_primary_scan_keeps_open_fds_bounded_by_depth(
+        tmp_path, monkeypatch):
+    fixture = _desktop_session(tmp_path)
+    for number in range(300):
+        (fixture["unit"] / f"wide-{number}").mkdir()
+    original_open = os.open
+    original_close = os.close
+    tracked: set[int] = set()
+    high_water = 0
+
+    def track_open(*args, **kwargs):
+        nonlocal high_water
+        descriptor = original_open(*args, **kwargs)
+        tracked.add(descriptor)
+        high_water = max(high_water, len(tracked))
+        return descriptor
+
+    def track_close(descriptor):
+        tracked.discard(descriptor)
+        return original_close(descriptor)
+
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(os, "close", track_close)
+
+    descriptor, primary, status = scree._open_claude_desktop_primary(
+        fixture["metadata"], tmp_path)
+    try:
+        assert status == "ok"
+        assert primary == fixture["primary"]
+        assert descriptor is not None
+        assert high_water <= scree.BACKUP_MAX_DEPTH + 10
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def test_claude_desktop_identity_never_collapses_to_audit(tmp_path):
+    fixture = _desktop_session(tmp_path)
+    assert scree._file_access_session_id(
+        scree.CLAUDE_DESKTOP_PROVIDER, fixture["audit"]
+    ) == "local_desktop-one"
+    inspected = scree.build_inspect(fixture["audit"], tmp_path)
+    assert inspected["sessionId"] == "local_desktop-one"
+    assert inspected["provider"] == scree.CLAUDE_DESKTOP_PROVIDER
 
 
 def test_sessions_lists_sessions_newest_first(bind_home):
@@ -1958,10 +3637,25 @@ def test_search_counts_sessions_it_could_not_read(tmp_path):
     finally:
         blocked.chmod(0o600)
     assert out["unreadableSessions"] == 1
-    # 훑기 자체는 끝났다.
-    assert out["coverage"] == "complete"
+    # 목록에 남은 후보는 모두 훑었지만 discovery도 같은 unreadable 파일을
+    # 완전하게 분류하지 못했다. 두 단계 중 하나라도 불완전하면 전체 검색도
+    # complete가 아니다.
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "discovery"
     # 그러나 못 읽은 세션이 있으면 "그런 대화 없음"이라고 단정할 수 없다.
     # 이것이 unknown이 none으로 오염되는 정확한 지점이다.
+    assert out["definitive"] is False
+
+
+def test_search_withholds_absence_when_store_discovery_is_incomplete(tmp_path):
+    fixture = _desktop_session(tmp_path)
+    fixture["metadata"].write_text("{broken", encoding="utf-8")
+
+    out = scree.build_search("phrase-not-present", tmp_path)
+
+    assert out["totalSessions"] == 0
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "discovery"
     assert out["definitive"] is False
 
 
@@ -2312,6 +4006,39 @@ def test_evidence_withholds_conclusions_when_it_could_not_read_everything(tmp_pa
     assert out["definitive"] is False
 
 
+def test_evidence_withholds_absence_when_store_discovery_is_incomplete(
+        tmp_path, monkeypatch):
+    fixture = _desktop_session(tmp_path)
+    root = tmp_path.joinpath(*scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
+    root_info = root.stat()
+    root_identity = (root_info.st_dev, root_info.st_ino)
+    original = os.scandir
+
+    def deny_desktop(path):
+        if isinstance(path, int):
+            info = os.fstat(path)
+            if (info.st_dev, info.st_ino) == root_identity:
+                raise PermissionError("TCC denied")
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", deny_desktop)
+
+    out = scree.build_evidence("phrase-not-present", tmp_path)
+
+    assert fixture["metadata"].exists()
+    assert out["totalSessions"] == 0
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "discovery"
+    assert out["definitive"] is False
+
+
+def test_empty_evidence_query_is_never_definitive(tmp_path):
+    out = scree.build_evidence("   ", tmp_path)
+
+    assert out["scannedSessions"] == 0
+    assert out["definitive"] is False
+
+
 def test_evidence_cli_emits_json(tmp_path, capsys):
     assert scree.main(["evidence", "npm cache clean",
                        "--home", str(_evidence_home(tmp_path))]) == 0
@@ -2367,6 +4094,343 @@ def test_backup_and_restore_preserve_full_session_bytes_and_private_permissions(
         assert (home / name).stat().st_mtime_ns == before[name]
 
 
+def test_backup_category_ignores_colliding_claude_project_bucket_name(tmp_path):
+    home = tmp_path / "home"
+    source = home / ".claude" / "projects" / "subagents" / "session-1.jsonl"
+    tool_result = source.parent / source.stem / "tool-results" / "tool.txt"
+    _write(source, _jsonl({"type": "user", "message": {"content": "hello"}}))
+    _write(tool_result, "done")
+
+    receipt = scree.build_session_backup(
+        source, home, tmp_path / "category.zip", include_sensitive=True)
+
+    assert receipt["categories"] == ["tool-results", "transcript"]
+
+
+def test_claude_desktop_backup_owns_the_pair_but_never_follows_selected_folders(tmp_path):
+    home = tmp_path.resolve() / "home"
+    fixture = _desktop_session(home)
+    archive = tmp_path / "desktop-backup.zip"
+
+    receipt = scree.build_session_backup(
+        fixture["metadata"], home, archive, include_sensitive=True)
+    assert receipt["provider"] == "Claude Desktop"
+    assert receipt["scope"] == "claude-desktop-conversation-unit"
+    assert receipt["categories"] == [
+        "audit", "metadata", "outputs", "queue", "sidecar", "subagents",
+        "transcript", "uploads",
+    ]
+
+    with zipfile.ZipFile(archive) as bundle:
+        manifest = json.loads(bundle.read("manifest.json"))
+        archived = {entry["path"] for entry in manifest["files"]}
+        metadata_relative = fixture["metadata"].relative_to(home).as_posix()
+        unit_relative = fixture["unit"].relative_to(home).as_posix()
+        assert metadata_relative in archived
+        assert all(path == metadata_relative or path.startswith(unit_relative + "/")
+                   for path in archived)
+        assert any(path.endswith("/audit.jsonl") for path in archived)
+        assert any("/subagents/" in path for path in archived)
+        assert any("/.claude/sessions/" in path for path in archived)
+        debug_entry = next(entry for entry in manifest["files"]
+                           if entry["path"].endswith("/.claude/debug/latest"))
+        assert debug_entry["kind"] == "symlink"
+        assert not any("must-not-be-followed" in path for path in archived)
+        assert b"EXTERNAL_SELECTED_FOLDER" not in b"".join(
+            bundle.read(name) for name in bundle.namelist())
+
+    restored = tmp_path / "restored-desktop"
+    result = scree.restore_session_backup(archive, restored)
+    assert result["scope"] == "claude-desktop-conversation-unit"
+    assert (restored / fixture["metadata"].relative_to(home)).is_file()
+    assert (restored / fixture["primary"].relative_to(home)).read_bytes() \
+        == fixture["primary"].read_bytes()
+    restored_link = restored / fixture["debug_link"].relative_to(home)
+    assert restored_link.is_symlink()
+    assert os.readlink(restored_link) == os.readlink(fixture["debug_link"])
+    assert not (restored / fixture["selected"].relative_to(home)).exists()
+
+
+def test_claude_desktop_backup_receipt_does_not_claim_unit_secrets_were_filtered(
+        tmp_path):
+    home = tmp_path.resolve() / "home"
+    fixture = _desktop_session(home)
+    secret_copy = fixture["unit"] / "sandbox" / "copied-settings.json"
+    _write(secret_copy, "TOKEN_INSIDE_OWNED_UNIT")
+
+    receipt = scree.build_session_backup(
+        fixture["metadata"], home, tmp_path / "desktop.zip",
+        include_sensitive=True,
+    )
+
+    assert "settings-and-credentials" not in receipt["excluded"]
+    assert receipt["excluded"] == [
+        "other-conversation-units", "external-referenced-files",
+    ]
+
+
+def test_backup_receipt_exclusions_are_isolated_between_results(tmp_path):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "session.zip"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+
+    first = scree.verify_session_backup(archive)
+    first["excluded"].append("caller-mutation")
+    second = scree.verify_session_backup(archive)
+
+    assert "caller-mutation" not in second["excluded"]
+    assert "caller-mutation" not in scree.BACKUP_EXCLUSIONS
+
+
+def test_claude_desktop_backup_requires_the_primary_transcript(tmp_path):
+    home = tmp_path.resolve() / "home"
+    fixture = _desktop_session(home)
+    fixture["primary"].unlink()
+
+    with pytest.raises(ValueError, match="unique primary transcript"):
+        scree.build_session_backup(
+            fixture["metadata"], home, tmp_path / "incomplete.zip",
+            include_sensitive=True,
+        )
+    assert not (tmp_path / "incomplete.zip").exists()
+
+
+def test_claude_desktop_verifier_rejects_an_archive_without_primary_transcript(tmp_path):
+    home = tmp_path.resolve() / "home"
+    fixture = _desktop_session(home)
+    complete = tmp_path / "complete.zip"
+    incomplete = tmp_path / "incomplete.zip"
+    scree.build_session_backup(
+        fixture["metadata"], home, complete, include_sensitive=True)
+    primary_relative = fixture["primary"].relative_to(home).as_posix()
+
+    with zipfile.ZipFile(complete) as source:
+        manifest = json.loads(source.read("manifest.json"))
+        manifest["files"] = [
+            entry for entry in manifest["files"]
+            if entry["path"] != primary_relative
+        ]
+        with zipfile.ZipFile(incomplete, "w", compression=zipfile.ZIP_DEFLATED) as target:
+            for name in source.namelist():
+                if name not in ("manifest.json", "payload/" + primary_relative):
+                    target.writestr(name, source.read(name))
+            target.writestr("manifest.json", json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="unique primary transcript"):
+        scree.verify_session_backup(incomplete)
+
+
+def test_backup_rejects_symlink_entries_outside_desktop_sidecars(tmp_path):
+    home, source, _ = _backup_fixture(tmp_path)
+    complete = tmp_path / "complete.zip"
+    forged = tmp_path / "forged.zip"
+    scree.build_session_backup(source, home, complete, include_sensitive=True)
+    source_relative = source.relative_to(home).as_posix()
+    link_value = b"../../../../outside"
+
+    with zipfile.ZipFile(complete) as original:
+        manifest = json.loads(original.read("manifest.json"))
+        source_entry = next(entry for entry in manifest["files"]
+                            if entry["path"] == source_relative)
+        source_entry.update({
+            "kind": "symlink",
+            "size": len(link_value),
+            "sha256": hashlib.sha256(link_value).hexdigest(),
+        })
+        with zipfile.ZipFile(forged, "w", compression=zipfile.ZIP_DEFLATED) as target:
+            for name in original.namelist():
+                if name == "manifest.json":
+                    target.writestr(name, json.dumps(manifest))
+                elif name == "payload/" + source_relative:
+                    target.writestr(name, link_value)
+                else:
+                    target.writestr(name, original.read(name))
+
+    with pytest.raises(ValueError, match="limited to Claude Desktop sidecars"):
+        scree.verify_session_backup(forged)
+    restored = tmp_path / "forged-restore"
+    with pytest.raises(ValueError, match="limited to Claude Desktop sidecars"):
+        scree.restore_session_backup(forged, restored)
+    assert not restored.exists()
+
+
+@pytest.mark.parametrize("ancestor_first", [True, False])
+def test_desktop_verifier_rejects_payload_ancestor_conflicts(
+        tmp_path, ancestor_first):
+    home = tmp_path.resolve() / "home"
+    fixture = _desktop_session(home)
+    complete = tmp_path / "desktop-complete.zip"
+    forged = tmp_path / "desktop-conflict.zip"
+    scree.build_session_backup(
+        fixture["metadata"], home, complete, include_sensitive=True)
+
+    with zipfile.ZipFile(complete) as original:
+        files = {info.filename: original.read(info)
+                 for info in original.infolist()}
+    manifest = json.loads(files.pop("manifest.json"))
+    source_relative = manifest["sourceRelative"]
+    unit_relative = fixture["unit"].relative_to(home).as_posix()
+    ancestor_path = unit_relative + "/conflict"
+    child_path = ancestor_path + "/child.txt"
+    ancestor_body = b"elsewhere"
+    child_body = b"must-not-restore"
+
+    def manifest_entry(path, body, kind):
+        return {
+            "path": path,
+            "size": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "kind": kind,
+            "category": scree._backup_category(
+                scree.CLAUDE_DESKTOP_TOOL, source_relative, path),
+        }
+
+    conflict_entries = [
+        manifest_entry(ancestor_path, ancestor_body, "symlink"),
+        manifest_entry(child_path, child_body, "file"),
+    ]
+    if not ancestor_first:
+        conflict_entries.reverse()
+    manifest["files"].extend(conflict_entries)
+    files["payload/" + ancestor_path] = ancestor_body
+    files["payload/" + child_path] = child_body
+    files["manifest.json"] = json.dumps(manifest).encode()
+    with zipfile.ZipFile(forged, "w", compression=zipfile.ZIP_DEFLATED) as target:
+        for name, body in files.items():
+            target.writestr(name, body)
+
+    with pytest.raises(ValueError, match="ancestor conflict"):
+        scree.verify_session_backup(forged)
+    restored = tmp_path / "conflict-restore"
+    with pytest.raises(ValueError, match="ancestor conflict"):
+        scree.restore_session_backup(forged, restored)
+    assert not restored.exists()
+
+
+@pytest.mark.parametrize("invalid_target,error", [
+    (b"", "symlink target is invalid"),
+    (b"contains\x00nul", "symlink target is invalid"),
+    (b"a" * 1024, "invalid backup file metadata"),
+])
+def test_desktop_verifier_rejects_unrestorable_symlink_targets(
+        tmp_path, invalid_target, error):
+    home = tmp_path.resolve() / "home"
+    fixture = _desktop_session(home)
+    complete = tmp_path / "desktop-complete.zip"
+    forged = tmp_path / "desktop-invalid-link.zip"
+    scree.build_session_backup(
+        fixture["metadata"], home, complete, include_sensitive=True)
+
+    with zipfile.ZipFile(complete) as original:
+        files = {info.filename: original.read(info)
+                 for info in original.infolist()}
+    manifest = json.loads(files["manifest.json"])
+    link_relative = fixture["debug_link"].relative_to(home).as_posix()
+    link_entry = next(entry for entry in manifest["files"]
+                      if entry["path"] == link_relative)
+    link_entry["size"] = len(invalid_target)
+    link_entry["sha256"] = hashlib.sha256(invalid_target).hexdigest()
+    files["payload/" + link_relative] = invalid_target
+    files["manifest.json"] = json.dumps(manifest).encode()
+    with zipfile.ZipFile(forged, "w", compression=zipfile.ZIP_DEFLATED) as target:
+        for name, body in files.items():
+            target.writestr(name, body)
+
+    with pytest.raises(ValueError, match=error):
+        scree.verify_session_backup(forged)
+    restored = tmp_path / "invalid-link-restore"
+    with pytest.raises(ValueError, match=error):
+        scree.restore_session_backup(forged, restored)
+    assert not restored.exists()
+
+
+def test_backup_paths_reject_unrestorable_component_lengths():
+    assert scree._backup_relative("payload/" + ("é" * 255))
+    assert scree._backup_relative("payload/" + ("😀" * 127))
+    with pytest.raises(ValueError, match="component is too long"):
+        scree._backup_relative("payload/" + ("a" * 256))
+    with pytest.raises(ValueError, match="component is too long"):
+        scree._backup_relative("payload/" + ("😀" * 128))
+
+
+def test_desktop_backup_accepts_a_unicode_name_over_255_utf8_bytes(tmp_path):
+    home = tmp_path.resolve() / "home"
+    fixture = _desktop_session(home)
+    unicode_sidecar = fixture["unit"] / "outputs" / ("é" * 128)
+    _write(unicode_sidecar, "preserved")
+
+    archive = tmp_path / "desktop-unicode.zip"
+    receipt = scree.build_session_backup(
+        fixture["metadata"], home, archive, include_sensitive=True)
+
+    assert receipt["status"] == "verified"
+    with zipfile.ZipFile(archive) as bundle:
+        names = bundle.namelist()
+    assert any(name.endswith("/" + unicode_sidecar.name) for name in names)
+
+
+def test_backup_verifier_recomputes_receipt_categories(tmp_path):
+    home, source, _ = _backup_fixture(tmp_path)
+    complete = tmp_path / "complete.zip"
+    forged = tmp_path / "forged-category.zip"
+    scree.build_session_backup(
+        source, home, complete, include_sensitive=True)
+
+    with zipfile.ZipFile(complete) as original:
+        manifest = json.loads(original.read("manifest.json"))
+        manifest["files"][0]["category"] = "settings-and-credentials"
+        with zipfile.ZipFile(forged, "w", compression=zipfile.ZIP_DEFLATED) as target:
+            for name in original.namelist():
+                target.writestr(
+                    name,
+                    json.dumps(manifest) if name == "manifest.json"
+                    else original.read(name),
+                )
+
+    with pytest.raises(ValueError, match="metadata"):
+        scree.verify_session_backup(forged)
+
+
+def test_backup_archive_special_file_is_rejected_without_blocking(tmp_path):
+    fifo = tmp_path / "archive.fifo"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ValueError, match="regular file"):
+        scree.verify_session_backup(fifo)
+    destination = tmp_path / "fifo-restore"
+    with pytest.raises(ValueError, match="regular file"):
+        scree.restore_session_backup(fifo, destination)
+    assert not destination.exists()
+
+
+def test_verify_rejects_archive_inode_mutation_after_payload_validation(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    original = scree._backup_verify_open
+    mutated = False
+
+    def mutate_after_validation(bundle):
+        nonlocal mutated
+        manifest = original(bundle)
+        if not mutated:
+            mutated = True
+            with archive.open("r+b") as handle:
+                handle.truncate(0)
+                handle.flush()
+                os.fsync(handle.fileno())
+        return manifest
+
+    monkeypatch.setattr(scree, "_backup_verify_open", mutate_after_validation)
+    with pytest.raises(ValueError, match="changed during verification"):
+        scree.verify_session_backup(archive)
+
+    assert mutated is True
+
+
 def test_backup_requires_explicit_raw_consent(tmp_path):
     home, source, _ = _backup_fixture(tmp_path)
     with pytest.raises(ValueError, match="include-sensitive"):
@@ -2398,6 +4462,64 @@ def test_backup_never_overwrites_archive_or_restoration_directory(tmp_path):
         scree.restore_session_backup(archive, restored)
     assert list(restored.iterdir()) == [restored / "keep.txt"]
     assert (restored / "keep.txt").read_text() == "keep"
+
+
+def test_restore_rejects_live_provider_store_roots_and_children(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    roots = (
+        home / ".claude",
+        home / ".codex",
+        scree._claude_desktop_root(home),
+    )
+    for root in roots:
+        root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(scree, "_restore_live_store_roots", lambda: roots)
+
+    for root in roots:
+        for destination in (root, root / "restored-copy"):
+            with pytest.raises(ValueError, match="outside live AI session stores"):
+                scree.restore_session_backup(archive, destination)
+            if destination != root:
+                assert not destination.exists()
+
+    casing_variants = (
+        home / ".CLAUDE" / "restored-copy",
+        home / ".CODEX" / "restored-copy",
+        home / "library" / "application support" / "CLAUDE"
+        / "LOCAL-AGENT-MODE-SESSIONS" / "restored-copy",
+    )
+    for destination in casing_variants:
+        with pytest.raises(ValueError, match="outside live AI session stores"):
+            scree._reject_live_restore_destination(destination)
+
+
+def test_restore_rejects_existing_leaf_symlink_to_live_store_before_zip_open(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    roots = (
+        home / ".claude",
+        home / ".codex",
+        scree._claude_desktop_root(home),
+    )
+    monkeypatch.setattr(scree, "_restore_live_store_roots", lambda: roots)
+    destination = tmp_path / "existing-live-alias"
+    destination.symlink_to(home / ".claude", target_is_directory=True)
+
+    def reject_archive_open(_archive):
+        raise AssertionError("live destination must be rejected before ZIP verification")
+
+    monkeypatch.setattr(scree, "_open_backup_bundle", reject_archive_open)
+
+    with pytest.raises(ValueError, match="outside live AI session stores"):
+        scree.restore_session_backup(archive, destination)
+    assert destination.is_symlink()
 
 
 @pytest.mark.parametrize("symlink_kind", ["source", "file", "directory"])
@@ -2439,10 +4561,13 @@ def test_backup_allows_separate_codex_outputs_but_not_codex_transcript_storage(t
 def test_backup_detects_source_changes_during_copy(tmp_path, monkeypatch):
     home, source, _ = _backup_fixture(tmp_path)
     original = scree._backup_read_file
-    def append_during_copy(path, target=None):
-        result = original(path, target)
-        if path == source and target is not None:
-            with path.open("ab") as output:
+    source_relative = source.relative_to(home).as_posix()
+    def append_during_copy(home_fd, inventory, entry, target=None, *,
+                           limit=scree.BACKUP_MAX_BYTES):
+        result = original(
+            home_fd, inventory, entry, target, limit=limit)
+        if entry.relative == source_relative and target is not None:
+            with source.open("ab") as output:
                 output.write(b'{"new":"turn"}\n')
         return result
     monkeypatch.setattr(scree, "_backup_read_file", append_during_copy)
@@ -2452,16 +4577,456 @@ def test_backup_detects_source_changes_during_copy(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".modore-backup-*"))
 
 
+def test_backup_fails_closed_when_source_parent_is_swapped_for_symlink(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    project = source.parent
+    held = project.with_name("project-held")
+    outside = home / "outside"
+    outside.mkdir()
+    (outside / source.name).write_bytes(b"OUTSIDE_SECRET_BYTES")
+    source_relative = source.relative_to(home).as_posix()
+    original = scree._backup_read_file
+    swapped = False
+
+    def swap_before_read(home_fd, inventory, entry, target=None, *,
+                         limit=scree.BACKUP_MAX_BYTES):
+        nonlocal swapped
+        if (not swapped and target is not None
+                and entry.relative == source_relative):
+            swapped = True
+            project.rename(held)
+            project.symlink_to(outside, target_is_directory=True)
+            try:
+                # A path-based reader would copy the outside bytes here, then
+                # pass its later inventory recheck after this ABA restoration.
+                return original(
+                    home_fd, inventory, entry, target, limit=limit)
+            finally:
+                project.unlink()
+                held.rename(project)
+        return original(home_fd, inventory, entry, target, limit=limit)
+
+    monkeypatch.setattr(scree, "_backup_read_file", swap_before_read)
+    archive = tmp_path / "escaped.zip"
+    try:
+        with pytest.raises(ValueError, match="symlink|changed"):
+            scree.build_session_backup(
+                source, home, archive, include_sensitive=True)
+    finally:
+        if project.is_symlink():
+            project.unlink()
+        if held.exists():
+            held.rename(project)
+
+    assert swapped is True
+    assert not archive.exists()
+    assert not list(tmp_path.glob(".modore-backup-*"))
+
+
+def test_backup_fails_closed_when_destination_parent_is_replaced(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    parent = tmp_path / "exports"
+    parent.mkdir()
+    held = tmp_path / "exports-held"
+    replacement = tmp_path / "exports-replacement"
+    replacement.mkdir()
+    destination = parent / "session.zip"
+    original = scree._backup_verify_descriptor
+    swapped = False
+
+    def replace_parent(descriptor):
+        nonlocal swapped
+        result = original(descriptor)
+        if not swapped:
+            swapped = True
+            parent.rename(held)
+            replacement.rename(parent)
+        return result
+
+    monkeypatch.setattr(
+        scree, "_backup_verify_descriptor", replace_parent)
+    with pytest.raises(ValueError, match="destination directory changed"):
+        scree.build_session_backup(
+            source, home, destination, include_sensitive=True)
+
+    assert swapped is True
+    assert not destination.exists()
+    assert list(parent.iterdir()) == []
+    assert list(held.iterdir()) == []
+
+
+def test_backup_does_not_publish_if_zip_changes_after_first_verify(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "mutated-after-verify.zip"
+    original = scree._backup_verify_descriptor
+    mutated = False
+
+    def mutate_verified_inode(descriptor):
+        nonlocal mutated
+        manifest = original(descriptor)
+        if not mutated:
+            mutated = True
+            os.ftruncate(descriptor, 0)
+            os.fsync(descriptor)
+        return manifest
+
+    monkeypatch.setattr(
+        scree, "_backup_verify_descriptor", mutate_verified_inode)
+    with pytest.raises(ValueError, match="changed during verification"):
+        scree.build_session_backup(
+            source, home, archive, include_sensitive=True)
+
+    assert mutated is True
+    assert not archive.exists()
+    assert not list(tmp_path.glob(".modore-backup-*"))
+
+
+def test_backup_rejects_regular_hardlink_into_sensitive_store_data(tmp_path):
+    home, source, _ = _backup_fixture(tmp_path)
+    credentials = home / ".claude/.credentials.json"
+    planted = source.parent / source.stem / "tool-results/planted"
+    os.link(credentials, planted)
+
+    archive = tmp_path / "hardlink.zip"
+    with pytest.raises(ValueError, match="hard-linked"):
+        scree.build_session_backup(
+            source, home, archive, include_sensitive=True)
+
+    assert credentials.read_text() == "must never be copied"
+    assert not archive.exists()
+
+
+def test_backup_rejects_a_sidecar_mount_boundary(tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    sidecar_root = home / ".claude/file-history/session-1"
+    sidecar_identity = (
+        sidecar_root.stat().st_dev, sidecar_root.stat().st_ino)
+    original = os.fstat
+
+    def report_other_device(descriptor):
+        info = original(descriptor)
+        if (info.st_dev, info.st_ino) == sidecar_identity:
+            values = list(info)
+            values[2] += 1  # stat_result sequence field 2 is st_dev.
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(os, "fstat", report_other_device)
+    archive = tmp_path / "mounted-sidecar.zip"
+    with pytest.raises(ValueError, match="filesystem boundary"):
+        scree.build_session_backup(
+            source, home, archive, include_sensitive=True)
+    assert not archive.exists()
+
+
+def test_backup_rejects_an_intermediate_directory_device_change(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    intermediate = source.parent / source.stem / "tool-results"
+    intermediate_identity = (
+        intermediate.stat().st_dev, intermediate.stat().st_ino)
+    original = os.fstat
+
+    def report_other_device(descriptor):
+        info = original(descriptor)
+        if (info.st_dev, info.st_ino) == intermediate_identity:
+            values = list(info)
+            values[2] += 1
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(os, "fstat", report_other_device)
+    with pytest.raises(ValueError, match="filesystem boundary"):
+        scree.build_session_backup(
+            source, home, tmp_path / "intermediate-mount.zip",
+            include_sensitive=True)
+
+
+def test_backup_sigterm_removes_its_partial_archive(tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    destination = tmp_path / "interrupted.zip"
+    previous_handler = scree.signal.getsignal(scree.signal.SIGTERM)
+
+    def terminate_during_copy(_home_fd, _inventory, _entry, target=None, *,
+                              limit=scree.BACKUP_MAX_BYTES):
+        assert target is not None
+        target.write(b"partial")
+        scree.signal.raise_signal(scree.signal.SIGTERM)
+        raise AssertionError("SIGTERM handler must exit the operation")
+
+    monkeypatch.setattr(scree, "_backup_read_file", terminate_during_copy)
+    with pytest.raises(SystemExit):
+        scree.build_session_backup(
+            source, home, destination, include_sensitive=True)
+
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".modore-backup-*"))
+    assert scree.signal.getsignal(scree.signal.SIGTERM) == previous_handler
+
+
+def test_restore_sigterm_removes_its_partial_tree(tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    destination = tmp_path / "interrupted-restore"
+    scree.build_session_backup(source, home, archive, include_sensitive=True)
+    previous_handler = scree.signal.getsignal(scree.signal.SIGTERM)
+    original = scree._backup_stream
+
+    def terminate_during_restore(source_handle, target=None, *, limit=scree.BACKUP_MAX_BYTES):
+        if target is not None:
+            target.write(b"partial")
+            scree.signal.raise_signal(scree.signal.SIGTERM)
+            raise AssertionError("SIGTERM handler must exit the operation")
+        return original(source_handle, target, limit=limit)
+
+    monkeypatch.setattr(scree, "_backup_stream", terminate_during_restore)
+    with pytest.raises(SystemExit):
+        scree.restore_session_backup(archive, destination)
+
+    assert not destination.exists()
+    assert scree.signal.getsignal(scree.signal.SIGTERM) == previous_handler
+
+
+def test_restore_fails_closed_when_visible_root_is_swapped_for_symlink(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    scree.build_session_backup(source, home, archive, include_sensitive=True)
+    destination = tmp_path / "restore"
+    held = tmp_path / "restore-held"
+    outside = tmp_path / "outside-restore"
+    outside.mkdir()
+    _write(outside / "KEEP.txt", "outside stays untouched")
+    original = scree._RestoreLedger.open_directory
+    swapped = False
+
+    def swap_root(ledger, relative, *, create):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            destination.rename(held)
+            destination.symlink_to(outside, target_is_directory=True)
+        return original(ledger, relative, create=create)
+
+    monkeypatch.setattr(scree._RestoreLedger, "open_directory", swap_root)
+    try:
+        with pytest.raises(ValueError, match="destination changed"):
+            scree.restore_session_backup(archive, destination)
+    finally:
+        if destination.is_symlink():
+            destination.unlink()
+
+    assert swapped is True
+    assert [path.name for path in outside.iterdir()] == ["KEEP.txt"]
+    assert (outside / "KEEP.txt").read_text() == "outside stays untouched"
+    assert held.is_dir()
+    assert not any(held.iterdir())
+
+
+def test_restore_rehashes_every_output_immediately_before_success(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    restored_source = destination / source.relative_to(home)
+    original = scree._RestoreLedger.validate_all
+    tampered = False
+
+    def tamper_before_final_validation(ledger):
+        nonlocal tampered
+        size = restored_source.stat().st_size
+        restored_source.write_bytes(b"X" * size)
+        tampered = True
+        return original(ledger)
+
+    monkeypatch.setattr(
+        scree._RestoreLedger, "validate_all",
+        tamper_before_final_validation)
+    with pytest.raises(ValueError, match="checksum"):
+        scree.restore_session_backup(archive, destination)
+
+    assert tampered is True
+    assert not destination.exists()
+
+
+def test_restore_removes_tree_if_archive_changes_at_context_exit(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    original = scree._RestoreLedger.validate_all
+    mutated = False
+
+    def mutate_archive_after_output_validation(ledger):
+        nonlocal mutated
+        original(ledger)
+        with archive.open("r+b") as handle:
+            handle.truncate(0)
+            handle.flush()
+            os.fsync(handle.fileno())
+        mutated = True
+
+    monkeypatch.setattr(
+        scree._RestoreLedger, "validate_all",
+        mutate_archive_after_output_validation)
+    with pytest.raises(ValueError, match="archive changed"):
+        scree.restore_session_backup(archive, destination)
+
+    assert mutated is True
+    assert not destination.exists()
+
+
+def test_restore_cleans_a_regular_file_when_ledger_recording_fails(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    original = scree._RestoreLedger.record_owned
+    failed = False
+
+    def fail_first_record(ledger, *args, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("ledger allocation failed")
+        return original(ledger, *args, **kwargs)
+
+    monkeypatch.setattr(
+        scree._RestoreLedger, "record_owned", fail_first_record)
+    with pytest.raises(OSError, match="ledger allocation"):
+        scree.restore_session_backup(archive, destination)
+
+    assert failed is True
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("created_part", ["root", "child"])
+def test_restore_recovers_created_directory_identity_after_one_fstat_error(
+        tmp_path, monkeypatch, created_part):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    target = destination if created_part == "root" else destination / ".claude"
+    original_fstat = os.fstat
+    original_stat = os.stat
+    failed = False
+
+    def fail_once_for_created_directory(descriptor):
+        nonlocal failed
+        info = original_fstat(descriptor)
+        if not failed:
+            try:
+                target_info = original_stat(target, follow_symlinks=False)
+            except OSError:
+                target_info = None
+            if (target_info is not None
+                    and (info.st_dev, info.st_ino)
+                    == (target_info.st_dev, target_info.st_ino)):
+                failed = True
+                raise OSError("injected fstat failure")
+        return info
+
+    monkeypatch.setattr(os, "fstat", fail_once_for_created_directory)
+    with pytest.raises(OSError, match="fstat failure"):
+        scree.restore_session_backup(archive, destination)
+
+    assert failed is True
+    assert not destination.exists()
+
+
+def test_restore_cleanup_never_deletes_a_symlink_name_replacement(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    fixture = _desktop_session(home)
+    archive = tmp_path / "desktop.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        fixture["metadata"], home, archive, include_sensitive=True)
+    original = os.stat
+    replaced = False
+
+    def replace_link_before_first_stat(path, *args, **kwargs):
+        nonlocal replaced
+        if (not replaced and path == "latest"
+                and kwargs.get("dir_fd") is not None
+                and kwargs.get("follow_symlinks") is False):
+            replaced = True
+            os.unlink(path, dir_fd=kwargs["dir_fd"])
+            descriptor = os.open(
+                path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600, dir_fd=kwargs["dir_fd"])
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(b"KEEP_USER_REPLACEMENT")
+            raise OSError("injected first stat failure")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", replace_link_before_first_stat)
+    with pytest.raises(OSError, match="first stat"):
+        scree.restore_session_backup(archive, destination)
+
+    restored_replacement = destination / fixture["debug_link"].relative_to(home)
+    assert replaced is True
+    assert restored_replacement.read_bytes() == b"KEEP_USER_REPLACEMENT"
+
+
+def test_restore_final_symlink_validation_rejects_post_read_replacement(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    fixture = _desktop_session(home)
+    archive = tmp_path / "desktop.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        fixture["metadata"], home, archive, include_sensitive=True)
+    original = os.readlink
+    read_count = 0
+    replaced = False
+
+    def replace_after_validation_read(path, *args, **kwargs):
+        nonlocal read_count, replaced
+        value = original(path, *args, **kwargs)
+        if path in ("latest", b"latest") and kwargs.get("dir_fd") is not None:
+            read_count += 1
+            if read_count == 2:
+                descriptor = kwargs["dir_fd"]
+                os.unlink(path, dir_fd=descriptor)
+                os.symlink(b"../../MALICIOUS", path, dir_fd=descriptor)
+                replaced = True
+        return value
+
+    monkeypatch.setattr(os, "readlink", replace_after_validation_read)
+
+    with pytest.raises(ValueError, match="changed during restore"):
+        scree.restore_session_backup(archive, destination)
+
+    replacement = destination / fixture["debug_link"].relative_to(home)
+    assert replaced is True
+    assert replacement.is_symlink()
+    assert os.readlink(replacement) == "../../MALICIOUS"
+
+
 def test_backup_detects_new_sidecars_during_copy(tmp_path, monkeypatch):
     home, source, _ = _backup_fixture(tmp_path)
     original = scree._backup_read_file
-    def add_sidecar(path, target=None):
-        result = original(path, target)
+    def add_sidecar(home_fd, inventory, entry, target=None, *,
+                    limit=scree.BACKUP_MAX_BYTES):
+        result = original(
+            home_fd, inventory, entry, target, limit=limit)
         if target is not None:
             _write(source.parent / source.stem / "tool-results/new.txt", "new output")
         return result
     monkeypatch.setattr(scree, "_backup_read_file", add_sidecar)
-    with pytest.raises(ValueError, match="files changed"):
+    with pytest.raises(ValueError, match="files changed|path changed"):
         scree.build_session_backup(source, home, tmp_path / "backup.zip", include_sensitive=True)
 
 
@@ -2470,6 +5035,28 @@ def test_backup_enforces_size_bound_before_creating_archive(tmp_path, monkeypatc
     monkeypatch.setattr(scree, "BACKUP_MAX_BYTES", 1)
     with pytest.raises(ValueError, match="size limit"):
         scree.build_session_backup(source, home, tmp_path / "backup.zip", include_sensitive=True)
+
+
+def test_backup_rejects_restore_directory_limit_before_reading_or_creating_zip(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    fixture = _desktop_session(home)
+    for number in range(scree.RESTORE_MAX_DIRECTORIES + 1):
+        _write(fixture["unit"] / "many" / f"directory-{number}" / "value.txt",
+               "value")
+    archive = tmp_path / "too-many-directories.zip"
+
+    def reject_payload_read(*_args, **_kwargs):
+        raise AssertionError("payload was read before restore limit validation")
+
+    monkeypatch.setattr(scree, "_backup_read_file", reject_payload_read)
+
+    with pytest.raises(ValueError, match="too many restore directories"):
+        scree.build_session_backup(
+            fixture["metadata"], home, archive, include_sensitive=True)
+
+    assert not archive.exists()
+    assert list(tmp_path.glob(".modore-backup-*")) == []
 
 
 @pytest.mark.parametrize("attack", ["checksum", "traversal", "absolute", "credentials",

@@ -74,8 +74,11 @@ struct WorkProject: Identifiable {
 
     var totalBytes: Int64 { sessions.reduce(0) { $0 + $1.sizeBytes } }
 
+    var hasIncompleteSessionSizes: Bool { sessions.contains { $0.sizeComplete == false } }
+
     var sizeText: String {
-        ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        let measured = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        return hasIncompleteSessionSizes ? "최소 \(measured)" : measured
     }
 
     /// Which agents worked here, in a stable order.

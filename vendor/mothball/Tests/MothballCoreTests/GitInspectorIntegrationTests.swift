@@ -59,6 +59,40 @@ final class GitInspectorIntegrationTests: XCTestCase {
         XCTAssertTrue(meta.isDirty)
     }
 
+    func test_repoConfigCannotHideUntrackedFilesFromRetirementAssessment() async throws {
+        try await repo.initialize()
+        try repo.writeFile("README.md")
+        try await repo.commit("initial")
+        try await repo.git(["config", "status.showUntrackedFiles", "no"])
+        try repo.writeFile("must-not-be-hidden.txt")
+
+        let meta = try await inspector.inspect(repoAt: repo.url)
+
+        XCTAssertTrue(meta.isDirty)
+    }
+
+    func test_inspectionDisablesRepositoryFsmonitorCommand() async throws {
+        try await repo.initialize()
+        try repo.writeFile("README.md")
+        try await repo.commit("initial")
+        let marker = repo.url.appending(path: "fsmonitor-ran")
+        let hook = repo.url.appending(path: "untrusted-fsmonitor")
+        let quotedMarker = marker.path.replacingOccurrences(of: "'", with: "'\\''")
+        try Data("#!/bin/sh\n: > '\(quotedMarker)'\n".utf8).write(to: hook)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: hook.path
+        )
+        try await repo.git(["config", "core.fsmonitor", hook.path])
+
+        _ = try await inspector.inspect(repoAt: repo.url)
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: marker.path),
+            "read-only inspection must not execute a repo-configured fsmonitor hook"
+        )
+    }
+
     func test_repoWithFakeUpstream_reportsZeroAhead() async throws {
         try await repo.initialize()
         try repo.writeFile("README.md")

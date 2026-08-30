@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import MothballCore
 
@@ -28,6 +29,7 @@ struct SessionBackupReceipt: Decodable {
     let status: String
     let archive: String
     let provider: String
+    let scope: String?
     let sourceRelative: String
     let fileCount: Int
     let totalBytes: Int64
@@ -44,9 +46,19 @@ struct SessionBackupReceipt: Decodable {
     }
 
     var includedDescription: String {
-        let labels = ["transcript": "대화 원본", "subagents": "서브에이전트",
-                      "tool-results": "도구 결과", "file-history": "파일 스냅샷",
-                      "image-cache": "이미지", "uploads": "첨부 파일"]
+        let labels = [
+            "metadata": "세션 메타데이터",
+            "transcript": "대화 원본",
+            "audit": "감사 기록",
+            "subagents": "서브에이전트",
+            "queue": "작업 큐",
+            "outputs": "작업 산출물",
+            "tool-results": "도구 결과",
+            "file-history": "파일 스냅샷",
+            "image-cache": "이미지",
+            "uploads": "첨부 파일",
+            "sidecar": "보조 파일",
+        ]
         return categories.compactMap { labels[$0] }.joined(separator: " · ")
     }
 }
@@ -93,7 +105,18 @@ enum ScreeService {
         if case .create = operation, let homeOverride {
             arguments += ["--home", homeOverride.path]
         }
-        switch await invoke(execution: execution, arguments: arguments, timeout: 300) {
+        // Raw backup/restore installs a SIGTERM cleanup handler. Do not cut
+        // that exact-inode cleanup off with LocalProcessRunner's ordinary
+        // one-second SIGKILL. A finite one-minute ceiling still prevents a
+        // blocked volume from leaving an untracked Python process forever;
+        // the UI returns its bounded timeout while cleanup continues.
+        switch await invoke(
+            execution: execution,
+            arguments: arguments,
+            timeout: 300,
+            forceKillAfterTermination: 60,
+            waitForCleanupOnStop: true
+        ) {
         case .timedOut:
             return .failure(.init(message: "5분 안에 검증을 마치지 못했습니다. 백업·복원 성공으로 표시하지 않습니다."))
         case .failure(let message):
@@ -110,11 +133,15 @@ enum ScreeService {
     }
 
     static func run(projectRoot: URL) async -> ScreeOutcome {
-        switch await invoke(projectRoot: projectRoot, arguments: ["report", "--json"], timeout: 180) {
+        // The worktree portion owns a shorter internal isolation deadline, and
+        // the full metadata report is measured in seconds. Keep an outer UI
+        // ceiling as defense in depth: a TCC- or filesystem-blocked syscall
+        // must never leave the Work screen claiming to run for minutes.
+        switch await invoke(projectRoot: projectRoot, arguments: ["report", "--json"], timeout: 30) {
         case .failure(let message):
             return .failure(message)
         case .timedOut:
-            return .failure("scree가 3분 안에 끝나지 않았습니다. 세션·워크트리가 많으면 시간이 더 걸릴 수 있습니다.")
+            return .failure("작업 감사가 30초 안에 끝나지 않아 중단했습니다. 읽기 제한 경로는 결과 없음으로 단정하지 않습니다.")
         case .success(let output):
             guard let start = output.firstIndex(of: "{") else {
                 return .failure("scree 출력에서 JSON을 찾지 못했습니다.")
@@ -152,9 +179,53 @@ enum ScreeService {
             return .failure(message)
         case .timedOut:
             return .failure("대화 내보내기가 1분 안에 끝나지 않았습니다.")
-        case .success:
-            return .success(destination)
+        case .success(let output):
+            guard let actual = validatedPreserveOutput(
+                output,
+                expectedParent: destination.deletingLastPathComponent()
+            ) else {
+                return .failure("대화 내보내기 결과 경로를 안전하게 확인하지 못했습니다.")
+            }
+            return .success(actual)
         }
+    }
+
+    private struct PreservePayload: Decodable {
+        let status: String
+        let output: String
+        let masked: Bool
+    }
+
+    /// The Python writer may choose a random create-only filename when the
+    /// readable default already exists. Trust that returned path only after
+    /// rechecking it as an owner-only regular file in the exact output parent.
+    static func validatedPreserveOutput(
+        _ output: String,
+        expectedParent: URL
+    ) -> URL? {
+        guard let start = output.firstIndex(of: "{"),
+              let data = String(output[start...]).data(using: .utf8),
+              let payload = try? JSONDecoder().decode(PreservePayload.self, from: data),
+              payload.status == "preserved",
+              payload.masked else {
+            return nil
+        }
+        let candidate = URL(fileURLWithPath: payload.output).standardizedFileURL
+        let parent = expectedParent.standardizedFileURL
+        guard candidate.isFileURL,
+              candidate.deletingLastPathComponent().path == parent.path,
+              candidate.pathExtension.lowercased() == "md" else {
+            return nil
+        }
+        var value = stat()
+        let status = candidate.path.withCString { Darwin.lstat($0, &value) }
+        guard status == 0,
+              value.st_mode & S_IFMT == S_IFREG,
+              value.st_uid == Darwin.geteuid(),
+              value.st_mode & 0o077 == 0 else {
+            return nil
+        }
+        return candidate
     }
 
     /// Pure and independently testable: a stable, readable export filename
@@ -292,7 +363,11 @@ extension ScreeService {
             return "\(unbound.joined(separator: "·")) 세션 저장소는 아직 검사하지 않습니다. "
                 + "이 저장소에 연결된 대화가 없다고 단정할 수 없습니다."
         }
-        let stalled = [("Claude", detail.claude), ("Codex", detail.codex)]
+        let stalled = [
+            ("Claude Code", detail.claude),
+            ("Claude Desktop", detail.claudeDesktop),
+            ("Codex", detail.codex),
+        ]
             .filter { $0.1 != nil && $0.1 != "complete" }
             .map(\.0)
         if !stalled.isEmpty {
@@ -365,10 +440,14 @@ extension ScreeService {
         let payload = targets.map { target in
             ["workspace": target.workspace.path, "repoUrl": target.repoURL as Any]
         }
+        let scratch = bindAllScratchURLs(outputRoot: execution.outputRoot)
         // Written to a file rather than passed as arguments: a screen can
         // carry fifty candidates and their absolute paths, which is past
-        // what a command line should be asked to hold.
-        let listing = execution.outputRoot.appending(path: "scree-bind-targets.json")
+        // what a command line should be asked to hold. Each run has its own
+        // pair: a cancelled pass may still be unwinding while a new Work
+        // screen pass starts, and shared names let the old defer delete the
+        // new pass's files.
+        let listing = scratch.targets
         guard let input = try? JSONSerialization.data(withJSONObject: payload),
               (try? input.write(to: listing, options: [.atomic])) != nil else {
             return failAll(targets, "바인딩 대상 목록을 기록하지 못했습니다.")
@@ -380,7 +459,7 @@ extension ScreeService {
         // the runner's output ceiling -- and a limit that exists to stop a
         // runaway subprocess is the wrong thing to raise for a result
         // that is legitimately large.
-        let resultFile = execution.outputRoot.appending(path: "scree-bind-results.json")
+        let resultFile = scratch.results
         try? FileManager.default.removeItem(at: resultFile)
         defer { try? FileManager.default.removeItem(at: resultFile) }
 
@@ -418,6 +497,17 @@ extension ScreeService {
             }
             return out
         }
+    }
+
+    static func bindAllScratchURLs(
+        outputRoot: URL,
+        runID: UUID = UUID()
+    ) -> (targets: URL, results: URL) {
+        let suffix = runID.uuidString.lowercased()
+        return (
+            outputRoot.appending(path: "scree-bind-targets-\(suffix).json"),
+            outputRoot.appending(path: "scree-bind-results-\(suffix).json")
+        )
     }
 
     private struct BatchPayload: Decodable {
@@ -697,6 +787,234 @@ extension ScreeService {
         case failure(String)
     }
 
+    /// A scree subprocess normally removes these files in `defer`, but a
+    /// force-quit never runs that cleanup. Remove only names this exact build
+    /// creates, and only after they are old enough that no bounded operation
+    /// from another just-replaced app instance can still own them.
+    static let scratchCleanupMinimumAge: TimeInterval = 60 * 60
+
+    private static let scratchNameRules: [(prefix: String, extension: String)] = [
+        ("scree-query", "txt"),
+        ("scree-evidence-query", "txt"),
+        ("scree-sessions", "json"),
+        ("scree-bind-targets", "json"),
+        ("scree-bind-results", "json"),
+        ("scree-title-sources", "json"),
+    ]
+
+    private struct ScratchIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+
+        init(_ metadata: stat) {
+            device = UInt64(bitPattern: Int64(metadata.st_dev))
+            inode = UInt64(metadata.st_ino)
+        }
+    }
+
+    /// Safely removes force-quit leftovers from the private results directory.
+    ///
+    /// Every pathname decision is repeated from an already-open directory
+    /// descriptor immediately before `unlinkat`. The opened file descriptor is
+    /// also matched to the directory entry, so replacing a candidate between
+    /// discovery and the final check preserves the replacement. The optional
+    /// hook is only a deterministic test seam for that race.
+    @discardableResult
+    static func cleanupStaleScratchFiles(
+        in outputRoot: URL,
+        now: Date = Date(),
+        minimumAge: TimeInterval = scratchCleanupMinimumAge,
+        beforeFinalValidation: ((URL) -> Void)? = nil
+    ) -> Int {
+        guard outputRoot.isFileURL,
+              minimumAge.isFinite, minimumAge >= 0 else { return 0 }
+        let cutoff = now.timeIntervalSince1970 - minimumAge
+        guard cutoff.isFinite else { return 0 }
+
+        var namedDirectory = stat()
+        let namedStatus = outputRoot.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return Darwin.lstat(path, &namedDirectory)
+        }
+        guard namedStatus == 0,
+              isPrivateOwnedDirectory(namedDirectory) else { return 0 }
+
+        let directoryDescriptor = outputRoot.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard directoryDescriptor >= 0 else { return 0 }
+        defer { Darwin.close(directoryDescriptor) }
+
+        var openedDirectory = stat()
+        guard Darwin.fstat(directoryDescriptor, &openedDirectory) == 0,
+              isPrivateOwnedDirectory(openedDirectory),
+              ScratchIdentity(openedDirectory) == ScratchIdentity(namedDirectory) else {
+            return 0
+        }
+        let directoryIdentity = ScratchIdentity(openedDirectory)
+
+        // Enumerate through a duplicate of the verified descriptor. Collect
+        // first, then unlink: mutating a directory while readdir is advancing
+        // can otherwise skip adjacent entries. A hostile or corrupt results
+        // directory is fail-closed rather than an unbounded launch task.
+        let enumerationDescriptor = Darwin.dup(directoryDescriptor)
+        guard enumerationDescriptor >= 0 else { return 0 }
+        guard let stream = Darwin.fdopendir(enumerationDescriptor) else {
+            Darwin.close(enumerationDescriptor)
+            return 0
+        }
+        var names: [String] = []
+        var entryCount = 0
+        var exceededEntryLimit = false
+        while let entry = Darwin.readdir(stream) {
+            entryCount += 1
+            if entryCount > 10_000 {
+                exceededEntryLimit = true
+                break
+            }
+            let name = directoryEntryName(entry)
+            if isScratchFilename(name) { names.append(name) }
+        }
+        Darwin.closedir(stream)
+        guard !exceededEntryLimit else { return 0 }
+
+        var removed = 0
+        for name in names {
+            var discovered = stat()
+            let discoveredStatus = name.withCString {
+                Darwin.fstatat(
+                    directoryDescriptor,
+                    $0,
+                    &discovered,
+                    AT_SYMLINK_NOFOLLOW
+                )
+            }
+            guard discoveredStatus == 0,
+                  isEligibleScratchFile(discovered, cutoff: cutoff) else { continue }
+            let discoveredIdentity = ScratchIdentity(discovered)
+
+            beforeFinalValidation?(outputRoot.appendingPathComponent(name))
+
+            // Opening after the test seam catches a replacement before any
+            // deletion decision. O_NONBLOCK prevents an unexpected special
+            // file swapped into the name from blocking this launch path.
+            let fileDescriptor = name.withCString {
+                Darwin.openat(
+                    directoryDescriptor,
+                    $0,
+                    O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC
+                )
+            }
+            guard fileDescriptor >= 0 else { continue }
+
+            var openedFile = stat()
+            let openedIsOriginal = Darwin.fstat(fileDescriptor, &openedFile) == 0
+                && ScratchIdentity(openedFile) == discoveredIdentity
+                && isEligibleScratchFile(openedFile, cutoff: cutoff)
+            guard openedIsOriginal else {
+                Darwin.close(fileDescriptor)
+                continue
+            }
+
+            guard directoryStillMatches(
+                outputRoot,
+                descriptor: directoryDescriptor,
+                expected: directoryIdentity
+            ) else {
+                Darwin.close(fileDescriptor)
+                continue
+            }
+
+            var finalNamedFile = stat()
+            let finalStatus = name.withCString {
+                Darwin.fstatat(
+                    directoryDescriptor,
+                    $0,
+                    &finalNamedFile,
+                    AT_SYMLINK_NOFOLLOW
+                )
+            }
+            let finalIsOpenedFile = finalStatus == 0
+                && ScratchIdentity(finalNamedFile) == ScratchIdentity(openedFile)
+                && isEligibleScratchFile(finalNamedFile, cutoff: cutoff)
+            guard finalIsOpenedFile else {
+                Darwin.close(fileDescriptor)
+                continue
+            }
+
+            let unlinkStatus = name.withCString {
+                Darwin.unlinkat(directoryDescriptor, $0, 0)
+            }
+            Darwin.close(fileDescriptor)
+            if unlinkStatus == 0 { removed += 1 }
+        }
+        return removed
+    }
+
+    private static func isScratchFilename(_ name: String) -> Bool {
+        for rule in scratchNameRules {
+            let prefix = rule.prefix + "-"
+            let suffix = "." + rule.extension
+            guard name.hasPrefix(prefix), name.hasSuffix(suffix) else { continue }
+            let uuidStart = name.index(name.startIndex, offsetBy: prefix.count)
+            let uuidEnd = name.index(name.endIndex, offsetBy: -suffix.count)
+            let text = String(name[uuidStart..<uuidEnd])
+            guard text.utf8.count == 36,
+                  let uuid = UUID(uuidString: text) else {
+                continue
+            }
+            let canonical = uuid.uuidString
+            guard text == canonical || text == canonical.lowercased() else { continue }
+            return true
+        }
+        return false
+    }
+
+    private static func isPrivateOwnedDirectory(_ metadata: stat) -> Bool {
+        metadata.st_mode & S_IFMT == S_IFDIR
+            && metadata.st_uid == Darwin.geteuid()
+            && metadata.st_mode & 0o077 == 0
+    }
+
+    private static func isEligibleScratchFile(_ metadata: stat, cutoff: TimeInterval) -> Bool {
+        let modifiedAt = TimeInterval(metadata.st_mtimespec.tv_sec)
+            + TimeInterval(metadata.st_mtimespec.tv_nsec) / 1_000_000_000
+        return metadata.st_mode & S_IFMT == S_IFREG
+            && metadata.st_uid == Darwin.geteuid()
+            && metadata.st_nlink == 1
+            && modifiedAt.isFinite
+            && modifiedAt <= cutoff
+    }
+
+    private static func directoryStillMatches(
+        _ outputRoot: URL,
+        descriptor: Int32,
+        expected: ScratchIdentity
+    ) -> Bool {
+        var opened = stat()
+        guard Darwin.fstat(descriptor, &opened) == 0,
+              isPrivateOwnedDirectory(opened),
+              ScratchIdentity(opened) == expected else { return false }
+
+        var named = stat()
+        let status = outputRoot.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return Darwin.lstat(path, &named)
+        }
+        return status == 0
+            && isPrivateOwnedDirectory(named)
+            && ScratchIdentity(named) == expected
+    }
+
+    private static func directoryEntryName(_ entry: UnsafeMutablePointer<dirent>) -> String {
+        var value = entry.pointee
+        return withUnsafeBytes(of: &value.d_name) { bytes in
+            guard let base = bytes.bindMemory(to: CChar.self).baseAddress else { return "" }
+            return String(cString: base)
+        }
+    }
+
     private static func invoke(
         projectRoot: URL,
         arguments: [String],
@@ -713,16 +1031,25 @@ extension ScreeService {
     private static func invoke(
         execution: RuntimeExecutionContext,
         arguments: [String],
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        forceKillAfterTermination: TimeInterval = 1,
+        waitForCleanupOnStop: Bool = false
     ) async -> RawOutcome {
+        let outputRoot = execution.outputRoot
+        _ = await Task.detached(priority: .utility) {
+            cleanupStaleScratchFiles(in: outputRoot)
+        }.value
+
         guard let invocation = execution.pinnedInvocation(
             relativePath: "scripts/scree.py",
             name: "scree"
         ) else {
             return .failure("봉인한 scree 스크립트를 확인하지 못해 실행하지 않았습니다.")
         }
-        guard let python3 = Self.python3Path else {
-            return .failure("python3을 찾지 못해 scree를 실행하지 않았습니다.")
+        guard let python3 = Self.python3Path(
+            signedBundleURL: execution.signedBundleURL
+        ) else {
+            return .failure("봉인된 로컬 대화 엔진을 찾지 못해 scree를 실행하지 않았습니다.")
         }
 
         // `invocation.argument` is a pinned-file placeholder that LocalProcessRunner
@@ -747,12 +1074,14 @@ extension ScreeService {
         """
         let result = await LocalProcessRunner.capture(
             executable: python3,
-            arguments: ["-c", wrapper, invocation.argument] + arguments,
+            arguments: ["-I", "-B", "-c", wrapper, invocation.argument] + arguments,
             currentDirectory: execution.runtimeRoot,
             expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
             expectedSignedBundleURL: execution.signedBundleURL,
             pinnedFiles: invocation.files,
-            timeout: timeout
+            timeout: timeout,
+            forceKillAfterTermination: forceKillAfterTermination,
+            waitForCleanupOnStop: waitForCleanupOnStop
         )
         guard result.endState != .timedOut else {
             return .timedOut
@@ -769,45 +1098,250 @@ extension ScreeService {
         return .success(result.output)
     }
 
-    /// scree.py has no bundled interpreter; this resolves the same fixed,
-    /// non-PATH-dependent locations cleanup.sh-style scripts already trust.
-    private static let python3Path: String? = {
-        for candidate in ["/usr/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"] {
-            if FileManager.default.isExecutableFile(atPath: candidate) {
-                return candidate
-            }
+    /// A signed app may run only its nested, code-signed interpreter. System
+    /// Python remains a development/test fallback for an unpackaged checkout;
+    /// a damaged release never silently crosses that trust boundary.
+    static func python3Path(
+        signedBundleURL: URL?,
+        developmentCandidates: [String] = [
+            "/usr/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+        ]
+    ) -> String? {
+        if let signedBundleURL {
+            let bundled = signedBundleURL
+                .appendingPathComponent("Contents/Resources/modore-python/bin/python3.11")
+                .path
+            return isExecutableRegularFileWithoutFollowingLinks(bundled) ? bundled : nil
         }
-        return nil
-    }()
+        return developmentCandidates.first(where: isExecutableRegularFileWithoutFollowingLinks)
+    }
+
+    private static func isExecutableRegularFileWithoutFollowingLinks(_ path: String) -> Bool {
+        var value = stat()
+        let status = path.withCString { Darwin.lstat($0, &value) }
+        return status == 0
+            && value.st_mode & S_IFMT == S_IFREG
+            && Darwin.access(path, X_OK) == 0
+    }
 }
 
 extension ScanModel {
+    func startSessionExport(
+        tool: String,
+        source: String,
+        completion: @escaping (ScreePreserveOutcome) -> Void
+    ) {
+        let root = projectRoot
+        startSessionExport(
+            source: source,
+            using: {
+                await ScreeService.preserve(
+                    projectRoot: root,
+                    tool: tool,
+                    source: source
+                )
+            },
+            completion: completion
+        )
+    }
+
+    /// Injection point for the same single-owner and termination contract
+    /// exercised by the raw backup task.
+    func startSessionExport(
+        source: String,
+        using run: @escaping () async -> ScreePreserveOutcome,
+        completion: @escaping (ScreePreserveOutcome) -> Void
+    ) {
+        guard !applicationTerminationStarted else {
+            completion(.failure("앱이 종료 중이어서 새 내보내기를 시작하지 않았습니다."))
+            return
+        }
+        guard sessionExportTask == nil else {
+            completion(.failure("다른 대화 내보내기가 진행 중입니다."))
+            return
+        }
+        sessionExportGeneration += 1
+        let generation = sessionExportGeneration
+        screePreserveInFlightSource = source
+        sessionExportTask = Task { [weak self] in
+            guard let self else { return }
+            let outcome = await run()
+            guard !Task.isCancelled, generation == sessionExportGeneration else { return }
+            sessionExportTask = nil
+            screePreserveInFlightSource = nil
+            completion(outcome)
+        }
+    }
+
+    func startSessionBackup(
+        operation: SessionBackupOperation,
+        completion: @escaping (Result<SessionBackupReceipt, ScreeInspectionError>) -> Void
+    ) {
+        let root = projectRoot
+        startSessionBackup(
+            using: { await ScreeService.sessionBackup(projectRoot: root, operation: operation) },
+            completion: completion
+        )
+    }
+
+    /// Internal loader injection makes the termination lease testable without
+    /// selecting a real raw archive. Only one raw operation may own the lease.
+    func startSessionBackup(
+        using run: @escaping () async -> Result<SessionBackupReceipt, ScreeInspectionError>,
+        completion: @escaping (Result<SessionBackupReceipt, ScreeInspectionError>) -> Void
+    ) {
+        guard !applicationTerminationStarted else {
+            completion(.failure(.init(message: "앱이 종료 중이어서 새 백업·복원 작업을 시작하지 않았습니다.")))
+            return
+        }
+        guard sessionBackupTask == nil else {
+            completion(.failure(.init(message: "다른 세션 백업·복원 작업이 진행 중입니다.")))
+            return
+        }
+        sessionBackupGeneration += 1
+        let generation = sessionBackupGeneration
+        sessionBackupTask = Task {
+            let result = await run()
+            guard !Task.isCancelled, generation == sessionBackupGeneration else { return }
+            sessionBackupTask = nil
+            completion(result)
+        }
+    }
+
+    /// Cancels every automatic Work loader plus any raw session transfer, then
+    /// retains their task handles until cleanup finishes. The longer deadline
+    /// applies only to raw backup/restore, whose Python SIGTERM handler may need
+    /// time to remove a large partial ZIP or restore tree safely.
+    @discardableResult
+    func cancelApplicationTasksForTermination(
+        completion: @escaping () -> Void
+    ) -> Bool {
+        applicationTerminationStarted = true
+        var tasks = cancelWorkScreenTaskHandles()
+        tasks.append(contentsOf: cancelStorageEvidenceTaskHandles())
+        tasks.append(contentsOf: cancelNonDestructiveApplicationTaskHandles())
+        tasks.append(contentsOf: takePendingDrainTasksForTermination())
+        let hadRawTransfer = sessionBackupTask != nil
+        if let sessionBackupTask {
+            tasks.append(sessionBackupTask)
+        }
+        sessionBackupGeneration += 1
+        sessionBackupTask?.cancel()
+        sessionBackupTask = nil
+
+        if let sessionExportTask {
+            tasks.append(sessionExportTask)
+        }
+        sessionExportGeneration += 1
+        sessionExportTask?.cancel()
+        sessionExportTask = nil
+        screePreserveInFlightSource = nil
+
+        guard !tasks.isEmpty else { return false }
+        applicationTerminationWaitGeneration += 1
+        let generation = applicationTerminationWaitGeneration
+        applicationTerminationWaitTask?.cancel()
+        applicationTerminationDeadlineTask?.cancel()
+
+        applicationTerminationWaitTask = Task {
+            for task in tasks { await task.value }
+            guard !Task.isCancelled else { return }
+            finishApplicationTaskTerminationWait(
+                generation: generation,
+                completion: completion
+            )
+        }
+        let deadline: UInt64 = hadRawTransfer ? 70_000_000_000 : 8_000_000_000
+        applicationTerminationDeadlineTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: deadline)
+            } catch {
+                return
+            }
+            finishApplicationTaskTerminationWait(
+                generation: generation,
+                completion: completion
+            )
+        }
+        return true
+    }
+
+    private func finishApplicationTaskTerminationWait(
+        generation: Int,
+        completion: @escaping () -> Void
+    ) {
+        guard generation == applicationTerminationWaitGeneration else { return }
+        applicationTerminationWaitGeneration += 1
+        applicationTerminationWaitTask?.cancel()
+        applicationTerminationDeadlineTask?.cancel()
+        applicationTerminationWaitTask = nil
+        applicationTerminationDeadlineTask = nil
+        completion()
+    }
+
     func refreshScreeReport() {
-        guard !screeLoading else { return }
+        let root = projectRoot
+        refreshScreeReport {
+            await ScreeService.run(projectRoot: root)
+        }
+    }
+
+    /// Internal loader injection keeps the newest-request rule testable
+    /// without launching the bundled Python runtime. Production always uses
+    /// the zero-argument entry point above.
+    func refreshScreeReport(
+        using load: @escaping () async -> ScreeOutcome
+    ) {
+        guard !applicationTerminationStarted else { return }
+        cancelAndRetainForDrain(screeTask)
+        screeGeneration += 1
+        let generation = screeGeneration
+        screeNeedsRefresh = true
         screeLoading = true
         screeError = nil
-        let root = projectRoot
-        Task {
-            defer { screeLoading = false }
-            switch await ScreeService.run(projectRoot: root) {
+        screeTask = Task {
+            let outcome = await load()
+            guard !Task.isCancelled, generation == screeGeneration else { return }
+            switch outcome {
             case .success(let report):
+                // Every repository judgment and continuity binding belongs to
+                // the lineage in one specific audit report. A successful
+                // re-audit invalidates that entire derived layer before the
+                // new report becomes visible; WorkPage's revision task starts
+                // a fresh binding pass for the new lineage.
+                cancelAndRetainForDrain(archiveTask)
+                archiveGeneration += 1
+                archiveTask = nil
+                archiveLoading = false
+                archiveBindingComplete = false
+                archiveError = nil
+                repoAssessments = nil
+                repoScanFailures.removeAll()
+                reposNotScanned.removeAll()
+                archiveInspectionFailures = 0
+                retirementReview = nil
                 screeReport = report
+                screeReportRevision += 1
             case .failure(let message):
                 screeError = message
             }
+            guard generation == screeGeneration else { return }
+            screeNeedsRefresh = false
+            screeLoading = false
+            screeTask = nil
         }
     }
 
     func preserveScreeSession(_ session: ScreeExpiringSession) {
-        guard screePreserveInFlightSource == nil else { return }
-        screePreserveInFlightSource = session.source
+        guard sessionExportTask == nil else { return }
         errorMessage = nil
-        let root = projectRoot
         let tool = session.tool
         let source = session.source
-        Task {
-            defer { screePreserveInFlightSource = nil }
-            switch await ScreeService.preserve(projectRoot: root, tool: tool, source: source) {
+        startSessionExport(tool: tool, source: source) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
             case .success(let url):
                 NSWorkspace.shared.activateFileViewerSelecting([url])
                 appendLog("대화 텍스트 내보내기: \(url.lastPathComponent)")
@@ -822,9 +1356,10 @@ extension ScanModel {
     /// a phrase. The newest request wins, matching conversation search: a
     /// slow earlier scan must not land beneath a question typed afterwards.
     func runStorageEvidenceSearch() {
+        guard !applicationTerminationStarted else { return }
         let query = storageEvidenceQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
-        storageEvidenceTask?.cancel()
+        cancelAndRetainForDrain(storageEvidenceTask)
         storageEvidenceGeneration += 1
         let generation = storageEvidenceGeneration
         storageEvidenceRunning = true
@@ -853,6 +1388,22 @@ extension ScanModel {
         }
     }
 
+    /// Stops the explicit storage-history search when its owning page leaves
+    /// or the application terminates. The previous completed result remains
+    /// visible; only the in-flight disk read is cancelled.
+    func cancelStorageEvidenceSearch() {
+        retainPendingDrainTasks(cancelStorageEvidenceTaskHandles())
+    }
+
+    func cancelStorageEvidenceTaskHandles() -> [Task<Void, Never>] {
+        let tasks = [storageEvidenceTask].compactMap { $0 }
+        storageEvidenceGeneration += 1
+        storageEvidenceTask?.cancel()
+        storageEvidenceTask = nil
+        storageEvidenceRunning = false
+        return tasks
+    }
+
     /// Exports one session bound to an archive candidate, through the same
     /// masked single-session path the expiring-session list already uses.
     ///
@@ -862,18 +1413,16 @@ extension ScanModel {
     /// person about to approve the delete -- so the export is reachable
     /// from the row where they decide, not only from the session page.
     func preserveBoundSession(_ binding: SessionBinding) {
-        guard screePreserveInFlightSource == nil else { return }
+        guard sessionExportTask == nil else { return }
         let source = binding.source.path
-        screePreserveInFlightSource = source
         errorMessage = nil
-        let root = projectRoot
         // Every provider's own label. A binary Claude-or-Codex choice
         // filed Gemini exports under "Codex", which is wrong in the one
         // place a user later goes looking for them.
         let tool = binding.provider.displayName
-        Task {
-            defer { screePreserveInFlightSource = nil }
-            switch await ScreeService.preserve(projectRoot: root, tool: tool, source: source) {
+        startSessionExport(tool: tool, source: source) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
             case .success(let url):
                 NSWorkspace.shared.activateFileViewerSelecting([url])
                 appendLog("대화 텍스트 내보내기: \(url.lastPathComponent)")

@@ -608,6 +608,16 @@ enum RuntimeWorkspace {
            isSecureOwnedDirectory(at: destination),
            sourceManifest == manifestValue(at: destination),
            immutableRuntimeFilesMatch(source: source, destination: destination) {
+            // A previous install may have died after publishing the current
+            // runtime but before its final prune. The next normal launch takes
+            // this fast path, so it must also collect those stranded staging
+            // trees and redundant backups while retaining one rollback.
+            pruneSupersededRuntimeBackups(
+                in: parent,
+                keeping: newestRuntimeBackup(in: parent, fileManager: fileManager),
+                against: destination,
+                fileManager: fileManager
+            )
             return
         }
 
@@ -689,20 +699,104 @@ enum RuntimeWorkspace {
         let current = relativeFilePaths(under: runtime, fileManager: fileManager)
         for entry in entries {
             let name = entry.lastPathComponent
-            // Staging directories are pure leftovers from an install that
-            // died between copy and move; they never held owner data.
             let isStaging = name.hasPrefix("runtime-staging-")
             guard isStaging || name.hasPrefix("runtime-backup-") else { continue }
+            let prefix = isStaging ? "runtime-staging-" : "runtime-backup-"
+            guard isGeneratedRuntimeArtifactName(name, prefix: prefix) else { continue }
             if let newest, entry.standardizedFileURL == newest.standardizedFileURL { continue }
             guard isDirectoryWithoutSymlink(at: entry) else { continue }
-            if !isStaging {
-                let held = relativeFilePaths(under: entry, fileManager: fileManager)
-                guard held.isSubset(of: current),
-                      backupContainsOnlyUnmodifiedRuntime(
-                        entry, heldPaths: held, fileManager: fileManager
-                      ) else { continue }
+            guard let validatedIdentity = FilesystemIdentity.directory(at: entry) else {
+                continue
             }
-            try? fileManager.removeItem(at: entry)
+            // Staging is just as untrusted as backup once a process restart
+            // loses the in-memory URL that created it. Delete only an exact
+            // UUID-named tree whose own provenance authenticates every held
+            // byte and whose paths remain represented by the current runtime.
+            let held = relativeFilePaths(under: entry, fileManager: fileManager)
+            guard held.isSubset(of: current),
+                  backupContainsOnlyUnmodifiedRuntime(
+                    entry, heldPaths: held, fileManager: fileManager
+                  ) else { continue }
+            guard FilesystemIdentity.directory(at: entry) == validatedIdentity else {
+                continue
+            }
+
+            // Move the exact inode we inspected out of the discoverable name
+            // before recursive removal. If another owner process replaced that
+            // pathname between validation and rename, the quarantine identity
+            // differs and is restored rather than deleted. Validate the moved
+            // tree a second time so a concurrent child edit is also fail-safe.
+            let quarantine = parent.appendingPathComponent(
+                ".runtime-prune-\(UUID().uuidString)"
+            )
+            do {
+                try fileManager.moveItem(at: entry, to: quarantine)
+            } catch {
+                continue
+            }
+            let quarantinedHeld = relativeFilePaths(
+                under: quarantine, fileManager: fileManager
+            )
+            guard FilesystemIdentity.directory(at: quarantine) == validatedIdentity,
+                  quarantinedHeld.isSubset(of: current),
+                  backupContainsOnlyUnmodifiedRuntime(
+                    quarantine,
+                    heldPaths: quarantinedHeld,
+                    fileManager: fileManager
+                  ) else {
+                if !pathEntryExists(entry) {
+                    try? fileManager.moveItem(at: quarantine, to: entry)
+                }
+                continue
+            }
+            guard FilesystemIdentity.directory(at: quarantine) == validatedIdentity else {
+                if !pathEntryExists(entry) {
+                    try? fileManager.moveItem(at: quarantine, to: entry)
+                }
+                continue
+            }
+            try? fileManager.removeItem(at: quarantine)
+        }
+    }
+
+    private static func isGeneratedRuntimeArtifactName(
+        _ name: String,
+        prefix: String
+    ) -> Bool {
+        guard name.hasPrefix(prefix) else { return false }
+        let suffix = String(name.dropFirst(prefix.count))
+        guard let uuid = UUID(uuidString: suffix) else { return false }
+        return uuid.uuidString == suffix
+    }
+
+    private static func newestRuntimeBackup(
+        in parent: URL,
+        fileManager: FileManager
+    ) -> URL? {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: parent,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return nil }
+        let backups = entries.filter { candidate in
+            let name = candidate.lastPathComponent
+            guard isGeneratedRuntimeArtifactName(name, prefix: "runtime-backup-"),
+                  isDirectoryWithoutSymlink(at: candidate) else { return false }
+            let held = relativeFilePaths(under: candidate, fileManager: fileManager)
+            return backupContainsOnlyUnmodifiedRuntime(
+                candidate, heldPaths: held, fileManager: fileManager
+            )
+        }
+        return backups.max { left, right in
+            let leftDate = (try? left.resourceValues(
+                forKeys: [.contentModificationDateKey]
+            ).contentModificationDate) ?? .distantPast
+            let rightDate = (try? right.resourceValues(
+                forKeys: [.contentModificationDateKey]
+            ).contentModificationDate) ?? .distantPast
+            if leftDate == rightDate {
+                return left.lastPathComponent < right.lastPathComponent
+            }
+            return leftDate < rightDate
         }
     }
 
@@ -745,6 +839,47 @@ enum RuntimeWorkspace {
               provenance.schemaVersion == 1 else {
             return false
         }
+        let expectedFiles = Set(provenance.sha256ByPath.keys)
+        guard expectedFiles == heldPaths.subtracting([runtimeProvenanceName]) else {
+            return false
+        }
+        var traversalFailed = false
+        guard let walker = fileManager.enumerator(
+            at: backup,
+            includingPropertiesForKeys: [
+                .isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey,
+            ],
+            options: [],
+            errorHandler: { _, _ in
+                traversalFailed = true
+                return false
+            }
+        ) else { return false }
+        let rootPrefix = backup.standardizedFileURL.path + "/"
+        var observedFiles: Set<String> = []
+        for case let url as URL in walker {
+            guard let values = try? url.resourceValues(forKeys: [
+                .isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey,
+            ]),
+            !traversalFailed else { return false }
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(rootPrefix) else { return false }
+            let relative = String(path.dropFirst(rootPrefix.count))
+            if values.isSymbolicLink == true { return false }
+            if values.isRegularFile == true {
+                observedFiles.insert(relative)
+            } else if values.isDirectory == true {
+                let prefix = relative + "/"
+                guard heldPaths.contains(where: { $0.hasPrefix(prefix) }) else {
+                    // An empty or otherwise unclaimed directory may be owner
+                    // data added after the install stopped. Keep the tree.
+                    return false
+                }
+            } else {
+                return false
+            }
+        }
+        guard !traversalFailed, observedFiles == heldPaths else { return false }
         for path in heldPaths where path != runtimeProvenanceName {
             guard let expected = provenance.sha256ByPath[path] else { return false }
             let file = backup.appendingPathComponent(path)

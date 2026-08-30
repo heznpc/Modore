@@ -91,7 +91,10 @@ enum MothballService {
         guard !scope.roots.isEmpty else {
             return RepoScanOutcome(candidates: [], failures: [:], notScanned: scope.notScanned)
         }
-        let report = await RepoScanner().scanReport(roots: scope.roots)
+        // scree already proved these exact lineage paths were repositories.
+        // Inspect them directly: if one disappears meanwhile it becomes that
+        // path's failure, never a fresh recursive walk outside the scan budget.
+        let report = await RepoScanner().inspectKnownRepositories(scope.roots)
         // Every assessment, not only the archivable ones. Which of them
         // may be retired is a question `isRetirementEligible` answers per
         // repo; the screen also has to say what state the others are in.
@@ -222,45 +225,134 @@ extension ScanModel {
             return
         }
         conversationLoads[key] = .loading
+        let token = UUID()
+        conversationLoadTokens[key] = token
         let root = projectRoot
-        Task {
+        startTrackedApplicationTask(scope: .workScreen) { [weak self] in
+            guard let self else { return }
             guard let execution = await Task.detached(priority: .userInitiated, operation: {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
             }).value else {
-                conversationLoads[key] = .failed("서명된 실행 런타임을 확인하지 못했습니다.")
+                finishConversationLoad(
+                    key: key,
+                    token: token,
+                    state: Task.isCancelled
+                        ? nil
+                        : .failed("서명된 실행 런타임을 확인하지 못했습니다.")
+                )
                 return
             }
+            guard !Task.isCancelled else {
+                finishConversationLoad(key: key, token: token, state: nil)
+                return
+            }
+            let state: ConversationLoadState
             switch await ScreeService.inspect(execution: execution, binding: binding) {
             case .success(let conversation):
-                conversationLoads[key] = .loaded(conversation)
+                state = .loaded(conversation)
             case .failure(let error):
-                conversationLoads[key] = .failed(error.message)
+                state = .failed(error.message)
             }
+            finishConversationLoad(
+                key: key,
+                token: token,
+                state: Task.isCancelled ? nil : state
+            )
         }
     }
 
     /// Loads the session browser's index. Metadata only -- no transcript
     /// body is opened to build it.
     func refreshSessionIndex() {
-        guard !sessionIndexLoading else { return }
-        sessionIndexLoading = true
-        sessionIndexError = nil
         let root = projectRoot
-        Task {
-            defer { sessionIndexLoading = false }
+        refreshSessionIndex {
             guard let execution = await Task.detached(priority: .userInitiated, operation: {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
             }).value else {
-                sessionIndexError = "서명된 실행 런타임을 확인하지 못했습니다."
-                return
+                return .failure(.init(message: "서명된 실행 런타임을 확인하지 못했습니다."))
             }
-            switch await ScreeService.sessions(execution: execution) {
+            guard !Task.isCancelled else {
+                return .failure(.init(message: "세션 목록 읽기를 취소했습니다."))
+            }
+            return await ScreeService.sessions(execution: execution)
+        }
+    }
+
+    /// Internal loader injection mirrors the audit loader: a retry supersedes
+    /// the previous request, and only that newest generation may update UI.
+    func refreshSessionIndex(
+        using load: @escaping () async -> Result<SessionIndex, ScreeInspectionError>
+    ) {
+        guard !applicationTerminationStarted else { return }
+        cancelAndRetainForDrain(sessionIndexTask)
+        sessionIndexGeneration += 1
+        let generation = sessionIndexGeneration
+        sessionIndexNeedsRefresh = true
+        sessionIndexLoading = true
+        sessionIndexError = nil
+        sessionIndexTask = Task {
+            let outcome = await load()
+            guard !Task.isCancelled, generation == sessionIndexGeneration else { return }
+            switch outcome {
             case .success(let index):
                 sessionIndex = index
             case .failure(let error):
                 sessionIndexError = error.message
             }
+            guard generation == sessionIndexGeneration else { return }
+            sessionIndexNeedsRefresh = false
+            sessionIndexLoading = false
+            sessionIndexTask = nil
         }
+    }
+
+    /// Stops the loaders and explicit body search owned by the Work screen.
+    /// Exports/backups have their own progress and safety contracts and are
+    /// deliberately not cancelled by navigation.
+    func cancelWorkScreenTasks() {
+        retainPendingDrainTasks(cancelWorkScreenTaskHandles())
+    }
+
+    /// Captures handles before clearing model state so application termination
+    /// can await the cancelled work rather than dropping the last owner of a
+    /// subprocess cleanup sequence.
+    func cancelWorkScreenTaskHandles() -> [Task<Void, Never>] {
+        var tasks = [screeTask, sessionIndexTask, archiveTask, contentSearchTask]
+            .compactMap { $0 }
+        tasks.append(contentsOf: cancelTrackedApplicationTasks(in: .workScreen))
+
+        screeGeneration += 1
+        screeTask?.cancel()
+        screeTask = nil
+        screeLoading = false
+
+        sessionIndexGeneration += 1
+        sessionIndexTask?.cancel()
+        sessionIndexTask = nil
+        sessionIndexLoading = false
+
+        let archiveWasInFlight = archiveTask != nil
+        archiveGeneration += 1
+        archiveTask?.cancel()
+        archiveTask = nil
+        archiveLoading = false
+        if archiveWasInFlight { archiveBindingComplete = false }
+
+        contentSearchGeneration += 1
+        contentSearchTask?.cancel()
+        contentSearchTask = nil
+        contentSearchRunning = false
+
+        // A cancelled row task must be retryable immediately when the Work
+        // screen is opened again; do not wait for subprocess teardown to
+        // unwind its `defer` before clearing transient cache markers.
+        titleRequests.removeAll()
+        sessionTitleRequestTokens.removeAll()
+        candidateTitleRequestTokens.removeAll()
+        conversationLoadTokens.removeAll()
+        conversationLoads = conversationLoads.filter { $0.value != .loading }
+
+        return tasks
     }
 
     /// Everything the Work screen shows, assembled from the three
@@ -294,12 +386,13 @@ extension ScanModel {
     /// screen never reads a body was simply false, and a false comment
     /// about a privacy boundary is worse than none.
     func prepareWorkScreen() {
-        if sessionIndex == nil && !sessionIndexLoading && sessionIndexError == nil {
+        guard !applicationTerminationStarted else { return }
+        if sessionIndexNeedsRefresh && !sessionIndexLoading && sessionIndexError == nil {
             refreshSessionIndex()
         }
-        if screeReport == nil && !screeLoading && screeError == nil {
+        if screeNeedsRefresh && !screeLoading && screeError == nil {
             refreshScreeReport()
-        } else if screeReport != nil && repoAssessments == nil
+        } else if screeReport != nil && !archiveBindingComplete
                     && !archiveLoading && archiveError == nil {
             // The git judgment needs the workspace list the audit
             // produces, which is why the old page could not start without
@@ -315,6 +408,7 @@ extension ScanModel {
     /// transcripts is not, and doing it on every keystroke would turn a
     /// filter box into a disk scan.
     func runContentSearch() {
+        guard !applicationTerminationStarted else { return }
         let query = sessionSearch.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
         // A search takes tens of seconds, which is long enough for the
@@ -324,7 +418,7 @@ extension ScanModel {
         // stale answer under a different query. The newest request wins:
         // the previous one is cancelled, and any result that arrives from
         // a superseded generation is dropped.
-        contentSearchTask?.cancel()
+        cancelAndRetainForDrain(contentSearchTask)
         contentSearchGeneration += 1
         let generation = contentSearchGeneration
         contentSearchRunning = true
@@ -367,8 +461,15 @@ extension ScanModel {
     /// created in between is findable and would have been unopenable --
     /// the click would have done nothing at all.
     func openSearchMatch(_ match: SessionSearchMatch) {
+        selectedSearchMatch = match
         selectedSessionSource = match.source
         loadConversation(source: match.sourceURL, provider: match.provider)
+    }
+
+    var selectedSearchMatchForDetail: SessionSearchMatch? {
+        guard let selectedSessionSource,
+              selectedSearchMatch?.source == selectedSessionSource else { return nil }
+        return selectedSearchMatch
     }
 
     /// Fetches titles for the rows a screen is about to show, in one pass.
@@ -380,22 +481,29 @@ extension ScanModel {
         let wanted = sources.filter { sessionTitles[$0] == nil && !titleRequests.contains($0) }
         guard !wanted.isEmpty else { return }
         titleRequests.formUnion(wanted)
+        let token = UUID()
+        for source in wanted { sessionTitleRequestTokens[source] = token }
         let root = projectRoot
-        Task {
+        startTrackedApplicationTask(scope: .workScreen) { [weak self] in
+            guard let self else { return }
             guard let execution = await Task.detached(priority: .userInitiated, operation: {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
             }).value else {
-                titleRequests.subtract(wanted)
+                finishSessionTitleRequest(
+                    sources: wanted,
+                    token: token,
+                    fetched: [:],
+                    cancelled: Task.isCancelled
+                )
                 return
             }
             let fetched = await ScreeService.titles(execution: execution, sources: wanted)
-            guard !fetched.isEmpty else {
-                // Let a later pass try again rather than leaving these rows
-                // permanently unlabelled.
-                titleRequests.subtract(wanted)
-                return
-            }
-            sessionTitles.merge(fetched) { _, new in new }
+            finishSessionTitleRequest(
+                sources: wanted,
+                token: token,
+                fetched: fetched,
+                cancelled: Task.isCancelled
+            )
         }
     }
 
@@ -418,26 +526,81 @@ extension ScanModel {
             return
         }
         conversationLoads[key] = .loading
+        let token = UUID()
+        conversationLoadTokens[key] = token
         let root = projectRoot
-        Task {
+        startTrackedApplicationTask(scope: .workScreen) { [weak self] in
+            guard let self else { return }
             guard let execution = await Task.detached(priority: .userInitiated, operation: {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
             }).value else {
-                conversationLoads[key] = .failed("서명된 실행 런타임을 확인하지 못했습니다.")
+                finishConversationLoad(
+                    key: key,
+                    token: token,
+                    state: Task.isCancelled
+                        ? nil
+                        : .failed("서명된 실행 런타임을 확인하지 못했습니다.")
+                )
                 return
             }
+            guard !Task.isCancelled else {
+                finishConversationLoad(key: key, token: token, state: nil)
+                return
+            }
+            let state: ConversationLoadState
             switch await ScreeService.inspect(execution: execution, source: source) {
             case .success(let conversation):
-                conversationLoads[key] = .loaded(conversation)
+                state = .loaded(conversation)
             case .failure(let error):
-                conversationLoads[key] = .failed(error.message)
+                state = .failed(error.message)
             }
+            finishConversationLoad(
+                key: key,
+                token: token,
+                state: Task.isCancelled ? nil : state
+            )
+        }
+    }
+
+    @discardableResult
+    func finishConversationLoad(
+        key: String,
+        token: UUID,
+        state: ConversationLoadState?
+    ) -> Bool {
+        guard conversationLoadTokens[key] == token else { return false }
+        conversationLoadTokens[key] = nil
+        conversationLoads[key] = state
+        return true
+    }
+
+    func finishSessionTitleRequest(
+        sources: [String],
+        token: UUID,
+        fetched: [String: SessionTitle],
+        cancelled: Bool
+    ) {
+        let current = Set(sources.filter { sessionTitleRequestTokens[$0] == token })
+        guard !current.isEmpty else { return }
+        if !cancelled {
+            sessionTitles.merge(fetched.filter { current.contains($0.key) }) { _, new in new }
+        }
+        for source in current {
+            sessionTitleRequestTokens[source] = nil
+            titleRequests.remove(source)
         }
     }
 
     func conversationState(for entry: SessionIndexEntry) -> ConversationLoadState? {
+        conversationState(source: entry.sourceURL, provider: entry.provider)
+    }
+
+    func conversationState(
+        source: URL,
+        provider: SessionProvider
+    ) -> ConversationLoadState? {
         conversationLoads[Self.conversationKey(
-            provider: entry.provider, sessionID: entry.source, source: entry.sourceURL
+            provider: provider, sessionID: source.path, source: source
         )]
     }
 
@@ -477,8 +640,19 @@ extension ScanModel {
               !candidate.boundSessions.isEmpty else { return }
         let root = projectRoot
         let target = candidate
-        Task {
+        guard candidateTitleRequestTokens[target.id] == nil else { return }
+        let token = UUID()
+        candidateTitleRequestTokens[target.id] = token
+        startTrackedApplicationTask(scope: .workScreen) { [weak self] in
+            guard let self else { return }
+            defer {
+                if candidateTitleRequestTokens[target.id] == token {
+                    candidateTitleRequestTokens[target.id] = nil
+                }
+            }
             let titles = await MothballService.titles(for: target, projectRoot: root)
+            guard !Task.isCancelled,
+                  candidateTitleRequestTokens[target.id] == token else { return }
             guard let current = repoAssessments?.firstIndex(where: { $0.id == target.id })
             else { return }
             repoAssessments?[current].presentations = titles
@@ -486,17 +660,37 @@ extension ScanModel {
     }
 
     func refreshArchiveCandidates() {
-        guard !archiveLoading else { return }
         guard let report = screeReport else {
             archiveError = "작업 감사를 먼저 실행해야 저장소를 판정할 수 있습니다."
             return
         }
-        archiveLoading = true
-        archiveError = nil
+        let root = projectRoot
         let paths = report.lineagePaths
-        Task {
-            defer { archiveLoading = false }
-            let outcome = await MothballService.scanCandidates(lineagePaths: paths)
+        refreshArchiveCandidates(
+            using: { await MothballService.scanCandidates(lineagePaths: paths) },
+            binding: { candidates in
+                await MothballService.withContinuity(candidates, projectRoot: root)
+            }
+        )
+    }
+
+    /// Internal injection keeps cancellation and newest-request behavior
+    /// testable without spawning Git and Python processes. Production always
+    /// enters through the zero-argument method above.
+    func refreshArchiveCandidates(
+        using scan: @escaping () async -> RepoScanOutcome,
+        binding bind: @escaping ([ArchiveCandidate]) async -> [ArchiveCandidate]
+    ) {
+        guard !applicationTerminationStarted else { return }
+        cancelAndRetainForDrain(archiveTask)
+        archiveGeneration += 1
+        let generation = archiveGeneration
+        archiveLoading = true
+        archiveBindingComplete = false
+        archiveError = nil
+        archiveTask = Task {
+            let outcome = await scan()
+            guard !Task.isCancelled, generation == archiveGeneration else { return }
             // Show the git judgment first, then fill in session bindings:
             // binding spawns one subprocess per repo, and a long wait for
             // it would otherwise hold back a list that is already useful.
@@ -514,13 +708,21 @@ extension ScanModel {
             // ineligible keep their assessment and their `.notAssessed`
             // continuity, which is the honest answer for them.
             let eligible = outcome.candidates.filter(\.isRetirementEligible)
-            guard !eligible.isEmpty else { return }
-            let bound = await MothballService.withContinuity(
-                eligible, projectRoot: projectRoot
-            )
+            guard !eligible.isEmpty else {
+                archiveBindingComplete = true
+                archiveLoading = false
+                archiveTask = nil
+                return
+            }
+            let bound = await bind(eligible)
+            guard !Task.isCancelled, generation == archiveGeneration else { return }
             var byPath: [String: ArchiveCandidate] = [:]
             for candidate in bound { byPath[candidate.pathText] = candidate }
             repoAssessments = outcome.candidates.map { byPath[$0.pathText] ?? $0 }
+            guard generation == archiveGeneration else { return }
+            archiveBindingComplete = true
+            archiveLoading = false
+            archiveTask = nil
         }
     }
 }
