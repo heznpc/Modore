@@ -97,6 +97,8 @@ python3 scripts/mcp_server.py --tools    # inspect the surface without speaking 
 ```
 
 - `agent_state_report` — the join, retention forecast, orphan/sole-copy/lineage judgment, by section, with every truncation reported.
+- `agent_session_list` — newest-first local session metadata from `scree sessions`; conversation bodies are not opened.
+- `agent_session_search` — an explicit user-requested phrase search delegated to `scree search`; the query stays off argv and returned snippets remain masked.
 - `operator_friction_report` — the pushback taxonomy, filterable by store, category, and minimum severity.
 - `model_residue_report` — which models in the Hugging Face hub cache no project file names, and how many gigabytes those account for. Reports `search_complete`; when the search could not be exhaustive every model is `unknown`, never `unreferenced`.
 - `mcp_hygiene` — registered MCP servers that cannot start: dead command, missing script path, duplicate entry, or an `env` block worth a human look (reported as a key count, never as keys or values).
