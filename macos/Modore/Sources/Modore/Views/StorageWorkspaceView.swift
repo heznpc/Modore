@@ -33,11 +33,22 @@ struct StorageWorkspacePage: View {
                     workspaceList(storage)
                 }
             } else {
-                ModernEmptyState(
-                    symbol: "internaldrive",
-                    title: "저장공간 정보가 없습니다",
-                    message: "검사가 끝나면 정리 후보와 설치 자산이 여기에 표시됩니다."
-                )
+                VStack(spacing: 16) {
+                    ModernEmptyState(
+                        symbol: "internaldrive",
+                        title: model.isRunning ? "정리 후보를 측정하고 있습니다" : "저장공간 정보가 없습니다",
+                        message: model.isRunning
+                            ? "검사가 끝나면 이 화면에 확보 계획이 바로 표시됩니다."
+                            : "먼저 로컬 검사를 실행해 안전하게 정리할 수 있는 경로를 확인하세요."
+                    )
+                    if model.isRunning {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("정리 후보 측정") { model.runScan() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.isBusy)
+                    }
+                }
             }
         }
     }
@@ -46,7 +57,10 @@ struct StorageWorkspacePage: View {
     private func workspaceList(_ storage: StorageSnapshot) -> some View {
         switch section {
         case .cleanup: CleanupWorkspaceList(storage: storage)
-        case .goal: SpaceGoalWorkspaceList(storage: storage)
+        case .goal: SpaceGoalWorkspaceList(
+            storage: storage,
+            currentFreeGB: model.currentFreeGB
+        )
         case .development: DevelopmentWorkspaceList(storage: storage)
         case .applications: ApplicationWorkspaceList(storage: storage)
         case .simulators: SimulatorWorkspaceList(storage: storage)
@@ -102,7 +116,7 @@ private struct StorageWorkspaceToolbar: View {
     private var value: String {
         switch section {
         case .cleanup: return storage.reclaimableText
-        case .goal: return storage.reclaimableText
+        case .goal: return storage.recoveryText
         case .development: return storage.developerText
         case .applications: return storage.applicationsText
         case .simulators: return storage.simulatorText
