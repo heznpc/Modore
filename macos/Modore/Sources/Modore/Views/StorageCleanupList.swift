@@ -6,7 +6,7 @@ struct CleanupWorkspaceList: View {
 
     var body: some View {
         List {
-            StorageIncidentCauseSection(event: model.storageWatchPathEvents.last)
+            StorageIncidentCauseSection(evidence: model.latestStorageWatchEvidence)
             StorageIncidentTimelineSection()
             StorageIncidentContextSection()
             CleanupCandidateSection(storage: storage)
@@ -22,11 +22,16 @@ struct CleanupWorkspaceList: View {
 }
 
 private struct StorageIncidentCauseSection: View {
-    let event: StorageWatchPathEvent?
+    let evidence: StorageWatchEvidenceEvent?
 
     var body: some View {
         Section {
-            if let event {
+            if let signalEvent = evidence?.signalEvent {
+                ForEach(signalEvent.rows) { signal in
+                    StorageWatchSignalRow(signal: signal)
+                }
+            }
+            if let event = evidence?.pathEvent {
                 ForEach(event.rows) { row in
                     HStack(alignment: .top, spacing: 12) {
                         NativeStatusGlyph(
@@ -50,21 +55,44 @@ private struct StorageIncidentCauseSection: View {
                     }
                     .padding(.vertical, 4)
                 }
-            } else {
-                Text("부족 경고 당시의 known root 스냅샷을 아직 확인하지 못했습니다.")
+            } else if evidence?.signalEvent == nil {
+                Text("부족 경고 당시의 제한된 원인 스냅샷을 아직 확인하지 못했습니다.")
                     .foregroundStyle(.secondary)
             }
 
-            Text("원인을 모두 설명하지는 못했습니다.")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
+            if evidence != nil {
+                Text(evidenceSummary)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
         } header: {
             NativeSectionHeader(
                 title: "최근 부족 시점에 무엇이 컸나",
-                subtitle: "최근 부족 경고 때 함께 측정한 known root입니다. 큰 항목이라는 사실만 확인하며 원인으로 단정하지 않습니다.",
-                value: event?.capturedAt.formatted(date: .abbreviated, time: .shortened) ?? "확인 안 됨"
+                subtitle: "부족 진입·급감 때 같은 점검에서 실제로 확보한 항목을 함께 봅니다.",
+                value: evidence?.capturedAt.formatted(date: .abbreviated, time: .shortened) ?? "확인 안 됨"
             )
         }
+    }
+
+    private var evidenceSummary: String {
+        guard evidence != nil else {
+            return "표시할 원인 스냅샷이 없습니다. 큰 값만으로 원인을 확정하지 않습니다."
+        }
+        let rows = evidence?.signalEvent?.rows ?? []
+        let hasSwap = rows.contains { $0.kind == .swap }
+        let hasProcessRSS = rows.contains { $0.kind == .processRSS }
+        let captured: String
+        switch (hasSwap, hasProcessRSS) {
+        case (true, true):
+            captured = "스왑·상위 RAM·제한된 경로를 확보했습니다"
+        case (true, false):
+            captured = "스왑·제한된 경로를 확보했고, RAM 신호는 수집되지 않았습니다"
+        case (false, true):
+            captured = "상위 RAM·제한된 경로를 확보했고, 스왑 신호는 수집되지 않았습니다"
+        case (false, false):
+            captured = "제한된 경로만 확보했고, 스왑·RAM 신호는 수집되지 않았습니다"
+        }
+        return "같은 점검에서 \(captured). 큰 값만으로 원인을 확정하지 않습니다."
     }
 
     private func measurementText(_ row: StorageWatchPathSnapshot) -> String {

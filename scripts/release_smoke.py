@@ -349,6 +349,18 @@ SWIFT_FILES = sorted(
     if ".build" not in path.parts
 )
 
+# This command surface is distributed with the Mac source checkout. It is not
+# copied into the signed app's sealed runtime: bin/modore resolves sibling
+# repository scripts and the skill is installed or referenced from that source
+# tree by an agent host.
+MODORE_SOURCE_CHECKOUT_FILES = [
+    "bin/modore",
+    "scripts/bounded_exec.py",
+    "skills/modore-ops/SKILL.md",
+    "skills/modore-ops/agents/openai.yaml",
+    "skills/modore-ops/references/command-contract.md",
+]
+
 MACOS_BASE_FILES = COMMON_FILES + [
     "scan.command",
     "run-mac-app.command",
@@ -389,8 +401,21 @@ MACOS_BASE_FILES = COMMON_FILES + [
     # separate ones. The repo-root LICENSE covers it.
     "vendor/mothball/Package.swift",
     "assets/macos/AppIcon.svg",
-]
+] + MODORE_SOURCE_CHECKOUT_FILES
 MACOS_FILES = MACOS_BASE_FILES + SWIFT_FILES
+MACOS_EXECUTABLE_FILES = {
+    "scan.command",
+    "run-mac-app.command",
+    "scripts/scanner.sh",
+    "scripts/cleanup.sh",
+    "scripts/storage_watch.sh",
+    "scripts/schedule.sh",
+    "scripts/build_macos_swift_app.sh",
+    "scripts/build_macos_icon.sh",
+    "scripts/package_macos_release.sh",
+    "scripts/artifact_audit.py",
+    "bin/modore",
+}
 
 FORBIDDEN_NAMES = {
     "scan_result.json",
@@ -1114,18 +1139,7 @@ def main() -> int:
         mac = build_zip(
             mac_name,
             macos_files,
-            executable_entries={
-                "scan.command",
-                "run-mac-app.command",
-                "scripts/scanner.sh",
-                "scripts/cleanup.sh",
-                "scripts/storage_watch.sh",
-                "scripts/schedule.sh",
-                "scripts/build_macos_swift_app.sh",
-                "scripts/build_macos_icon.sh",
-                "scripts/package_macos_release.sh",
-                "scripts/artifact_audit.py",
-            },
+            executable_entries=MACOS_EXECUTABLE_FILES,
             output_dir=output_dir,
             source_commit=source_commit,
             publication_seals=publication_seals,
