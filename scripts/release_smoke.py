@@ -319,8 +319,9 @@ WINDOWS_FILES = COMMON_FILES + [
     "scripts/modules/installs.ps1",
 ]
 
-# macos/Modore/Package.swift declares a local path dependency on vendor/mothball
-# (product MothballCore). SwiftPM resolves that manifest structurally: every
+# macos/Modore/Package.swift declares local path dependencies on the shared
+# ModoreDomain package and vendor/mothball (product MothballCore). SwiftPM
+# resolves those manifests structurally: every
 # target it declares — including MothballApp and MothballCoreTests, which
 # Modore's own product never imports — must have its source directory present,
 # or `swift build` fails at manifest resolution before compiling a single file
@@ -339,6 +340,8 @@ SWIFT_FILES = sorted(
     for base in (
         PROJECT_ROOT / "macos/Modore/Sources",
         PROJECT_ROOT / "macos/Modore/Tests",
+        PROJECT_ROOT / "shared/ModoreDomain/Sources",
+        PROJECT_ROOT / "shared/ModoreDomain/Tests",
         PROJECT_ROOT / "vendor/mothball/Sources",
         PROJECT_ROOT / "vendor/mothball/Tests",
     )
@@ -380,6 +383,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/modules/macos/privacy.sh",
     "scripts/modules/macos/devtool_updates.sh",
     "macos/Modore/Package.swift",
+    "shared/ModoreDomain/Package.swift",
     # No `vendor/mothball/LICENSE`: the subtree is Modore's own code
     # under Modore's own terms, and a second LICENSE file there implied
     # separate ones. The repo-root LICENSE covers it.
@@ -975,6 +979,8 @@ def swift_files_from_commit(commit: str) -> list[str]:
     prefixes = (
         "macos/Modore/Sources/",
         "macos/Modore/Tests/",
+        "shared/ModoreDomain/Sources/",
+        "shared/ModoreDomain/Tests/",
         "vendor/mothball/Sources/",
         "vendor/mothball/Tests/",
     )

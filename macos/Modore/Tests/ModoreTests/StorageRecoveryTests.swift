@@ -1,3 +1,4 @@
+import ModoreDomain
 import XCTest
 @testable import Modore
 

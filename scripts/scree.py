@@ -5893,6 +5893,7 @@ class _RestoreOwnedEntry:
     identity: tuple[int, int]
     size: int
     digest: str
+    descriptor: Optional[int]
 
 
 class _RestoreLedger:
@@ -6098,8 +6099,14 @@ class _RestoreLedger:
             self, parent: str, name: str, kind: str,
             identity: tuple[int, int], size: int, digest: str, *,
             descriptor: Optional[int] = None) -> None:
-        self.owned.append(_RestoreOwnedEntry(
-            parent, name, kind, identity, size, digest))
+        held = os.dup(descriptor) if descriptor is not None else None
+        try:
+            self.owned.append(_RestoreOwnedEntry(
+                parent, name, kind, identity, size, digest, held))
+        except BaseException:
+            if held is not None:
+                os.close(held)
+            raise
 
     def validate_all(self) -> None:
         self.validate_root()
@@ -6219,31 +6226,18 @@ class _RestoreLedger:
                         and hashlib.sha256(value).hexdigest() == entry.digest
                     )
                 elif (entry.kind == "file"
-                      and stat.S_ISREG(named.st_mode)
-                      and named.st_nlink == 1
-                      and named.st_size == entry.size):
-                    descriptor = os.open(
-                        entry.name,
-                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-                        | os.O_CLOEXEC,
-                        dir_fd=parent_descriptor,
+                      and entry.descriptor is not None
+                      and stat.S_ISREG(named.st_mode)):
+                    # Keeping the creation descriptor open prevents its inode
+                    # from being recycled. A matching namespace identity is
+                    # therefore still our file even when a failed write or a
+                    # final validation changed its bytes, and should be
+                    # removed. A replacement cannot acquire this live inode.
+                    held = os.fstat(entry.descriptor)
+                    payload_matches = (
+                        stat.S_ISREG(held.st_mode)
+                        and _stat_identity(held) == entry.identity
                     )
-                    try:
-                        opened = os.fstat(descriptor)
-                        if (_stat_identity(opened) == entry.identity
-                                and stat.S_ISREG(opened.st_mode)
-                                and opened.st_nlink == 1):
-                            with os.fdopen(os.dup(descriptor), "rb") as source:
-                                payload = _backup_stream(
-                                    source, limit=entry.size)
-                            after = os.fstat(descriptor)
-                            payload_matches = (
-                                _stat_signature(opened)
-                                == _stat_signature(after)
-                                and payload == (entry.size, entry.digest)
-                            )
-                    finally:
-                        os.close(descriptor)
                 if (_stat_identity(named) == entry.identity
                         and payload_matches):
                     os.unlink(entry.name, dir_fd=parent_descriptor)
@@ -6288,6 +6282,12 @@ class _RestoreLedger:
                 pass
 
     def close(self) -> None:
+        for entry in self.owned:
+            if entry.descriptor is not None:
+                try:
+                    os.close(entry.descriptor)
+                except OSError:
+                    pass
         self.owned.clear()
         for descriptor, _, _, _ in self.directories.values():
             try:
