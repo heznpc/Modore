@@ -137,7 +137,18 @@ jobs:
       # exercised in CI of anything in this repo.
       - name: Test MothballCore (archive, seal, gate, restore)
         run: |
-          swift test --package-path vendor/mothball --parallel \
+          swift test --package-path vendor/mothball \
+            --skip ProcessRunnerTests --skip RepoScannerTests \
+            -Xswiftc -warnings-as-errors \
+            -Xswiftc -strict-concurrency=complete
+          # Subprocess lifecycle tests change process groups and cancellation
+          # state on purpose. Isolate them from the broad suite so a runner
+          # cannot strand the whole test process after otherwise successful
+          # tests; each invocation still exercises every safety assertion.
+          swift test --package-path vendor/mothball --filter RepoScannerTests \
+            -Xswiftc -warnings-as-errors \
+            -Xswiftc -strict-concurrency=complete
+          swift test --package-path vendor/mothball --filter ProcessRunnerTests \
             -Xswiftc -warnings-as-errors \
             -Xswiftc -strict-concurrency=complete
 
