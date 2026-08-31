@@ -309,12 +309,17 @@ final class LocalProcessRunnerTests: XCTestCase {
     }
 
     func testRootExitAlsoKillsSIGTERMIgnoringChildThatClosedTheOutputPipe() async {
+        let readySignal = FileManager.default.temporaryDirectory
+            .appendingPathComponent("local-process-runner-\(UUID().uuidString).ready")
+        defer { try? FileManager.default.removeItem(at: readySignal) }
         let started = Date()
         let result = await LocalProcessRunner.capture(
             executable: "/bin/bash",
             arguments: [
                 "-c",
-                "(trap '' TERM; exec >/dev/null 2>&1; while :; do /bin/sleep 30; done) & child=$!; printf 'child=%s\\n' \"$child\"; exit 0",
+                "(trap '' TERM; exec >/dev/null 2>&1; printf ready > \"$1\"; while :; do /bin/sleep 30; done) & child=$!; while [ ! -s \"$1\" ]; do /bin/sleep 0.01; done; printf 'child=%s\\n' \"$child\"; exit 0",
+                "closed-pipe-child-test",
+                readySignal.path,
             ],
             currentDirectory: FileManager.default.temporaryDirectory,
             timeout: 5
