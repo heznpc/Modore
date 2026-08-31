@@ -126,25 +126,34 @@ public enum ProcessRunner {
     }
 
     private static func waitForExitWithoutReaping(of processID: pid_t) async -> Bool {
-        await Task.detached(priority: .utility) {
-            var info = siginfo_t()
-            var result: Int32
-            repeat {
-                result = Darwin.waitid(P_PID, id_t(processID), &info, WEXITED | WNOWAIT)
-            } while result == -1 && errno == EINTR
-            return result == 0
-        }.value
+        // `waitid` blocks a kernel thread. Do not put it in `Task.detached`:
+        // enough concurrent inspections can exhaust Swift's cooperative pool
+        // and prevent the timeout/cancellation tasks from ever being scheduled.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                var info = siginfo_t()
+                var result: Int32
+                repeat {
+                    result = Darwin.waitid(P_PID, id_t(processID), &info, WEXITED | WNOWAIT)
+                } while result == -1 && errno == EINTR
+                continuation.resume(returning: result == 0)
+            }
+        }
     }
 
     private static func reap(_ processID: pid_t) async -> Int32 {
-        await Task.detached(priority: .utility) {
-            var status: Int32 = 0
-            var result: pid_t
-            repeat {
-                result = Darwin.waitpid(processID, &status, 0)
-            } while result == -1 && errno == EINTR
-            return result == processID ? status : Int32(127 << 8)
-        }.value
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                var status: Int32 = 0
+                var result: pid_t
+                repeat {
+                    result = Darwin.waitpid(processID, &status, 0)
+                } while result == -1 && errno == EINTR
+                continuation.resume(
+                    returning: result == processID ? status : Int32(127 << 8)
+                )
+            }
+        }
     }
 
     private static func decodedExitCode(_ status: Int32) -> Int32 {
@@ -335,7 +344,7 @@ private final class ProcessGroupController: @unchecked Sendable {
             lock.unlock()
             return
         }
-        _ = Darwin.kill(-group, SIGTERM)
+        signalAnchoredProcessGroup(group, signal: SIGTERM)
         let workItem = DispatchWorkItem { [weak self] in
             self?.escalateIfCurrent(group)
         }
@@ -360,7 +369,7 @@ private final class ProcessGroupController: @unchecked Sendable {
         }
         escalationWorkItem?.cancel()
         escalationWorkItem = nil
-        _ = Darwin.kill(-group, SIGKILL)
+        signalAnchoredProcessGroup(group, signal: SIGKILL)
         processGroupID = nil
         finished = true
         lock.unlock()
@@ -383,7 +392,16 @@ private final class ProcessGroupController: @unchecked Sendable {
         guard !finished, processGroupID == group else { return }
         // The leader has not been reaped: either it is still running or is a
         // waitid-observed zombie, so this PGID cannot have been reused.
-        _ = Darwin.kill(-group, SIGKILL)
+        signalAnchoredProcessGroup(group, signal: SIGKILL)
+    }
+
+    /// The unreaped leader is the identity anchor for both its PID and PGID.
+    /// Signal the group for descendants and the anchored leader explicitly:
+    /// this keeps cancellation bounded even on hosts where the private group
+    /// is temporarily unavailable, without risking a signal to a reused PID.
+    private func signalAnchoredProcessGroup(_ group: pid_t, signal: Int32) {
+        _ = Darwin.kill(-group, signal)
+        _ = Darwin.kill(group, signal)
     }
 }
 
@@ -408,45 +426,53 @@ private final class BoundedPipeReader: @unchecked Sendable {
     }
 
     func readAll() async -> Data {
-        await Task.detached(priority: .utility) { [self] in
-            var collected = Data()
-            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-            defer { stop() }
+        // `poll` is blocking as well. A Dispatch worker may overcommit while a
+        // cooperative Swift worker must remain available for timers and UI.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async { [self] in
+                continuation.resume(returning: readAllBlocking())
+            }
+        }
+    }
+
+    private func readAllBlocking() -> Data {
+        var collected = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        defer { stop() }
+
+        while true {
+            let current = descriptorSnapshot()
+            guard current >= 0 else { return collected }
+
+            var item = pollfd(fd: current, events: Int16(POLLIN | POLLHUP), revents: 0)
+            let pollStatus = Darwin.poll(&item, 1, 100)
+            if pollStatus < 0 {
+                if errno == EINTR { continue }
+                return collected
+            }
+            if pollStatus == 0 { continue }
+            if item.revents & Int16(POLLERR | POLLNVAL) != 0 { return collected }
 
             while true {
-                let current = descriptorSnapshot()
-                guard current >= 0 else { return collected }
+                let (count, readError) = readChunk(
+                    from: current,
+                    into: &buffer
+                )
 
-                var item = pollfd(fd: current, events: Int16(POLLIN | POLLHUP), revents: 0)
-                let pollStatus = Darwin.poll(&item, 1, 100)
-                if pollStatus < 0 {
-                    if errno == EINTR { continue }
-                    return collected
-                }
-                if pollStatus == 0 { continue }
-                if item.revents & Int16(POLLERR | POLLNVAL) != 0 { return collected }
-
-                while true {
-                    let (count, readError) = readChunk(
-                        from: current,
-                        into: &buffer
-                    )
-
-                    if count > 0 {
-                        let remaining = capBytes - collected.count
-                        if remaining > 0 {
-                            collected.append(contentsOf: buffer.prefix(min(remaining, count)))
-                        }
-                        continue
+                if count > 0 {
+                    let remaining = capBytes - collected.count
+                    if remaining > 0 {
+                        collected.append(contentsOf: buffer.prefix(min(remaining, count)))
                     }
-                    if count == -2 { return collected }
-                    if count == 0 { return collected }
-                    if readError == EINTR { continue }
-                    if readError == EAGAIN || readError == EWOULDBLOCK { break }
-                    return collected
+                    continue
                 }
+                if count == -2 { return collected }
+                if count == 0 { return collected }
+                if readError == EINTR { continue }
+                if readError == EAGAIN || readError == EWOULDBLOCK { break }
+                return collected
             }
-        }.value
+        }
     }
 
     private func descriptorSnapshot() -> Int32 {
