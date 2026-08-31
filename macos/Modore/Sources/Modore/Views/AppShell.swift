@@ -1,3 +1,4 @@
+import ModoreDomain
 import SwiftUI
 
 enum AppDestination: String, CaseIterable, Identifiable, Hashable {

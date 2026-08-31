@@ -1,0 +1,53 @@
+name: Modore
+
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+packages:
+  ModoreDomain:
+    path: ../../shared/ModoreDomain
+
+targets:
+  Modore:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources
+      - path: Resources
+        buildPhase: resources
+    dependencies:
+      - package: ModoreDomain
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.modore.ios
+        SWIFT_VERSION: "5.10"
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Modore summarizes public metadata for videos and screen recordings in your photo library."
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: NO
+    scheme:
+      testTargets:
+        - ModoreTests
+      gatherCoverageData: true
+
+  ModoreTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Modore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.modore.ios.tests
+        SWIFT_VERSION: "5.10"
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+        GENERATE_INFOPLIST_FILE: YES

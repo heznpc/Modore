@@ -12,13 +12,14 @@ Today, the Mac app focuses on AI work continuity and storage recovery. The Windo
 
 **Local by default.** Core scans, judgments, backups, and cleanup run on the device. No account or LLM is required, and nothing is deleted automatically. The optional MCP interface exposes selected read-only results to the client that invokes it.
 
-> **Status:** source preview. No public installer is published yet; build the Mac app from source or wait for a signed and notarized release.
+> **Status:** source preview. No public installer is published yet; build the Mac or iPhone app from source, or wait for a signed release.
 
 ## What ships today
 
 | Surface | What it provides |
 |---|---|
 | **Mac app** | Native SwiftUI views for storage, AI work, system evidence, activity history, settings, and approval-gated recovery. |
+| **iPhone preview** | Shows device capacity and, after explicit Photo Library permission, counts videos and screen recordings from public metadata. iOS does not expose other apps' caches or System Data, and this preview does not delete media. |
 | **AI work protection** | Joins Claude, Codex, Gemini, and supported IDE sessions to repositories and worktrees; flags retention risk, missing workspaces, and unpushed sole copies. |
 | **Verified backups** | Creates and verifies original Claude and Codex session archives, then restores them only into a new safe directory. |
 | **Storage recovery** | Explains caches, developer runtimes, apps, models, Simulator data, and project residue; safe batches require an exact preview and stop when the free-space goal is met. |
@@ -42,6 +43,16 @@ Requires macOS 13 or later and Swift 5.9 or later. Cleanup always shows an exact
 ### Windows
 
 Clone the repository or download its source archive, then run `scan.bat`. See [Installation](#installation) for requirements and troubleshooting.
+
+### iPhone source preview
+
+```bash
+cd ios/Modore
+xcodegen generate
+open Modore.xcodeproj
+```
+
+Requires iOS 17 or later. The generated project is committed, so XcodeGen is needed only after changing `project.yml`. Storage thresholds and capacity arithmetic come from `shared/ModoreDomain`, the same Swift package used by the Mac app.
 
 <details>
 <summary><strong>Technical and CLI reference</strong></summary>
@@ -160,6 +171,7 @@ Modore is the brand. The OS editions are separate products under that brand, not
 | Edition | Artifact | Focus | Validation rule |
 |---|---|---|---|
 | Mac Edition | `modore-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | The scree AI-agent session/residue audit, plus macOS security context and decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
+| iPhone preview | Source project in `ios/Modore` | Device capacity plus user-authorized video and screen-recording metadata; no cross-app cache inspection or deletion | Public iOS APIs only; Simulator tests and real-device validation before distribution |
 | Windows Edition | `modore-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
 
 Shared rules, whitelist data, i18n strings, and report vocabulary can be reused where they genuinely match. OS-specific collectors stay separate.
