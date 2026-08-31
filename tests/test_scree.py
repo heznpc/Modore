@@ -4354,6 +4354,10 @@ def test_backup_paths_reject_unrestorable_component_lengths():
         scree._backup_relative("payload/" + ("😀" * 128))
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="APFS/HFS+ name limits are UTF-16 units; Linux NAME_MAX is UTF-8 bytes",
+)
 def test_desktop_backup_accepts_a_unicode_name_over_255_utf8_bytes(tmp_path):
     home = tmp_path.resolve() / "home"
     fixture = _desktop_session(home)

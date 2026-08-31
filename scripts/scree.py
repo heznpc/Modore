@@ -6196,9 +6196,58 @@ class _RestoreLedger:
                     dir_fd=parent_descriptor,
                     follow_symlinks=False,
                 )
-                if _stat_identity(named) == entry.identity:
+                # dev+ino is not enough after unlink/recreate: Linux can reuse
+                # the just-freed inode immediately.  That made cleanup remove
+                # an attacker/user replacement even though the ledger had
+                # never created its bytes.  Reconfirm the recorded payload as
+                # well as the namespace identity before unlinking.  Symlinks
+                # are bounded to 1,023 bytes; regular-file hashing happens only
+                # on a failed restore and is capped by the manifest size.
+                payload_matches = False
+                if (entry.kind == "symlink"
+                        and stat.S_ISLNK(named.st_mode)):
+                    value = os.fsencode(os.readlink(
+                        entry.name, dir_fd=parent_descriptor))
+                    after = os.stat(
+                        entry.name,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                    payload_matches = (
+                        _stat_identity(after) == entry.identity
+                        and len(value) == entry.size
+                        and hashlib.sha256(value).hexdigest() == entry.digest
+                    )
+                elif (entry.kind == "file"
+                      and stat.S_ISREG(named.st_mode)
+                      and named.st_nlink == 1
+                      and named.st_size == entry.size):
+                    descriptor = os.open(
+                        entry.name,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                        | os.O_CLOEXEC,
+                        dir_fd=parent_descriptor,
+                    )
+                    try:
+                        opened = os.fstat(descriptor)
+                        if (_stat_identity(opened) == entry.identity
+                                and stat.S_ISREG(opened.st_mode)
+                                and opened.st_nlink == 1):
+                            with os.fdopen(os.dup(descriptor), "rb") as source:
+                                payload = _backup_stream(
+                                    source, limit=entry.size)
+                            after = os.fstat(descriptor)
+                            payload_matches = (
+                                _stat_signature(opened)
+                                == _stat_signature(after)
+                                and payload == (entry.size, entry.digest)
+                            )
+                    finally:
+                        os.close(descriptor)
+                if (_stat_identity(named) == entry.identity
+                        and payload_matches):
                     os.unlink(entry.name, dir_fd=parent_descriptor)
-            except OSError:
+            except (OSError, ValueError):
                 pass
         for key in sorted(
                 self.directories,
