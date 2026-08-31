@@ -36,12 +36,23 @@ final class ScanModel: ObservableObject {
     @Published private(set) var displayedStorageEntry: StorageHistoryEntry?
     @Published private(set) var freeSpaceSamples: [FreeSpaceSample] = []
     @Published private(set) var storageWatchPathEvents: [StorageWatchPathEvent] = []
+    @Published private(set) var storageWatchSignalEvents: [StorageWatchSignalEvent] = []
     @Published private(set) var simulatorKeepUUIDs: Set<String> = []
     @Published private(set) var simulatorLegacyKeepEntries: Set<String> = []
     @Published var storageWatchEnabled = false
     @Published var storageWatchDetail = "상태 확인 중"
     @Published var storageWatchHealthState: StorageWatchHealthState = .neverAttempted
     @Published var storageWatchInFlight = false
+    @Published private(set) var storageWatchCommittedEvidenceAt: Date?
+    private var storageWatchEvidenceGeneration = 0
+    var latestStorageWatchEvidence: StorageWatchEvidenceEvent? {
+        guard let storageWatchCommittedEvidenceAt else { return nil }
+        return StorageWatchEvidenceEvent.latest(
+            pathEvents: storageWatchPathEvents,
+            signalEvents: storageWatchSignalEvents,
+            committedAt: storageWatchCommittedEvidenceAt
+        )
+    }
     @Published private(set) var resultLoading = true
     @Published private(set) var reportState = ReportState.unknown
     @Published private(set) var liveState = LiveState.unobserved
@@ -632,10 +643,27 @@ final class ScanModel: ObservableObject {
     }
 
     func refreshStorageWatchEvidence() async {
-        let snapshots = await Task.detached(priority: .utility) {
-            StorageWatchSnapshotStore.load()
-        }.value
-        storageWatchPathEvents = StorageWatchSnapshotStore.events(from: snapshots)
+        await refreshStorageWatchEvidence {
+            await Task.detached(priority: .utility) {
+                StorageWatchEvidenceStore.load()
+            }.value
+        }
+    }
+
+    /// A later refresh owns publication even if an earlier filesystem read
+    /// finishes afterward. An unstable or unreadable transaction preserves
+    /// the last committed evidence already on screen.
+    func refreshStorageWatchEvidence(
+        using load: @escaping @Sendable () async -> StorageWatchEvidenceSnapshot?
+    ) async {
+        storageWatchEvidenceGeneration &+= 1
+        let generation = storageWatchEvidenceGeneration
+        let evidence = await load()
+        guard generation == storageWatchEvidenceGeneration,
+              let evidence else { return }
+        storageWatchPathEvents = evidence.pathEvents
+        storageWatchSignalEvents = evidence.signalEvents
+        storageWatchCommittedEvidenceAt = evidence.committedAt
     }
 
     func appendLog(_ text: String) {

@@ -8,8 +8,8 @@ struct ActivityPage: View {
             StorageWatchActivitySection()
             ContinuousObservationSection()
 
-            if let latestEvent = model.storageWatchPathEvents.last {
-                StorageWatchPathEvidenceSection(event: latestEvent)
+            if let evidence = model.latestStorageWatchEvidence {
+                StorageWatchEvidenceSection(evidence: evidence)
             }
 
             if !model.storageHistory.isEmpty {
@@ -39,7 +39,7 @@ private struct StorageWatchActivitySection: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.storageWatchEnabled ? "급감 감시 켜짐" : "급감 감시 꺼짐")
+                    Text(model.storageWatchEnabled ? "저장공간 감시 켜짐" : "저장공간 감시 꺼짐")
                         .font(.body.weight(.medium))
                     Text(model.storageWatchDetail)
                         .font(.subheadline)
@@ -59,7 +59,7 @@ private struct StorageWatchActivitySection: View {
         } header: {
             NativeSectionHeader(
                 title: "저장공간 변화",
-                subtitle: "평소에는 여유 공간만 기록하고, 급감 시 제한된 경로 크기만 추가로 남깁니다.",
+                subtitle: "평소에는 여유 공간만 기록하고, 부족 진입·급감 시 제한된 경로와 실제로 확보된 시스템 신호를 남깁니다.",
                 value: "\(model.freeSpaceSamples.count)개 표본"
             )
         }
@@ -194,41 +194,66 @@ private struct ObservationResultRows: View {
     }
 }
 
-private struct StorageWatchPathEvidenceSection: View {
-    let event: StorageWatchPathEvent
+private struct StorageWatchEvidenceSection: View {
+    let evidence: StorageWatchEvidenceEvent
 
     var body: some View {
         Section {
-            ForEach(event.rows) { row in
-                HStack(alignment: .top, spacing: 12) {
-                    NativeStatusGlyph(
-                        symbol: row.measured ? "folder" : "clock",
-                        tint: .secondary
-                    )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.label)
-                            .font(.body.weight(.medium))
-                        Text(row.path)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .help(row.path)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(measurementText(row))
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(row.measured ? .primary : .secondary)
-                        .monospacedDigit()
+            if let signalEvent = evidence.signalEvent {
+                ForEach(signalEvent.rows) { signal in
+                    StorageWatchSignalRow(signal: signal)
                 }
-                .padding(.vertical, 4)
+            }
+            if let event = evidence.pathEvent {
+                ForEach(event.rows) { row in
+                    HStack(alignment: .top, spacing: 12) {
+                        NativeStatusGlyph(
+                            symbol: row.measured ? "folder" : "clock",
+                            tint: .secondary
+                        )
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.label)
+                                .font(.body.weight(.medium))
+                            Text(row.path)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .help(row.path)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(measurementText(row))
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(row.measured ? .primary : .secondary)
+                            .monospacedDigit()
+                    }
+                    .padding(.vertical, 4)
+                }
             }
         } header: {
             NativeSectionHeader(
-                title: "최근 급감 당시 경로",
-                subtitle: "급감 직후 동시에 측정된 고정 후보입니다. 크기가 크다는 사실만으로 원인으로 확정하지 않습니다.",
-                value: event.capturedAt.formatted(date: .abbreviated, time: .shortened)
+                title: "최근 부족 시점의 증거",
+                subtitle: evidenceSummary,
+                value: evidence.capturedAt.formatted(date: .abbreviated, time: .shortened)
             )
         }
+    }
+
+    private var evidenceSummary: String {
+        let rows = evidence.signalEvent?.rows ?? []
+        let hasSwap = rows.contains { $0.kind == .swap }
+        let hasProcessRSS = rows.contains { $0.kind == .processRSS }
+        let captured: String
+        switch (hasSwap, hasProcessRSS) {
+        case (true, true):
+            captured = "스왑·상위 RAM·제한된 경로를 확보했습니다"
+        case (true, false):
+            captured = "스왑·제한된 경로를 확보했고, RAM 신호는 수집되지 않았습니다"
+        case (false, true):
+            captured = "상위 RAM·제한된 경로를 확보했고, 스왑 신호는 수집되지 않았습니다"
+        case (false, false):
+            captured = "제한된 경로만 확보했고, 스왑·RAM 신호는 수집되지 않았습니다"
+        }
+        return "같은 점검에서 \(captured). 큰 값만으로 원인을 확정하지 않습니다."
     }
 
     private func measurementText(_ row: StorageWatchPathSnapshot) -> String {

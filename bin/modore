@@ -1,0 +1,201 @@
+#!/bin/bash -p
+# Modore's narrow local command surface for session continuity and storage recovery.
+
+set -u
+set -o pipefail
+umask 077
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+unset BASH_ENV ENV CDPATH GLOBIGNORE PYTHONHOME PYTHONPATH
+# The repository scripts expose PCH_* overrides only to their own test and
+# signed-runtime harnesses. An installed command must not let caller-provided
+# overrides redirect a sourced module, state directory, or test fixture.
+for OVERRIDE_NAME in "${!PCH_@}"; do
+    unset "$OVERRIDE_NAME"
+done
+if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+    CURRENT_UID="$(/usr/bin/id -u)" || exit 64
+    TRUSTED_HOME="$(/usr/bin/dscacheutil -q user -a uid "$CURRENT_UID" 2>/dev/null \
+        | /usr/bin/awk '$1 == "dir:" {sub(/^[^:]*:[[:space:]]*/, ""); print; exit}')"
+    [[ "$TRUSTED_HOME" == /* && "$TRUSTED_HOME" != "/" \
+        && -d "$TRUSTED_HOME" && ! -L "$TRUSTED_HOME" ]] || exit 64
+    HOME="$(cd -P "$TRUSTED_HOME" && /bin/pwd -P)" || exit 64
+    export HOME
+fi
+
+usage() {
+    /usr/bin/printf '%s\n' \
+        'Usage:' \
+        '  modore sessions [--limit N]' \
+        '  modore search [--limit N] [--budget-seconds N]  # query on stdin' \
+        '  modore storage status' \
+        '  modore storage recovery' \
+        '  modore cleanup list' \
+        '  modore mcp tools'
+}
+
+fail_usage() {
+    /usr/bin/printf 'ERROR: %s\n' "$1" >&2
+    usage >&2
+    exit 64
+}
+
+bounded_positive_integer() {
+    local value="$1"
+    local maximum="$2"
+    [[ "$value" =~ ^[0-9]{1,6}$ ]] || return 1
+    value=$((10#$value))
+    [[ "$value" -ge 1 && "$value" -le "$maximum" ]]
+}
+
+# Follow an installation symlink so the repository remains the one source of
+# truth for scripts and skills. macOS 13 does not ship realpath(1).
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+    LINK_TARGET="$(/usr/bin/readlink "$SCRIPT_PATH")" || exit 1
+    case "$LINK_TARGET" in
+        /*) SCRIPT_PATH="$LINK_TARGET" ;;
+        *) SCRIPT_PATH="$(/usr/bin/dirname "$SCRIPT_PATH")/$LINK_TARGET" ;;
+    esac
+done
+SCRIPT_DIR="$(cd -P "$(/usr/bin/dirname "$SCRIPT_PATH")" && /bin/pwd -P)" || exit 1
+PROJECT_ROOT="$(cd -P "$SCRIPT_DIR/.." && /bin/pwd -P)" || exit 1
+
+SCREE="$PROJECT_ROOT/scripts/scree.py"
+STORAGE_WATCH="$PROJECT_ROOT/scripts/storage_watch.sh"
+CLEANUP="$PROJECT_ROOT/scripts/cleanup.sh"
+MCP_SERVER="$PROJECT_ROOT/scripts/mcp_server.py"
+BOUNDED_EXEC="$PROJECT_ROOT/scripts/bounded_exec.py"
+
+for REQUIRED_FILE in "$SCREE" "$STORAGE_WATCH" "$CLEANUP" "$MCP_SERVER" "$BOUNDED_EXEC"; do
+    [[ -f "$REQUIRED_FILE" && ! -L "$REQUIRED_FILE" ]] \
+        || { /usr/bin/printf 'ERROR: Modore runtime is incomplete.\n' >&2; exit 1; }
+done
+
+if [[ -x /usr/bin/python3 ]]; then
+    PYTHON=/usr/bin/python3
+else
+    PYTHON="$(command -v python3 2>/dev/null)" \
+        || { /usr/bin/printf 'ERROR: python3 is required.\n' >&2; exit 69; }
+fi
+
+COMMAND="${1:-help}"
+[[ "$#" -eq 0 ]] || shift
+
+case "$COMMAND" in
+    help|-h|--help)
+        usage
+        ;;
+    sessions)
+        SESSION_LIMIT=50
+        while [[ "$#" -gt 0 ]]; do
+            case "$1" in
+                --limit)
+                    if [[ "$#" -lt 2 ]] \
+                        || ! bounded_positive_integer "$2" 500; then
+                        fail_usage '--limit must be between 1 and 500.'
+                    fi
+                    SESSION_LIMIT="$2"
+                    shift 2
+                    ;;
+                *) fail_usage 'sessions accepts only --limit.' ;;
+            esac
+        done
+        exec "$PYTHON" -I -B "$BOUNDED_EXEC" 30 -- \
+            "$PYTHON" -I -B "$SCREE" sessions --limit "$SESSION_LIMIT"
+        ;;
+    search)
+        [[ ! -t 0 ]] || fail_usage 'search reads an explicit user query from stdin, never argv.'
+        SEARCH_LIMIT=20
+        SEARCH_BUDGET_SECONDS=30
+        while [[ "$#" -gt 0 ]]; do
+            case "$1" in
+                --limit|--budget-seconds)
+                    [[ "$#" -ge 2 ]] || fail_usage "$1 requires a value."
+                    if [[ "$1" == "--limit" ]]; then
+                        bounded_positive_integer "$2" 200 \
+                            || fail_usage '--limit must be between 1 and 200.'
+                        SEARCH_LIMIT="$2"
+                    else
+                        bounded_positive_integer "$2" 55 \
+                            || fail_usage '--budget-seconds must be between 1 and 55.'
+                        SEARCH_BUDGET_SECONDS="$2"
+                    fi
+                    shift 2
+                    ;;
+                *) fail_usage 'search accepts only --limit and --budget-seconds; send the query on stdin.' ;;
+            esac
+        done
+        exec "$PYTHON" -I -B "$BOUNDED_EXEC" 60 -- \
+            "$PYTHON" -I -B "$SCREE" search --query-file /dev/stdin \
+                --limit "$SEARCH_LIMIT" --budget-seconds "$SEARCH_BUDGET_SECONDS"
+        ;;
+    storage)
+        SUBCOMMAND="${1:-}"
+        [[ "$#" -eq 0 ]] || shift
+        case "$SUBCOMMAND" in
+            status)
+                [[ "$#" -eq 0 ]] || fail_usage 'storage status accepts no additional arguments.'
+                "$PYTHON" -I -B "$BOUNDED_EXEC" 30 -- \
+                    /bin/bash -p "$STORAGE_WATCH" >/dev/null
+                WATCH_STATUS=$?
+                [[ "$WATCH_STATUS" == "0" || "$WATCH_STATUS" == "75" ]] \
+                    || exit "$WATCH_STATUS"
+                if [[ "$WATCH_STATUS" == "75" ]]; then
+                    /usr/bin/printf 'watchStatus\tbusy\n'
+                    /usr/bin/printf '%s\n' \
+                        $'watchMessage\t다른 Modore 저장공간 점검이 실행 중입니다. 마지막 완료 기록을 표시합니다.'
+                fi
+                STATE="$HOME/Library/Application Support/Modore/storage-watch.tsv"
+                [[ -f "$STATE" && ! -L "$STATE" ]] \
+                    || { /usr/bin/printf 'ERROR: storage status was not written.\n' >&2; exit 1; }
+                /bin/cat "$STATE"
+                COMMITTED_CAPTURE="$(/usr/bin/awk -F '\t' \
+                    '$1 == "lastEvidenceAt" {print $2; exit}' "$STATE")"
+                case "$COMMITTED_CAPTURE" in
+                    *$'\t'*|*$'\n'*|*$'\r'*) COMMITTED_CAPTURE="" ;;
+                esac
+                [[ "${#COMMITTED_CAPTURE}" -le 64 ]] || COMMITTED_CAPTURE=""
+                [[ -z "$COMMITTED_CAPTURE" ]] \
+                    || /usr/bin/printf 'evidenceAt\t%s\n' "$COMMITTED_CAPTURE"
+                for EVIDENCE in \
+                    "$HOME/Library/Application Support/Modore/storage-watch-signals.tsv" \
+                    "$HOME/Library/Application Support/Modore/storage-watch-paths.tsv"; do
+                    [[ -f "$EVIDENCE" && ! -L "$EVIDENCE" ]] || continue
+                    [[ -n "$COMMITTED_CAPTURE" ]] || continue
+                    case "$EVIDENCE" in
+                        *-signals.tsv) EVIDENCE_KIND="signal" ;;
+                        *) EVIDENCE_KIND="pathSnapshot" ;;
+                    esac
+                    /usr/bin/awk -F '\t' -v captured="$COMMITTED_CAPTURE" \
+                        -v kind="$EVIDENCE_KIND" \
+                        '$1 == captured { print kind "\t" $0 }' "$EVIDENCE"
+                done
+                ;;
+            recovery)
+                [[ "$#" -eq 0 ]] || fail_usage 'storage recovery accepts no target or approval flags.'
+                [[ "$(/usr/bin/uname -s)" == "Darwin" ]] \
+                    || { /usr/bin/printf 'ERROR: native recovery is available on macOS.\n' >&2; exit 69; }
+                exec /usr/bin/open 'modore://storage/recovery'
+                ;;
+            *) fail_usage 'storage requires status or recovery.' ;;
+        esac
+        ;;
+    cleanup)
+        SUBCOMMAND="${1:-}"
+        [[ "$#" -eq 0 ]] || shift
+        case "$SUBCOMMAND" in
+            list)
+                [[ "$#" -eq 0 ]] || fail_usage 'cleanup list accepts no additional arguments.'
+                exec "$PYTHON" -I -B "$BOUNDED_EXEC" 10 -- \
+                    /bin/bash -p "$CLEANUP" --list
+                ;;
+            *) fail_usage 'cleanup requires list.' ;;
+        esac
+        ;;
+    mcp)
+        [[ "${1:-}" == "tools" && "$#" -eq 1 ]] || fail_usage 'mcp requires tools.'
+        exec "$PYTHON" -I -B "$BOUNDED_EXEC" 10 -- \
+            "$PYTHON" -I -B "$MCP_SERVER" --tools
+        ;;
+    *) fail_usage "unknown command: $COMMAND" ;;
+esac

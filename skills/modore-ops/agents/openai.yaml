@@ -1,0 +1,6 @@
+interface:
+  display_name: "Modore"
+  short_description: "Local AI work continuity and storage recovery"
+  default_prompt: "Use $modore-ops to inspect local AI work or storage and return the safest next action."
+policy:
+  allow_implicit_invocation: true
