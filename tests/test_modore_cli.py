@@ -1,7 +1,10 @@
 import json
 import os
 import subprocess
+import sys
 import time
+
+import pytest
 
 
 def run_cli(project_root, *args, stdin=None, extra_env=None):
@@ -29,6 +32,7 @@ def test_help_exposes_only_modore_owned_routes(project_root):
     assert "ship" not in result.stdout.lower()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="cleanup catalog is macOS-only")
 def test_cleanup_list_delegates_to_the_allowlisted_preview_harness(project_root):
     result = run_cli(project_root, "cleanup", "list")
 
@@ -75,6 +79,7 @@ def test_storage_status_discards_the_watchers_duplicate_success_protocol(project
     assert 'tail -n 1 "$EVIDENCE"' not in source
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="cleanup catalog is macOS-only")
 def test_caller_cannot_redirect_a_pinned_shell_module(project_root, tmp_path):
     marker = tmp_path / "executed"
     injected = tmp_path / "injected.sh"
@@ -209,15 +214,15 @@ def test_bounded_exec_forwards_termination_to_the_spawned_group(
         raise AssertionError("bounded child process survived wrapper termination")
 
 
-def test_bounded_exec_catches_signal_immediately_after_process_assignment(
-    project_root, tmp_path
-):
-    """Inject SIGTERM at the exact bytecode boundary that used to sit before
-    the _ForwardedSignal catch. The helper cleans up independently if this ever
-    regresses, so the test cannot leave its 30-second child behind."""
+def test_bounded_exec_catches_signal_during_process_start(project_root, tmp_path):
+    """Inject SIGTERM after Popen creates the child but before it returns.
+
+    This exercises the pending-signal handoff without depending on CPython's
+    version-specific bytecode offsets. The helper cleans up independently if
+    this ever regresses, so the test cannot leave its 30-second child behind.
+    """
     child_pid_file = tmp_path / "assignment-race-child.pid"
     helper = r'''
-import dis
 import importlib.util
 import json
 import os
@@ -231,27 +236,19 @@ spec = importlib.util.spec_from_file_location("bounded_exec_race", module_path)
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-stores = [
-    instruction.offset
-    for instruction in dis.get_instructions(module.main)
-    if instruction.opname == "STORE_DEREF" and instruction.argval == "process"
-]
-target = stores[-1]
-armed = False
+real_popen = module.subprocess.Popen
+pid_path = Path(os.environ["CHILD_PID_FILE"])
 
-def trace(frame, event, _argument):
-    global armed
-    if frame.f_code is module.main.__code__:
-        frame.f_trace_opcodes = True
-        if event == "opcode":
-            if armed:
-                sys.settrace(None)
-                os.kill(os.getpid(), signal.SIGTERM)
-            elif frame.f_lasti == target:
-                armed = True
-    return trace
+def popen_then_signal(*args, **kwargs):
+    child = real_popen(*args, **kwargs)
+    for _ in range(100):
+        if pid_path.is_file():
+            break
+        time.sleep(0.01)
+    os.kill(os.getpid(), signal.SIGTERM)
+    return child
 
-sys.settrace(trace)
+module.subprocess.Popen = popen_then_signal
 escaped = None
 result = None
 try:
@@ -262,9 +259,8 @@ try:
 except BaseException as error:
     escaped = type(error).__name__
 finally:
-    sys.settrace(None)
+    module.subprocess.Popen = real_popen
 
-pid_path = Path(os.environ["CHILD_PID_FILE"])
 for _ in range(100):
     if pid_path.is_file():
         break
@@ -286,7 +282,7 @@ if alive and child_pid is not None:
 print(json.dumps({"result": result, "escaped": escaped, "childAlive": alive}))
 '''
     result = subprocess.run(
-        ["/usr/bin/python3", "-I", "-B", "-c", helper],
+        [sys.executable, "-I", "-B", "-c", helper],
         capture_output=True,
         text=True,
         encoding="utf-8",
