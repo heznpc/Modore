@@ -104,12 +104,19 @@ jobs:
 
   macos-swift:
     runs-on: macos-latest
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Swift toolchain
         run: swift --version
+
+      - name: Test shared storage domain
+        run: |
+          swift test --package-path shared/ModoreDomain \
+            -Xswiftc -warnings-as-errors \
+            -Xswiftc -strict-concurrency=complete
 
       - name: Build Mac SwiftUI app
         run: |
@@ -131,6 +138,17 @@ jobs:
       - name: Test MothballCore (archive, seal, gate, restore)
         run: |
           swift test --package-path vendor/mothball \
+            --skip ProcessRunnerTests --skip RepoScannerTests \
+            -Xswiftc -warnings-as-errors \
+            -Xswiftc -strict-concurrency=complete
+          # Subprocess lifecycle tests change process groups and cancellation
+          # state on purpose. Isolate them from the broad suite so a runner
+          # cannot strand the whole test process after otherwise successful
+          # tests; each invocation still exercises every safety assertion.
+          swift test --package-path vendor/mothball --filter RepoScannerTests \
+            -Xswiftc -warnings-as-errors \
+            -Xswiftc -strict-concurrency=complete
+          swift test --package-path vendor/mothball --filter ProcessRunnerTests \
             -Xswiftc -warnings-as-errors \
             -Xswiftc -strict-concurrency=complete
 
@@ -179,3 +197,39 @@ jobs:
           }
           assert not list(Path("dist").glob("PC-Health-Check-Mac-v*.dmg"))
           PY
+
+  ios-swift:
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Select an available iPhone Simulator
+        id: simulator
+        run: |
+          udid="$(python3 - <<'PY'
+          import json
+          import subprocess
+
+          devices = json.loads(subprocess.check_output(
+              ["xcrun", "simctl", "list", "devices", "available", "-j"],
+              text=True,
+          ))["devices"]
+          for runtime in sorted(devices, reverse=True):
+              for device in devices[runtime]:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      raise SystemExit
+          raise SystemExit("no available iPhone Simulator")
+          PY
+          )"
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+
+      - name: Test iPhone source preview
+        run: |
+          xcodebuild test \
+            -project ios/Modore/Modore.xcodeproj \
+            -scheme Modore \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO

@@ -26,7 +26,8 @@ def _payload(result: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_only_the_read_only_judgment_tools_are_exposed():
-    assert sorted(mcp_server.HANDLERS) == ["agent_file_access", "agent_state_report",
+    assert sorted(mcp_server.HANDLERS) == ["agent_file_access", "agent_session_list",
+                                           "agent_session_search", "agent_state_report",
                                            "mcp_hygiene", "model_residue_report",
                                            "operator_friction_report", "system_scan_summary",
                                            "uninstall_residue_report"]
@@ -368,6 +369,35 @@ _SCREE_FIXTURE = {
         "registered_missing": []},
 }
 
+_SESSIONS_FIXTURE = {
+    "total": 3,
+    "sessions": [
+        {"tool": "Codex", "source": "/sessions/new.jsonl", "workspace": "/repo",
+         "workspaceExists": True, "kind": "session", "sizeBytes": 100,
+         "lastActive": "2026-08-30 12:00", "lastActiveEpoch": 1_800_000_000},
+        {"tool": "Claude", "source": "/sessions/old.jsonl", "workspace": "",
+         "workspaceExists": False, "kind": "session", "sizeBytes": 50,
+         "lastActive": "2026-08-29 12:00", "lastActiveEpoch": 1_799_000_000},
+    ],
+}
+
+_SESSION_SEARCH_FIXTURE = {
+    "query": "storage pressure",
+    "matches": [
+        {"position": 1, "role": "user", "snippet": "masked storage pressure text",
+         "tool": "Codex", "source": "/sessions/new.jsonl", "workspace": "/repo",
+         "lastActive": "2026-08-30 12:00"},
+    ],
+    "scannedSessions": 3,
+    "totalSessions": 3,
+    "unreadableSessions": 0,
+    "coverage": "complete",
+    "truncatedReason": None,
+    "definitive": True,
+    "evidenceKind": "conversation_mention",
+    "masked": True,
+}
+
 _FRICTION_FIXTURE = {
     "contract": "user-authored turns only",
     "taxonomy_basis": "cited",
@@ -407,9 +437,15 @@ _MORAINE_FIXTURE = {
 def stub_scripts(monkeypatch):
     calls = []
 
-    def fake(script, arguments, timeout):
+    def fake(script, arguments, timeout, *, stdin_text=None):
         calls.append((script.name, arguments))
-        return {"scree.py": _SCREE_FIXTURE, "friction.py": _FRICTION_FIXTURE,
+        if script.name == "scree.py":
+            if arguments and arguments[0] == "sessions":
+                return _SESSIONS_FIXTURE
+            if arguments and arguments[0] == "search":
+                return _SESSION_SEARCH_FIXTURE
+            return _SCREE_FIXTURE
+        return {"friction.py": _FRICTION_FIXTURE,
                 "moraine.py": _MORAINE_FIXTURE}[script.name]
 
     monkeypatch.setattr(mcp_server, "_run_json", fake)
@@ -436,6 +472,142 @@ def test_scree_summary_section_is_counts_only(stub_scripts):
     payload = _payload(_call("agent_state_report", {"section": "summary"}))
     assert "groups" not in payload and "worktrees" not in payload
     assert payload["groups_total"] == 2
+
+
+def test_agent_session_list_delegates_to_metadata_only_scree_sessions(stub_scripts):
+    payload = _payload(_call("agent_session_list", {"limit": 2}))
+
+    assert stub_scripts == [("scree.py", ["sessions", "--limit", "2"])]
+    assert payload["contract"] == "metadata-only; session bodies were not read"
+    assert payload["delegated_to"] == "scree sessions"
+    assert [item["tool"] for item in payload["sessions"]] == ["Codex", "Claude"]
+    assert payload["returned"] == 2
+    assert payload["total"] == 3
+    assert payload["truncated"] is True and payload["omitted"] == 1
+
+
+def test_agent_session_search_requires_explicit_user_intent_before_reading_bodies(
+    monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(mcp_server, "_run_json", lambda *a, **kw: calls.append((a, kw)))
+
+    for arguments in ({}, {"query": "storage"},
+                      {"query": "storage", "user_initiated": False},
+                      {"query": "   ", "user_initiated": True}):
+        result = _call("agent_session_search", arguments)
+        assert result.get("isError"), arguments
+    assert calls == [], "no transcript subprocess may start without explicit user intent and query"
+
+
+def test_agent_session_search_delegates_query_over_stdin_and_forces_masking(monkeypatch):
+    captured = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps(_SESSION_SEARCH_FIXTURE)
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(mcp_server.subprocess, "run", fake_run)
+    payload = _payload(_call("agent_session_search", {
+        "query": "storage pressure", "user_initiated": True,
+        "limit": 7, "budget_seconds": 12,
+    }))
+
+    argv = captured["argv"]
+    assert argv[4:] == ["search", "--query-file", "/dev/fd/0", "--limit", "7",
+                        "--budget-seconds", "12"]
+    assert "storage pressure" not in argv
+    assert "--raw" not in argv
+    assert captured["kwargs"]["input"] == "storage pressure"
+    assert "stdin" not in captured["kwargs"]
+    assert captured["kwargs"]["timeout"] == 12 + mcp_server.SCREE_SEARCH_PROCESS_GRACE_SECONDS
+    assert payload["masked"] is True
+    assert payload["delegatedTo"] == "scree search"
+    assert payload["evidenceKind"] == "conversation_mention"
+
+
+def test_agent_session_search_rejects_unmasked_or_malformed_scree_output(monkeypatch):
+    for report in (
+        {**_SESSION_SEARCH_FIXTURE, "masked": False},
+        {"masked": True, "matches": "not-a-list"},
+    ):
+        monkeypatch.setattr(mcp_server, "_run_json", lambda *a, report=report, **kw: report)
+        result = _call("agent_session_search", {
+            "query": "storage", "user_initiated": True,
+        })
+        assert result.get("isError"), report
+
+
+def test_agent_session_search_applies_a_second_output_limit(monkeypatch):
+    report = {**_SESSION_SEARCH_FIXTURE,
+              "matches": [{"snippet": f"masked-{index}"} for index in range(10)]}
+    monkeypatch.setattr(mcp_server, "_run_json", lambda *a, **kw: report)
+
+    payload = _payload(_call("agent_session_search", {
+        "query": "storage", "user_initiated": True, "limit": 2,
+    }))
+
+    assert len(payload["matches"]) == 2
+    assert payload["returnWindow"] == {
+        "returned": 2, "total": 10, "truncated": True, "omitted": 8,
+    }
+
+
+def test_agent_session_tools_delegate_end_to_end_without_unmasking(tmp_path, monkeypatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    session = tmp_path / ".claude" / "projects" / "-fixture" / "session.jsonl"
+    session.parent.mkdir(parents=True)
+    session.write_text("\n".join([
+        json.dumps({"cwd": str(workspace)}),
+        json.dumps({
+            "timestamp": "2026-08-30T12:00:00Z",
+            "message": {"role": "user", "content": [
+                {"type": "text", "text": "needle contact someone@example.com"},
+            ]},
+        }),
+    ]) + "\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    listed = _payload(_call("agent_session_list", {"limit": 10}))
+    assert listed["sessions"][0]["source"] == str(session)
+    assert "needle" not in json.dumps(listed, ensure_ascii=False)
+
+    searched_result = _call("agent_session_search", {
+        "query": "needle", "user_initiated": True, "limit": 10,
+        "budget_seconds": 10,
+    })
+    searched = _payload(searched_result)
+    assert searched["matches"]
+    rendered = json.dumps(searched, ensure_ascii=False)
+    assert "someone@example.com" not in rendered
+    assert "<email-redacted>" in rendered
+    assert searched_result["content"][0]["text"].startswith(mcp_server.UNTRUSTED_OPEN)
+    assert searched_result["content"][0]["text"].rstrip().endswith(mcp_server.UNTRUSTED_CLOSE)
+
+
+@pytest.mark.parametrize("arguments", [
+    {"query": "x", "user_initiated": True, "limit": 0},
+    {"query": "x", "user_initiated": True, "limit": 201},
+    {"query": "x", "user_initiated": True, "budget_seconds": 0},
+    {"query": "x", "user_initiated": True, "budget_seconds": 61},
+    {"query": "\x00", "user_initiated": True},
+    {"query": "가" * 1366, "user_initiated": True},
+])
+def test_agent_session_search_bounds_query_limit_and_timeout(arguments, monkeypatch):
+    calls = []
+    monkeypatch.setattr(mcp_server, "_run_json", lambda *a, **kw: calls.append((a, kw)))
+
+    result = _call("agent_session_search", arguments)
+
+    assert result.get("isError")
+    assert calls == []
 
 
 def test_friction_scan_passes_filters_through_and_applies_the_rest_locally(stub_scripts):
@@ -493,7 +665,10 @@ def test_every_tool_result_is_fenced_as_untrusted(stub_scripts, tmp_path, monkey
     monkeypatch.setenv("PCH_SCAN", str(tmp_path / "absent.json"))
     monkeypatch.setattr(mcp_server, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    for name, arguments in (("agent_state_report", {}), ("operator_friction_report", {}),
+    for name, arguments in (("agent_state_report", {}), ("agent_session_list", {}),
+                            ("agent_session_search", {
+                                "query": "storage", "user_initiated": True}),
+                            ("operator_friction_report", {}),
                             ("system_scan_summary", {}), ("uninstall_residue_report", {})):
         text = _call(name, arguments)["content"][0]["text"]
         assert text.startswith(mcp_server.UNTRUSTED_OPEN), name
@@ -551,7 +726,8 @@ def test_initialize_echoes_a_supported_version_and_falls_back_otherwise():
 
 def test_tools_list_declares_closed_input_schemas():
     tools = mcp_server.handle_request("tools/list", {})["tools"]
-    assert [t["name"] for t in tools] == ["agent_state_report", "operator_friction_report",
+    assert [t["name"] for t in tools] == ["agent_state_report", "agent_session_list",
+                                          "agent_session_search", "operator_friction_report",
                                           "model_residue_report", "mcp_hygiene",
                                           "agent_file_access", "system_scan_summary",
                                           "uninstall_residue_report"]
@@ -602,7 +778,8 @@ def test_serve_handles_a_full_session_including_malformed_input():
 def test_cli_tools_dump_is_the_registered_surface(capsys):
     assert mcp_server.main(["--tools"]) == 0
     dumped = json.loads(capsys.readouterr().out)
-    assert [t["name"] for t in dumped["exposed"]] == ["agent_state_report", "operator_friction_report",
+    assert [t["name"] for t in dumped["exposed"]] == ["agent_state_report", "agent_session_list",
+                                                      "agent_session_search", "operator_friction_report",
                                                       "model_residue_report", "mcp_hygiene",
                                                       "agent_file_access", "system_scan_summary",
                                                       "uninstall_residue_report"]

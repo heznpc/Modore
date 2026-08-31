@@ -317,7 +317,10 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
     )
     (temp / "storage_paths.tsv").write_text(
         "temp\tManual temporary path\t/private/tmp\t3145728\tok\t\t\n"
-        "cache\tExecutable cache\t/Users/test/cache\t3145728\tok\t\tcache_recipe\n",
+        "cache\tExecutable cache\t/Users/test/cache\t3145728\tok\t\tcache_recipe\n"
+        "cache\tSmall allowlisted cache\t/Users/test/small-cache\t1024\tok\t\tcleanup_small\n"
+        "project_residue\tnode_modules · web\t/Users/test/web/node_modules"
+        "\t5120\tok\t재생성 가능\tproject_residue\n",
         encoding="utf-8",
     )
     executable_with_spaces = (
@@ -380,6 +383,12 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
     assert simulator["protectionReason"] == "사용자 보존 목록"
     cleanup = scan["sections"]["storage"]["cleanupCandidates"]
     assert [item["cleanupId"] for item in cleanup] == ["cache_recipe"]
+    recovery = scan["sections"]["storage"]["recoveryCandidates"]
+    assert {item["cleanupId"] for item in recovery} == {
+        "cache_recipe",
+        "cleanup_small",
+        "project_residue",
+    }
     raw_facts = json.loads(raw.read_text(encoding="utf-8"))
     assert raw_facts["sections"]["cpu"][0]["path"] == executable_with_spaces
     assert raw_facts["sections"]["cpu"][0]["name"] == "Modore"
@@ -617,8 +626,8 @@ def test_browser_runtime_elapsed_time_is_parsed_as_decimal(project_root):
 
 def test_project_residue_scan_surfaces_rebuildable_artifacts(project_root, tmp_path):
     """개발 프로젝트 내부의 재생성 가능한 빌드 산출물(gitignore 사각지대)을
-    project_residue 행으로 표면화한다. 4MB 미만은 노이즈로 생략하고, cleanup_id는
-    항상 비어 있어야 한다(탐지 전용 — 임의 경로 삭제 레시피 금지)."""
+    project_residue 행으로 표면화한다. 4MB 미만은 노이즈로 생략하고, 경로와 분리된
+    고정 cleanup_id를 제공한다(실제 경로는 bounded FD 요청서로만 전달)."""
     script = project_root / "scripts" / "modules" / "macos" / "storage.sh"
     home = tmp_path / "home"
     facts = tmp_path / "facts"
@@ -679,12 +688,13 @@ def test_project_residue_scan_surfaces_rebuildable_artifacts(project_root, tmp_p
     assert int(flutter_build[3]) >= 5 * 1024  # KB
     assert flutter_build[4] == "ok"
     assert "flutter clean" in flutter_build[5]
-    assert flutter_build[6] == ""  # 탐지 전용: cleanup_id 없음
+    assert flutter_build[6] == "project_residue"
 
     assert str(flutter / ".dart_tool") in by_path
     node_row = by_path[str(node / "node_modules")]
     assert "webapp" in node_row[1]
     assert "npm install" in node_row[5]
+    assert all(row[6] == "project_residue" for row in residue)
 
     # 4MB 플로어: tiny 프로젝트는 생략
     assert str(tiny / "node_modules") not in by_path

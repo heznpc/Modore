@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import stat
@@ -14,7 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from artifact_audit import audit_path, audit_tree, audit_zip, inspect_bytes
+from artifact_audit import (
+    PYTHON_RUNTIME_ORIGIN,
+    audit_path,
+    audit_tree,
+    audit_zip,
+    inspect_bytes,
+)
 
 
 def load_release_smoke(project_root: Path):
@@ -742,6 +749,88 @@ def test_artifact_tree_rejects_world_writable_entries(tmp_path):
     }
 
 
+def test_artifact_tree_exempts_only_an_exact_manifested_python_runtime(tmp_path):
+    payload = tmp_path / "payload"
+    runtime = payload / "Modore.app/Contents/Resources/modore-python"
+    helper = runtime / "bin/python3.11"
+    license_file = runtime / "lib/python3.11/LICENSE.txt"
+    dynload_readme = runtime / "lib/python3.11/lib-dynload/README.txt"
+    helper.parent.mkdir(parents=True)
+    license_file.parent.mkdir(parents=True)
+    dynload_readme.parent.mkdir(parents=True)
+    helper.write_bytes(b"upstream-author@example.org")
+    helper.chmod(0o755)
+    license_file.write_bytes(b"another-upstream@example.org")
+    dynload_readme.write_text("no extension modules", encoding="utf-8")
+    (runtime / "ORIGIN.txt").write_text(PYTHON_RUNTIME_ORIGIN, encoding="utf-8")
+
+    entries = []
+    for path in sorted(item for item in runtime.rglob("*") if item.is_file()):
+        relative = path.relative_to(runtime).as_posix()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        entries.append(f"{digest}  ./{relative}\n")
+    (runtime / "RUNTIME-MANIFEST.sha256").write_text("".join(entries), encoding="utf-8")
+
+    assert not audit_tree(payload, allowed_symlinks=set())
+
+    leaked = runtime / "lib/python3.11/local.py"
+    leaked.write_text('api_key = "definitely-real-secret"\n', encoding="utf-8")
+    findings = audit_tree(payload, allowed_symlinks=set())
+    rules = {finding.rule for finding in findings}
+    assert "runtime-manifest" in rules
+    assert "assigned-secret" in rules
+
+
+def test_artifact_tree_rejects_a_runtime_manifest_hash_mismatch(tmp_path):
+    payload = tmp_path / "payload"
+    runtime = payload / "Contents/Resources/modore-python"
+    helper = runtime / "bin/python3.11"
+    license_file = runtime / "lib/python3.11/LICENSE.txt"
+    helper.parent.mkdir(parents=True)
+    license_file.parent.mkdir(parents=True)
+    helper.write_bytes(b"upstream@example.org")
+    helper.chmod(0o755)
+    license_file.write_text("license", encoding="utf-8")
+    (runtime / "ORIGIN.txt").write_text(PYTHON_RUNTIME_ORIGIN, encoding="utf-8")
+    (runtime / "RUNTIME-MANIFEST.sha256").write_text(
+        "0" * 64 + "  ./bin/python3.11\n"
+        + hashlib.sha256(license_file.read_bytes()).hexdigest()
+        + "  ./lib/python3.11/LICENSE.txt\n"
+        + hashlib.sha256(PYTHON_RUNTIME_ORIGIN.encode()).hexdigest()
+        + "  ./ORIGIN.txt\n",
+        encoding="utf-8",
+    )
+
+    rules = {finding.rule for finding in audit_tree(payload, allowed_symlinks=set())}
+    assert "runtime-manifest" in rules
+    assert "email-address" in rules
+
+
+def test_artifact_tree_does_not_exempt_python_runtime_under_helpers(tmp_path):
+    payload = tmp_path / "payload"
+    runtime = payload / "Modore.app/Contents/Helpers/modore-python"
+    helper = runtime / "bin/python3.11"
+    license_file = runtime / "lib/python3.11/LICENSE.txt"
+    dynload_readme = runtime / "lib/python3.11/lib-dynload/README.txt"
+    helper.parent.mkdir(parents=True)
+    license_file.parent.mkdir(parents=True)
+    dynload_readme.parent.mkdir(parents=True)
+    helper.write_bytes(b"upstream-author@example.org")
+    helper.chmod(0o755)
+    license_file.write_text("license", encoding="utf-8")
+    dynload_readme.write_text("no extension modules", encoding="utf-8")
+    (runtime / "ORIGIN.txt").write_text(PYTHON_RUNTIME_ORIGIN, encoding="utf-8")
+    entries = []
+    for path in sorted(item for item in runtime.rglob("*") if item.is_file()):
+        relative = path.relative_to(runtime).as_posix()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        entries.append(f"{digest}  ./{relative}\n")
+    (runtime / "RUNTIME-MANIFEST.sha256").write_text("".join(entries), encoding="utf-8")
+
+    rules = {finding.rule for finding in audit_tree(payload, allowed_symlinks=set())}
+    assert "email-address" in rules
+
+
 def test_artifact_zip_rejects_traversal_and_symlink(tmp_path):
     archive_path = tmp_path / "unsafe.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
@@ -788,6 +877,9 @@ def test_mac_builder_embeds_release_identity_without_local_path(project_root):
     assert "build_macos_icon.sh" in source
     assert 'Contents/Resources/LICENSE' in source
     assert "CFBundleIconFile" in source
+    assert "CFBundleURLTypes" in source
+    assert "CFBundleURLSchemes:0 string modore" in source
+    assert "CFBundleURLName string $IDENTIFIER" in source
     assert "project-root.txt" not in source
     assert source.startswith("#!/bin/bash -p")
     assert "run_clean /usr/bin/xcrun swift build" in source
@@ -808,6 +900,11 @@ def test_mac_builder_embeds_release_identity_without_local_path(project_root):
     assert "Verified replacement; previous app backup removed" in source
     assert 'ALLOW_USER_TOOLCHAIN="${PCH_ALLOW_USER_TOOLCHAIN:-0}"' in source
     assert '"$ALLOW_USER_TOOLCHAIN" == "1" && "${PCH_SKIP_ADHOC_SIGN:-0}" == "1"' in source
+    assert 'Contents/Resources/modore-python' in source
+    assert 'Contents/Helpers/modore-python' not in source
+    assert 'lib/python3.11/lib-dynload/README.txt' in source
+    assert 'python_smoke_stderr' in source
+    assert '! -s "$python_smoke_stdout" || -s "$python_smoke_stderr"' in source
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS builder boundary")
@@ -934,6 +1031,9 @@ def test_mac_packager_separates_local_and_public_trust(project_root):
     assert "-ov" not in source
     assert "git -C \"$ROOT_DIR\" archive" in source
     assert "PCH_BUILD_DIR=$PACKAGE_BUILD_DIR" in source
+    assert 'EMBEDDED_PYTHON="$APP_DIR/Contents/Resources/modore-python/bin/python3.11"' in source
+    assert 'EMBEDDED_PYTHON_ROOT="$APP_DIR/Contents/Resources/modore-python"' in source
+    assert 'Contents/Helpers/modore-python' not in source
     assert "/bin/ln \"$WORK_DMG_PATH\" \"$DMG_PATH\"" in source
     assert source.startswith("#!/bin/bash -p")
     assert "/usr/bin/env -i" in source
@@ -996,6 +1096,14 @@ def test_mac_packager_separates_local_and_public_trust(project_root):
     assert "renameatx_np" in source
     assert "0x00000004,  # RENAME_EXCL" in source
     assert '/bin/rm -f "$rollback_path"' not in source
+    python_sign = '--sign "$identity" ' + "\\\n" + '        "$EMBEDDED_PYTHON"'
+    app_sign = '--sign "$identity" ' + "\\\n" + '        "$APP_DIR"'
+    python_sign_index = source.index(python_sign)
+    manifest_refresh_index = source.index(
+        "    refresh_embedded_python_manifest\n", python_sign_index
+    )
+    app_sign_index = source.index(app_sign)
+    assert python_sign_index < manifest_refresh_index < app_sign_index
 
 
 def test_mac_packager_sanitizes_dmg_before_distribution_trust_checks(project_root):
@@ -1306,11 +1414,13 @@ def test_release_extracted_scanner_does_not_abort_on_a_missing_module(project_ro
         )
 
 
-def test_release_ships_scree_the_readme_leads_with(project_root):
-    """README.md's opening paragraph and first 'What ships today' bullet are
-    scree — the AI-agent session/residue audit. A source release that omits
-    scripts/scree.py means the feature the README sells first cannot be run by
-    anyone who follows the documented install path (clone + run)."""
+def test_mac_source_release_ships_the_ai_work_audit(project_root):
+    """The Mac source release must contain the AI work audit used by Modore.
+
+    README presents the user-facing capability rather than the internal module
+    name, but omitting its CLI implementation would still make the documented
+    source build incomplete.
+    """
     module = load_release_smoke(project_root)
     assert "scripts/scree.py" in module.MACOS_FILES
 

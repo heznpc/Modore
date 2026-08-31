@@ -170,7 +170,7 @@ final class ConversationCacheKeyTests: XCTestCase {
 /// reader that the button lies.
 final class EditorStateHasNoConversationTests: XCTestCase {
     func test_onlyAgentProvidersOfferAConversation() {
-        for provider in [SessionProvider.claude, .codex, .gemini] {
+        for provider in [SessionProvider.claude, .claudeDesktop, .codex, .gemini] {
             XCTAssertTrue(provider.keepsTranscripts, "\(provider) holds a transcript")
         }
         for provider in [SessionProvider.vscode, .cursor, .windsurf, .kiro, .antigravity] {
@@ -180,8 +180,31 @@ final class EditorStateHasNoConversationTests: XCTestCase {
 
     func test_theBrowserRowFollowsTheSameRule() {
         XCTAssertTrue(SessionInspectionFixtures.entry(tool: "Claude").isReadable)
+        XCTAssertTrue(SessionInspectionFixtures.entry(tool: "Claude Desktop").isReadable)
+        XCTAssertEqual(SessionInspectionFixtures.entry(tool: "Claude Desktop").provider, .claudeDesktop)
         XCTAssertFalse(SessionInspectionFixtures.entry(tool: "VS Code").isReadable)
         XCTAssertFalse(SessionInspectionFixtures.entry(tool: "Kiro").isReadable)
+    }
+
+    func test_originalBackupMatchesThePythonProviderContract() {
+        for tool in ["Claude", "Claude Desktop", "Codex"] {
+            XCTAssertTrue(SessionInspectionFixtures.entry(tool: tool).supportsOriginalBackup)
+        }
+        for tool in ["Gemini", "VS Code", "Kiro"] {
+            XCTAssertFalse(SessionInspectionFixtures.entry(tool: tool).supportsOriginalBackup)
+        }
+    }
+
+    func test_desktopMetadataHandleOffersMaskedConversationExport() {
+        let desktop = SessionInspectionFixtures.entry(
+            tool: "Claude Desktop",
+            source: "/Users/example/Library/Application Support/Claude/local-agent-mode-sessions/a/b/local_one.json"
+        )
+        XCTAssertTrue(desktop.supportsConversationExport)
+        XCTAssertFalse(SessionInspectionFixtures.entry(
+            tool: "Gemini",
+            source: "/Users/example/.gemini/tmp/project/chats/session.json"
+        ).supportsConversationExport)
     }
 
     /// The store's own kind wins over the provider name, so a store scree
@@ -346,6 +369,13 @@ final class SessionSearchResultTests: XCTestCase {
         let caveat = try XCTUnwrap(
             try result(coverage: "truncated", reason: "limit").caveat)
         XCTAssertTrue(caveat.contains("좁히"))
+    }
+
+    func test_aDiscoveryFailureNamesTheStoreInsteadOfBlamingTheQuery() throws {
+        let caveat = try XCTUnwrap(
+            try result(coverage: "truncated", reason: "discovery").caveat)
+        XCTAssertTrue(caveat.contains("저장소"))
+        XCTAssertFalse(caveat.contains("좁히"))
     }
 
     /// Sessions that could not be opened are counted even when the sweep

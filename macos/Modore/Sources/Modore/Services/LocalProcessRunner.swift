@@ -71,6 +71,8 @@ enum LocalProcessRunner {
         environment: [String: String] = [:],
         timeout: TimeInterval? = 180,
         maxOutputBytes: Int = 2_000_000,
+        forceKillAfterTermination: TimeInterval = 1,
+        waitForCleanupOnStop: Bool = false,
         onOutput: @escaping @Sendable (String) -> Void
     ) async -> Int32 {
         let session = ManagedProcessSession(
@@ -85,7 +87,9 @@ enum LocalProcessRunner {
             ),
             outputMode: .stream(onOutput),
             timeout: timeout,
-            maxOutputBytes: maxOutputBytes
+            maxOutputBytes: maxOutputBytes,
+            forceKillAfterTermination: forceKillAfterTermination,
+            waitForCleanupOnStop: waitForCleanupOnStop
         )
         let result = await withTaskCancellationHandler {
             await session.run()
@@ -104,7 +108,9 @@ enum LocalProcessRunner {
         pinnedFiles: [String: Data] = [:],
         environment: [String: String] = [:],
         timeout: TimeInterval? = 60,
-        maxOutputBytes: Int = 2_000_000
+        maxOutputBytes: Int = 2_000_000,
+        forceKillAfterTermination: TimeInterval = 1,
+        waitForCleanupOnStop: Bool = false
     ) async -> CapturedProcessResult {
         let session = ManagedProcessSession(
             configuration: SpawnConfiguration(
@@ -118,7 +124,9 @@ enum LocalProcessRunner {
             ),
             outputMode: .capture,
             timeout: timeout,
-            maxOutputBytes: maxOutputBytes
+            maxOutputBytes: maxOutputBytes,
+            forceKillAfterTermination: forceKillAfterTermination,
+            waitForCleanupOnStop: waitForCleanupOnStop
         )
         return await withTaskCancellationHandler {
             await session.run()
@@ -238,7 +246,6 @@ private enum ProcessOutputMode: Sendable {
 
 private final class ManagedProcessSession: @unchecked Sendable {
     private static let pollIntervalMilliseconds: Int32 = 100
-    private static let forceKillDelay: TimeInterval = 1
     private static let stopCompletionLimit: TimeInterval = 3
     private static let postTerminationDrainLimit: TimeInterval = 2
 
@@ -246,6 +253,8 @@ private final class ManagedProcessSession: @unchecked Sendable {
     private let outputMode: ProcessOutputMode
     private let timeout: TimeInterval?
     private let maxOutputBytes: Int
+    private let forceKillAfterTermination: TimeInterval
+    private let waitForCleanupOnStop: Bool
     private let lock = NSLock()
     private let terminationSignal = DispatchSemaphore(value: 0)
 
@@ -258,19 +267,24 @@ private final class ManagedProcessSession: @unchecked Sendable {
     private var stopReason: ProcessEndState?
     private var stopRequestedAt: UInt64?
     private var groupTerminationScheduled = false
+    private var groupTerminationCompleted = false
+    private var groupTerminator: ProcessGroupTerminator?
     private var deadlineWork: DispatchWorkItem?
-    private var forceKillWork: DispatchWorkItem?
 
     init(
         configuration: SpawnConfiguration,
         outputMode: ProcessOutputMode,
         timeout: TimeInterval?,
-        maxOutputBytes: Int
+        maxOutputBytes: Int,
+        forceKillAfterTermination: TimeInterval,
+        waitForCleanupOnStop: Bool
     ) {
         self.configuration = configuration
         self.outputMode = outputMode
         self.timeout = timeout
         self.maxOutputBytes = max(1, maxOutputBytes)
+        self.forceKillAfterTermination = forceKillAfterTermination
+        self.waitForCleanupOnStop = waitForCleanupOnStop
     }
 
     func run() async -> CapturedProcessResult {
@@ -323,15 +337,18 @@ private final class ManagedProcessSession: @unchecked Sendable {
     }
 
     private func observeTermination(of pid: pid_t) {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            var rawStatus: Int32 = 0
-            var result: pid_t
+        DispatchQueue.global(qos: .utility).async { [self] in
+            var info = siginfo_t()
+            var result: Int32
             repeat {
-                result = Darwin.waitpid(pid, &rawStatus, 0)
+                result = Darwin.waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT)
             } while result == -1 && errno == EINTR
 
-            let status = result == pid ? Self.exitStatus(from: rawStatus) : -1
-            self?.recordTermination(status: status)
+            if result == 0 {
+                recordTermination(status: Self.exitStatus(from: info))
+            } else {
+                recordLostLeaderIdentity()
+            }
         }
     }
 
@@ -407,13 +424,14 @@ private final class ManagedProcessSession: @unchecked Sendable {
             }
 
             let snapshot = lifecycleSnapshot()
+            let cleanupPending = snapshot.groupTerminationScheduled
+                && !snapshot.groupTerminationCompleted
             if pipeFinished, snapshot.terminationStatus != nil {
                 // A descendant can close its copy of stdout/stderr and keep
-                // running after the root exits. Do not cancel the scheduled
-                // SIGKILL until the private process group is actually empty.
-                if let processID = snapshot.processID,
-                   snapshot.groupTerminationScheduled,
-                   Self.processGroupExists(processID) {
+                // running after the root exits. The group terminator holds the
+                // unreaped leader as a stable identity until every member is
+                // gone or the force deadline has fired.
+                if cleanupPending {
                     _ = terminationSignal.wait(timeout: .now() + .milliseconds(100))
                 } else {
                     break
@@ -421,11 +439,20 @@ private final class ManagedProcessSession: @unchecked Sendable {
             }
             if let stopRequestedAt = snapshot.stopRequestedAt,
                elapsedTime(since: stopRequestedAt) >= Self.stopCompletionLimit {
-                break
+                let cleanupLimit = max(
+                    Self.stopCompletionLimit,
+                    forceKillAfterTermination + 5
+                )
+                if !waitForCleanupOnStop || !cleanupPending
+                    || elapsedTime(since: stopRequestedAt) >= cleanupLimit {
+                    break
+                }
             }
             if let terminationObservedAt = snapshot.terminationObservedAt,
                elapsedTime(since: terminationObservedAt) >= Self.postTerminationDrainLimit {
-                break
+                if !waitForCleanupOnStop || !cleanupPending {
+                    break
+                }
             }
         }
 
@@ -450,6 +477,8 @@ private final class ManagedProcessSession: @unchecked Sendable {
     }
 
     private func recordTermination(status: Int32) {
+        var terminatorToStart: ProcessGroupTerminator?
+        let terminator: ProcessGroupTerminator?
         lock.lock()
         guard observedTerminationStatus == nil else {
             lock.unlock()
@@ -457,12 +486,41 @@ private final class ManagedProcessSession: @unchecked Sendable {
         }
         observedTerminationStatus = status
         terminationObservedAt = monotonicNow()
+        if !groupTerminationScheduled, let processID {
+            terminatorToStart = makeGroupTerminatorLocked(processID: processID)
+        }
+        terminator = groupTerminator
         lock.unlock()
-        terminationSignal.signal()
 
         // The root command may exit while background descendants still own the
-        // output pipe. The process group belongs exclusively to this session.
-        scheduleGroupTerminationIfNeeded()
+        // output pipe—or after closing it. Publish and start group cleanup
+        // before waking the reader so finish() cannot race ahead of cleanup.
+        terminatorToStart?.start()
+        terminator?.noteLeaderTermination()
+        terminationSignal.signal()
+    }
+
+    /// A failed `waitid(..., WNOWAIT)` means this session no longer has proof
+    /// that the numeric PID still names the child it launched. Retire every
+    /// pending group action before publishing the failure so a delayed signal
+    /// cannot be delivered to a subsequently reused process-group identifier.
+    private func recordLostLeaderIdentity() {
+        let terminator: ProcessGroupTerminator?
+        lock.lock()
+        guard observedTerminationStatus == nil else {
+            lock.unlock()
+            return
+        }
+        observedTerminationStatus = -1
+        terminationObservedAt = monotonicNow()
+        groupTerminationScheduled = true
+        groupTerminationCompleted = true
+        terminator = groupTerminator
+        groupTerminator = nil
+        lock.unlock()
+
+        terminator?.abandonLostLeaderIdentity()
+        terminationSignal.signal()
     }
 
     private func requestStop(_ reason: ProcessEndState) {
@@ -483,37 +541,38 @@ private final class ManagedProcessSession: @unchecked Sendable {
     }
 
     private func scheduleGroupTerminationIfNeeded() {
-        let pid: pid_t
-        let forceWork: DispatchWorkItem
+        let terminator: ProcessGroupTerminator
         lock.lock()
         guard didLaunch,
-              !didFinish,
               !groupTerminationScheduled,
               let processID else {
             lock.unlock()
             return
         }
-        groupTerminationScheduled = true
-        pid = processID
-        forceWork = DispatchWorkItem { [weak self] in
-            self?.forceStopGroupIfNeeded(pid: pid)
-        }
-        forceKillWork = forceWork
+        terminator = makeGroupTerminatorLocked(processID: processID)
         lock.unlock()
 
-        _ = Darwin.kill(-pid, SIGTERM)
-        DispatchQueue.global(qos: .utility).asyncAfter(
-            deadline: .now() + Self.forceKillDelay,
-            execute: forceWork
-        )
+        terminator.start()
     }
 
-    private func forceStopGroupIfNeeded(pid: pid_t) {
+    private func makeGroupTerminatorLocked(processID: pid_t) -> ProcessGroupTerminator {
+        let terminator = ProcessGroupTerminator(
+            processGroupID: processID,
+            forceKillAfter: forceKillAfterTermination
+        ) { [weak self] in
+            self?.recordGroupTerminationCompletion()
+        }
+        groupTerminationScheduled = true
+        groupTerminator = terminator
+        return terminator
+    }
+
+    private func recordGroupTerminationCompletion() {
         lock.lock()
-        let alreadyFinished = didFinish
+        groupTerminationCompleted = true
+        groupTerminator = nil
         lock.unlock()
-        guard !alreadyFinished else { return }
-        _ = Darwin.kill(-pid, SIGKILL)
+        terminationSignal.signal()
     }
 
     private func lifecycleSnapshot() -> (
@@ -521,8 +580,8 @@ private final class ManagedProcessSession: @unchecked Sendable {
         terminationObservedAt: UInt64?,
         stopReason: ProcessEndState?,
         stopRequestedAt: UInt64?,
-        processID: pid_t?,
-        groupTerminationScheduled: Bool
+        groupTerminationScheduled: Bool,
+        groupTerminationCompleted: Bool
     ) {
         lock.lock()
         defer { lock.unlock() }
@@ -531,8 +590,8 @@ private final class ManagedProcessSession: @unchecked Sendable {
             terminationObservedAt,
             stopReason,
             stopRequestedAt,
-            processID,
-            groupTerminationScheduled
+            groupTerminationScheduled,
+            groupTerminationCompleted
         )
     }
 
@@ -566,13 +625,10 @@ private final class ManagedProcessSession: @unchecked Sendable {
         didFinish = true
         self.continuation = nil
         let deadlineWork = self.deadlineWork
-        let forceKillWork = self.forceKillWork
         self.deadlineWork = nil
-        self.forceKillWork = nil
         lock.unlock()
 
         deadlineWork?.cancel()
-        forceKillWork?.cancel()
         continuation.resume(
             returning: CapturedProcessResult(
                 status: status,
@@ -603,18 +659,160 @@ private final class ManagedProcessSession: @unchecked Sendable {
         return TimeInterval(now - start) / 1_000_000_000
     }
 
-    private static func exitStatus(from rawStatus: Int32) -> Int32 {
-        let terminatingSignal = rawStatus & 0x7f
-        if terminatingSignal == 0 {
-            return (rawStatus >> 8) & 0xff
+    private static func exitStatus(from info: siginfo_t) -> Int32 {
+        switch info.si_code {
+        case CLD_EXITED:
+            return info.si_status
+        case CLD_KILLED, CLD_DUMPED:
+            return 128 + info.si_status
+        default:
+            return -1
         }
-        return 128 + terminatingSignal
+    }
+}
+
+/// Owns process-group cleanup independently from the caller-facing result.
+/// A bounded result can therefore return while a cooperative cleanup handler
+/// still has its full grace period, without losing the eventual SIGKILL ceiling.
+private final class ProcessGroupTerminator: @unchecked Sendable {
+    private static let pollIntervalNanoseconds: UInt64 = 100_000_000
+
+    private let processGroupID: pid_t
+    private let forceDeadline: UInt64
+    private let completion: @Sendable () -> Void
+    private let queue: DispatchQueue
+    private var started = false
+    private var leaderTerminationObserved = false
+    private var forceKillIssued = false
+    private var monitorScheduled = false
+    private var finished = false
+
+    init(
+        processGroupID: pid_t,
+        forceKillAfter gracePeriod: TimeInterval,
+        completion: @escaping @Sendable () -> Void
+    ) {
+        self.processGroupID = processGroupID
+        self.completion = completion
+        queue = DispatchQueue(label: "me.heznpc.modore.process-group.\(processGroupID)")
+        let boundedGrace = gracePeriod.isFinite ? max(0, gracePeriod) : 0
+        forceDeadline = (DispatchTime.now() + boundedGrace).uptimeNanoseconds
     }
 
-    private static func processGroupExists(_ processGroupID: pid_t) -> Bool {
-        errno = 0
-        if Darwin.kill(-processGroupID, 0) == 0 { return true }
-        return errno == EPERM
+    func start() {
+        // Cancellation can be followed immediately by application exit. Send
+        // SIGTERM before returning to the caller; only polling/escalation is
+        // deferred to this object's private serial queue.
+        queue.sync { [self] in
+            guard !started, !finished else { return }
+            started = true
+            _ = Darwin.kill(-processGroupID, SIGTERM)
+            poll()
+        }
+    }
+
+    func noteLeaderTermination() {
+        queue.async { [self] in
+            guard !finished else { return }
+            leaderTerminationObserved = true
+            if started, !monitorScheduled {
+                poll()
+            }
+        }
+    }
+
+    /// Stops this terminator without sending another signal. This is used only
+    /// after the owner can no longer prove that the leader PID is still held as
+    /// an unreaped identity anchor.
+    func abandonLostLeaderIdentity() {
+        var shouldComplete = false
+        queue.sync { [self] in
+            guard !finished else { return }
+            finished = true
+            monitorScheduled = false
+            shouldComplete = true
+        }
+        if shouldComplete {
+            completion()
+        }
+    }
+
+    private func poll() {
+        guard started, !finished else { return }
+
+        let now = DispatchTime.now().uptimeNanoseconds
+        if !forceKillIssued, now >= forceDeadline {
+            // The leader has deliberately not been reaped, so its PID still
+            // reserves this process-group identity. This group signal cannot
+            // be redirected to a newly reused numeric PGID.
+            _ = Darwin.kill(-processGroupID, SIGKILL)
+            forceKillIssued = true
+        }
+
+        if leaderTerminationObserved,
+           (forceKillIssued || Self.hasOtherGroupMembers(processGroupID) == false) {
+            reapLeaderAndFinish()
+            return
+        }
+
+        let remaining = forceDeadline > now ? forceDeadline - now : 0
+        let delay = forceKillIssued
+            ? Self.pollIntervalNanoseconds
+            : min(Self.pollIntervalNanoseconds, remaining)
+        monitorScheduled = true
+        queue.asyncAfter(
+            deadline: .now() + .nanoseconds(Int(delay))
+        ) { [self] in
+            monitorScheduled = false
+            poll()
+        }
+    }
+
+    private func reapLeaderAndFinish() {
+        var rawStatus: Int32 = 0
+        var result: pid_t
+        repeat {
+            result = Darwin.waitpid(processGroupID, &rawStatus, WNOHANG)
+        } while result == -1 && errno == EINTR
+
+        guard result == processGroupID || (result == -1 && errno == ECHILD) else {
+            monitorScheduled = true
+            queue.asyncAfter(deadline: .now() + .milliseconds(10)) { [self] in
+                monitorScheduled = false
+                poll()
+            }
+            return
+        }
+
+        // ECHILD means the leader identity was lost unexpectedly. Finishing
+        // here is safe because `finished` suppresses every queued poll before
+        // this serial queue can perform another process-group signal.
+        finished = true
+        completion()
+    }
+
+    /// Returns nil when a complete process snapshot cannot be obtained. A
+    /// failed snapshot keeps the stable leader unreaped until the deadline;
+    /// it never guesses that the group is empty.
+    private static func hasOtherGroupMembers(_ processGroupID: pid_t) -> Bool? {
+        let estimatedCount = Darwin.proc_listallpids(nil, 0)
+        guard estimatedCount > 0 else { return nil }
+        var processIDs = [pid_t](
+            repeating: 0,
+            count: Int(estimatedCount) + 128
+        )
+        let count = processIDs.withUnsafeMutableBytes { storage in
+            Darwin.proc_listallpids(storage.baseAddress, Int32(storage.count))
+        }
+        guard count >= 0, Int(count) < processIDs.count else { return nil }
+
+        for processID in processIDs.prefix(Int(count))
+        where processID > 0 && processID != processGroupID {
+            if Darwin.getpgid(processID) == processGroupID {
+                return true
+            }
+        }
+        return false
     }
 }
 

@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -6,6 +7,7 @@ import SwiftUI
 final class PCHealthCheckApplicationDelegate: NSObject, NSApplicationDelegate {
     private weak var model: ScanModel?
     private var terminationReplyPending = false
+    private var pendingTerminationConditions = 0
 
     func bind(to model: ScanModel) {
         self.model = model
@@ -15,14 +17,29 @@ final class PCHealthCheckApplicationDelegate: NSObject, NSApplicationDelegate {
         guard !terminationReplyPending else { return .terminateLater }
         guard let model else { return .terminateNow }
 
-        let deferred = model.deferApplicationTerminationUntilSafe { [weak self] in
-            guard let self, self.terminationReplyPending else { return }
-            self.terminationReplyPending = false
-            sender.reply(toApplicationShouldTerminate: true)
+        var deferredConditions = 0
+        if model.cancelApplicationTasksForTermination(completion: { [weak self] in
+            self?.finishTerminationCondition(sender: sender)
+        }) {
+            deferredConditions += 1
         }
-        guard deferred else { return .terminateNow }
+        if model.deferApplicationTerminationUntilSafe({ [weak self] in
+            self?.finishTerminationCondition(sender: sender)
+        }) {
+            deferredConditions += 1
+        }
+        guard deferredConditions > 0 else { return .terminateNow }
+        pendingTerminationConditions = deferredConditions
         terminationReplyPending = true
         return .terminateLater
+    }
+
+    private func finishTerminationCondition(sender: NSApplication) {
+        guard terminationReplyPending, pendingTerminationConditions > 0 else { return }
+        pendingTerminationConditions -= 1
+        guard pendingTerminationConditions == 0 else { return }
+        terminationReplyPending = false
+        sender.reply(toApplicationShouldTerminate: true)
     }
 }
 
@@ -31,12 +48,36 @@ struct ModoreApp: App {
     @NSApplicationDelegateAdaptor(PCHealthCheckApplicationDelegate.self)
     private var applicationDelegate
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var model = ScanModel()
+    @StateObject private var model: ScanModel
+    /// Retaining the descriptor is what retains singleton ownership. The lock
+    /// is released automatically after normal or deferred app termination.
+    private let instanceLease: AppInstanceCoordinator.Lease?
 
     init() {
         if let message = BackgroundNotifier.pendingMessage(in: CommandLine.arguments) {
             BackgroundNotifier.postAndExit(message: message)
         }
+        switch AppInstanceCoordinator.acquire() {
+        case .continueRunning(let lease, let obsoletePeers):
+            instanceLease = lease
+            // A source-built copy and an installed copy share one app
+            // identity. Ask older peers to terminate normally; their delegate
+            // defers while a destructive transaction is in flight.
+            for peer in obsoletePeers {
+                peer.terminate()
+            }
+        case .activateExistingAndExit(let existing):
+            existing?.activate(options: [.activateAllWindows])
+            Darwin.exit(EXIT_SUCCESS)
+        case .cannotCoordinate:
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Modore를 안전하게 시작할 수 없습니다"
+            alert.informativeText = "단일 실행 잠금 파일을 안전하게 열 수 없습니다. ~/Library/Application Support/Modore의 소유권과 심볼릭 링크 상태를 확인하세요."
+            alert.runModal()
+            Darwin.exit(EXIT_FAILURE)
+        }
+        _model = StateObject(wrappedValue: ScanModel())
         switch ProcessInfo.processInfo.environment["PCH_FORCE_APPEARANCE"]?.lowercased() {
         case "light":
             NSApplication.shared.appearance = NSAppearance(named: .aqua)
@@ -62,6 +103,7 @@ struct ModoreApp: App {
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1100, height: 760)
+        .handlesExternalEvents(matching: ["*"])
         .commands {
             CommandGroup(after: .newItem) {
                 Button(model.isRunning ? "정밀 검사 취소" : "정밀 검사") {
@@ -148,6 +190,10 @@ struct ContentView: View {
         ModernRootView()
         .sheet(item: $model.cleanupPreview) { preview in
             CleanupApprovalSheet(preview: preview)
+                .environmentObject(model)
+        }
+        .sheet(item: $model.cleanupRecoveryPlan) { plan in
+            CleanupRecoverySheet(initialPlan: plan)
                 .environmentObject(model)
         }
         .sheet(item: $model.browserAutomationStopPreview) { preview in

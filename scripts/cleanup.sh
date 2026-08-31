@@ -29,6 +29,12 @@ OWNER_APPROVED="false"
 APPROVAL_TOKEN=""
 APPROVAL_TOKEN_FILE=""
 APPROVAL_INPUT_KIND=""
+REQUEST_FILE=""
+PROJECT_RESIDUE_TARGET=""
+PROJECT_RESIDUE_PARENT=""
+PROJECT_RESIDUE_BASENAME=""
+PROJECT_RESIDUE_PRIMARY_MARKER=""
+PROJECT_PROCESS_PATH_PATTERN=""
 HOME_ROOT="${HOME:-}"
 VAR_FOLDERS_ROOT="/private/var/folders"
 APPLICATIONS_ROOT="/Applications"
@@ -59,6 +65,7 @@ MOVED_DESTINATIONS=()
 SIMULATOR_UUID=""
 RECIPE_BLOCK_REASON=""
 PREVIEW_APPROVAL_TOKEN=""
+PREVIEW_APPROVAL_EXPIRES_EPOCH=0
 EXECUTION_MANIFEST=""
 TRANSACTION_JOURNAL=""
 EXECUTION_FAILURE_STATUS="partial"
@@ -78,7 +85,9 @@ usage() {
         'Usage:' \
         '  cleanup.sh --list' \
         '  cleanup.sh --preview <recipe-id>' \
+        '  cleanup.sh --preview project_residue --request-file /dev/fd/<fd>' \
         '  cleanup.sh --execute <recipe-id> --owner-approved --approval-token-file /dev/fd/<fd>' \
+        '  cleanup.sh --execute project_residue --request-file /dev/fd/<fd> --owner-approved --approval-token-file /dev/fd/<fd>' \
         '  Legacy CLI compatibility: --approval-token <token>'
 }
 
@@ -174,6 +183,7 @@ configure_roots() {
         for test_path in \
             "${PCH_PROCESS_LIST_FILE:-}" \
             "${PCH_PROCESS_LIST_WITH_PID_FILE:-}" \
+            "${PCH_TEST_PROCESS_CWD_FILE:-}" \
             "${PCH_SIMCTL_LIST_FILE:-}" \
             "${PCH_SIMCTL_DELETE_LOG:-}" \
             "${PCH_TEST_APP_GROUPS_FILE:-}" \
@@ -232,6 +242,261 @@ add_target_if_present() {
     if [[ -e "$target" || -L "$target" ]]; then
         TARGETS+=("$target")
     fi
+}
+
+# Project-local build output is the one dynamic cleanup recipe. Its path never
+# travels in argv: the app pins this three-row request to a short-lived file
+# descriptor. Keep the grammar deliberately smaller than a general TSV parser so
+# another field can never acquire deletion semantics by accident.
+read_project_residue_request() {
+    local source="$1"
+    local size line line_number=0 target=""
+    [[ "$source" =~ ^/dev/fd/[0-9]+$ && -f "$source" ]] || return 1
+    size="$(approval_token_file_size "$source")" || return 1
+    [[ "$size" =~ ^[0-9]+$ && "$size" -ge 1 && "$size" -le 4096 ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_number=$((line_number + 1))
+        case "$line_number:$line" in
+            $'1:version\t1') ;;
+            $'2:kind\tproject_residue') ;;
+            3:$'target\t'*)
+                target="${line#*$'\t'}"
+                [[ -n "$target" ]] || return 1
+                case "$target" in *$'\t'*|*$'\n'*|*$'\r'*) return 1 ;; esac
+                ;;
+            *) return 1 ;;
+        esac
+    done < "$source"
+    [[ "$line_number" -eq 3 && "$target" == /* ]] || return 1
+    PROJECT_RESIDUE_TARGET="$target"
+    return 0
+}
+
+regex_escape_ere() {
+    /usr/bin/printf '%s' "$1" | /usr/bin/sed 's/[][(){}.^$*+?|\\]/\\&/g'
+}
+
+sha256_file() {
+    local source="$1"
+    if [[ -x /usr/bin/shasum ]]; then
+        /usr/bin/shasum -a 256 "$source" 2>/dev/null | /usr/bin/awk '{print $1}'
+    else
+        /usr/bin/openssl dgst -sha256 "$source" 2>/dev/null | /usr/bin/awk '{print $NF}'
+    fi
+}
+
+safe_git() {
+    /usr/bin/env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+        -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+        /usr/bin/git "$@"
+}
+
+project_has_git_marker() {
+    local probe="$1" parent
+    while [[ "$probe" == "$HOME_ROOT" || "$probe" == "$HOME_ROOT/"* ]]; do
+        if [[ -e "$probe/.git" || -L "$probe/.git" ]]; then
+            return 0
+        fi
+        [[ "$probe" != "$HOME_ROOT" ]] || break
+        parent="$(/usr/bin/dirname "$probe")"
+        [[ "$parent" != "$probe" ]] || break
+        probe="$parent"
+    done
+    return 1
+}
+
+project_residue_candidate_names() {
+    case "$PROJECT_RESIDUE_BASENAME" in
+        node_modules) /usr/bin/printf '%s\n' package.json ;;
+        target) /usr/bin/printf '%s\n' Cargo.toml ;;
+        .build) /usr/bin/printf '%s\n' Package.swift ;;
+        .dart_tool) /usr/bin/printf '%s\n' pubspec.yaml ;;
+        .gradle) /usr/bin/printf '%s\n' gradlew ;;
+        Pods) /usr/bin/printf '%s\n' Podfile ;;
+        build) /usr/bin/printf '%s\n' pubspec.yaml gradlew ;;
+        *) return 1 ;;
+    esac
+}
+
+project_residue_lock_names() {
+    case "$PROJECT_RESIDUE_BASENAME" in
+        node_modules)
+            /usr/bin/printf '%s\n' package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb
+            ;;
+        target) /usr/bin/printf '%s\n' Cargo.lock ;;
+        .build) /usr/bin/printf '%s\n' Package.resolved ;;
+        .dart_tool) /usr/bin/printf '%s\n' pubspec.lock ;;
+        .gradle) /usr/bin/printf '%s\n' gradle.lockfile ;;
+        Pods) /usr/bin/printf '%s\n' Podfile.lock ;;
+        build)
+            if [[ "$(/usr/bin/basename "$PROJECT_RESIDUE_PRIMARY_MARKER")" == "pubspec.yaml" ]]; then
+                /usr/bin/printf '%s\n' pubspec.lock
+            else
+                /usr/bin/printf '%s\n' gradle.lockfile
+            fi
+            ;;
+    esac
+}
+
+project_residue_tool_pattern() {
+    case "$PROJECT_RESIDUE_BASENAME" in
+        node_modules)
+            /usr/bin/printf '%s' '(^|/)(npm|npx|pnpm|yarn|bun)( |$)|(^|/)(npm-cli|npx-cli)\.js( |$)|(^|/)pnpm\.(cjs|js|mjs)( |$)|corepack'
+            ;;
+        target)
+            /usr/bin/printf '%s' '(^|/)(cargo|rustc)( |$)'
+            ;;
+        .build)
+            /usr/bin/printf '%s' '(^|/)(swift|swift-build|swift-package)( |$)'
+            ;;
+        .dart_tool)
+            /usr/bin/printf '%s' '(^|/)(flutter|dart)( |$)|flutter_tools|dart-sdk/bin/dart'
+            ;;
+        .gradle)
+            /usr/bin/printf '%s' '(^|/)(gradle|gradlew)( |$)|GradleDaemon|org\.gradle\.(launcher|wrapper)'
+            ;;
+        Pods)
+            /usr/bin/printf '%s' '(^|/)pod( |$)|CocoaPods'
+            ;;
+        build)
+            if [[ "$(/usr/bin/basename "$PROJECT_RESIDUE_PRIMARY_MARKER")" == "pubspec.yaml" ]]; then
+                /usr/bin/printf '%s' '(^|/)(flutter|dart)( |$)|flutter_tools|dart-sdk/bin/dart'
+            else
+                /usr/bin/printf '%s' '(^|/)(gradle|gradlew)( |$)|GradleDaemon|org\.gradle\.(launcher|wrapper)'
+            fi
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+owned_regular_file() {
+    local source="$1" owner
+    [[ -f "$source" && ! -L "$source" ]] || return 1
+    owner="$(path_owner_uid "$source")" || return 1
+    [[ "$owner" == "$(/usr/bin/id -u)" ]]
+}
+
+project_git_state() {
+    local project="$1" target="$2" repo index_path index_parent canonical_index_parent
+    local relative tracked_bytes owner
+    PROJECT_GIT_REPO=""
+    PROJECT_GIT_INDEX=""
+    if ! repo="$(safe_git -C "$project" rev-parse --show-toplevel 2>/dev/null)"; then
+        # Absence of a repository is valid for local projects. Presence of a
+        # .git marker plus a failed Git query is different: permissions, a
+        # broken worktree pointer, or Git failure made the tracked-data check
+        # unavailable, so fail closed instead of calling the target untracked.
+        project_has_git_marker "$project" && return 1
+        return 0
+    fi
+    [[ "$repo" == /* && -d "$repo" && ! -L "$repo" ]] || return 1
+    repo="$(cd -P "$repo" 2>/dev/null && /bin/pwd -P)" || return 1
+    [[ "$repo" == "$HOME_ROOT" || "$repo" == "$HOME_ROOT/"* ]] || return 1
+    owner="$(path_owner_uid "$repo")" || return 1
+    [[ "$owner" == "$(/usr/bin/id -u)" ]] || return 1
+    [[ "$target" == "$repo/"* ]] || return 1
+    relative="${target#"$repo/"}"
+    [[ -n "$relative" && "$relative" != ../* && "$relative" != */../* ]] || return 1
+    tracked_bytes="$(safe_git -C "$repo" ls-files -z -- "$relative" 2>/dev/null | /usr/bin/wc -c | /usr/bin/tr -d '[:space:]')" \
+        || return 1
+    [[ "$tracked_bytes" =~ ^[0-9]+$ ]] || return 1
+    # A directory is not itself an index entry, but `git ls-files -- dir` lists
+    # tracked descendants as well. Any byte therefore means this tree contains
+    # source-controlled data and must not be a cleanup target.
+    [[ "$tracked_bytes" == "0" ]] || return 2
+
+    index_path="$(safe_git -C "$repo" rev-parse --git-path index 2>/dev/null)" || return 1
+    if [[ "$index_path" != /* ]]; then
+        index_path="$repo/$index_path"
+    fi
+    index_parent="$(/usr/bin/dirname "$index_path")"
+    canonical_index_parent="$(cd -P "$index_parent" 2>/dev/null && /bin/pwd -P)" || return 1
+    [[ "$canonical_index_parent" == "$HOME_ROOT" || "$canonical_index_parent" == "$HOME_ROOT/"* ]] \
+        || return 1
+    index_path="$canonical_index_parent/$(/usr/bin/basename "$index_path")"
+    if [[ -e "$index_path" || -L "$index_path" ]]; then
+        owned_regular_file "$index_path" || return 1
+        PROJECT_GIT_INDEX="$index_path"
+    fi
+    PROJECT_GIT_REPO="$repo"
+    return 0
+}
+
+validate_project_residue_contract() {
+    local target="$1" parent canonical_parent basename owner marker marker_path found=""
+    [[ "$target" == "$PROJECT_RESIDUE_TARGET" && -d "$target" && ! -L "$target" ]] || return 1
+    [[ "$target" == "$HOME_ROOT/"* ]] || return 1
+    parent="$(/usr/bin/dirname "$target")"
+    canonical_parent="$(cd -P "$parent" 2>/dev/null && /bin/pwd -P)" || return 1
+    [[ "$canonical_parent" == "$parent" ]] || return 1
+    [[ "$canonical_parent" == "$HOME_ROOT" || "$canonical_parent" == "$HOME_ROOT/"* ]] || return 1
+    basename="$(/usr/bin/basename "$target")"
+    [[ "$parent" != "$target" && "$parent" != "/" ]] || return 1
+    case "$basename" in .build|node_modules|target|build|.dart_tool|.gradle|Pods) ;; *) return 1 ;; esac
+    [[ -d "$parent" && ! -L "$parent" ]] || return 1
+    owner="$(path_owner_uid "$target")" || return 1
+    [[ "$owner" == "$(/usr/bin/id -u)" ]] || return 1
+    owner="$(path_owner_uid "$parent")" || return 1
+    [[ "$owner" == "$(/usr/bin/id -u)" ]] || return 1
+
+    PROJECT_RESIDUE_PARENT="$parent"
+    PROJECT_RESIDUE_BASENAME="$basename"
+    while IFS= read -r marker; do
+        [[ -n "$marker" ]] || continue
+        marker_path="$parent/$marker"
+        if owned_regular_file "$marker_path"; then
+            found="$marker_path"
+            break
+        fi
+    done < <(project_residue_candidate_names)
+    [[ -n "$found" ]] || return 1
+    PROJECT_RESIDUE_PRIMARY_MARKER="$found"
+    project_git_state "$parent" "$target"
+}
+
+stable_file_evidence() {
+    local role="$1" source="$2" before after digest
+    if [[ ! -e "$source" && ! -L "$source" ]]; then
+        /usr/bin/printf 'file\t%s\t%s\tabsent\n' "$role" "$source"
+        return 0
+    fi
+    owned_regular_file "$source" || return 1
+    before="$(target_stat_fields "$source")" || return 1
+    digest="$(sha256_file "$source")" || return 1
+    [[ "$digest" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+    after="$(target_stat_fields "$source")" || return 1
+    [[ "$before" == "$after" ]] || return 1
+    /usr/bin/printf 'file\t%s\t%s\t%s\t%s\n' "$role" "$source" "$before" "$digest"
+}
+
+project_residue_evidence_stream() {
+    local marker lock marker_path lock_path
+    validate_project_residue_contract "$PROJECT_RESIDUE_TARGET" || return 1
+    /usr/bin/printf 'request\t1\tproject_residue\t%s\n' "$PROJECT_RESIDUE_TARGET"
+    while IFS= read -r marker; do
+        [[ -n "$marker" ]] || continue
+        marker_path="$PROJECT_RESIDUE_PARENT/$marker"
+        stable_file_evidence "marker" "$marker_path" || return 1
+    done < <(project_residue_candidate_names)
+    while IFS= read -r lock; do
+        [[ -n "$lock" ]] || continue
+        lock_path="$PROJECT_RESIDUE_PARENT/$lock"
+        stable_file_evidence "lock" "$lock_path" || return 1
+    done < <(project_residue_lock_names)
+    if [[ -n "$PROJECT_GIT_REPO" ]]; then
+        /usr/bin/printf 'gitRepo\t%s\nuntracked\t%s\n' "$PROJECT_GIT_REPO" "$PROJECT_RESIDUE_TARGET"
+        if [[ -n "$PROJECT_GIT_INDEX" ]]; then
+            stable_file_evidence "gitIndex" "$PROJECT_GIT_INDEX" || return 1
+        else
+            /usr/bin/printf 'gitIndex\tabsent\n'
+        fi
+    else
+        /usr/bin/printf 'gitRepo\tnone\nuntracked\t%s\n' "$PROJECT_RESIDUE_TARGET"
+    fi
+}
+
+project_residue_evidence_fingerprint() {
+    project_residue_evidence_stream | sha256_stream
 }
 
 read_bundle_id() {
@@ -673,6 +938,10 @@ apply_recipe_guidance() {
             DESCRIPTION="일부 국내 사이트가 파일 전송에 사용하는 INNORIX-EX 모듈과 자동 실행 항목입니다."
             AVOID_WHEN="이 모듈을 요구하는 업무·금융 사이트를 곧 이용해야 한다면 두세요."
             ;;
+        project_residue)
+            DESCRIPTION="선택한 개발 프로젝트 안의 재생성 가능한 빌드 산출물입니다. 프로젝트 소스와 lockfile은 대상이 아닙니다."
+            AVOID_WHEN="이 프로젝트의 빌드·패키지 설치가 진행 중이거나 곧 오프라인에서 다시 빌드해야 한다면 두세요."
+            ;;
     esac
     return 0
 }
@@ -699,12 +968,14 @@ define_recipe() {
     SIMULATOR_UUID=""
     RECIPE_BLOCK_REASON=""
     PREVIEW_APPROVAL_TOKEN=""
+    PREVIEW_APPROVAL_EXPIRES_EPOCH=0
     SHARED_RESIDUE=()
     REVIEW_RESIDUE=()
     EXECUTION_MANIFEST=""
     TRANSACTION_JOURNAL=""
     EXECUTION_FAILURE_STATUS="partial"
     TEST_STAGED_APPROVED_ORIGINAL=""
+    PROJECT_PROCESS_PATH_PATTERN=""
 
     if [[ "$recipe" == simulator_delete:* ]]; then
         define_simulator_recipe "${recipe#simulator_delete:}" || return $?
@@ -714,6 +985,28 @@ define_recipe() {
 
     if [[ "$recipe" == app_uninstall:* ]]; then
         define_app_recipe "${recipe#app_uninstall:}" || return $?
+        apply_recipe_guidance "$recipe"
+        return 0
+    fi
+
+    if [[ "$recipe" == "project_residue" ]]; then
+        local requested_parent requested_pattern
+        [[ -n "$REQUEST_FILE" ]] || return 1
+        read_project_residue_request "$REQUEST_FILE" || return 1
+        requested_parent="$(/usr/bin/dirname "$PROJECT_RESIDUE_TARGET")"
+        requested_pattern="$(regex_escape_ere "$requested_parent")" || return 1
+        [[ -n "$requested_pattern" ]] || return 1
+        PROJECT_RESIDUE_PARENT="$requested_parent"
+        LABEL="프로젝트 빌드 산출물 · $(/usr/bin/basename "$(/usr/bin/dirname "$PROJECT_RESIDUE_TARGET")")"
+        # A recursive lsof +D over multi-GB node_modules can itself stall recovery.
+        # Instead, block the bounded process snapshot when an active command line
+        # names this exact project/target. The manifest and same-device rename
+        # remain the race-safe destructive boundary if a tool starts afterward.
+        PROJECT_PROCESS_PATH_PATTERN="$requested_pattern"
+        PROCESS_PATTERN="$requested_pattern"
+        WARNING="빌드 산출물은 다음 빌드 또는 패키지 설치 때 다시 생성됩니다. 프로젝트 표식과 lockfile은 보존합니다."
+        PROCESS_NOTE="해당 프로젝트의 빌드와 패키지 설치를 먼저 종료하세요."
+        TARGETS+=("$PROJECT_RESIDUE_TARGET")
         apply_recipe_guidance "$recipe"
         return 0
     fi
@@ -918,6 +1211,9 @@ allowed_target() {
         return 1
     fi
     case "$recipe" in
+        project_residue)
+            [[ "$target" == "$PROJECT_RESIDUE_TARGET" ]]
+            ;;
         npm_cache) [[ "$target" == "$HOME_ROOT/.npm" ]] ;;
         pnpm_store) [[ "$target" == "$HOME_ROOT/Library/pnpm" ]] ;;
         playwright_browsers) [[ "$target" == "$HOME_ROOT/Library/Caches/ms-playwright" ]] ;;
@@ -961,18 +1257,22 @@ validate_target() {
     canonical_parent="$(cd -P "$parent" 2>/dev/null && /bin/pwd -P)" || return 1
     canonical_target="$canonical_parent/$(/usr/bin/basename "$target")"
 
-    if [[ "$target" == "$HOME_ROOT"* ]]; then
+    if [[ "$target" == "$HOME_ROOT" || "$target" == "$HOME_ROOT/"* ]]; then
         expected="$HOME_ROOT${target#"$HOME_ROOT"}"
-    elif [[ "$target" == "$APPLICATIONS_ROOT"* ]]; then
+    elif [[ "$target" == "$APPLICATIONS_ROOT" || "$target" == "$APPLICATIONS_ROOT/"* ]]; then
         expected="$APPLICATIONS_ROOT${target#"$APPLICATIONS_ROOT"}"
-    elif [[ "$target" == "$VAR_FOLDERS_ROOT"* ]]; then
+    elif [[ "$target" == "$VAR_FOLDERS_ROOT" || "$target" == "$VAR_FOLDERS_ROOT/"* ]]; then
         local canonical_var
         canonical_var="$(cd -P "$VAR_FOLDERS_ROOT" 2>/dev/null && /bin/pwd -P)" || return 1
         expected="$canonical_var${target#"$VAR_FOLDERS_ROOT"}"
     else
         return 1
     fi
-    [[ "$canonical_target" == "$expected" ]]
+    [[ "$canonical_target" == "$expected" ]] || return 1
+    if [[ "$recipe" == "project_residue" ]]; then
+        validate_project_residue_contract "$target"
+    fi
+    return 0
 }
 
 bounded_du_kb() {
@@ -1078,8 +1378,99 @@ exclude_self_and_measurement() {
             '^(/usr/bin/du|/usr/bin/mdls|/usr/libexec/PlistBuddy)( -[^ ]+)* [^&|;]*$'
 }
 
+process_cwd_for_pid() {
+    local pid="$1"
+    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+        [[ -n "${PCH_TEST_PROCESS_CWD_FILE:-}" && -f "$PCH_TEST_PROCESS_CWD_FILE" ]] \
+            || return 1
+        /usr/bin/awk -F '\t' -v wanted="$pid" \
+            '$1 == wanted && NF == 2 {print $2; found=1; exit} END {exit !found}' \
+            "$PCH_TEST_PROCESS_CWD_FILE"
+        return $?
+    fi
+    [[ -x /usr/sbin/lsof ]] || return 1
+    # One PID and only its cwd descriptor: unlike `lsof +D`, this does not walk
+    # the project tree. Callers cap candidate build processes at 64.
+    /usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null \
+        | /usr/bin/awk '/^n\// {sub(/^n/, ""); print; found=1; exit} END {exit !found}'
+}
+
+process_cwd_is_project() {
+    local pid="$1" cwd canonical
+    cwd="$(process_cwd_for_pid "$pid")" || return 2
+    case "$cwd" in ''|*$'\t'*|*$'\n'*|*$'\r'*) return 2 ;; esac
+    [[ -d "$cwd" && ! -L "$cwd" ]] || return 2
+    canonical="$(cd -P "$cwd" 2>/dev/null && /bin/pwd -P)" || return 2
+    if [[ "$canonical" == "$PROJECT_RESIDUE_PARENT" \
+        || "$canonical" == "$PROJECT_RESIDUE_PARENT/"* ]]; then
+        return 0
+    fi
+    return 1
+}
+
+project_process_rows_with_pid() {
+    local tool_pattern pid command filtered candidate_count=0 cwd_status
+    tool_pattern="$(project_residue_tool_pattern)" || return 1
+    process_snapshot_with_pid \
+        | /usr/bin/awk '
+            /^[[:space:]]*[0-9]+[[:space:]]/ {
+                pid = $1
+                line = $0
+                sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", line)
+                printf "%s\t%s\n", pid, line
+            }' \
+        | while IFS=$'\t' read -r pid command; do
+            [[ "$pid" =~ ^[0-9]+$ && -n "$command" ]] || continue
+            filtered="$(/usr/bin/printf '%s\n' "$command" | exclude_self_and_measurement || true)"
+            [[ -n "$filtered" ]] || continue
+            if /usr/bin/printf '%s\n' "$command" | /usr/bin/grep -E -q "$PROJECT_PROCESS_PATH_PATTERN"; then
+                /usr/bin/printf '%s\t%s\n' "$pid" "$command"
+                continue
+            fi
+            /usr/bin/printf '%s\n' "$command" | /usr/bin/grep -E -q "$tool_pattern" || continue
+            candidate_count=$((candidate_count + 1))
+            if [[ "$candidate_count" -gt 64 ]]; then
+                # An unexpectedly large candidate set makes the bounded cwd
+                # proof incomplete. Fail closed rather than silently skipping
+                # a possible writer to the approved target.
+                /usr/bin/printf '%s\t%s\n' "$pid" "$command"
+                continue
+            fi
+            process_cwd_is_project "$pid"
+            cwd_status=$?
+            if [[ "$cwd_status" -eq 0 || "$cwd_status" -eq 2 ]]; then
+                /usr/bin/printf '%s\t%s\n' "$pid" "$command"
+            fi
+        done \
+        | /usr/bin/awk -F '\t' '!seen[$1 FS $2]++' \
+        | /usr/bin/head -n 5
+}
+
+matching_project_processes() {
+    if [[ "${PCH_TEST_MODE:-0}" == "1" \
+        && -z "${PCH_PROCESS_LIST_WITH_PID_FILE:-}" ]]; then
+        process_snapshot \
+            | /usr/bin/grep -E "$PROJECT_PROCESS_PATH_PATTERN" \
+            | exclude_self_and_measurement \
+            | /usr/bin/head -n 5 \
+            | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' \
+            | /usr/bin/cut -c 1-240 \
+            || true
+        return 0
+    fi
+    project_process_rows_with_pid \
+        | /usr/bin/awk -F '\t' '{ $1=""; sub(/^ /, ""); print }' \
+        | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' \
+        | /usr/bin/cut -c 1-240 \
+        || true
+}
+
 matching_processes() {
     [[ -n "$PROCESS_PATTERN" ]] || return 0
+    if [[ "$RECIPE_ID" == "project_residue" ]]; then
+        matching_project_processes
+        return 0
+    fi
     process_snapshot \
         | /usr/bin/grep -E "$PROCESS_PATTERN" \
         | exclude_self_and_measurement \
@@ -1107,6 +1498,8 @@ process_display_name() {
             *Claude*|*claude*|*local-agent-mode*) display_name="Claude" ;;
             *pnpm*) display_name="pnpm" ;;
             *npm*|*npx*|*node*) display_name="Node/npm" ;;
+            *cargo*|*rustc*) display_name="Cargo/Rust" ;;
+            *"/swift "*|swift\ *|swift|*swift-build*|*swift-package*) display_name="Swift build" ;;
             *GradleDaemon*|*org.gradle*|*gradlew*) display_name="Gradle" ;;
             *CocoaPods*|*"/pod "*|pod\ *|pod) display_name="CocoaPods" ;;
             *flutter*|*dart*) display_name="Dart/Flutter" ;;
@@ -1133,6 +1526,14 @@ display_process_names() {
 # 됐다. 매칭할 때는 명령줄을 줄 앞으로 보내고, 표시할 때 PID를 되돌린다.
 matching_processes_with_pid() {
     [[ -n "$PROCESS_PATTERN" ]] || return 0
+    if [[ "$RECIPE_ID" == "project_residue" ]]; then
+        project_process_rows_with_pid \
+            | /usr/bin/awk -F '\t' 'NF >= 2 {pid=$1; $1=""; sub(/^ /, ""); printf "%s %s\n", pid, $0}' \
+            | /usr/bin/sed -E 's/[[:space:]]+/ /g' \
+            | /usr/bin/cut -c 1-240 \
+            || true
+        return 0
+    fi
     process_snapshot_with_pid \
         | /usr/bin/awk '
             /^[[:space:]]*[0-9]+[[:space:]]/ {
@@ -1249,7 +1650,7 @@ remove_tree_same_device() {
 write_current_manifest() {
     local output="$1"
     local created_epoch="${2:-}"
-    local target fields value total=0 count=0 fingerprint
+    local target fields value total=0 count=0 fingerprint project_evidence
     if [[ -z "$created_epoch" ]]; then
         created_epoch="$(/bin/date '+%s')" || return 1
     fi
@@ -1263,6 +1664,11 @@ write_current_manifest() {
         /usr/bin/printf 'actionMode\t%s\n' "$REMOVE_MODE"
         /usr/bin/printf 'createdEpoch\t%s\n' "$created_epoch"
         /usr/bin/printf 'processFingerprint\t%s\n' "$fingerprint"
+        if [[ "$RECIPE_ID" == "project_residue" ]]; then
+            project_evidence="$(project_residue_evidence_fingerprint)" || return 1
+            [[ "$project_evidence" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+            /usr/bin/printf 'projectEvidenceFingerprint\t%s\n' "$project_evidence"
+        fi
         if [[ "${#TARGETS[@]}" -gt 0 ]]; then
             for target in "${TARGETS[@]}"; do
                 validate_target "$RECIPE_ID" "$target" || return 1
@@ -1282,7 +1688,7 @@ write_current_manifest() {
 }
 
 create_approval_manifest() {
-    local token temporary destination
+    local token temporary destination created_epoch
     prepare_private_directory "$APPROVAL_DIR" || return 1
     token="$(new_approval_token)" || return 1
     [[ "$token" =~ ^[0-9a-f]{64}$ ]] || return 1
@@ -1291,6 +1697,10 @@ create_approval_manifest() {
         /bin/rm -f "$temporary"
         return 1
     fi
+    created_epoch="$(/usr/bin/awk -F '\t' '$1 == "createdEpoch" {print $2; count++} END {if (count != 1) exit 1}' "$temporary")" \
+        || { /bin/rm -f "$temporary"; return 1; }
+    [[ "$created_epoch" =~ ^[0-9]+$ ]] \
+        || { /bin/rm -f "$temporary"; return 1; }
     destination="$APPROVAL_DIR/$token.tsv"
     [[ ! -e "$destination" && ! -L "$destination" ]] || {
         /bin/rm -f "$temporary"
@@ -1301,6 +1711,7 @@ create_approval_manifest() {
         return 1
     }
     PREVIEW_APPROVAL_TOKEN="$token"
+    PREVIEW_APPROVAL_EXPIRES_EPOCH=$((created_epoch + APPROVAL_TTL_SECONDS))
     return 0
 }
 
@@ -1383,6 +1794,16 @@ manifest_size_matches() {
     return 1
 }
 
+manifest_project_evidence_matches() {
+    local approved current
+    [[ "$RECIPE_ID" == "project_residue" ]] || return 0
+    approved="$(/usr/bin/awk -F '\t' '$1 == "projectEvidenceFingerprint" {print $2; count++} END {if (count != 1) exit 1}' "$EXECUTION_MANIFEST")" \
+        || return 1
+    [[ "$approved" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+    current="$(project_residue_evidence_fingerprint)" || return 1
+    [[ "$current" == "$approved" ]]
+}
+
 preview_status() {
     local target matches
     PREVIEW_STATUS="ready"
@@ -1438,6 +1859,7 @@ emit_state() {
     emit "blockedReason" "${BLOCKED_REASON:-}"
     emit "runningProcesses" "${RUNNING_PROCESSES:-}"
     emit "approvalToken" "$PREVIEW_APPROVAL_TOKEN"
+    emit "approvalExpiresEpoch" "$PREVIEW_APPROVAL_EXPIRES_EPOCH"
     if [[ "${#TARGETS[@]}" -gt 0 ]]; then
         for target in "${TARGETS[@]}"; do
             emit "target" "$target"
@@ -1818,6 +2240,7 @@ destructive_boundary_ready() {
         manifest_identity_matches "$target" "$target" || return 1
         manifest_size_matches "$target" "$target" || return 1
     done
+    manifest_project_evidence_matches || return 1
     matches="$(matching_processes)"
     if [[ -n "$matches" ]]; then
         RUNNING_PROCESSES="$(display_process_evidence | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
@@ -1925,10 +2348,22 @@ parse_arguments() {
                         APPROVAL_TOKEN="$2"
                         shift
                         ;;
+                    --request-file)
+                        [[ "$#" -ge 2 ]] || fail_usage "--request-file 값이 필요합니다."
+                        [[ -z "$REQUEST_FILE" ]] || fail_usage "요청 파일은 하나만 사용할 수 있습니다."
+                        REQUEST_FILE="$2"
+                        shift
+                        ;;
                     *) fail_usage "알 수 없는 옵션: $1" ;;
                 esac
                 shift
             done
+            if [[ "$RECIPE_ID" == "project_residue" ]]; then
+                [[ -n "$REQUEST_FILE" ]] \
+                    || fail_usage "project_residue에는 --request-file /dev/fd/N이 필요합니다."
+            elif [[ -n "$REQUEST_FILE" ]]; then
+                fail_usage "--request-file은 project_residue에만 사용할 수 있습니다."
+            fi
             ;;
         *) fail_usage "작업을 지정하세요." ;;
     esac
@@ -2086,7 +2521,8 @@ run_execute() {
             if [[ -n "$(matching_processes)" ]] \
                 || ! validate_target "$RECIPE_ID" "$target" \
                 || ! manifest_identity_matches "$target" "$target" \
-                || ! manifest_size_matches "$target" "$target"; then
+                || ! manifest_size_matches "$target" "$target" \
+                || ! manifest_project_evidence_matches; then
                 FAILED=1
                 EXECUTION_FAILURE_STATUS="blocked"
                 BLOCKED_REASON="실행 중 대상 또는 관련 프로세스 상태가 바뀌어 남은 정리를 중단했습니다."

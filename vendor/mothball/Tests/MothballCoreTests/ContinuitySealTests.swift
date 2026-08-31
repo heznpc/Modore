@@ -100,6 +100,48 @@ final class ContinuitySealTests: XCTestCase {
         XCTAssertEqual(bundle.sessions.first?.fileCount, 4)
     }
 
+    func test_seal_copiesClaudeDesktopMetadataAndConversationUnit() throws {
+        let store = scratch.appending(path: "desktop", directoryHint: .isDirectory)
+        let unit = store.appending(path: "local_1", directoryHint: .isDirectory)
+        let nested = unit.appending(path: "subagents/turn.jsonl")
+        try FileManager.default.createDirectory(
+            at: nested.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let metadata = store.appending(path: "local_1.json")
+        let primary = unit.appending(path: "session.jsonl")
+        try Data(#"{"cwd":"/workspace"}"#.utf8).write(to: metadata)
+        try Data(#"{"type":"user"}"#.utf8).write(to: primary)
+        try Data(#"{"type":"assistant"}"#.utf8).write(to: nested)
+        let binding = SessionBinding(
+            provider: .claudeDesktop,
+            sessionID: "local_1",
+            source: metadata,
+            subtranscripts: [primary, nested],
+            artifactRoot: unit,
+            evidence: [.selectedFolder],
+            confidence: .medium
+        )
+
+        let bundle = try ContinuitySealer().seal(bindings: [binding], stagingParent: scratch)
+        defer { try? FileManager.default.removeItem(at: bundle.stagingRoot) }
+        let sealed = bundle.stagingRoot.appending(
+            path: "sessions/claude-desktop/local_1",
+            directoryHint: .isDirectory
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: sealed.appending(path: "transcript.json").path
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: sealed.appending(path: "session.jsonl").path
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: sealed.appending(path: "subagents/turn.jsonl").path
+        ))
+        XCTAssertEqual(bundle.sessions.first?.fileCount, 3)
+    }
+
     /// The provider's own cleanup deletes the parent transcript and
     /// leaves the subagent tree behind. A digest over only the parent
     /// would therefore verify the smaller half of what was preserved.
@@ -587,6 +629,7 @@ final class TranscriptNamingTests: XCTestCase {
     /// editor windows remembered this folder" are different warnings.
     func test_providersDeclareWhetherTheyKeepTranscripts() {
         XCTAssertTrue(SessionProvider.claude.keepsTranscripts)
+        XCTAssertTrue(SessionProvider.claudeDesktop.keepsTranscripts)
         XCTAssertTrue(SessionProvider.gemini.keepsTranscripts)
         XCTAssertFalse(SessionProvider.vscode.keepsTranscripts)
         XCTAssertFalse(SessionProvider.kiro.keepsTranscripts)
@@ -597,7 +640,7 @@ final class TranscriptNamingTests: XCTestCase {
     func test_providerRawValuesAreStable() {
         XCTAssertEqual(
             Set(SessionProvider.allCases.map(\.rawValue)),
-            ["claude", "codex", "gemini", "vscode", "kiro", "cursor", "windsurf", "antigravity"]
+            ["claude", "claude-desktop", "codex", "gemini", "vscode", "kiro", "cursor", "windsurf", "antigravity"]
         )
     }
 }

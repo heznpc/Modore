@@ -135,15 +135,33 @@ enum ObservationService {
 
 extension ScanModel {
     func observeNow(windowSeconds: Int) {
+        let root = projectRoot
+        observeNow(windowSeconds: windowSeconds) {
+            await ObservationService.observe(projectRoot: root, windowSeconds: windowSeconds)
+        }
+    }
+
+    /// Injection keeps the stale-result and cancellation contract testable
+    /// without opening the two observation subprocesses.
+    func observeNow(
+        windowSeconds: Int,
+        using observe: @escaping () async -> ObservationOutcome
+    ) {
         // Symmetric with isBusy including observationInFlight: neither side
         // may run underneath the other, or each measures the other's work.
-        guard !isBusy, !observationInFlight else { return }
+        guard !applicationTerminationStarted, !isBusy, !observationInFlight else { return }
+        observationGeneration += 1
+        let generation = observationGeneration
         observationInFlight = true
         observationErrorMessage = nil
-        let root = projectRoot
-        Task {
-            defer { observationInFlight = false }
-            switch await ObservationService.observe(projectRoot: root, windowSeconds: windowSeconds) {
+        let identifier = startTrackedApplicationTask(scope: .activityScreen) { [weak self] in
+            guard let self else { return }
+            defer {
+                if generation == observationGeneration { observationInFlight = false }
+            }
+            let outcome = await observe()
+            guard !Task.isCancelled, generation == observationGeneration else { return }
+            switch outcome {
             case .ready(let result):
                 observationResult = result
             case .failure(let message):
@@ -153,6 +171,9 @@ extension ScanModel {
                 observationResult = nil
                 observationErrorMessage = message
             }
+        }
+        if identifier == nil, generation == observationGeneration {
+            observationInFlight = false
         }
     }
 }

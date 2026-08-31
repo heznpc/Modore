@@ -1,6 +1,18 @@
 import Foundation
 
 public struct GitInspector: Sendable {
+    /// Repository and user Git config are untrusted input during an audit.
+    /// These options make every inspection command read-only at the process
+    /// boundary as well as at the Git-command level: `status` must not invoke
+    /// a configured fsmonitor hook, no repository hook directory is usable,
+    /// and a configured pager cannot outlive the bounded subprocess.
+    static let safeGitPrefix = [
+        "--no-optional-locks",
+        "-c", "core.fsmonitor=false",
+        "-c", "core.hooksPath=/dev/null",
+        "-c", "core.pager=cat",
+    ]
+
     public enum Error: Swift.Error, Sendable {
         case notARepository(URL)
         case process(ProcessError)
@@ -34,9 +46,15 @@ public struct GitInspector: Sendable {
     }
 
     public func inspect(repoAt url: URL) async throws -> GitMetadata {
-        // Cheap upfront check before paying for any subprocess.
-        let gitDir = url.appending(path: ".git")
-        guard FileManager.default.fileExists(atPath: gitDir.path) else {
+        // Keep the repository probe inside the bounded child. A parent-side
+        // `.git` lookup can itself block on an unavailable volume before any
+        // timeout exists; `git -C` performs the same validation after spawn.
+        let repositoryProbe = try await runGit(
+            at: url,
+            ["rev-parse", "--is-inside-work-tree"]
+        )
+        guard repositoryProbe.isSuccess,
+              repositoryProbe.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true" else {
             throw Error.notARepository(url)
         }
 
@@ -53,7 +71,13 @@ public struct GitInspector: Sendable {
         // parallel rather than serially; for a typical repo this drops
         // total inspection time from ~150ms to ~50ms on M-series macs.
         async let lastCommitRaw  = optional(at: url, ["log", "-1", "--format=%ct"])
-        async let statusRaw      = required(at: url, ["--no-optional-locks", "status", "--porcelain"])
+        // Pin both dimensions that user/repository config can otherwise hide.
+        // Retirement assessment must count every untracked file and every
+        // submodule change even when status.showUntrackedFiles or
+        // diff.ignoreSubmodules says otherwise.
+        async let statusRaw      = required(at: url, [
+            "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none",
+        ])
         async let originURL      = optional(at: url, ["config", "--get", "remote.origin.url"])
         async let branch         = optional(at: url, ["symbolic-ref", "--short", "HEAD"])
         async let head           = optional(at: url, ["rev-parse", "HEAD"])
@@ -112,8 +136,8 @@ public struct GitInspector: Sendable {
     private func runGit(at repo: URL, _ args: [String]) async throws -> ProcessResult {
         try await ProcessRunner.run(
             executable: gitExecutable,
-            arguments: args,
-            workingDirectory: repo,
+            arguments: Self.safeGitPrefix + ["-C", repo.path] + args,
+            workingDirectory: Self.safeWorkingDirectory,
             timeout: perCommandTimeout,
             wrapping: Error.process
         )
@@ -122,11 +146,21 @@ public struct GitInspector: Sendable {
     private func tryFetch(at repo: URL) async {
         _ = try? await ProcessRunner.run(
             executable: gitExecutable,
-            arguments: ["fetch", "--quiet", "--prune", "--no-tags", "origin"],
-            workingDirectory: repo,
+            arguments: Self.safeGitPrefix
+                + ["-C", repo.path, "fetch", "--quiet", "--prune", "--no-tags", "origin"],
+            workingDirectory: Self.safeWorkingDirectory,
             timeout: fetchTimeout
         )
     }
+
+    /// `posix_spawn` must not chdir into a caller-supplied repository before
+    /// ProcessRunner's timeout controller exists. Repository access starts in
+    /// the child through `git -C`; this fixed local directory is only the
+    /// spawn-time cwd.
+    private static let safeWorkingDirectory = URL(
+        fileURLWithPath: "/private/tmp",
+        isDirectory: true
+    )
 
     /// Number of local commits ahead of upstream, or nil if no upstream
     /// is configured for the current branch.

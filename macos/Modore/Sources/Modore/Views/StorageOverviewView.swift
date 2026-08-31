@@ -566,7 +566,7 @@ private struct StatusRecoverySection: View {
         switch assessment.kind {
         case .collectionIncomplete, .noResult: return "정밀 검사"
         case .securityDanger, .securityAttention: return "보안 보기"
-        case .storageCritical: return "후보 보기"
+        case .storageCritical: return "확보 계획"
         case .browserAutomation, .runtimeAttention: return "개발 보기"
         case .storageDrop, .clear: return "기록 보기"
         }
@@ -576,7 +576,7 @@ private struct StatusRecoverySection: View {
         switch assessment.kind {
         case .collectionIncomplete, .noResult: return runScan
         case .securityDanger, .securityAttention: return onOpenSecurity
-        case .storageCritical: return { onOpenStorage(.cleanup) }
+        case .storageCritical: return { onOpenStorage(.goal) }
         case .browserAutomation, .runtimeAttention: return { onOpenStorage(.development) }
         case .storageDrop, .clear: return onOpenActivity
         }

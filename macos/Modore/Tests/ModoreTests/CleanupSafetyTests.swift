@@ -831,23 +831,80 @@ final class RuntimeBackupRetentionTests: XCTestCase {
                        "an edited managed path must not be pruned by path identity")
     }
 
-    /// A staging directory is a leftover from an install that died between
-    /// copy and move. It never held owner data.
+    /// A staging directory is prunable only when its UUID name and provenance
+    /// prove it came from a completed Modore runtime copy.
     func test_abandonedStagingDirectoriesArePruned() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-backup-staging-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let parent = root.appendingPathComponent("support/Modore")
         let destination = parent.appendingPathComponent("runtime")
-        try runtime(at: destination, marker: "v1")
+        let source = root.appendingPathComponent("bundle/runtime")
+        try runtime(at: source, marker: "v1")
+        try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
         let stranded = parent.appendingPathComponent("runtime-staging-\(UUID().uuidString)")
-        try runtime(at: stranded, marker: "abandoned")
+        try FileManager.default.copyItem(at: destination, to: stranded)
 
         RuntimeWorkspace.pruneSupersededRuntimeBackups(
             in: parent, keeping: nil, against: destination)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: stranded.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func test_stagingPrefixWithoutOwnedProvenanceIsNeverPruned() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-backup-unowned-staging-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("support/Modore")
+        let destination = parent.appendingPathComponent("runtime")
+        try runtime(at: destination, marker: "v1")
+        let plausible = parent.appendingPathComponent("runtime-staging-\(UUID().uuidString)")
+        let nonUUID = parent.appendingPathComponent("runtime-staging-owner-files")
+        try runtime(at: plausible, marker: "owner")
+        try runtime(at: nonUUID, marker: "owner")
+
+        RuntimeWorkspace.pruneSupersededRuntimeBackups(
+            in: parent, keeping: nil, against: destination)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: plausible.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: nonUUID.path))
+    }
+
+    /// The normal launch fast path must finish cleanup left behind by a crash
+    /// after the new runtime was published but before the install returned.
+    func test_currentRuntimeFastPathPrunesCrashResidueAndKeepsNewestRollback() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pch-backup-fast-path-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("bundle/runtime")
+        let parent = root.appendingPathComponent("support/Modore")
+        let destination = parent.appendingPathComponent("runtime")
+        try runtime(at: source, marker: "v1")
+        try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
+
+        let older = parent.appendingPathComponent("runtime-backup-\(UUID().uuidString)")
+        let newest = parent.appendingPathComponent("runtime-backup-\(UUID().uuidString)")
+        let staging = parent.appendingPathComponent("runtime-staging-\(UUID().uuidString)")
+        try FileManager.default.copyItem(at: destination, to: older)
+        try FileManager.default.copyItem(at: destination, to: newest)
+        try FileManager.default.copyItem(at: destination, to: staging)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 100)],
+            ofItemAtPath: older.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 200)],
+            ofItemAtPath: newest.path
+        )
+
+        try RuntimeWorkspace.installBundledRuntime(from: source, to: destination)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: older.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newest.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertEqual(try backups(in: parent).map(\.standardizedFileURL),
+                       [newest.standardizedFileURL])
     }
 
     /// Nothing outside the two known prefixes is ever touched.

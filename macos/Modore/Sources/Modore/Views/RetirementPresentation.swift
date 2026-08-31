@@ -84,6 +84,7 @@ enum RetirementPresentation {
         switch evidence {
         case .remoteURL: return "원격 URL 기록됨"
         case .workingDirectory: return "작업 디렉터리 일치"
+        case .selectedFolder: return "사용자 선택 폴더 일치"
         case .fileAccess: return "파일 접근 기록"
         }
     }

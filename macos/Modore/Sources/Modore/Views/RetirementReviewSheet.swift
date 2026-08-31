@@ -226,7 +226,7 @@ struct RetirementReviewSheet: View {
         }
         var rows: [(Bool, String)] = [
             (true, "대화 \(bindings.count)개는 각 제공자 저장소에 그대로 남습니다."),
-            (false, "제공자가 자체 보존 기한에 따라 지울 수 있습니다. 남기려면 '보존'으로 내보내세요."),
+            (false, "제공자가 자체 보존 기한에 따라 지울 수 있습니다. 작업 화면의 대화 상세에서 원본을 백업하세요. 대화 텍스트 내보내기는 원본 백업이 아닙니다."),
         ]
         if coverage != .complete {
             rows.append((false, "확인하지 못한 저장소가 있어 여기 없는 대화가 더 있을 수 있습니다."))

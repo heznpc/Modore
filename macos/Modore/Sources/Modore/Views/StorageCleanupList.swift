@@ -17,6 +17,7 @@ struct CleanupWorkspaceList: View {
         .listStyle(.inset)
         .accessibilityLabel("저장공간 정리 항목")
         .task { await model.refreshStorageWatchEvidence() }
+        .onDisappear { model.cancelStorageEvidenceSearch() }
     }
 }
 

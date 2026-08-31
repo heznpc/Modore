@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -44,6 +45,15 @@ PLACEHOLDER_SECRETS = {
     "your_token",
 }
 ALLOWED_EXTENDED_ATTRIBUTES = {"com.apple.provenance"}
+PYTHON_RUNTIME_MANIFEST = "RUNTIME-MANIFEST.sha256"
+PYTHON_RUNTIME_ORIGIN = (
+    "Modore embedded Python runtime\n"
+    "Version: 3.11.16+20260825\n"
+    "Source: https://github.com/astral-sh/python-build-standalone\n"
+    "a84adc050a29e0c7387c885ff13e6ac4b0027f9e841359e200d647313dbb5b03  arm64\n"
+    "77bfa2b959edc0d653830f14f08ab8260156d4b5930368886d4e1c6a76f1d2d4  x86_64\n"
+)
+PYTHON_RUNTIME_MANIFEST_LINE = re.compile(r"^([a-f0-9]{64})  (\./[^\\\r\n]+)$")
 
 
 @dataclass(frozen=True)
@@ -271,6 +281,182 @@ def audit_zip(
     return findings
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _python_runtime_content_exemptions(root: Path) -> tuple[set[str], list[Finding]]:
+    """Verify the one bundled third-party tree before skipping text heuristics.
+
+    CPython's stdlib contains upstream author emails and credential-shaped
+    examples. Treating those as leaked user data makes every legitimate DMG
+    fail, while exempting a path prefix alone would hide a real leak. The build
+    therefore seals the exact file set and bytes after nested-code signing;
+    only a complete matching manifest under Modore's fixed resource location may
+    bypass `inspect_bytes`. Modes, metadata, symlinks, types, and size limits
+    are still audited normally below.
+    """
+    candidates = [
+        root / "Contents/Resources/modore-python",
+        root / "Modore.app/Contents/Resources/modore-python",
+    ]
+    exemptions: set[str] = set()
+    findings: list[Finding] = []
+    for runtime_root in candidates:
+        if not runtime_root.exists() and not runtime_root.is_symlink():
+            continue
+        prefix = runtime_root.relative_to(root).as_posix()
+        manifest_path = runtime_root / PYTHON_RUNTIME_MANIFEST
+        origin_path = runtime_root / "ORIGIN.txt"
+        local_findings: list[Finding] = []
+        if runtime_root.is_symlink() or not runtime_root.is_dir():
+            local_findings.append(Finding(prefix, "runtime-root", "embedded Python root is not a directory"))
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            local_findings.append(Finding(
+                f"{prefix}/{PYTHON_RUNTIME_MANIFEST}",
+                "runtime-manifest",
+                "embedded Python manifest is missing or not a regular file",
+            ))
+        if origin_path.is_symlink() or not origin_path.is_file():
+            local_findings.append(Finding(
+                f"{prefix}/ORIGIN.txt",
+                "runtime-origin",
+                "embedded Python origin is missing or not a regular file",
+            ))
+        if local_findings:
+            findings.extend(local_findings)
+            continue
+
+        try:
+            if origin_path.read_text(encoding="utf-8") != PYTHON_RUNTIME_ORIGIN:
+                local_findings.append(Finding(
+                    f"{prefix}/ORIGIN.txt",
+                    "runtime-origin",
+                    "embedded Python version, source, or archive hashes differ",
+                ))
+            manifest_text = manifest_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            local_findings.append(Finding(
+                f"{prefix}/{PYTHON_RUNTIME_MANIFEST}",
+                "runtime-manifest",
+                type(error).__name__,
+            ))
+            findings.extend(local_findings)
+            continue
+
+        expected: dict[str, str] = {}
+        for line in manifest_text.splitlines():
+            match = PYTHON_RUNTIME_MANIFEST_LINE.fullmatch(line)
+            if not match:
+                local_findings.append(Finding(
+                    f"{prefix}/{PYTHON_RUNTIME_MANIFEST}",
+                    "runtime-manifest",
+                    "malformed checksum line",
+                ))
+                break
+            relative = match.group(2)[2:]
+            parsed = PurePosixPath(relative)
+            if (
+                not relative
+                or parsed.is_absolute()
+                or ".." in parsed.parts
+                or relative in expected
+                or relative == PYTHON_RUNTIME_MANIFEST
+            ):
+                local_findings.append(Finding(
+                    f"{prefix}/{PYTHON_RUNTIME_MANIFEST}",
+                    "runtime-manifest",
+                    "duplicate or unsafe checksum path",
+                ))
+                break
+            expected[relative] = match.group(1)
+
+        actual: dict[str, Path] = {}
+        if not local_findings:
+            for current, directories, files in os.walk(runtime_root, topdown=True, followlinks=False):
+                current_path = Path(current)
+                for name in list(directories) + files:
+                    path = current_path / name
+                    relative = path.relative_to(runtime_root).as_posix()
+                    try:
+                        mode = path.lstat().st_mode
+                    except OSError as error:
+                        local_findings.append(Finding(
+                            f"{prefix}/{relative}", "runtime-manifest", type(error).__name__
+                        ))
+                        continue
+                    if stat.S_ISLNK(mode):
+                        local_findings.append(Finding(
+                            f"{prefix}/{relative}", "runtime-manifest", "runtime link is not allowed"
+                        ))
+                        if name in directories:
+                            directories.remove(name)
+                    elif stat.S_ISDIR(mode):
+                        continue
+                    elif not stat.S_ISREG(mode):
+                        local_findings.append(Finding(
+                            f"{prefix}/{relative}", "runtime-manifest", "runtime special file"
+                        ))
+                    elif relative != PYTHON_RUNTIME_MANIFEST:
+                        actual[relative] = path
+
+        if not local_findings and set(actual) != set(expected):
+            local_findings.append(Finding(
+                f"{prefix}/{PYTHON_RUNTIME_MANIFEST}",
+                "runtime-manifest",
+                "checksum file set does not match the runtime tree",
+            ))
+        required = {
+            "bin/python3.11",
+            "lib/python3.11/LICENSE.txt",
+            "lib/python3.11/lib-dynload/README.txt",
+            "ORIGIN.txt",
+        }
+        if not local_findings and not required.issubset(expected):
+            local_findings.append(Finding(
+                f"{prefix}/{PYTHON_RUNTIME_MANIFEST}",
+                "runtime-manifest",
+                "required runtime files are missing",
+            ))
+        if not local_findings and any(
+            path != "ORIGIN.txt"
+            and path != "bin/python3.11"
+            and not path.startswith("lib/python3.11/")
+            for path in expected
+        ):
+            local_findings.append(Finding(
+                f"{prefix}/{PYTHON_RUNTIME_MANIFEST}",
+                "runtime-manifest",
+                "runtime contains an unapproved path",
+            ))
+
+        if not local_findings:
+            for relative, expected_digest in expected.items():
+                try:
+                    if _sha256_file(actual[relative]) != expected_digest:
+                        local_findings.append(Finding(
+                            f"{prefix}/{relative}",
+                            "runtime-manifest",
+                            "runtime file checksum mismatch",
+                        ))
+                        break
+                except OSError as error:
+                    local_findings.append(Finding(
+                        f"{prefix}/{relative}", "runtime-manifest", type(error).__name__
+                    ))
+                    break
+
+        if local_findings:
+            findings.extend(local_findings)
+        else:
+            exemptions.update(f"{prefix}/{relative}" for relative in expected)
+    return exemptions, findings
+
+
 def audit_tree(root: Path, allowed_symlinks: set[str]) -> list[Finding]:
     findings: list[Finding] = []
     if root.is_symlink():
@@ -282,6 +468,9 @@ def audit_tree(root: Path, allowed_symlinks: set[str]) -> list[Finding]:
     root_mode = root.lstat().st_mode
     if root_mode & (stat.S_IWGRP | stat.S_IWOTH):
         findings.append(Finding(".", "unsafe-mode", "group/world-writable artifact root"))
+
+    runtime_exemptions, runtime_findings = _python_runtime_content_exemptions(root)
+    findings.extend(runtime_findings)
 
     for current, directories, files in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current)
@@ -317,7 +506,8 @@ def audit_tree(root: Path, allowed_symlinks: set[str]) -> list[Finding]:
                 findings.append(Finding(relative, "size-limit", "artifact file exceeds audit size limit"))
                 continue
             try:
-                findings.extend(inspect_bytes(relative, path.read_bytes()))
+                if relative not in runtime_exemptions:
+                    findings.extend(inspect_bytes(relative, path.read_bytes()))
             except OSError as error:
                 findings.append(Finding(relative, "unreadable", type(error).__name__))
     return findings

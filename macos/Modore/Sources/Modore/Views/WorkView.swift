@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import MothballCore
 
@@ -22,12 +23,12 @@ struct WorkPage: View {
             WorkDetailPane()
                 .frame(minWidth: 320)
         }
-        .task { model.prepareWorkScreen() }
         // The git judgment needs the workspace list the audit produces, so
-        // on a cold start it cannot be kicked off until that lands. Without
-        // this the retirement review never becomes available in the session
-        // that first ran the audit.
-        .task(id: model.screeReport != nil) { model.prepareWorkScreen() }
+        // a cold start waits until that lands. A boolean only changes on the
+        // first report; a revision also restarts binding after a successful
+        // re-audit, so new lineage cannot be mixed with an old repo judgment.
+        .task(id: model.screeReportRevision) { model.prepareWorkScreen() }
+        .onDisappear { model.cancelWorkScreenTasks() }
         .sheet(item: $model.retirementReview) { target in
             // The id, not the project. Continuity binding finishes after
             // the sheet can already be open, and a value captured at
@@ -41,6 +42,7 @@ struct WorkPage: View {
 
 struct WorkListPane: View {
     @EnvironmentObject private var model: ScanModel
+    @State private var showingBackup = false
 
     /// Conversation titles shown under a project before it is selected.
     /// Enough to recognise the work, few enough that one project cannot
@@ -59,6 +61,9 @@ struct WorkListPane: View {
                 list
             }
         }
+        .sheet(isPresented: $showingBackup) {
+            SessionBackupSheet(source: nil, tool: nil)
+        }
     }
 
     private var header: some View {
@@ -71,6 +76,9 @@ struct WorkListPane: View {
             TextField("작업·대화 검색 (Return으로 대화 내용까지)", text: $model.sessionSearch)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { model.runContentSearch() }
+            Button("백업 확인·복원…") { showingBackup = true }
+                .font(.caption)
+                .accessibilityIdentifier("work-backup-library")
             if let summary = Self.summary(model.workProjects) {
                 Text(summary)
                     .font(.caption)
@@ -122,6 +130,10 @@ struct WorkListPane: View {
         let projects = Self.filter(model.workProjects, search: model.sessionSearch)
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
+                if let coverageWarning = model.sessionIndex?.coverage.warningText {
+                    WorkNotice(text: coverageWarning, action: nil)
+                    Divider()
+                }
                 if let error = model.contentSearchError {
                     WorkNotice(text: error, action: ("다시 시도", { model.runContentSearch() }))
                     Divider()
@@ -319,6 +331,7 @@ private struct ConversationTitleRow: View {
 
     var body: some View {
         Button {
+            model.selectedSearchMatch = nil
             model.selectedSessionSource = session.source
             model.loadConversation(for: session)
         } label: {
@@ -359,10 +372,22 @@ private struct ConversationTitleRow: View {
 
 private struct WorkDetailPane: View {
     @EnvironmentObject private var model: ScanModel
+    @State private var backupTarget: BackupTarget?
+    @State private var exporting = false
+    @State private var exportError: String?
 
     private var session: SessionIndexEntry? {
         guard let source = model.selectedSessionSource else { return nil }
         return model.sessionIndex?.sessions.first { $0.source == source }
+    }
+
+    private var searchMatch: SessionSearchMatch? {
+        guard session == nil else { return nil }
+        return model.selectedSearchMatchForDetail
+    }
+
+    private var hasConversationSelection: Bool {
+        session != nil || searchMatch != nil
     }
 
     var body: some View {
@@ -375,20 +400,102 @@ private struct WorkDetailPane: View {
                     Text(session.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    HStack {
+                        if session.supportsConversationExport {
+                            Button("대화 내보내기…") {
+                                exportConversation(tool: session.tool, source: session.source)
+                            }
+                                .disabled(exporting)
+                                .help("대화 텍스트만 마스킹하여 Markdown으로 내보냅니다. 원본 백업이 아닙니다.")
+                        }
+                        if session.supportsOriginalBackup {
+                            Button("원본 백업…") {
+                                backupTarget = BackupTarget(tool: session.tool, source: session.source)
+                            }
+                                .accessibilityIdentifier("work-session-backup")
+                        }
+                        if exporting { ProgressView().controlSize(.small) }
+                    }
+                    if let exportError {
+                        Text(exportError).font(.caption).foregroundStyle(.red)
+                    }
                     Divider()
-                    detail(for: session)
+                    conversationDetail(
+                        source: session.sourceURL,
+                        provider: session.provider,
+                        retry: { model.loadConversation(for: session, retry: true) }
+                    )
+                } else if let searchMatch {
+                    Text(searchMatch.displayLabel)
+                        .font(.headline)
+                    Text(searchMatch.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        if searchMatch.supportsConversationExport {
+                            Button("대화 내보내기…") {
+                                exportConversation(tool: searchMatch.tool, source: searchMatch.source)
+                            }
+                            .disabled(exporting)
+                            .help("대화 텍스트만 마스킹하여 Markdown으로 내보냅니다. 원본 백업이 아닙니다.")
+                        }
+                        if searchMatch.supportsOriginalBackup {
+                            Button("원본 백업…") {
+                                backupTarget = BackupTarget(
+                                    tool: searchMatch.tool,
+                                    source: searchMatch.source
+                                )
+                            }
+                            .accessibilityIdentifier("work-session-backup")
+                        }
+                        if exporting { ProgressView().controlSize(.small) }
+                    }
+                    if let exportError {
+                        Text(exportError).font(.caption).foregroundStyle(.red)
+                    }
+                    Divider()
+                    conversationDetail(
+                        source: searchMatch.sourceURL,
+                        provider: searchMatch.provider,
+                        retry: {
+                            model.loadConversation(
+                                source: searchMatch.sourceURL,
+                                provider: searchMatch.provider,
+                                retry: true
+                            )
+                        }
+                    )
                 } else {
                     WorkAuditSummary()
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(session == nil ? 0 : 16)
+            .padding(hasConversationSelection ? 16 : 0)
+        }
+        .sheet(item: $backupTarget) { selected in
+            SessionBackupSheet(source: selected.source, tool: selected.tool)
+        }
+    }
+
+    private func exportConversation(tool: String, source: String) {
+        exporting = true
+        exportError = nil
+        model.startSessionExport(tool: tool, source: source) { outcome in
+            exporting = false
+            switch outcome {
+            case .success(let url): NSWorkspace.shared.activateFileViewerSelecting([url])
+            case .failure(let message): exportError = message
+            }
         }
     }
 
     @ViewBuilder
-    private func detail(for session: SessionIndexEntry) -> some View {
-        switch model.conversationState(for: session) {
+    private func conversationDetail(
+        source: URL,
+        provider: SessionProvider,
+        retry: @escaping () -> Void
+    ) -> some View {
+        switch model.conversationState(source: source, provider: provider) {
         case .loaded(let conversation):
             SessionConversationBody(conversation: conversation)
         case .failed(let message):
@@ -396,7 +503,7 @@ private struct WorkDetailPane: View {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("다시 시도") { model.loadConversation(for: session, retry: true) }
+                Button("다시 시도", action: retry)
                     .buttonStyle(.link)
                     .font(.caption)
             }
@@ -408,6 +515,12 @@ private struct WorkDetailPane: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private struct BackupTarget: Identifiable {
+        let tool: String
+        let source: String
+        var id: String { source }
     }
 }
 
@@ -470,8 +583,8 @@ private struct WorkAuditSummary: View {
                 }
             }
 
-            if let quota = model.timeQuotaSnapshot {
-                TimeQuotaSection(snapshot: quota)
+            if let quotaState = model.timeQuotaCardState {
+                TimeQuotaSection(state: quotaState)
             }
             if let report = model.screeReport {
                 ScreeExpiringSection(
@@ -481,7 +594,9 @@ private struct WorkAuditSummary: View {
                 )
                 ScreeWorktreeSection(
                     items: report.worktreeItems,
-                    protectedCount: report.protectedWorktreeCount
+                    protectedCount: report.protectedWorktreeCount,
+                    registeredMissing: report.registeredMissing,
+                    discovery: report.worktreeDiscovery
                 )
                 ScreeLineageSection(
                     summary: report.lineageSummary,
@@ -491,7 +606,16 @@ private struct WorkAuditSummary: View {
             }
         }
         .macSettingsFormStyle()
-        .task { model.refreshTimeQuotaCard() }
+        .task {
+            while !Task.isCancelled {
+                await model.refreshTimeQuotaCard()
+                do {
+                    try await Task.sleep(nanoseconds: 60_000_000_000)
+                } catch {
+                    return
+                }
+            }
+        }
     }
 }
 
