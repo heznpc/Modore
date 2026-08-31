@@ -1414,11 +1414,13 @@ def test_release_extracted_scanner_does_not_abort_on_a_missing_module(project_ro
         )
 
 
-def test_release_ships_scree_the_readme_leads_with(project_root):
-    """README.md's opening paragraph and first 'What ships today' bullet are
-    scree — the AI-agent session/residue audit. A source release that omits
-    scripts/scree.py means the feature the README sells first cannot be run by
-    anyone who follows the documented install path (clone + run)."""
+def test_mac_source_release_ships_the_ai_work_audit(project_root):
+    """The Mac source release must contain the AI work audit used by Modore.
+
+    README presents the user-facing capability rather than the internal module
+    name, but omitting its CLI implementation would still make the documented
+    source build incomplete.
+    """
     module = load_release_smoke(project_root)
     assert "scripts/scree.py" in module.MACOS_FILES
 

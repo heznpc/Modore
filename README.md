@@ -1,24 +1,54 @@
 # Modore
 
-> **Modore audits durable local state that outlives the work, tool, or software that created it** — so you can see what still matters, what no longer has an owner, and what is safe to reclaim. Agent sessions whose workspace is gone, worktrees holding the only copy of unpushed work, trust roots installed by software you removed months ago, model caches nothing references: state that survived its creator, judged by provenance and survival — deterministically, metadata-only, with no LLM anywhere in the judgment path.
->
-> Built for Macs shaped by AI-assisted development.
+**Modore finds what AI tools and developer workflows left on your device, protects what matters, and safely reclaims the rest.**
 
-[🌐 **Website**](https://heznpc.github.io/modore/) · [📦 Releases (when published)](https://github.com/heznpc/modore/releases) · [Architecture](./docs/ARCHITECTURE.md)
+Today, the Mac app focuses on AI work continuity and storage recovery. The Windows edition provides maintained local PC diagnostics.
 
-*Part of the Heznpc portfolio — Trust tier (Supporting).*
+| Protect AI work | Understand storage | Reclaim safely |
+|---|---|---|
+| Find sessions and worktrees at risk, then create verified Claude and Codex backups. | Trace caches, developer runtimes, app residue, and storage drops to their source. | Preview exact targets, remeasure before execution, require approval, and record the result. |
 
-> **Source-preview status:** no public installer is currently published. Review and build the source, or wait for a release whose DMG is Developer ID signed, notarized, stapled, Gatekeeper-assessed, and accompanied by SHA-256/build metadata.
+[Website](https://heznpc.github.io/Modore/) · [Install](#installation) · [Architecture](./docs/ARCHITECTURE.md) · [Security](./SECURITY.md) · [Releases](https://github.com/heznpc/Modore/releases)
 
----
+**Local by default.** Core scans, judgments, backups, and cleanup run on the device. No account or LLM is required, and nothing is deleted automatically. The optional MCP interface exposes selected read-only results to the client that invokes it.
 
-## What it answers
+> **Status:** source preview. No public installer is published yet; build the Mac app from source or wait for a signed and notarized release.
 
-Everything below is one question asked of different stores: **what survived, what still matters, and what can be reclaimed.** A session outlives its workspace; a worktree outlives its branch; a trust root outlives its installer; a model cache outlives the experiment. Each audit connects a survivor to its origin and judges whether it is protected, orphaned, or rebuildable — and none of them deletes anything.
+## What ships today
 
-### What your AI tools left behind (Mac)
+| Surface | What it provides |
+|---|---|
+| **Mac app** | Native SwiftUI views for storage, AI work, system evidence, activity history, settings, and approval-gated recovery. |
+| **AI work protection** | Joins Claude, Codex, Gemini, and supported IDE sessions to repositories and worktrees; flags retention risk, missing workspaces, and unpushed sole copies. |
+| **Verified backups** | Creates and verifies original Claude and Codex session archives, then restores them only into a new safe directory. |
+| **Storage recovery** | Explains caches, developer runtimes, apps, models, Simulator data, and project residue; safe batches require an exact preview and stop when the free-space goal is met. |
+| **Local audits** | Reviews uninstall residue and trust roots, unused model caches, broken MCP registrations, session file access, and user corrections of AI agents. |
+| **Read-only MCP** | Makes selected judgments available during an agent session without exposing cleanup, deletion, or scan execution. |
+| **System diagnosis** | Connects process, network, autorun, security, and storage evidence with locale-aware explanations and optional hash-only VirusTotal lookup. |
+| **Windows edition** | Maintained PowerShell scanner and offline report for Defender, Sysinternals, startup entries, networking, recent installs, and idle CPU. |
 
-On a Mac where Claude Code, Claude Desktop's Code surface, Codex, Gemini, or an AI IDE has been working, the machine fills with traces nothing audits end to end: session stores that silently expire on rolling windows, agent git worktrees holding the only copy of unpushed work, orphaned sessions pointing at deleted projects, gigabytes of rebuildable model and editor caches, and paths whose only surviving record is a session transcript. **scree**, Modore's session-and-residue audit, judges all of it — deterministically, metadata-only, with no LLM anywhere in the judgment path:
+## Run from source
+
+### macOS
+
+```bash
+git clone https://github.com/heznpc/Modore.git
+cd Modore
+./run-mac-app.command
+```
+
+Requires macOS 13 or later and Swift 5.9 or later. Cleanup always shows an exact preview and requires explicit approval.
+
+### Windows
+
+Clone the repository or download its source archive, then run `scan.bat`. See [Installation](#installation) for requirements and troubleshooting.
+
+<details>
+<summary><strong>Technical and CLI reference</strong></summary>
+
+### AI work protection (Mac)
+
+Modore connects local Claude Code, Claude Desktop Code, Codex, Gemini, and supported IDE session stores to their workspaces and repositories. It reports retention risk, missing workspaces, and worktrees or checkouts that hold unpushed work. The CLI entry point is:
 
 ```bash
 python3 scripts/scree.py                          # join · retention forecast · orphans · sole-copy verdicts · lineage
@@ -34,7 +64,7 @@ python3 scripts/scree.py title <session-file>     # one masked line: what that s
 - **Not a uniqueness claim about the primitive** — an agent IDE that creates worktrees can and does compute the same unpushed-work verdict for the worktrees it manages (Orca's workspace cleanup runs the same `rev-list --not --remotes` check). scree's coverage is the difference: it sweeps every agent worktree on the machine regardless of which tool created it, plus primary checkouts stranded off main and registry entries whose directory is gone.
 - **Contract** — ordinary audits retain only metadata; nested transcripts are attributed by `stat()` without being opened. Explicit `preserve`, `title`, `titles`, `inspect`, `search`, `evidence`, and `bind --deep` commands may read content as documented in `scree.py`. Raw backup operations below are a separate opt-in exception. None of these outputs grants deletion permission, and scans never create backups automatically.
 
-### Currently implemented — Original session backups (Mac)
+### Verified session backups (Mac)
 
 In **작업**, select a Claude Code, Claude Desktop Code, or Codex conversation and choose **원본 백업…**.
 The separate **대화 내보내기…** action still produces masked Markdown text;
@@ -57,7 +87,7 @@ deletion, full machine backup, provider migration, or a guarantee that a provide
 can resume an archived session. A successful byte comparison is not a cleanup
 authorization.
 
-**friction**, scree's sibling, reads the same four session stores for the opposite question — not what the agents left behind, but where the operator stopped them:
+The operator-friction audit reads the same session stores for a different question: where did the user stop or correct the agent? Its CLI entry point is:
 
 ```bash
 python3 scripts/friction.py                                  # 9-category pushback taxonomy · severity 1-3
@@ -69,9 +99,9 @@ python3 scripts/friction.py scan --json --source codex       # structured output
 - **Same judgment contract** — keyword and tone matching only, no model anywhere in the path; a review aid that both under- and over-catches, so every verdict is tagged `evidence: preview`.
 - **Content contract** — only turns authored by the user are examined; assistant text, tool calls, and nested subagent transcripts are never emitted. Quotes are capped at 200 characters and masked (email / JWT / API keys / private keys / home path) by default, with `--raw-quotes` as the explicit opt-out. Nothing is written.
 
-### What stayed after you uninstalled it
+### App and trust residue (Mac)
 
-Removing an app does not remove what it registered. `moraine` reads the two records that outlive the uninstall — macOS installer receipts and the system/user trust stores — and correlates them:
+Removing an app does not remove everything it registered. Modore correlates macOS installer receipts with the system and user trust stores; the CLI entry point is:
 
 ```bash
 python3 scripts/moraine.py            # receipts · trusted roots · orphaned-root verdict
@@ -84,7 +114,7 @@ python3 scripts/moraine.py --json
 - **Prior art** — AppCleaner is the reference for moraine hunting and its location list is genuinely vetted, but it is target-driven (you drop an app on it) and its binary contains no `SecTrust`/`SecCertificate` symbols at all; mole reads `pkgutil` receipts too, but only to locate app bundles in `/usr/local` and `/opt`, never to judge whether a payload survived. The trust store is the half neither reaches.
 - **Deletes nothing.** Removing a trust root is an admin act and stays a human decision.
 
-### Both questions, mid-session (MCP)
+### Read-only agent access (MCP)
 
 The judgments above were terminal-only, which meant the agent doing the work could not ask them while working. Modore ships a zero-dependency MCP server so it can — before deleting a worktree, before assuming a session will still be there tomorrow, before repeating something the operator already objected to:
 
@@ -109,41 +139,13 @@ python3 scripts/mcp_server.py --tools    # inspect the surface without speaking 
 - **Read-only by contract, enforced at registration** — a tool is reachable only if it is on an explicit allowlist and annotated read-only and non-destructive; one added without a deliberate edit fails closed. Cleanup, deletion, and scan execution are deliberately absent. Modore gates destruction on an approval a human grants on screen; an agent-reachable bypass would not be a feature, it would be the end of that guarantee. Every result is fenced as untrusted data.
 - **This surface can cross the local boundary — read-only is not the same as local-only.** The server itself speaks stdio and makes no network request or LLM API call, and no judgment here is produced by a model, exactly as everywhere else in Modore. But a tool result exists to be read by whatever client invoked it: local metadata, directory and process names, and (from `operator_friction_report`) masked, length-capped excerpts of turns you wrote become available to that client, and whether they then leave this machine depends on that client's and its model provider's data-handling policy — a wholly local client and model is a different answer than a hosted one. Two claims that sound alike and are not: *no model produces Modore's verdicts* is true on every surface; *nothing Modore reads reaches a model* is true of the app and script mode, and is not what connecting this server means. Several tools also read machine-wide session stores rather than only the current project, so register it per-project (`--scope local` in Claude Code) rather than globally until you want that breadth.
 
-### Why is this machine busy? (maintained diagnostics)
+### System diagnosis (maintained)
 
 A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange network connection, disk space vanishing overnight. Generic scanners detect but do not explain — and on a Korean banking/government PC they cry wolf over IPinside, nProtect, MagicLine and the rest of the mandated plugin set until users either panic-uninstall critical software or learn to ignore every warning. Modore is the second opinion: it joins process, network, autorun, security, and storage signals, checks miner-like runtime patterns, recognizes the Korean plugin set with a locale-aware whitelist, and explains every finding in plain Korean, English, or Japanese with a 🟢🟡🔴 verdict. Nothing is ever deleted automatically.
 
 This diagnostic surface is **maintained, not growing**: bug and security fixes continue, but new Modore capability lands on the durable-state side above. Live monitoring that does not contribute to provenance, residue attribution, or a bounded cleanup decision is out of scope.
 
----
-
-## What ships today
-
-- **Two OS editions under one brand**: Modore for Windows and Modore for Mac share the same promise — explain local machine state in plain language without deleting anything automatically.
-- **Mac Edition — AI-agent session audit**: `scree` (above) is the flagship Mac capability — cross-tool join, retention forecast, orphan/sole-copy/lineage judgment, metadata-only.
-- **Mac Edition — Work continuity browser**: the native **작업** page groups repositories, worktrees, and Claude Code / Claude Desktop Code / Codex conversations by canonical workspace; it supports explicit masked inspect/search/export, byte-preserving backup verification and restore, and a fail-closed pre-retirement continuity check.
-- **Mac Edition — QuotaPie boundary**: when QuotaPie publishes its local semantic-v2 `quota.json`, Modore reads that one owner-controlled file for provider quota status. It does not import QuotaPie's collectors, credentials, network calls, or lifecycle.
-- **Mac Edition — leave-behind audit**: `moraine` judges what survived an uninstall from installer receipts and the macOS trust store, including root certificates left trusted by software that is no longer installed.
-- **Mac Edition — operator-friction scan**: `friction` classifies the turns where the operator pushed back on agent behaviour across Claude Code, Codex, Gemini CLI, and Claude Desktop transcripts — nine categories, severity 1-3, deterministic keyword/tone matching, user-authored turns only, quotes masked by default.
-- **Mac Edition — Hugging Face cache audit**: `hfscan` cross-references every cached model against the code on this machine and reports which ones nothing names. An incomplete search withholds the verdict instead of guessing.
-- **Mac Edition — MCP config hygiene**: `mcpaudit` reads the registered MCP servers and reports the entries that cannot start. It never edits a config, disables a server, or starts one.
-- **Mac Edition — file-access reverse index**: `fileaccess` answers "which sessions touched this file, how often, and when last", rule surfaces first. Only paths and tool names are kept — the command a path came from is never emitted.
-- **Read-only MCP surface**: a zero-dependency stdio MCP server exposing scree, friction, the two audits above, and the existing storage/security scan summary to an agent mid-session. Judgment only — no cleanup, no deletion, no scan execution.
-- **Mac Edition scanner**: Bash + JXA collectors for macOS security context, launchd/login items, Gatekeeper/SIP/XProtect, network/listening ports, installed-app size, and developer-runtime incidents. Every collector reports `ok`, `permission_denied`, `unavailable`, `timed_out`, or `failed`; a missing required collector can never become a safe verdict.
-- **Mac Edition app**: the native SwiftUI app presents one incident judgment followed by evidence, likely impact, and approval-gated recovery; bounded local history keeps the judgment without storing raw commands or URLs. Browser automation is grouped into roots with PID, parent, elapsed time, channel, profile type, and a privacy-preserving controller label. The signed app embeds a pinned, hash-audited CPython helper for the stdlib-only scree data plane, runs it in isolated mode, and does not depend on a separately installed Python.
-- **Windows Edition**: PowerShell 5.1+ scanner focused on Korean banking/government plugin context, Windows Defender, Sysinternals-backed signature/autoruns coverage, networking, startup entries, scheduled tasks, recent installs, and the 5-minute idle CPU monitor.
-- **Storage pressure becomes an in-app recovery flow**: the Mac app keeps a live warning below 20GB free (urgent below 5GB), opens a safe-cache-first plan aimed at restoring 20GB of headroom, shows every exact target, and runs the ready set after one explicit approval. It stops as soon as the goal is reached and re-reads real filesystem free space after each step; apps, models, Simulator devices, and services remain individual decisions. Local operators such as Hydrojet can open that same boundary with `modore://storage/recovery`; the URL carries no target, tier, or approval, so Modore still recomputes the plan and asks inside the app.
-- **Storage decoded, AI residue included**: rebuildable build residue inside dev projects (Flutter, node_modules, Cargo, SwiftPM, Pods, Gradle) can enter that plan only through a path-bound request that rechecks the project marker, lockfiles, Git index/tracked state, target identity, size, and active build processes at the destructive boundary. The mapped AI-tool layer still separates Claude/Codex histories and credentials from reclaimable caches; Ollama models and other consequence-heavy data remain review-only.
-- **Local recurrence watch**: an optional hourly LaunchAgent keeps a bounded owner-only free-space timeline. It notifies when free space falls below 20GB or drops by at least 8GB between checks; it never deletes anything.
-- **Suspicion-to-evidence workflow**: CPU/GPU load, idle CPU samples, miner process names, miner-pool ports, network endpoints, autoruns, signatures, and optional VirusTotal hash lookups are shown together so a user can decide what deserves a closer look before removing anything.
-- **Locale-aware whitelist**: 73 known-good entries across 7 categories (system, browser, korean_common, banking_security, dev_tools, hardware, cloud), plus 20 miner blacklist entries, 6 RAT blacklist entries, and 13 miner-pool ports. Covers IPinside, nProtect, INISAFE, MagicLine, Veraport, XecureWeb, Ahnlab V3, Alyac, and the rest of the Korean banking/government plugin set.
-- **Traffic-light output** (🟢 safe / 🟡 check / 🔴 danger) so non-technical users can act on the report.
-- **VirusTotal lookup (opt-in)**: SHA-256 hash query only. 48h local cache, 16s rate-limit, respects the public API quota (4 req/min, 500/day).
-- **Single-file HTML report**: opens in the user's browser and works offline. The shipped OS-native reports include user-clicked Google/VirusTotal investigation links; opening one shares the selected search term, IP address, or hash with that site. The Python development report also includes collapsible novice-friendly explanations. On Mac, HTML is an export/share artifact; the SwiftUI utility interface is the primary experience.
-- **Local-only by default**: the Mac SwiftUI app and script mode run local scanners only. There is no AI/LLM integration, no OpenAI/Claude/Codex API call, no token spend, no account login, and no report upload. Connecting the optional MCP server adds another data path: tool results become available to the client you registered it with, and whether they leave this machine then depends on that client's and its model provider's data-handling policy; see the MCP section above. The optional automatic VirusTotal API lookup is the only network request initiated by a Mac scan and sends file SHA-256 hashes only. Windows can separately download Microsoft Sysinternals tools only after the configured consent step.
-- **i18n**: English is the source language everywhere. The Python development report keeps en/ko/ja strings (`data/report_i18n/`); the Korean whitelist/explanation depth is a specialized data layer, not the default voice.
-- **Rule engine + tests**: declarative JSON rules in `rules/` (autoruns, defender, installs, network, process) evaluated by OS-native runtime engines. Pytest covers report/rule/cleanup/release contracts; Swift tests cover stable selection, protected data, storage accounting, cleanup protocol parsing, and standalone runtime staging.
-- **Read-the-source distribution**: source release ZIPs contain readable PowerShell/Bash/JXA and Swift code, no bundled DLLs, and no telemetry. A separately produced Developer ID/notarized DMG may contain the compiled Mac app, but its scanner/rules remain bundled as readable resources and the source ZIP remains the audit surface.
+</details>
 
 ## Planned
 
