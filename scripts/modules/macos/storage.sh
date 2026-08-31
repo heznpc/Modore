@@ -23,42 +23,6 @@ _pch_is_protected_developer_app() {
     return 1
 }
 
-_pch_browser_controller_label() {
-    local command="$1"
-
-    case "$command" in
-        *Codex.app*|*/codex*|*SkyComputerUseClient*) /usr/bin/printf 'Codex'; return 0 ;;
-        *Claude.app*|*/claude*|*claude-code*) /usr/bin/printf 'Claude'; return 0 ;;
-        *ChatGPT.app*|*/ChatGPT*|*com.openai.chat*) /usr/bin/printf 'ChatGPT'; return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-_pch_browser_controller() {
-    local current_pid="$1"
-    local depth=0
-    local parent_line ancestor_pid ancestor_command controller_label
-    local fallback="other local process"
-
-    while [[ "$depth" -lt 8 ]]; do
-        case "$current_pid" in ''|*[!0-9]*|0|1) break ;; esac
-        parent_line="$(/bin/ps -p "$current_pid" -o ppid=,command= 2>/dev/null || true)"
-        [[ -n "$parent_line" ]] || break
-        read -r ancestor_pid ancestor_command <<< "$parent_line"
-        if controller_label="$(_pch_browser_controller_label "$ancestor_command")"; then
-            /usr/bin/printf '%s' "$controller_label"
-            return 0
-        fi
-        case "$ancestor_command" in
-            *playwright*|*node*) fallback="Playwright/Node" ;;
-            *python*) [[ "$fallback" == "other local process" ]] && fallback="Python automation" ;;
-        esac
-        current_pid="$ancestor_pid"
-        depth=$((depth + 1))
-    done
-    /usr/bin/printf '%s' "$fallback"
-}
-
 _pch_elapsed_seconds() {
     local elapsed="$1"
     local days=0 hours=0 minutes=0 seconds=0 clock
@@ -84,96 +48,398 @@ _pch_elapsed_seconds() {
 }
 
 _pch_browser_automation_roots() {
-    local pid ppid elapsed rss_kb command channel state profile controller parent_command
-    local parent_parent_pid elapsed_seconds process_snapshot tree_stats tree_memory_kb tree_process_count
+    local maximum_roots="${PCH_BROWSER_AUTOMATION_ROOT_LIMIT:-128}"
+    local maximum_snapshot_rows="${PCH_BROWSER_PROCESS_SNAPSHOT_LIMIT:-32768}"
+    local maximum_work_units="${PCH_BROWSER_ANALYSIS_WORK_LIMIT:-2000000}"
+    case "$maximum_roots" in ''|*[!0-9]*|0) maximum_roots=128 ;; esac
+    case "$maximum_snapshot_rows" in ''|*[!0-9]*|0) maximum_snapshot_rows=32768 ;; esac
+    case "$maximum_work_units" in ''|*[!0-9]*|0) maximum_work_units=2000000 ;; esac
+    [[ "$maximum_roots" -le 512 ]] || maximum_roots=512
+    [[ "$maximum_snapshot_rows" -le 65536 ]] || maximum_snapshot_rows=65536
+    [[ "$maximum_work_units" -le 10000000 ]] || maximum_work_units=10000000
 
-    process_snapshot="$(/bin/cat)"
-    while read -r pid ppid elapsed rss_kb command; do
-        case "$pid$ppid" in ''|*[!0-9]*) continue ;; esac
-        case "$elapsed" in ''|*[!0-9:-]*) elapsed="unknown" ;; esac
-        case "$rss_kb" in ''|*[!0-9]*) rss_kb="0" ;; esac
-        case "$command" in
-            *playwright_chromiumdev_profile*|*--remote-debugging-pipe*|*--remote-debugging-port*|*--no-startup-window*|*--headless*) ;;
-            *) continue ;;
-        esac
-        case "$command" in
-            *"Google Chrome Helper"*|*"Chromium Helper"*|*" --type="*) continue ;;
-        esac
-        case "$command" in
-            *"Google Chrome.app/Contents/MacOS/Google Chrome"*|*"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"*|*"Chromium.app/Contents/MacOS/Chromium"*|*"ms-playwright/"*"headless_shell"*) ;;
-            *) continue ;;
-        esac
-
-        case "$command" in
-            *"Google Chrome for Testing.app/"*|*"/ms-playwright/"*|*"Chromium.app/"*) channel="isolated" ;;
-            *"/Applications/Google Chrome.app/"*) channel="system" ;;
-            *) channel="unknown" ;;
-        esac
-        case "$command" in
-            *playwright_chromiumdev_profile*|*--user-data-dir=/tmp/*|*--user-data-dir=/private/tmp/*|*--user-data-dir=/var/folders/*|*--user-data-dir=/private/var/folders/*) profile="temporary" ;;
-            *--user-data-dir=*) profile="custom" ;;
-            *) profile="default" ;;
-        esac
-        parent_command="$(/bin/ps -p "$ppid" -o command= 2>/dev/null || true)"
-        parent_parent_pid="$(/bin/ps -p "$ppid" -o ppid= 2>/dev/null | /usr/bin/tr -d ' ' || true)"
-        elapsed_seconds="$(_pch_elapsed_seconds "$elapsed" 2>/dev/null || /usr/bin/printf '0')"
-        controller="$(_pch_browser_controller "$ppid")"
-        [[ -n "$parent_command" ]] || controller="parent unavailable"
-        if [[ ( "$ppid" == "1" || "$parent_parent_pid" == "1" || -z "$parent_command" ) \
-            && "$elapsed_seconds" -ge 3600 ]]; then
-            state="orphan_candidate"
-        elif [[ "$ppid" == "1" || "$parent_parent_pid" == "1" || -z "$parent_command" ]]; then
-            state="detached"
-        else
-            state="active"
-        fi
-        tree_stats="$(/usr/bin/printf '%s\n' "$process_snapshot" | /usr/bin/awk -v root="$pid" '
-            BEGIN { included[root] = 1 }
-            {
-                pids[NR] = $1
-                parents[NR] = $2
-                memory[NR] = $4 + 0
+    # Build parent/controller and descendant facts from the one already captured
+    # process table. The previous implementation called ps two to ten times per
+    # browser root and re-parsed the whole table once per root, so the diagnostic
+    # itself became slow when automation had leaked hundreds of browser roots.
+    # Commands stay in awk memory only; output remains categorical metadata.
+    /usr/bin/awk \
+        -v maximum_roots="$maximum_roots" \
+        -v maximum_snapshot_rows="$maximum_snapshot_rows" \
+        -v maximum_work_units="$maximum_work_units" '
+        function elapsed_seconds(raw, day_parts, clock_parts, day_count, count) {
+            day_count = 0
+            count = split(raw, day_parts, "-")
+            if (count == 2) {
+                if (day_parts[1] !~ /^[0-9]+$/) return 0
+                day_count = day_parts[1] + 0
+                raw = day_parts[2]
+            } else if (count != 1) return 0
+            count = split(raw, clock_parts, ":")
+            if (count == 3 && clock_parts[1] ~ /^[0-9]+$/ \
+                && clock_parts[2] ~ /^[0-9]+$/ && clock_parts[3] ~ /^[0-9]+$/) {
+                return day_count * 86400 + clock_parts[1] * 3600 \
+                    + clock_parts[2] * 60 + clock_parts[3]
             }
-            END {
+            if (count == 2 && clock_parts[1] ~ /^[0-9]+$/ \
+                && clock_parts[2] ~ /^[0-9]+$/) {
+                return day_count * 86400 + clock_parts[1] * 60 + clock_parts[2]
+            }
+            return 0
+        }
+        function controller_for(current_pid, depth, command, fallback) {
+            fallback = "other local process"
+            for (depth = 0; depth < 8; depth++) {
+                if (current_pid == "" || current_pid == "0" \
+                    || current_pid == "1" || !(current_pid in commands)) break
+                command = commands[current_pid]
+                if (command ~ /Codex\.app/ || command ~ /\/codex/ \
+                    || command ~ /SkyComputerUseClient/) return "Codex"
+                if (command ~ /Claude\.app/ || command ~ /\/claude/ \
+                    || command ~ /claude-code/) return "Claude"
+                if (command ~ /ChatGPT\.app/ || command ~ /\/ChatGPT/ \
+                    || command ~ /com\.openai\.chat/) return "ChatGPT"
+                if (command ~ /playwright/ || command ~ /node/) fallback = "Playwright/Node"
+                else if (command ~ /python/ && fallback == "other local process") \
+                    fallback = "Python automation"
+                current_pid = parents[current_pid]
+            }
+            return fallback
+        }
+        {
+            if (NR > maximum_snapshot_rows) {
+                snapshot_limited = 1
+                next
+            }
+            pid = $1
+            ppid = $2
+            elapsed = $3
+            rss = $4
+            if (pid !~ /^[0-9]+$/ || ppid !~ /^[0-9]+$/) next
+            command = ""
+            for (field = 5; field <= NF; field++) {
+                if (field > 5) command = command " "
+                command = command $field
+            }
+            row_count += 1
+            pids[row_count] = pid
+            parents[pid] = ppid
+            elapsed_values[pid] = elapsed
+            memory[pid] = rss ~ /^[0-9]+$/ ? rss + 0 : 0
+            commands[pid] = command
+
+            is_signal = command ~ /playwright_chromiumdev_profile/ \
+                || command ~ /--remote-debugging-pipe/ \
+                || command ~ /--remote-debugging-port/ \
+                || command ~ /--no-startup-window/ || command ~ /--headless/
+            is_helper = command ~ /Google Chrome Helper/ \
+                || command ~ /Chromium Helper/ || command ~ / --type=/
+            is_root = command ~ /Google Chrome\.app\/Contents\/MacOS\/Google Chrome/ \
+                || command ~ /Google Chrome for Testing\.app\/Contents\/MacOS\/Google Chrome for Testing/ \
+                || command ~ /Chromium\.app\/Contents\/MacOS\/Chromium/ \
+                || (command ~ /ms-playwright\// && command ~ /headless_shell/)
+            if (!is_signal || is_helper || !is_root) next
+            if (root_count >= maximum_roots) {
+                roots_limited = 1
+                next
+            }
+            root_count += 1
+            roots[root_count] = pid
+        }
+        END {
+            if (snapshot_limited) {
+                print "__PCH_BROWSER_BOUNDED__"
+                exit
+            }
+            for (root_index = 1; root_index <= root_count; root_index++) {
+                if (work_units >= maximum_work_units) {
+                    budget_limited = 1
+                    break
+                }
+                root = roots[root_index]
+                command = commands[root]
+                ppid = parents[root]
+                elapsed = elapsed_values[root]
+                if (elapsed !~ /^[0-9:-]+$/) elapsed = "unknown"
+                rss = memory[root]
+                if (command ~ /Google Chrome for Testing\.app\// \
+                    || command ~ /\/ms-playwright\// || command ~ /Chromium\.app\//) \
+                    channel = "isolated"
+                else if (command ~ /\/Applications\/Google Chrome\.app\//) \
+                    channel = "system"
+                else channel = "unknown"
+                if (command ~ /playwright_chromiumdev_profile/ \
+                    || command ~ /--user-data-dir=\/tmp\// \
+                    || command ~ /--user-data-dir=\/private\/tmp\// \
+                    || command ~ /--user-data-dir=\/var\/folders\// \
+                    || command ~ /--user-data-dir=\/private\/var\/folders\//) \
+                    profile = "temporary"
+                else if (command ~ /--user-data-dir=/) profile = "custom"
+                else profile = "default"
+
+                parent_available = ppid in commands
+                parent_parent = parent_available ? parents[ppid] : ""
+                controller = parent_available ? controller_for(ppid) : "parent unavailable"
+                detached = ppid == "1" || parent_parent == "1" || !parent_available
+                if (detached && elapsed_seconds(elapsed) >= 3600) state = "orphan_candidate"
+                else if (detached) state = "detached"
+                else state = "active"
+
+                for (included_pid in included) delete included[included_pid]
+                included[root] = 1
                 for (pass = 0; pass < 16; pass++) {
                     changed = 0
-                    for (i = 1; i <= NR; i++) {
-                        if (included[parents[i]] && !included[pids[i]]) {
-                            included[pids[i]] = 1
+                    for (row = 1; row <= row_count; row++) {
+                        work_units += 1
+                        if (work_units >= maximum_work_units) {
+                            budget_limited = 1
+                            break
+                        }
+                        child = pids[row]
+                        if (included[parents[child]] && !included[child]) {
+                            included[child] = 1
                             changed = 1
                         }
                     }
+                    if (budget_limited) break
                     if (!changed) break
                 }
-                total = 0
-                count = 0
-                for (i = 1; i <= NR; i++) {
-                    if (included[pids[i]]) {
-                        total += memory[i]
-                        count++
+                if (budget_limited) break
+                tree_memory = 0
+                tree_count = 0
+                for (row = 1; row <= row_count; row++) {
+                    work_units += 1
+                    if (work_units >= maximum_work_units) {
+                        budget_limited = 1
+                        break
+                    }
+                    child = pids[row]
+                    if (included[child]) {
+                        tree_memory += memory[child]
+                        tree_count += 1
                     }
                 }
-                printf "%d %d", total, count
+                if (budget_limited) break
+                printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\n", \
+                    root, ppid, elapsed, channel, state, profile, controller, \
+                    rss, tree_memory, tree_count
             }
-        ')"
-        read -r tree_memory_kb tree_process_count <<< "$tree_stats"
-        case "$tree_memory_kb$tree_process_count" in ''|*[!0-9]*) tree_memory_kb="$rss_kb"; tree_process_count="1" ;; esac
-        /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$pid" "$ppid" "$elapsed" "$channel" "$state" "$profile" "$controller" \
-            "$rss_kb" "$tree_memory_kb" "$tree_process_count"
-    done <<< "$process_snapshot"
+            if (roots_limited || budget_limited) print "__PCH_BROWSER_BOUNDED__"
+        }
+    '
 }
 
+_pch_storage_test_tool() {
+    local requested_tool="$1"
+    local tool_root="${PCH_TEST_STORAGE_TOOL_ROOT:-}"
+    local physical_root physical_parent
+    [[ "${PCH_TEST_MODE:-}" == "1" && -n "$tool_root" ]] || return 1
+    [[ "$tool_root" == /* && -d "$tool_root" && ! -L "$tool_root" ]] || return 1
+    [[ "$requested_tool" == "$tool_root/"* && -f "$requested_tool" \
+        && ! -L "$requested_tool" && -x "$requested_tool" ]] || return 1
+    physical_root="$(cd -P "$tool_root" 2>/dev/null && /bin/pwd -P)" || return 1
+    physical_parent="$(cd -P "$(/usr/bin/dirname "$requested_tool")" 2>/dev/null \
+        && /bin/pwd -P)" || return 1
+    [[ "$physical_parent" == "$physical_root" \
+        || "$physical_parent" == "$physical_root/"* ]] || return 1
+    /usr/bin/printf '%s' "$requested_tool"
+}
+
+_pch_storage_regular_identity() {
+    local path="$1"
+    local identity device inode owner links size
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        identity="$(/usr/bin/stat -f '%d:%i:%u:%l:%z' "$path" 2>/dev/null)" || return 1
+    else
+        identity="$(/usr/bin/stat -c '%d:%i:%u:%h:%s' "$path" 2>/dev/null)" || return 1
+    fi
+    IFS=: read -r device inode owner links size <<< "$identity"
+    case "$device$inode$owner$links$size" in ''|*[!0-9]*) return 1 ;; esac
+    [[ "$owner" == "0" || "$owner" == "$(/usr/bin/id -u)" ]] || return 1
+    [[ "$links" == "1" && "$size" -gt 0 && "$size" -le 4194304 ]] || return 1
+    /usr/bin/printf '%s' "$identity"
+}
+
+_pch_storage_tool_to_file() (
+    local output_file="$1"
+    local timeout_seconds="$2"
+    shift 2
+    local command_pid="" timer_pid="" command_status=0 timed_out=0
+    local output_limit_kb="${_pch_storage_tool_output_limit_kb:-8}"
+    local output_limit_blocks output_limit_bytes output_size
+    local timeout_marker="$output_file.timeout"
+    # shellcheck disable=SC2329 # Invoked through EXIT/HUP/INT/TERM traps below.
+    cleanup_bounded_tool() {
+        local cleanup_timer="${timer_pid:-}" cleanup_command="${command_pid:-}"
+        trap - HUP INT TERM EXIT
+        timer_pid=""
+        command_pid=""
+        if [[ -n "$cleanup_timer" ]]; then
+            _pch_project_git_kill_tree "$cleanup_timer"
+            wait "$cleanup_timer" 2>/dev/null || true
+        fi
+        if [[ -n "$cleanup_command" ]]; then
+            _pch_project_git_kill_tree "$cleanup_command"
+            wait "$cleanup_command" 2>/dev/null || true
+        fi
+    }
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap cleanup_bounded_tool EXIT
+    case "$timeout_seconds" in ''|*[!0-9]*|0) return 124 ;; esac
+    case "$output_limit_kb" in ''|*[!0-9]*|0) output_limit_kb=8 ;; esac
+    [[ "$output_limit_kb" -le 64 ]] || output_limit_kb=64
+    output_limit_blocks=$((output_limit_kb * 2))
+    output_limit_bytes=$((output_limit_kb * 1024))
+    : > "$output_file" || return 1
+    : > "$timeout_marker" || return 1
+
+    # Keep the tool in the collector's process group: a real outer cancellation
+    # then reaches the collector, helper, tool, and descendants together. The
+    # watchdog uses the bounded descendant-tree killer for its own deadline.
+    (
+        ulimit -f "$output_limit_blocks" || exit 1
+        exec "$@"
+    ) > "$output_file" 2>/dev/null &
+    command_pid=$!
+    (
+        /bin/sleep "$timeout_seconds"
+        /usr/bin/printf 'timed_out' > "$timeout_marker" 2>/dev/null || true
+        _pch_project_git_kill_tree "$command_pid"
+    ) &
+    timer_pid=$!
+
+    if wait "$command_pid"; then
+        command_status=0
+    else
+        command_status=$?
+    fi
+    if [[ "$(/bin/cat "$timeout_marker" 2>/dev/null || true)" == "timed_out" ]]; then
+        timed_out=1
+    fi
+    if [[ "$timed_out" -eq 1 ]]; then
+        # Let the watchdog finish its TERM/KILL sequence so a child retained by
+        # the inspected tool cannot survive after the group leader exits.
+        wait "$timer_pid" 2>/dev/null || true
+        timer_pid=""
+    else
+        _pch_project_git_kill_tree "$timer_pid"
+        wait "$timer_pid" 2>/dev/null || true
+        timer_pid=""
+    fi
+    command_pid=""
+    /bin/rm -f "$timeout_marker" 2>/dev/null || true
+    if [[ "$timed_out" -eq 1 ]]; then
+        : > "$output_file" 2>/dev/null || true
+        return 124
+    fi
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        output_size="$(/usr/bin/stat -f '%z' "$output_file" 2>/dev/null || true)"
+    else
+        output_size="$(/usr/bin/stat -c '%s' "$output_file" 2>/dev/null || true)"
+    fi
+    case "$output_size" in ''|*[!0-9]*) output_size=0 ;; esac
+    if [[ "$command_status" -ne 0 || "$output_size" -ge "$output_limit_bytes" ]]; then
+        : > "$output_file" 2>/dev/null || true
+        [[ "$output_size" -lt "$output_limit_bytes" ]] || return 65
+    fi
+    return "$command_status"
+)
+
 _pch_collect_storage_applications() {
-    # 설치 앱은 Spotlight가 이미 계산한 번들 크기를 먼저 읽는다. 깊은 du 순회 없이 큰 앱을 빠르게 비교한다.
-    local app_path app_bytes app_kb app_name bundle_id app_note
+    # Spotlight가 계산한 번들 크기를 쓰되, 사용자 Applications 아래의 손상된
+    # bundle 하나가 전체 검사를 붙잡지 못하도록 유형·개수·시간을 모두 제한한다.
+    local app_path app_bytes app_kb app_name bundle_id app_note info_plist
+    local plist_output mdls_output tool_status remaining_seconds plist_identity
+    local maximum_apps="${PCH_STORAGE_APPLICATION_LIMIT:-256}"
+    local command_timeout="${PCH_STORAGE_APPLICATION_COMMAND_TIMEOUT:-2}"
+    local total_budget="${PCH_STORAGE_APPLICATION_TOTAL_BUDGET:-8}"
+    local tool_output_limit_kb="${PCH_STORAGE_APPLICATION_OUTPUT_LIMIT_KB:-8}"
+    local plist_buddy="/usr/libexec/PlistBuddy"
+    local mdls_bin="/usr/bin/mdls"
+    local started_at="$SECONDS"
+    local considered_apps=0
+    local application_test_root=""
+    local physical_tool_root physical_application_root
+    case "$maximum_apps" in ''|*[!0-9]*|0) maximum_apps=256 ;; esac
+    case "$command_timeout" in ''|*[!0-9]*|0) command_timeout=2 ;; esac
+    case "$total_budget" in ''|*[!0-9]*|0) total_budget=8 ;; esac
+    case "$tool_output_limit_kb" in ''|*[!0-9]*|0) tool_output_limit_kb=8 ;; esac
+    [[ "$maximum_apps" -le 512 ]] || maximum_apps=512
+    [[ "$command_timeout" -le 10 ]] || command_timeout=10
+    [[ "$total_budget" -le 30 ]] || total_budget=30
+    [[ "$tool_output_limit_kb" -le 64 ]] || tool_output_limit_kb=64
+    local _pch_storage_tool_output_limit_kb="$tool_output_limit_kb"
+
+    if [[ "${PCH_TEST_MODE:-}" == "1" ]]; then
+        if [[ -n "${PCH_TEST_STORAGE_PLISTBUDDY_BIN:-}" ]]; then
+            plist_buddy="$(_pch_storage_test_tool "$PCH_TEST_STORAGE_PLISTBUDDY_BIN")" \
+                || return 1
+        fi
+        if [[ -n "${PCH_TEST_STORAGE_MDLS_BIN:-}" ]]; then
+            mdls_bin="$(_pch_storage_test_tool "$PCH_TEST_STORAGE_MDLS_BIN")" \
+                || return 1
+        fi
+        if [[ -n "${PCH_TEST_STORAGE_APPLICATIONS_ROOT:-}" ]]; then
+            application_test_root="$PCH_TEST_STORAGE_APPLICATIONS_ROOT"
+            [[ -n "${PCH_TEST_STORAGE_TOOL_ROOT:-}" \
+                && "$application_test_root" == "$PCH_TEST_STORAGE_TOOL_ROOT/"* \
+                && -d "$application_test_root" && ! -L "$application_test_root" ]] \
+                || return 1
+            physical_tool_root="$(cd -P "$PCH_TEST_STORAGE_TOOL_ROOT" 2>/dev/null \
+                && /bin/pwd -P)" || return 1
+            physical_application_root="$(cd -P "$application_test_root" 2>/dev/null \
+                && /bin/pwd -P)" || return 1
+            [[ "$physical_application_root" == "$physical_tool_root/"* ]] || return 1
+        fi
+    fi
+
+    plist_output="$TMP_DIR/storage_app_plist.$$.$RANDOM.out"
+    mdls_output="$TMP_DIR/storage_app_mdls.$$.$RANDOM.out"
     while IFS= read -r -d '' app_path; do
+        [[ "$considered_apps" -lt "$maximum_apps" ]] || break
+        [[ $((SECONDS - started_at)) -lt "$total_budget" ]] || break
+        considered_apps=$((considered_apps + 1))
         [[ -d "$app_path" && ! -L "$app_path" ]] || continue
-        bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist" 2>/dev/null || true)"
-        [[ "$bundle_id" =~ ^[A-Za-z0-9][A-Za-z0-9.-]+$ ]] || continue
+        [[ -d "$app_path/Contents" && ! -L "$app_path/Contents" ]] || continue
+        info_plist="$app_path/Contents/Info.plist"
+        # Reject FIFOs/devices, symlinks, hard-link aliases, surprising owners,
+        # and oversized metadata. Re-read the identity immediately before the
+        # bounded parser so a path swap during enumeration fails closed.
+        plist_identity="$(_pch_storage_regular_identity "$info_plist")" || continue
+
+        remaining_seconds=$((total_budget - (SECONDS - started_at)))
+        [[ "$remaining_seconds" -gt 0 ]] || break
+        [[ "$remaining_seconds" -le "$command_timeout" ]] \
+            || remaining_seconds="$command_timeout"
+        [[ "$(_pch_storage_regular_identity "$info_plist" 2>/dev/null || true)" \
+            == "$plist_identity" ]] || continue
+        if _pch_storage_tool_to_file "$plist_output" "$remaining_seconds" \
+            "$plist_buddy" -c 'Print :CFBundleIdentifier' "$info_plist"; then
+            bundle_id="$(/usr/bin/head -n 1 "$plist_output" 2>/dev/null)"
+        else
+            tool_status=$?
+            bundle_id=""
+            [[ "$tool_status" -ne 124 ]] || continue
+        fi
+        [[ "$bundle_id" =~ ^[A-Za-z0-9][A-Za-z0-9.-]+$ \
+            && "${#bundle_id}" -le 255 ]] || continue
         [[ "$bundle_id" != "com.apple.Safari" ]] || continue
-        app_bytes="$(/usr/bin/mdls -raw -name kMDItemFSSize "$app_path" 2>/dev/null || true)"
+
+        remaining_seconds=$((total_budget - (SECONDS - started_at)))
+        [[ "$remaining_seconds" -gt 0 ]] || break
+        [[ "$remaining_seconds" -le "$command_timeout" ]] \
+            || remaining_seconds="$command_timeout"
+        if _pch_storage_tool_to_file "$mdls_output" "$remaining_seconds" \
+            "$mdls_bin" -raw -name kMDItemFSSize "$app_path"; then
+            app_bytes="$(/usr/bin/head -n 1 "$mdls_output" 2>/dev/null)"
+        else
+            app_bytes=""
+        fi
         case "$app_bytes" in ''|*[!0-9]*) continue ;; esac
+        [[ "${#app_bytes}" -le 20 ]] || continue
         app_kb=$((app_bytes / 1024))
         app_name="$(/usr/bin/basename "$app_path" .app)"
         if _pch_is_protected_developer_app "$app_path" "$bundle_id"; then
@@ -184,9 +450,16 @@ _pch_collect_storage_applications() {
             add_sized_path "application" "$app_name" "$app_path" "$app_kb" "$app_note" "app_uninstall:$bundle_id"
         fi
     done < <(
-        /usr/bin/find /Applications -mindepth 1 -maxdepth 1 -type d -name '*.app' -print0 2>/dev/null
-        /usr/bin/find "$HOME/Applications" -mindepth 1 -maxdepth 2 -type d -name '*.app' -prune -print0 2>/dev/null
+        if [[ -n "$application_test_root" ]]; then
+            /usr/bin/find "$application_test_root" -mindepth 1 -maxdepth 2 \
+                -type d -name '*.app' -prune -print0 2>/dev/null
+        else
+            /usr/bin/find /Applications -mindepth 1 -maxdepth 1 -type d -name '*.app' -print0 2>/dev/null
+            /usr/bin/find "$HOME/Applications" -mindepth 1 -maxdepth 2 -type d -name '*.app' -prune -print0 2>/dev/null
+        fi
     )
+    /bin/rm -f "$plist_output" "$mdls_output" \
+        "$plist_output.timeout" "$mdls_output.timeout" 2>/dev/null || true
 }
 
 _pch_collect_storage_simulators() {
@@ -275,6 +548,377 @@ _pch_add_project_residue_row() {
         >> "$TMP_DIR/storage_paths.tsv"
 }
 
+# 얕은 개발 루트 검색에서 Git 저장소 하나를 찾으면, 파일시스템 전체를 더 깊게
+# 순회하지 않고 Git index에 등록된 Package.swift만 따라간다. 모노레포의 Swift
+# package는 저장소 루트보다 훨씬 아래에 있을 수 있지만, 각 .build의 바로 위
+# Package.swift를 기준으로 행을 만들면 cleanup.sh의 marker/parent 계약도 그대로
+# 성립한다. Git 명령은 개별/전체 시간 예산 안에서만 실행하고,
+# manifest 예산은 실제 .build 디렉터리가 있는 잔여물 후보만 소모한다.
+_pch_project_git_budget_start() {
+    [[ "$_pch_project_git_budget_started" -eq 0 ]] || return 0
+    _pch_project_git_budget_started=1
+    /bin/sleep "$_pch_project_git_total_budget" &
+    _pch_project_git_budget_timer_pid=$!
+}
+
+_pch_project_git_budget_expired() {
+    _pch_project_git_budget_start
+    if [[ -z "$_pch_project_git_budget_timer_pid" ]] \
+        || ! /bin/kill -0 "$_pch_project_git_budget_timer_pid" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+_pch_project_git_budget_stop() {
+    [[ -n "$_pch_project_git_budget_timer_pid" ]] || return 0
+    /bin/kill "$_pch_project_git_budget_timer_pid" 2>/dev/null || true
+    wait "$_pch_project_git_budget_timer_pid" 2>/dev/null || true
+    _pch_project_git_budget_timer_pid=""
+}
+
+_pch_project_git_trace() {
+    local operation="$1"
+    local status="$2"
+    local waited_ticks="$3"
+    [[ "${PCH_TEST_MODE:-}" == "1" ]] || return 0
+    [[ -n "${PCH_TEST_PROJECT_GIT_TRACE_FILE:-}" ]] || return 0
+    /usr/bin/printf '%s\t%s\t%s\n' \
+        "$operation" "$status" "$waited_ticks" >> "$PCH_TEST_PROJECT_GIT_TRACE_FILE"
+}
+
+_pch_project_git_limit_nul_records() {
+    local max_records="$1"
+    local status_file="$2"
+    local record=""
+    local record_count=0
+
+    while true; do
+        record=""
+        if ! IFS= read -r -d '' record; then
+            if [[ -n "$record" ]]; then
+                /usr/bin/printf 'output_limit' > "$status_file"
+                return 65
+            fi
+            return 0
+        fi
+        record_count=$((record_count + 1))
+        if [[ "$record_count" -gt "$max_records" ]]; then
+            /usr/bin/printf 'record_limit' > "$status_file"
+            return 64
+        fi
+        /usr/bin/printf '%s\0' "$record"
+    done
+}
+
+_pch_project_git_kill_tree() {
+    local root_pid="$1"
+    local process_snapshot descendant_pids descendant_pid
+    case "$root_pid" in ''|*[!0-9]*|0|1) return 0 ;; esac
+    process_snapshot="$(/bin/ps -axo pid=,ppid= 2>/dev/null || true)"
+    descendant_pids="$(/usr/bin/printf '%s\n' "$process_snapshot" | /usr/bin/awk -v root="$root_pid" '
+        BEGIN { included[root] = 1 }
+        {
+            pids[NR] = $1
+            parents[NR] = $2
+        }
+        END {
+            for (pass = 0; pass < 16; pass++) {
+                changed = 0
+                for (i = 1; i <= NR; i++) {
+                    if (included[parents[i]] && !included[pids[i]]) {
+                        included[pids[i]] = 1
+                        changed = 1
+                    }
+                }
+                if (!changed) break
+            }
+            for (i = 1; i <= NR; i++) {
+                if (pids[i] != root && included[pids[i]]) print pids[i]
+            }
+        }
+    ')"
+    while IFS= read -r descendant_pid; do
+        case "$descendant_pid" in ''|*[!0-9]*|0|1) continue ;; esac
+        /bin/kill -9 "$descendant_pid" 2>/dev/null || true
+    done <<< "$descendant_pids"
+    /bin/kill -9 "$root_pid" 2>/dev/null || true
+}
+
+_pch_project_discovery_to_file() {
+    local scan_root="$1"
+    local output_file="$2"
+    local max_results="$3"
+    local waited_ticks=0
+    local timeout_ticks=$((_pch_project_discovery_timeout * 10))
+    local command_pid command_status timeout_status="" limit_status=""
+    local limit_status_file="$output_file.limit"
+    local test_stall_seconds="${PCH_TEST_PROJECT_DISCOVERY_STALL_SECONDS:-}"
+
+    : > "$output_file"
+    : > "$limit_status_file"
+    if _pch_project_git_budget_expired; then
+        /bin/rm -f "$limit_status_file"
+        _pch_project_git_timed_out=1
+        return 1
+    fi
+
+    (
+        if [[ "${PCH_TEST_MODE:-}" == "1" \
+            && "$test_stall_seconds" =~ ^[1-9][0-9]*$ ]]; then
+            exec /bin/sleep "$test_stall_seconds"
+        fi
+        set -o pipefail
+        /usr/bin/find "$scan_root" -mindepth 1 -maxdepth 3 \
+            \( -name .git \( -type d -o -type f \) -print0 -prune \) -o \
+            \( -type d \( -name node_modules -o -name build -o -name .dart_tool \
+                -o -name target -o -name Pods -o -name .build -o -name .gradle \
+                -o -name Library -o -name "*.app" \) -prune \) -o \
+            -type f \( -name pubspec.yaml -o -name package.json -o -name Cargo.toml \
+                -o -name Package.swift -o -name Podfile -o -name gradlew \) -print0 2>/dev/null \
+            | _pch_project_git_limit_nul_records "$max_results" "$limit_status_file"
+    ) > "$output_file" 2>/dev/null &
+    command_pid=$!
+
+    while /bin/kill -0 "$command_pid" 2>/dev/null; do
+        if _pch_project_git_budget_expired; then
+            timeout_status="total_budget"
+            break
+        fi
+        if [[ "$waited_ticks" -ge "$timeout_ticks" ]]; then
+            timeout_status="command_timeout"
+            break
+        fi
+        /bin/sleep 0.1
+        waited_ticks=$((waited_ticks + 1))
+    done
+
+    if [[ -n "$timeout_status" ]]; then
+        _pch_project_git_kill_tree "$command_pid"
+        wait "$command_pid" 2>/dev/null || true
+        /bin/rm -f "$limit_status_file"
+        _pch_project_git_timed_out=1
+        return 1
+    fi
+
+    if wait "$command_pid"; then
+        command_status=0
+    else
+        command_status=$?
+    fi
+    limit_status="$(/bin/cat "$limit_status_file" 2>/dev/null || true)"
+    /bin/rm -f "$limit_status_file"
+    if [[ "$limit_status" == "record_limit" ]]; then
+        _pch_project_git_timed_out=1
+        return 1
+    fi
+    if [[ "$command_status" -ne 0 ]]; then
+        _pch_project_git_incomplete=1
+        return 1
+    fi
+    return 0
+}
+
+# macOS 기본 Bash 3.2에 timeout(1)이 없어도 절대 경로의 Git만 제한된
+# 백그라운드 자식으로 실행한다. 개별 명령 제한과 모든 repo가 공유하는
+# 전체 제한 중 먼저 다한 쪽에서 자식을 종료한다.
+_pch_project_git_to_file() {
+    local operation="$1"
+    local output_file="$2"
+    shift 2
+    local waited_ticks=0
+    local command_timeout_ticks=$((_pch_project_git_command_timeout * 10))
+    local command_pid command_status timeout_status="" output_size_bytes=0 limit_status=""
+    local test_stall_seconds="${PCH_TEST_PROJECT_GIT_STALL_SECONDS:-}"
+    local output_limit_bytes=$((_pch_project_git_output_limit_kb * 1024))
+    local limit_status_file="$output_file.limit"
+
+    : > "$output_file"
+    : > "$limit_status_file"
+    _pch_project_git_last_status=""
+    if _pch_project_git_budget_expired; then
+        /bin/rm -f "$limit_status_file"
+        _pch_project_git_timed_out=1
+        _pch_project_git_last_status="total_budget"
+        _pch_project_git_trace "$operation" "total_budget" "$waited_ticks"
+        return 1
+    fi
+
+    # 테스트 모드에서만 실제로 종료해야 하는 sleep 자식으로 느린 Git을
+    # 재현한다. 운영 경로는 항상 /usr/bin/git 절대 경로로 고정된다.
+    # head로 stdout만 잘라 Git이 읽는 index나 기타 파일의 크기 제한은 바꾸지
+    # 않는다. pipefail은 손상된 index의 Git 실패를 head 성공으로 숨기지 않는다.
+    # checkout/user config의 core.fsmonitor는 실행 파일을 지정할 수 있으므로
+    # 읽기 전용 스캔에서 강제로 끄고 optional index write도 금지한다.
+    (
+        if [[ "${PCH_TEST_MODE:-}" == "1" \
+            && "${PCH_TEST_PROJECT_GIT_STALL_OPERATION:-}" == "$operation" \
+            && "$test_stall_seconds" =~ ^[1-9][0-9]*$ ]]; then
+            exec /bin/sleep "$test_stall_seconds"
+        fi
+        set -o pipefail
+        if [[ "$operation" == "ls-files" ]]; then
+            /usr/bin/git --no-optional-locks -c core.fsmonitor=false "$@" 2>/dev/null \
+                | /usr/bin/head -c "$output_limit_bytes" \
+                | _pch_project_git_limit_nul_records \
+                    "$_pch_project_git_record_limit" "$limit_status_file"
+        else
+            /usr/bin/git --no-optional-locks -c core.fsmonitor=false "$@" 2>/dev/null \
+                | /usr/bin/head -c "$output_limit_bytes"
+        fi
+    ) > "$output_file" 2>/dev/null &
+    command_pid=$!
+
+    while /bin/kill -0 "$command_pid" 2>/dev/null; do
+        if _pch_project_git_budget_expired; then
+            timeout_status="total_budget"
+            break
+        fi
+        if [[ "$waited_ticks" -ge "$command_timeout_ticks" ]]; then
+            timeout_status="command_timeout"
+            break
+        fi
+        /bin/sleep 0.1
+        waited_ticks=$((waited_ticks + 1))
+    done
+
+    if [[ -n "$timeout_status" ]]; then
+        # 타임아웃 시점의 전체 자손 트리를 먼저 캡처해 종료한다.
+        # 직계만 종료하면 Git이 띄운 외부 helper가 재부모화되어 남을 수 있다.
+        _pch_project_git_kill_tree "$command_pid"
+        wait "$command_pid" 2>/dev/null || true
+        : > "$output_file"
+        /bin/rm -f "$limit_status_file"
+        _pch_project_git_timed_out=1
+        _pch_project_git_last_status="$timeout_status"
+        _pch_project_git_trace "$operation" "$timeout_status" "$waited_ticks"
+        return 1
+    fi
+
+    if wait "$command_pid"; then
+        command_status=0
+    else
+        command_status=$?
+    fi
+    output_size_bytes="$(/usr/bin/stat -f '%z' "$output_file" 2>/dev/null || /usr/bin/printf '0')"
+    case "$output_size_bytes" in ''|*[!0-9]*) output_size_bytes=0 ;; esac
+    limit_status="$(/bin/cat "$limit_status_file" 2>/dev/null || true)"
+    /bin/rm -f "$limit_status_file"
+    if [[ "$limit_status" == "record_limit" ]]; then
+        : > "$output_file"
+        _pch_project_git_last_status="record_limit"
+        _pch_project_git_trace "$operation" "record_limit" "$waited_ticks"
+        return 1
+    fi
+    # stdout이 상한과 정확히 같으면 Git이 pipe buffer에 모두 쓰고 0으로
+    # 끝났더라도 뒷부분 존재를 구분할 수 없으므로 보수적으로 불완전 처리한다.
+    if [[ "$limit_status" == "output_limit" \
+        || "$output_size_bytes" -ge "$output_limit_bytes" ]]; then
+        : > "$output_file"
+        _pch_project_git_last_status="output_limit"
+        _pch_project_git_trace "$operation" "output_limit" "$waited_ticks"
+        return 1
+    fi
+    if [[ "$command_status" -ne 0 ]]; then
+        : > "$output_file"
+        _pch_project_git_last_status="failed"
+        _pch_project_git_trace "$operation" "failed" "$waited_ticks"
+        return 1
+    fi
+    _pch_project_git_last_status="ok"
+    _pch_project_git_trace "$operation" "ok" "$waited_ticks"
+    return 0
+}
+
+_pch_collect_git_swiftpm_residue() {
+    local probe_dir="$1"
+    local scan_root="$2"
+    local max_repositories="$3"
+    local max_manifests="$4"
+    local repo_expected="${5:-false}"
+    local repo_root canonical_repo manifest_rel manifest_path package_dir canonical_package_dir
+    local package_name build_dir rev_parse_output ls_files_output
+
+    [[ "$_pch_project_repository_count" -lt "$max_repositories" ]] || return 0
+    [[ "$_pch_project_manifest_count" -lt "$max_manifests" ]] || return 0
+    rev_parse_output="$TMP_DIR/project_git_rev_parse.$$.$RANDOM.out"
+    if ! _pch_project_git_to_file \
+        "rev-parse" "$rev_parse_output" -C "$probe_dir" rev-parse --show-toplevel; then
+        if [[ "$repo_expected" == "true" \
+            && ( "$_pch_project_git_last_status" == "failed" \
+                || "$_pch_project_git_last_status" == "output_limit" \
+                || "$_pch_project_git_last_status" == "record_limit" ) ]]; then
+            _pch_project_git_incomplete=1
+        fi
+        /bin/rm -f "$rev_parse_output"
+        return 0
+    fi
+    repo_root="$(/bin/cat "$rev_parse_output" 2>/dev/null || true)"
+    /bin/rm -f "$rev_parse_output"
+    if [[ "$repo_root" != /* || ! -d "$repo_root" || -L "$repo_root" ]]; then
+        [[ "$repo_expected" != "true" ]] || _pch_project_git_incomplete=1
+        return 0
+    fi
+    case "$repo_root" in
+        *$'\t'*|*$'\n'*|*$'\r'*)
+            [[ "$repo_expected" != "true" ]] || _pch_project_git_incomplete=1
+            return 0
+            ;;
+    esac
+    if ! canonical_repo="$(cd -P "$repo_root" 2>/dev/null && /bin/pwd -P)"; then
+        [[ "$repo_expected" != "true" ]] || _pch_project_git_incomplete=1
+        return 0
+    fi
+    if [[ "$canonical_repo" != "$repo_root" \
+        || ( "$canonical_repo" != "$scan_root" && "$canonical_repo" != "$scan_root/"* ) ]]; then
+        [[ "$repo_expected" != "true" ]] || _pch_project_git_incomplete=1
+        return 0
+    fi
+    case "$_pch_project_seen_repositories" in
+        *"|$canonical_repo|"*) return 0 ;;
+    esac
+    _pch_project_seen_repositories="${_pch_project_seen_repositories}${canonical_repo}|"
+    _pch_project_repository_count=$((_pch_project_repository_count + 1))
+
+    ls_files_output="$TMP_DIR/project_git_ls_files.$$.$RANDOM.out"
+    if ! _pch_project_git_to_file \
+        "ls-files" "$ls_files_output" -C "$canonical_repo" \
+        ls-files -z -- Package.swift '*/Package.swift'; then
+        if [[ "$_pch_project_git_last_status" == "failed" \
+            || "$_pch_project_git_last_status" == "output_limit" \
+            || "$_pch_project_git_last_status" == "record_limit" ]]; then
+            _pch_project_git_incomplete=1
+        fi
+        /bin/rm -f "$ls_files_output"
+        return 0
+    fi
+    while IFS= read -r -d '' manifest_rel; do
+        [[ "$_pch_project_manifest_count" -lt "$max_manifests" ]] || break
+        if _pch_project_git_budget_expired; then
+            _pch_project_git_timed_out=1
+            break
+        fi
+        case "$manifest_rel" in
+            ''|/*|../*|*/../*|*$'\t'*|*$'\n'*|*$'\r'*) continue ;;
+        esac
+        [[ "${manifest_rel##*/}" == "Package.swift" ]] || continue
+        manifest_path="$canonical_repo/$manifest_rel"
+        [[ -f "$manifest_path" && ! -L "$manifest_path" ]] || continue
+        package_dir="${manifest_path%/*}"
+        [[ -d "$package_dir" && ! -L "$package_dir" ]] || continue
+        canonical_package_dir="$(cd -P "$package_dir" 2>/dev/null && /bin/pwd -P)" || continue
+        [[ "$canonical_package_dir" == "$package_dir" ]] || continue
+        build_dir="$package_dir/.build"
+        [[ -d "$build_dir" && ! -L "$build_dir" ]] || continue
+        _pch_project_manifest_count=$((_pch_project_manifest_count + 1))
+        package_name="$(/usr/bin/basename "$package_dir")"
+        _pch_add_project_residue_row "$build_dir" \
+            "SwiftPM 빌드 산출물 · $package_name" \
+            "바로 위 Package.swift가 Git 저장소에 등록된 Swift package입니다. swift package clean 또는 .build 삭제로 재생성 가능합니다."
+    done < "$ls_files_output"
+    /bin/rm -f "$ls_files_output"
+}
+
 _pch_collect_project_residue() {
     # 개발 프로젝트가 자기 폴더 안에 쌓는 재생성 가능 산출물(Flutter build/,
     # node_modules, Cargo target/ 등)을 표면화한다. 이 항목들은 .gitignore가
@@ -283,26 +927,86 @@ _pch_collect_project_residue() {
     # 개수를 제한해 빠른 검사 예산 안에 머문다.
     local scan_roots="${PCH_PROJECT_SCAN_ROOTS:-$HOME/Documents:$HOME/Developer:$HOME/Projects:$HOME/IdeaProjects:$HOME/StudioProjects:$HOME/dev:$HOME/workspace:$HOME/src}"
     local max_projects="${PCH_PROJECT_SCAN_LIMIT:-32}"
+    local max_repositories="${PCH_PROJECT_GIT_SCAN_LIMIT:-128}"
+    local max_manifests="${PCH_PROJECT_SWIFTPM_MANIFEST_LIMIT:-256}"
+    local project_git_command_timeout="${PCH_PROJECT_GIT_COMMAND_TIMEOUT:-2}"
+    local project_git_total_budget="${PCH_PROJECT_GIT_TOTAL_BUDGET:-8}"
+    local project_git_output_limit_kb="${PCH_PROJECT_GIT_OUTPUT_LIMIT_KB:-4096}"
+    local project_git_record_limit="${PCH_PROJECT_GIT_RECORD_LIMIT:-16384}"
+    local project_discovery_timeout="${PCH_PROJECT_DISCOVERY_TIMEOUT:-2}"
+    local project_discovery_result_limit="${PCH_PROJECT_DISCOVERY_RESULT_LIMIT:-400}"
     case "$max_projects" in ''|*[!0-9]*) max_projects=32 ;; esac
+    case "$max_repositories" in ''|*[!0-9]*) max_repositories=128 ;; esac
+    case "$max_manifests" in ''|*[!0-9]*) max_manifests=256 ;; esac
+    case "$project_git_command_timeout" in ''|*[!0-9]*|0) project_git_command_timeout=2 ;; esac
+    case "$project_git_total_budget" in ''|*[!0-9]*|0) project_git_total_budget=8 ;; esac
+    case "$project_git_output_limit_kb" in ''|*[!0-9]*|0) project_git_output_limit_kb=4096 ;; esac
+    case "$project_git_record_limit" in ''|*[!0-9]*|0) project_git_record_limit=16384 ;; esac
+    case "$project_discovery_timeout" in ''|*[!0-9]*|0) project_discovery_timeout=2 ;; esac
+    case "$project_discovery_result_limit" in ''|*[!0-9]*|0) project_discovery_result_limit=400 ;; esac
+    [[ "$project_git_command_timeout" -le 30 ]] || project_git_command_timeout=30
+    [[ "$project_git_total_budget" -le 60 ]] || project_git_total_budget=60
+    [[ "$project_git_output_limit_kb" -le 16384 ]] || project_git_output_limit_kb=16384
+    [[ "$project_git_record_limit" -le 65536 ]] || project_git_record_limit=65536
+    [[ "$project_discovery_timeout" -le 30 ]] || project_discovery_timeout=30
+    [[ "$project_discovery_result_limit" -le 2000 ]] || project_discovery_result_limit=2000
     local seen_projects="|"
     local found=0
-    local root marker_file project_dir project_name
+    local root marker_file project_dir project_name preferred_project discovery_output
     local -a scan_root_list=()
+    # Bash의 동적 local scope를 이용해 helper가 모든 scan root에 걸친 동일 예산과
+    # dedup 상태를 갱신한다. 일반 marker 32개 제한과 분리해, 얕게 발견한 Git 저장소
+    # 최대 128개/SwiftPM .build 잔여물 최대 256개까지만 확인한다.
+    local _pch_project_seen_repositories="|"
+    local _pch_project_repository_count=0
+    local _pch_project_manifest_count=0
+    local _pch_project_git_command_timeout="$project_git_command_timeout"
+    local _pch_project_git_total_budget="$project_git_total_budget"
+    local _pch_project_git_output_limit_kb="$project_git_output_limit_kb"
+    local _pch_project_git_record_limit="$project_git_record_limit"
+    local _pch_project_discovery_timeout="$project_discovery_timeout"
+    local _pch_project_git_budget_started=0
+    local _pch_project_git_budget_timer_pid=""
+    local _pch_project_git_timed_out=0
+    local _pch_project_git_incomplete=0
+    local _pch_project_git_last_status=""
+
+    if [[ "${PCH_TEST_MODE:-}" == "1" \
+        && -n "${PCH_TEST_PROJECT_GIT_TRACE_FILE:-}" ]]; then
+        : > "$PCH_TEST_PROJECT_GIT_TRACE_FILE"
+    fi
+
+    # 소스 checkout에서 실행할 때는 scanner 자체의 저장소를 먼저 본다. 사용자의
+    # IdeaProjects에 repo가 32개보다 많아도 Modore 모노레포가 뒤로 밀리지 않는다.
+    # 앱 번들에서는 PROJECT_DIR가 Git 저장소가 아니므로 이 호출은 즉시 끝난다.
+    preferred_project="${PCH_PROJECT_DIR:-${PROJECT_DIR:-}}"
+    if [[ -n "$preferred_project" && -d "$preferred_project" && ! -L "$preferred_project" ]]; then
+        _pch_collect_git_swiftpm_residue \
+            "$preferred_project" "$preferred_project" "$max_repositories" "$max_manifests"
+    fi
 
     IFS=':' read -r -a scan_root_list <<< "$scan_roots"
     for root in "${scan_root_list[@]}"; do
         [[ -d "$root" && ! -L "$root" ]] || continue
-        while IFS= read -r marker_file; do
+        discovery_output="$TMP_DIR/project_discovery.$$.$RANDOM.out"
+        _pch_project_discovery_to_file \
+            "$root" "$discovery_output" "$project_discovery_result_limit" || true
+        while IFS= read -r -d '' marker_file; do
             [[ -n "$marker_file" ]] || continue
+            case "$marker_file" in *$'\t'*|*$'\n'*|*$'\r'*) continue ;; esac
+            if [[ "$marker_file" == */.git ]]; then
+                project_dir="${marker_file%/.git}"
+                _pch_collect_git_swiftpm_residue \
+                    "$project_dir" "$root" "$max_repositories" "$max_manifests" "true"
+                continue
+            fi
             project_dir="${marker_file%/*}"
             case "$seen_projects" in
                 *"|$project_dir|"*) continue ;;
             esac
+            [[ "$found" -lt "$max_projects" ]] || continue
             seen_projects="${seen_projects}${project_dir}|"
             found=$((found + 1))
-            if [[ "$found" -gt "$max_projects" ]]; then
-                break 2
-            fi
             project_name="$(/usr/bin/basename "$project_dir")"
             case "$marker_file" in
                 */pubspec.yaml)
@@ -342,17 +1046,27 @@ _pch_collect_project_residue() {
                         "재생성 가능한 프로젝트 로컬 Gradle 캐시입니다."
                     ;;
             esac
-        done < <(/usr/bin/find "$root" -mindepth 1 -maxdepth 3 \
-            \( -type d \( -name node_modules -o -name build -o -name .git -o -name .dart_tool \
-                -o -name target -o -name Pods -o -name .build -o -name .gradle \
-                -o -name Library -o -name "*.app" \) -prune \) -o \
-            -type f \( -name pubspec.yaml -o -name package.json -o -name Cargo.toml \
-                -o -name Package.swift -o -name Podfile -o -name gradlew \) -print 2>/dev/null \
-            | /usr/bin/head -n 400)
+            _pch_collect_git_swiftpm_residue \
+                "$project_dir" "$root" "$max_repositories" "$max_manifests"
+        done < "$discovery_output"
+        /bin/rm -f "$discovery_output"
     done
 
-    record_collection_status "project_residue" "프로젝트 빌드 산출물" "ok" "false" \
-        "개발 프로젝트의 재생성 가능한 빌드 산출물을 확인했습니다."
+    _pch_project_git_budget_stop
+    if [[ "$_pch_project_git_timed_out" -eq 1 \
+        && "$_pch_project_git_incomplete" -eq 1 ]]; then
+        record_collection_status "project_residue" "프로젝트 빌드 산출물" "timed_out" "false" \
+            "일부 Git 저장소를 읽지 못했고, 시간·결과 예산 안에서 확인한 재생성 가능 산출물만 기록했습니다."
+    elif [[ "$_pch_project_git_timed_out" -eq 1 ]]; then
+        record_collection_status "project_residue" "프로젝트 빌드 산출물" "timed_out" "false" \
+            "시간·결과 예산 안에서 확인한 재생성 가능 산출물만 기록했습니다."
+    elif [[ "$_pch_project_git_incomplete" -eq 1 ]]; then
+        record_collection_status "project_residue" "프로젝트 빌드 산출물" "failed" "false" \
+            "손상되었거나 출력 상한을 넘긴 일부 Git 저장소를 읽지 못해 결과가 불완전합니다."
+    else
+        record_collection_status "project_residue" "프로젝트 빌드 산출물" "ok" "false" \
+            "개발 프로젝트의 재생성 가능한 빌드 산출물을 확인했습니다."
+    fi
 }
 
 _pch_collect_known_storage_paths() {
@@ -515,6 +1229,7 @@ _pch_collect_storage_access_checks() {
 _pch_collect_storage_runtime_signals() {
     # 반복 생성원: 공간을 직접 지우기보다 "왜 또 쌓이는지"를 설명하는 신호.
     local chrome_count sim_count codex_count claude_count node_count
+    local browser_analysis_bounded=0
     chrome_count="$(count_processes 'Google Chrome')"
     sim_count="$(count_processes '/CoreSimulator/Volumes/iOS_|launchd_sim|Simulator.app|CoreSimulatorBridge')"
     codex_count="$(count_processes 'Codex.app|/codex|node_repl|SkyComputerUseClient')"
@@ -525,6 +1240,10 @@ _pch_collect_storage_runtime_signals() {
     local browser_pid browser_ppid browser_elapsed browser_channel browser_state browser_profile browser_controller browser_rss_kb browser_tree_memory_kb browser_tree_process_count
     local browser_label browser_risk browser_action browser_channel_note
     while IFS=$'\t' read -r browser_pid browser_ppid browser_elapsed browser_channel browser_state browser_profile browser_controller browser_rss_kb browser_tree_memory_kb browser_tree_process_count; do
+        if [[ "$browser_pid" == "__PCH_BROWSER_BOUNDED__" ]]; then
+            browser_analysis_bounded=1
+            continue
+        fi
         case "$browser_channel" in
             system)
                 browser_label="시스템 Chrome 자동화"
@@ -568,6 +1287,13 @@ _pch_collect_storage_runtime_signals() {
             "$browser_tree_memory_kb" \
             "$browser_tree_process_count"
     done < <(/usr/bin/printf '%s\n' "$ps_detailed" | _pch_browser_automation_roots)
+    if [[ "$browser_analysis_bounded" -eq 1 ]]; then
+        record_collection_status "browser_automation" "브라우저 자동화 프로세스" \
+            "timed_out" "false" "행·시간 상한 안에서 확인한 브라우저 자동화만 기록했습니다."
+    else
+        record_collection_status "browser_automation" "브라우저 자동화 프로세스" \
+            "ok" "false" "실행 중인 브라우저 자동화 root를 확인했습니다."
+    fi
     add_runtime_signal "process_count" "CoreSimulator processes" "$sim_count" "$([[ "$sim_count" -ge 100 ]] && echo warning || echo info)" "필요한 Simulator만 Booted" "부팅된 Simulator는 런타임 프로세스를 대량으로 띄웁니다."
     add_runtime_signal "process_count" "Codex processes" "$codex_count" "$([[ "$codex_count" -ge 20 ]] && echo warning || echo info)" "끝난 Codex 작업의 프로세스 종료" "세션 기록은 보존하고, 더 이상 사용하지 않는 Codex/Computer Use 프로세스만 앱에서 정상 종료하세요."
     add_runtime_signal "process_count" "Claude processes" "$claude_count" "$([[ "$claude_count" -ge 15 ]] && echo warning || echo info)" "끝난 Claude 작업의 프로세스 종료" "로컬 작업공간은 보존하고, 더 이상 사용하지 않는 Claude Desktop/Code 프로세스만 앱에서 정상 종료하세요."

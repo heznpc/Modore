@@ -4,6 +4,7 @@ import plistlib
 import stat
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -15,6 +16,200 @@ def parse_protocol(text: str) -> dict[str, str]:
             key, value = line.split("\t", 1)
             values[key] = value
     return values
+
+
+def wait_for_storage_watch_lock(state_dir):
+    lock_dir = state_dir / ".storage-watch.lock"
+    lock_file = state_dir / ".storage-watch.lockfile"
+    for _ in range(100):
+        if sys.platform == "darwin" and lock_file.is_file():
+            probe = subprocess.run(
+                [
+                    "/usr/bin/lockf",
+                    "-s",
+                    "-t",
+                    "0",
+                    "-k",
+                    "-n",
+                    str(lock_file),
+                    "/usr/bin/true",
+                ],
+                capture_output=True,
+            )
+            if probe.returncode == 75:
+                return
+        elif sys.platform != "darwin" and lock_dir.is_dir():
+            return
+        time.sleep(0.02)
+    raise AssertionError("storage watcher did not acquire its lock")
+
+
+def test_storage_watch_serializes_launchagent_and_manual_runs(project_root, tmp_path):
+    state_dir = tmp_path / "state"
+    base_env = os.environ.copy()
+    base_env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(50 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "0",
+            "PCH_TEST_HOLD_LOCK_SECONDS": "1",
+        }
+    )
+    script = project_root / "scripts" / "storage_watch.sh"
+    first = subprocess.Popen(
+        [str(script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=base_env,
+    )
+    lock_dir = state_dir / ".storage-watch.lock"
+    wait_for_storage_watch_lock(state_dir)
+
+    second_env = {**base_env, "PCH_TEST_HOLD_LOCK_SECONDS": "0"}
+    second_env["PCH_TEST_FREE_KB"] = str(49 * 1024 * 1024)
+    second = subprocess.run(
+        [str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=second_env,
+        timeout=15,
+    )
+    first_stdout, first_stderr = first.communicate(timeout=15)
+
+    assert first.returncode == 0, first_stderr
+    assert second.returncode == 0, second.stderr
+    assert parse_protocol(first_stdout)["freeKB"] == str(50 * 1024 * 1024)
+    assert parse_protocol(second.stdout)["freeKB"] == str(49 * 1024 * 1024)
+    history = (state_dir / "storage-samples.tsv").read_text(encoding="utf-8")
+    assert len(history.splitlines()) == 2
+    assert not lock_dir.exists()
+    if sys.platform == "darwin":
+        lock_file = state_dir / ".storage-watch.lockfile"
+        assert lock_file.is_file()
+        assert stat.S_IMODE(lock_file.stat().st_mode) == 0o600
+
+
+def test_storage_watch_reports_busy_instead_of_silently_reusing_state(
+    project_root, tmp_path
+):
+    state_dir = tmp_path / "state"
+    base_env = os.environ.copy()
+    base_env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(50 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "0",
+            "PCH_TEST_HOLD_LOCK_SECONDS": "5",
+        }
+    )
+    script = project_root / "scripts" / "storage_watch.sh"
+    first = subprocess.Popen(
+        [str(script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=base_env,
+    )
+    wait_for_storage_watch_lock(state_dir)
+
+    second_env = {**base_env, "PCH_TEST_HOLD_LOCK_SECONDS": "0"}
+    second_env["PCH_TEST_WATCH_LOCK_ATTEMPTS"] = "2"
+    second_env["PCH_TEST_WATCH_LOCK_SECONDS"] = "0"
+    contenders = [
+        subprocess.Popen(
+            [str(script)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            env=second_env,
+        )
+        for _ in range(16)
+    ]
+    contender_results = []
+    for contender in contenders:
+        stdout, stderr = contender.communicate(timeout=5)
+        contender_results.append((contender.returncode, stdout, stderr))
+    _, first_stderr = first.communicate(timeout=10)
+
+    assert first.returncode == 0, first_stderr
+    assert {result[0] for result in contender_results} == {75}
+    for _, stdout, stderr in contender_results:
+        assert not stderr
+        payload = parse_protocol(stdout)
+        assert payload["watchStatus"] == "busy"
+        assert "마지막 완료 기록" in payload["message"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS advisory lock contract")
+def test_storage_watch_uses_a_persistent_kernel_lock(project_root):
+    source = (project_root / "scripts" / "storage_watch.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/usr/bin/lockf -s" in source
+    assert '-k "$WATCH_LOCK_FILE"' in source
+    assert "WATCH_LOCK_HOLDER_PID" in source
+    assert "exec 9" not in source
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS advisory lock contract")
+def test_storage_watch_lock_ceiling_stops_the_owner_before_unlocking(
+    project_root, tmp_path
+):
+    state_dir = tmp_path / "state"
+    env = {
+        **os.environ,
+        "PCH_TEST_MODE": "1",
+        "PCH_STATE_DIR": str(state_dir),
+        "PCH_TEST_FREE_KB": str(50 * 1024 * 1024),
+        "PCH_WATCH_NOTIFY": "0",
+        "PCH_TEST_HOLD_LOCK_SECONDS": "5",
+        "PCH_TEST_WATCH_LOCK_HOLDER_SECONDS": "1",
+    }
+    watcher = subprocess.Popen(
+        [str(project_root / "scripts" / "storage_watch.sh")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=env,
+    )
+    wait_for_storage_watch_lock(state_dir)
+
+    watcher.wait(timeout=5)
+    if watcher.stdout is not None:
+        watcher.stdout.close()
+    if watcher.stderr is not None:
+        watcher.stderr.close()
+
+    assert watcher.returncode != 0
+    lock_file = state_dir / ".storage-watch.lockfile"
+    for _ in range(50):
+        probe = subprocess.run(
+            [
+                "/usr/bin/lockf",
+                "-s",
+                "-t",
+                "0",
+                "-k",
+                "-n",
+                str(lock_file),
+                "/usr/bin/true",
+            ],
+            capture_output=True,
+        )
+        if probe.returncode == 0:
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("watch lock remained held after its owner stopped")
 
 
 def test_storage_watch_detects_large_drop_without_deleting(project_root, tmp_path):
@@ -142,6 +337,217 @@ def test_storage_watch_captures_bounded_top_paths_only_after_large_drop(
     assert int(rows[0][1]) > int(rows[1][1]) > 0
     assert all(row[2] == "ok" for row in rows)
     assert all(str(snapshot_root) in row[4] for row in rows)
+
+
+def test_storage_watch_captures_private_tmp_swap_and_bounded_rss_metadata(
+    project_root, tmp_path
+):
+    state_dir = tmp_path / "state"
+    snapshot_root = tmp_path / "snapshot-roots"
+    private_tmp = tmp_path / "private-tmp"
+    snapshot_root.mkdir()
+    modore_temps = [private_tmp / f"modore-build-{suffix}" for suffix in "abcde"]
+    claude_tmp = private_tmp / f"claude-{os.getuid()}"
+    ignored_tmp = private_tmp / "unrelated-tool"
+    for directory in (*modore_temps, claude_tmp, ignored_tmp):
+        directory.mkdir(parents=True)
+    for index, directory in enumerate(modore_temps, start=1):
+        (directory / "payload.bin").write_bytes(b"m" * (index * 64 * 1024))
+    (claude_tmp / "payload.bin").write_bytes(b"c" * (512 * 1024))
+    (ignored_tmp / "payload.bin").write_bytes(b"x" * (1024 * 1024))
+
+    swap_fixture = tmp_path / "swap.txt"
+    swap_fixture.write_text(
+        "vm.swapusage: total = 4096.00M  used = 1024.00M  free = 3072.00M\n",
+        encoding="utf-8",
+    )
+    rss_fixture = tmp_path / "rss.txt"
+    codex_executable = "Codex Renderer"
+    rss_fixture.write_text(
+        f"42 800000 {codex_executable}\n"
+        f"43 600000 {codex_executable}\n"
+        "44 400000 python3\n"
+        "not-a-pid 999999 must-not-appear\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(50 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "0",
+            "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
+            "PCH_WATCH_PRIVATE_TMP_ROOT": str(private_tmp),
+            "PCH_WATCH_SWAP_TEST_FILE": str(swap_fixture),
+            "PCH_WATCH_RSS_TEST_FILE": str(rss_fixture),
+            "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "2",
+            "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "1",
+            "PCH_WATCH_SNAPSHOT_EVENT_LIMIT": "1",
+        }
+    )
+    script = project_root / "scripts" / "storage_watch.sh"
+
+    baseline = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert baseline.returncode == 0, baseline.stderr
+    assert parse_protocol(baseline.stdout)["signalsRows"] == "0"
+    assert not (state_dir / "storage-watch-signals.tsv").exists()
+
+    env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
+    first_drop = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert first_drop.returncode == 0, first_drop.stderr
+    assert parse_protocol(first_drop.stdout)["signalsRows"] == "4"
+
+    path_rows = [
+        line.split("\t")
+        for line in (state_dir / "storage-watch-paths.tsv")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert {row[3] for row in path_rows} == {"Modore 임시 작업", "Claude 임시 작업"}
+    assert {row[4] for row in path_rows} == {
+        str(claude_tmp),
+        *(str(path) for path in modore_temps),
+    }
+    assert sum(row[3] == "Modore 임시 작업" for row in path_rows) == 5
+    assert str(ignored_tmp) not in {row[4] for row in path_rows}
+
+    # A second rapid drop replaces the previous signal event because the
+    # configured event history is one. This fixes the retention bound as well
+    # as the per-event row bound (one swap plus three unique executables max).
+    swap_fixture.write_text(
+        "vm.swapusage: total = 4096.00M  used = 2048.00M  free = 2048.00M\n",
+        encoding="utf-8",
+    )
+    env["PCH_TEST_FREE_KB"] = str(30 * 1024 * 1024)
+    second_drop = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert second_drop.returncode == 0, second_drop.stderr
+    payload = parse_protocol(second_drop.stdout)
+    assert payload["signalsRows"] == "4"
+
+    signals_file = state_dir / "storage-watch-signals.tsv"
+    assert stat.S_IMODE(signals_file.stat().st_mode) == 0o600
+    signal_rows = [
+        line.split("\t") for line in signals_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(signal_rows) <= 4
+    assert all(len(row) == 8 for row in signal_rows)
+    assert len({row[0] for row in signal_rows}) == 1
+    latest_at = signal_rows[-1][0]
+    latest_rows = [row for row in signal_rows if row[0] == latest_at]
+    assert len(latest_rows) == 4
+    swap = next(row for row in latest_rows if row[1] == "swap")
+    assert swap[2:5] == [str(2 * 1024 * 1024), str(4 * 1024 * 1024), "0"]
+    rss_rows = [row for row in latest_rows if row[1] == "process_rss"]
+    assert {(row[2], row[4], row[6], row[7]) for row in rss_rows} == {
+        ("800000", "42", codex_executable, codex_executable),
+        ("600000", "43", codex_executable, codex_executable),
+        ("400000", "44", "python3", "python3"),
+    }
+    assert "must-not-appear" not in signals_file.read_text(encoding="utf-8")
+
+    path_rows_after_second_drop = [
+        line.split("\t")
+        for line in (state_dir / "storage-watch-paths.tsv")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len({row[0] for row in path_rows_after_second_drop}) == 1
+
+    # Production asks ps for the short accounting name (`ucomm`) rather than
+    # `comm` or `command`, either of which may contain argv on macOS.
+    watch_source = script.read_text(encoding="utf-8")
+    assert '-U "$(/usr/bin/id -u)"' in watch_source
+    assert "pid=,rss=,ucomm=" in watch_source
+    assert "pid=,rss=,comm=" not in watch_source
+    assert "pid=,rss=,command=" not in watch_source
+
+
+def test_storage_watch_reserves_rows_for_transient_workspaces(project_root, tmp_path):
+    state_dir = tmp_path / "state"
+    private_tmp = tmp_path / "private-tmp"
+    snapshot_root = tmp_path / "snapshot-roots"
+    claude_tmp = private_tmp / f"claude-{os.getuid()}"
+    claude_tmp.mkdir(parents=True)
+    (claude_tmp / "payload.bin").write_bytes(b"c" * (32 * 1024))
+    modore_temps = []
+    for index in range(5):
+        directory = private_tmp / f"modore-work-{index}"
+        directory.mkdir(parents=True)
+        (directory / "payload.bin").write_bytes(b"m" * ((index + 1) * 64 * 1024))
+        modore_temps.append(directory)
+    for index in range(10):
+        directory = snapshot_root / f"persistent-{index}"
+        directory.mkdir(parents=True)
+        (directory / "payload.bin").write_bytes(b"p" * (1024 * 1024))
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PCH_TEST_MODE": "1",
+            "PCH_STATE_DIR": str(state_dir),
+            "PCH_TEST_FREE_KB": str(50 * 1024 * 1024),
+            "PCH_WATCH_NOTIFY": "0",
+            "PCH_WATCH_PRIVATE_TMP_ROOT": str(private_tmp),
+            "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
+            "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "4",
+            "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "1",
+        }
+    )
+    script = project_root / "scripts" / "storage_watch.sh"
+    baseline = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert baseline.returncode == 0, baseline.stderr
+    env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
+    dropped = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert dropped.returncode == 0, dropped.stderr
+
+    rows = [
+        line.split("\t")
+        for line in (state_dir / "storage-watch-paths.tsv")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(rows) == 8
+    assert sum(row[3] == "Claude 임시 작업" for row in rows) == 1
+    retained_modore = {row[4] for row in rows if row[3] == "Modore 임시 작업"}
+    assert retained_modore == {str(path) for path in modore_temps[-3:]}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS ps field contract")
+def test_macos_ucomm_does_not_expose_a_secret_argv0(project_root):
+    secret = f"secret-token-in-argv0-{os.getpid()}"
+    process = subprocess.Popen(
+        ["/bin/bash", "-c", 'exec -a "$1" /bin/sleep 5', "bash", secret]
+    )
+    try:
+        time.sleep(0.1)
+        result = subprocess.run(
+            ["/bin/ps", "-p", str(process.pid), "-o", "ucomm="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        assert result.stdout.strip()
+        assert secret not in result.stdout
+        watch_source = (project_root / "scripts" / "storage_watch.sh").read_text(
+            encoding="utf-8"
+        )
+        assert "pid=,rss=,ucomm=" in watch_source
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
 
 
 def test_storage_watch_bounds_history(project_root, tmp_path):
@@ -808,6 +1214,59 @@ def test_storage_watch_never_reaches_open_when_no_app_bundle_is_configured(proje
     assert osascript_attempted, "an unconfigured bundle path must still fall back to osascript"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS process-group contract")
+def test_storage_watch_notification_deadline_stops_the_entire_process_tree(
+    project_root, tmp_path
+):
+    state_dir = tmp_path / "state"
+    child_pid_file = tmp_path / "notification-child.pid"
+    hanging_notifier = tmp_path / "hanging-osascript"
+    hanging_notifier.write_text(
+        "#!/bin/bash\n"
+        "/bin/sleep 20 &\n"
+        "child=$!\n"
+        f'/usr/bin/printf "%s\\n" "$child" > "{child_pid_file}"\n'
+        # The leader exits successfully while its background child remains.
+        # The deadline must therefore observe the whole process group.
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    hanging_notifier.chmod(0o755)
+    env = {
+        **os.environ,
+        "PCH_TEST_MODE": "1",
+        "PCH_STATE_DIR": str(state_dir),
+        "PCH_TEST_FREE_KB": str(19 * 1024 * 1024),
+        "PCH_WATCH_NOTIFY": "1",
+        "PCH_TEST_OSASCRIPT_BIN": str(hanging_notifier),
+        "PCH_TEST_WATCH_NOTIFICATION_TICKS": "10",
+    }
+    env.pop("PCH_STORAGE_WATCH_APP_BUNDLE", None)
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [str(project_root / "scripts" / "storage_watch.sh")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert time.monotonic() - started < 4
+    assert child_pid_file.is_file()
+    child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+    for _ in range(50):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("notification deadline left a descendant process running")
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="launchd plist tools are macOS-only")
 def test_schedule_install_threads_the_app_bundle_path_into_the_plist(project_root, tmp_path):
     """The env var the app passes at install time must survive into the
@@ -931,3 +1390,21 @@ def test_storage_watch_captures_evidence_when_space_is_low_without_a_sudden_drop
     assert staying["status"] == "warning"
     assert staying["snapshotReason"] == ""
     assert staying["snapshotRows"] == "0"
+
+    # An installation upgraded from the path-only watcher has no signal file.
+    # Seed it after a short floor rather than waiting the full six-hour low-space
+    # cooldown; this fixture has no signal provider, but the capture reason and
+    # path evidence still prove the upgrade branch ran.
+    state_file = state_dir / "storage-watch.tsv"
+    state_lines = state_file.read_text(encoding="utf-8").splitlines()
+    state_file.write_text(
+        "\n".join(
+            "lastSnapshot\t0" if line.startswith("lastSnapshot\t") else line
+            for line in state_lines
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    seeded = run(18)
+    assert seeded["snapshotReason"] == "missing-pressure-evidence"
+    assert int(seeded["snapshotRows"]) >= 1

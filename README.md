@@ -40,6 +40,18 @@ cd Modore
 
 Requires macOS 13 or later and Swift 5.9 or later. Cleanup always shows an exact preview and requires explicit approval.
 
+From a source checkout, you can link that checkout's `bin/modore` into your
+`PATH` for a narrow terminal or agent entry point. The installed Mac app does
+not currently install this command. It owns AI-session continuity and storage
+recovery only; it does not route Git, PR, or multi-repository work.
+
+```bash
+modore sessions --limit 50
+modore storage status
+modore cleanup list
+modore storage recovery
+```
+
 ### Windows
 
 Clone the repository or download its source archive, then run `scan.bat`. See [Installation](#installation) for requirements and troubleshooting.
@@ -244,6 +256,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 ### Requirements
 - **macOS script mode**: Bash + `osascript` (built into macOS).
 - **macOS SwiftUI source mode**: macOS 13 or later plus Swift tools 5.9 or later from the system-selected, root-owned Xcode under `/Applications` or Command Line Tools under `/Library/Developer/CommandLineTools`. The explicitly nonpublishable local/CI packaging check may also use an ephemeral current-user-owned Xcode when it is not group/world writable; public distribution never receives that exception. A notarized DMG does not require the toolchain.
+- **Source-checkout `bin/modore` command**: Python 3.9+ available as `/usr/bin/python3`. The installed Mac app does not require or install this command.
 - **Windows**: PowerShell 5.1+ (built into Windows 10/11).
 - **Development / tests only**: Python 3.11+ for pytest, release-smoke packaging, and local docs preview.
 

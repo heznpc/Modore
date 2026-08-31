@@ -455,6 +455,26 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     assert "scripts/package_macos_release.sh" in module.MACOS_FILES
     assert "run-mac-app.command" in module.MACOS_FILES
     assert "macos/Modore/Package.swift" in module.MACOS_FILES
+    modore_source_checkout = {
+        "bin/modore",
+        "scripts/bounded_exec.py",
+        "skills/modore-ops/SKILL.md",
+        "skills/modore-ops/agents/openai.yaml",
+        "skills/modore-ops/references/command-contract.md",
+    }
+    assert set(module.MODORE_SOURCE_CHECKOUT_FILES) == modore_source_checkout
+    assert modore_source_checkout.issubset(set(module.MACOS_FILES))
+    assert modore_source_checkout.isdisjoint(set(module.WINDOWS_FILES))
+    skill_files = {
+        path.relative_to(project_root).as_posix()
+        for path in (project_root / "skills" / "modore-ops").rglob("*")
+        if path.is_file()
+    }
+    assert skill_files == {
+        path for path in modore_source_checkout
+        if path.startswith("skills/modore-ops/")
+    }
+    assert "bin/modore" in module.MACOS_EXECUTABLE_FILES
     swift_root = project_root / "macos" / "Modore"
     swift_files = {
         path.relative_to(project_root).as_posix()
@@ -700,6 +720,10 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
         "scripts/mcpaudit.py",
         "scripts/fileaccess.py",
         "scripts/mcp_server.py",
+        # The timeout wrapper is a dependency of the source-checkout-only
+        # bin/modore entry point. The installed app does not invoke that shell
+        # command and therefore must not gain an unreachable Python helper.
+        "scripts/bounded_exec.py",
     }
     non_shell_expected = {
         f"data/{path.name}" for path in (project_root / "data").glob("*.json")
@@ -722,6 +746,15 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
     assert not non_shell_missing, (
         f"runtime data/programs missing from the shipped app runtime: {sorted(non_shell_missing)}"
     )
+
+    source_checkout_only = {
+        "bin/modore",
+        "scripts/bounded_exec.py",
+        "skills/modore-ops/SKILL.md",
+        "skills/modore-ops/agents/openai.yaml",
+        "skills/modore-ops/references/command-contract.md",
+    }
+    assert runtime_files.isdisjoint(source_checkout_only)
 
 
 @pytest.mark.parametrize(
@@ -1305,7 +1338,10 @@ def test_macos_browser_automation_evidence_is_structured_without_raw_commands(
         assert field in helper
     assert 'verdict = orphanedRoots.length ? "orphaned"' in helper
     assert 'systemRoots.length ? "conflict_possible"' in helper
-    assert "parent_command" in storage
+    assert "parent_available = ppid in commands" in storage
+    assert "maximum_work_units" in storage
+    assert "__PCH_BROWSER_BOUNDED__" in storage
+    assert '/bin/ps -p "$ppid"' not in storage
     assert "storage_runtime.tsv" in storage
 
 
