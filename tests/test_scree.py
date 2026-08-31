@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import resource
 import signal
 import shutil
 import subprocess
@@ -275,6 +276,47 @@ def test_claude_collection_never_follows_a_linked_project_bucket(tmp_path):
     assert status["count"] == 0
 
 
+def test_claude_evidence_accepts_canonical_macos_var_alias(tmp_path):
+    canonical = str(tmp_path)
+    if not canonical.startswith("/private/var/"):
+        pytest.skip("this host does not expose the macOS /var alias")
+    alias_home = Path(canonical.replace("/private/var/", "/var/", 1))
+    transcript = tmp_path / ".claude/projects/-storage/session.jsonl"
+    _write(transcript, "\n".join([
+        json.dumps({"cwd": "/Users/example/work"}),
+        json.dumps({
+            "timestamp": "2026-08-14T00:00:00Z",
+            "message": {"role": "user", "content": [
+                {"type": "text", "text": "npm cache clean 할까요?"},
+            ]},
+        }, ensure_ascii=False),
+        json.dumps({
+            "timestamp": "2026-08-14T00:01:00Z",
+            "message": {"role": "assistant", "content": [{
+                "type": "tool_use", "id": "call-1", "name": "Bash",
+                "input": {"command": "npm cache clean --force"},
+            }]},
+        }),
+        json.dumps({
+            "timestamp": "2026-08-14T00:01:01Z",
+            "message": {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": "call-1", "content": "done",
+            }]},
+        }),
+    ]) + "\n")
+
+    result = scree.build_evidence("npm cache clean", alias_home)
+
+    assert len(result["conversationMentions"]) == 1
+    assert len(result["providerToolInvocations"]) == 1
+    invocation = result["providerToolInvocations"][0]
+    assert invocation["command"] == "npm cache clean --force"
+    assert invocation["status"] == "completed"
+    assert invocation["source"] == str(
+        Path(str(transcript).replace("/private/var/", "/var/", 1))
+    )
+
+
 # ---------------------------------------------------------------------------
 # 소유자가 앱에서 이미 지운 대화 (데스크탑 인덱스 톰스톤)
 # ---------------------------------------------------------------------------
@@ -333,6 +375,49 @@ def test_tombstone_bodies_are_never_opened(tmp_path):
         assert retention["expiring"][0]["owner_deleted"] is True
     finally:
         tomb.chmod(0o600)
+
+
+def test_desktop_tombstone_store_root_symlink_is_never_followed(tmp_path):
+    home = tmp_path / "home"
+    outside = tmp_path / "outside-index"
+    _write(outside / "acct" / "org" / "deleted_external-session", "timestamp")
+    root = home.joinpath(*scree.CLAUDE_DESKTOP_INDEX)
+    root.parent.mkdir(parents=True)
+    root.symlink_to(outside, target_is_directory=True)
+
+    assert scree.collect_claude_desktop_deletions(home) == set()
+
+
+def test_desktop_tombstones_enforce_name_and_depth_bounds(tmp_path):
+    home = tmp_path / "home"
+    root = home.joinpath(*scree.CLAUDE_DESKTOP_INDEX)
+    _write(root / "acct" / "org" / "deleted_valid-id_1", "timestamp")
+    _write(root / "acct" / "org" / "deleted_bad.id", "timestamp")
+    _write(root / "acct" / "org" / "deleted_", "timestamp")
+    too_long = "x" * (scree.CLAUDE_DESKTOP_TOMBSTONE_ID_MAX_CHARS + 1)
+    _write(root / "acct" / "org" / f"deleted_{too_long}", "timestamp")
+    assert scree.collect_claude_desktop_deletions(home) == {"valid-id_1"}
+
+    deep_home = tmp_path / "deep-home"
+    deep_root = deep_home.joinpath(*scree.CLAUDE_DESKTOP_INDEX)
+    deep = deep_root.joinpath(
+        *("nested" for _ in range(
+            scree.CLAUDE_DESKTOP_TOMBSTONE_MAX_DEPTH + 1)),
+        "deleted_too-deep",
+    )
+    _write(deep, "timestamp")
+
+    assert scree.collect_claude_desktop_deletions(deep_home) == set()
+
+
+def test_desktop_tombstone_discovery_honors_entry_cap(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    root = home.joinpath(*scree.CLAUDE_DESKTOP_INDEX)
+    _write(root / "deleted_one", "timestamp")
+    _write(root / "deleted_two", "timestamp")
+    monkeypatch.setattr(scree, "CLAUDE_DESKTOP_TOMBSTONE_MAX_ENTRIES", 1)
+
+    assert len(scree.collect_claude_desktop_deletions(home)) <= 1
 
 
 def test_a_machine_with_no_desktop_index_judges_exactly_as_before(tmp_path):
@@ -574,6 +659,29 @@ def test_retention_missing_config_falls_back_to_heuristic(retention_home):
     retention = scree.build_scree(home)["retention"]
     claude = next(s for s in retention["stores"] if s["store"] == "Claude")
     assert claude["mode"] == "rolling"
+
+
+@pytest.mark.parametrize("damage", ["symlink", "fifo", "oversized"])
+def test_cleanup_period_rejects_unsafe_or_oversized_user_settings(
+        tmp_path, damage):
+    home = tmp_path / "home"
+    settings = home / ".claude" / "settings.local.json"
+    settings.parent.mkdir(parents=True)
+    if damage == "symlink":
+        outside = tmp_path / "outside-settings.json"
+        _write(outside, json.dumps({"cleanupPeriodDays": 3}))
+        settings.symlink_to(outside)
+    elif damage == "fifo":
+        os.mkfifo(settings)
+    else:
+        settings.write_bytes(
+            b'{"cleanupPeriodDays":3,"padding":"'
+            + b"x" * scree.CLAUDE_SETTINGS_MAX_BYTES
+            + b'"}')
+
+    started = time.monotonic()
+    assert scree.read_claude_cleanup_period_days(home) is None
+    assert time.monotonic() - started < 1.0
 
 
 @pytest.fixture
@@ -938,6 +1046,74 @@ def test_git_cwd_identity_change_discards_query_output(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", swapping_run)
     assert scree._git(["status", "--porcelain"], repo) is None
+
+
+def test_git_forces_system_binary_and_disables_optional_fsmonitor(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    observed = {}
+
+    def recording_run(command, **kwargs):
+        observed["command"] = command
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+
+    assert scree._git(["status", "--porcelain"], repo) == ""
+    assert observed["command"][:5] == [
+        "/usr/bin/git", "--no-optional-locks",
+        "-c", "core.fsmonitor=false", "status",
+    ]
+
+
+def test_git_does_not_execute_hostile_repo_fsmonitor_or_leave_setsid_child(
+        worktree_home):
+    _, repo, git = worktree_home
+    marker = repo.parent / "fsmonitor-invoked"
+    child_pid_file = repo.parent / "fsmonitor-child.pid"
+    hook = repo.parent / "hostile-fsmonitor.py"
+    hook.write_text(
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "import subprocess\n"
+        "import sys\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        f"marker = Path({str(marker)!r})\n"
+        f"pid_file = Path({str(child_pid_file)!r})\n"
+        "if '--detached-child' in sys.argv:\n"
+        "    os.setsid()\n"
+        "    pid_file.write_text(str(os.getpid()))\n"
+        "    time.sleep(30)\n"
+        "    raise SystemExit(0)\n"
+        "marker.write_text('invoked')\n"
+        "subprocess.Popen(\n"
+        "    [sys.executable, __file__, '--detached-child'],\n"
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL, close_fds=True)\n"
+        "for _ in range(100):\n"
+        "    if pid_file.exists():\n"
+        "        break\n"
+        "    time.sleep(0.01)\n"
+        "print('fsmonitor-token')\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    git("config", "core.fsmonitor", str(hook))
+
+    try:
+        assert scree._git(["status", "--porcelain"], repo, timeout=2.0) is not None
+        time.sleep(0.05)
+        assert not marker.exists()
+        assert not child_pid_file.exists()
+    finally:
+        if child_pid_file.exists():
+            try:
+                child_pid = int(child_pid_file.read_text())
+                os.killpg(child_pid, signal.SIGKILL)
+            except (OSError, ValueError):
+                pass
 
 
 def test_worktree_budget_exhaustion_keeps_known_item_unreadable(
@@ -1677,6 +1853,52 @@ def only_bindable_stores(bind_home, monkeypatch):
     바인더 없는 저장소 요인만 제거한 상태에서 본다."""
     monkeypatch.setattr(scree, "unbound_stores_present", lambda home: [])
     return bind_home
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex", "gemini"])
+def test_deep_binders_reject_fifo_and_symlink_session_candidates(
+        only_bindable_stores, provider):
+    home = only_bindable_stores["home"]
+    workspace = str(only_bindable_stores["repo"])
+    outside = home.parent / f"outside-{provider}"
+
+    if provider == "claude":
+        directory = home / ".claude" / "projects" / "-hostile"
+        suffix = ".jsonl"
+        _write(outside, _jsonl({"cwd": workspace}))
+    elif provider == "codex":
+        directory = home / ".codex" / "sessions" / "hostile"
+        suffix = ".jsonl"
+        _write(outside, _jsonl({
+            "type": "session_meta",
+            "payload": {"id": "escaped", "cwd": workspace},
+        }))
+    else:
+        directory = home / ".gemini" / "tmp" / "hostile" / "chats"
+        suffix = ".json"
+        digest = hashlib.sha256(workspace.encode("utf-8")).hexdigest()
+        _write(home / ".gemini" / "projects.json",
+               json.dumps({"projects": {workspace: {}}}))
+        _write(outside, json.dumps({
+            "sessionId": "escaped",
+            "projectHash": digest,
+            "messages": [{"type": "user", "content": workspace}],
+        }))
+
+    directory.mkdir(parents=True, exist_ok=True)
+    escaped = directory / f"escaped{suffix}"
+    escaped.symlink_to(outside)
+    fifo = directory / f"blocked{suffix}"
+    os.mkfifo(fifo)
+
+    started = time.monotonic()
+    out = scree.build_bindings(home, workspace, deep=True)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0
+    assert out["coverageDetail"][provider] == "incomplete"
+    assert not any(binding["source"] == str(escaped)
+                   for binding in out["bindings"])
 
 
 def test_coverage_is_complete_when_every_bindable_store_was_read(only_bindable_stores):
@@ -3024,9 +3246,12 @@ def test_session_index_does_not_call_an_unreadable_claude_store_missing(
     root = tmp_path / ".claude" / "projects"
     root.mkdir(parents=True)
     original = os.scandir
+    root_identity = (root.stat().st_dev, root.stat().st_ino)
 
     def deny_projects(path):
-        if not isinstance(path, int) and Path(path) == root:
+        if (isinstance(path, int)
+                and (os.fstat(path).st_dev, os.fstat(path).st_ino)
+                == root_identity):
             raise PermissionError("TCC denied")
         return original(path)
 
@@ -3475,6 +3700,36 @@ def test_sessions_returns_everything_by_default(bind_home):
     assert len(out["sessions"]) == out["total"]
 
 
+def test_claude_discovery_bounds_fds_for_300_sibling_buckets(tmp_path):
+    root = tmp_path / ".claude" / "projects"
+    expected_sources = set()
+    for number in range(300):
+        workspace = f"/tmp/modore-wide-{number:03d}"
+        bucket = root / scree._encode_claude_project_dir(workspace)
+        source = bucket / f"session-{number:03d}.jsonl"
+        _write(source, _jsonl({
+            "type": "user",
+            "cwd": workspace,
+            "sessionId": f"wide-{number:03d}",
+        }))
+        expected_sources.add(str(source))
+
+    original_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if (original_limit[1] != resource.RLIM_INFINITY
+            and original_limit[1] < 256):
+        pytest.skip("hard RLIMIT_NOFILE is below the regression limit")
+    try:
+        resource.setrlimit(
+            resource.RLIMIT_NOFILE, (256, original_limit[1]))
+        records, coverage = scree.collect_claude(tmp_path)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, original_limit)
+
+    assert coverage["status"] == "ok"
+    assert coverage["count"] == 300
+    assert {record["source"] for record in records} == expected_sources
+
+
 def test_sessions_includes_gemini_conversations(tmp_path):
     """collect_gemini는 registry(project_state)를 보고하고, 실제 대화는
     ~/.gemini/tmp/*/chats/*.json에 있다. 화면이 부제에서 Gemini를 말하면서
@@ -3500,6 +3755,181 @@ def test_sessions_includes_gemini_conversations(tmp_path):
     assert all(s["kind"] == "session" for s in gemini)
     # 그리고 그 경로는 실제로 inspect가 읽을 수 있어야 한다.
     assert scree.build_inspect(Path(gemini[0]["source"]), home)["status"] == "ok"
+
+
+@pytest.mark.parametrize("damage", ["symlink", "hardlink", "fifo"])
+def test_sessions_rejects_codex_special_leaf_and_search_withholds_absence(
+        tmp_path, damage):
+    sessions = tmp_path / ".codex" / "sessions" / "2026" / "09"
+    sessions.mkdir(parents=True)
+    leaf = sessions / "hostile.jsonl"
+    secret = "OUTSIDE_CODEX_SECRET"
+    if damage in ("symlink", "hardlink"):
+        outside = tmp_path / "outside.jsonl"
+        _write(outside, _jsonl(
+            {"type": "session_meta", "payload": {"id": "outside", "cwd": "/w"}},
+            {"type": "response_item", "payload": {
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": secret}],
+            }},
+        ))
+        if damage == "symlink":
+            leaf.symlink_to(outside)
+        else:
+            os.link(outside, leaf)
+    else:
+        os.mkfifo(leaf)
+
+    started = time.monotonic()
+    sessions_payload = scree.build_sessions(tmp_path)
+    search = scree.build_search(secret, tmp_path)
+    assert time.monotonic() - started < 2.0
+
+    codex = next(store for store in sessions_payload["coverage"]["stores"]
+                 if store["store"] == "Codex")
+    assert codex["status"] == "unrecognized"
+    assert sessions_payload["coverage"]["complete"] is False
+    assert search["matches"] == []
+    assert search["coverage"] == "truncated"
+    assert search["truncatedReason"] == "discovery"
+    assert search["definitive"] is False
+
+
+@pytest.mark.parametrize("provider", ["claude", "gemini", "vscode"])
+@pytest.mark.parametrize("damage", ["symlink", "hardlink", "fifo"])
+def test_metadata_discovery_rejects_special_provider_leaf(
+        tmp_path, provider, damage):
+    outside = tmp_path / "outside-provider.json"
+    outside.write_text('{"folder":"file:///outside","messages":[]}', encoding="utf-8")
+    if provider == "claude":
+        leaf = tmp_path / ".claude" / "projects" / "-tmp-work" / "evil.jsonl"
+        store_name = "Claude"
+    elif provider == "gemini":
+        (tmp_path / ".gemini" / "projects.json").parent.mkdir(parents=True)
+        (tmp_path / ".gemini" / "projects.json").write_text(
+            '{"projects":{}}', encoding="utf-8")
+        leaf = tmp_path / ".gemini" / "tmp" / "demo" / "chats" / "evil.json"
+        store_name = "Gemini"
+    else:
+        leaf = (tmp_path / "Library" / "Application Support" / "Code" / "User"
+                / "workspaceStorage" / "demo" / "workspace.json")
+        store_name = "VS Code"
+    leaf.parent.mkdir(parents=True)
+    if damage == "symlink":
+        leaf.symlink_to(outside)
+    elif damage == "hardlink":
+        os.link(outside, leaf)
+    else:
+        os.mkfifo(leaf)
+
+    started = time.monotonic()
+    payload = scree.build_sessions(tmp_path)
+    assert time.monotonic() - started < 2.0
+    store = next(item for item in payload["coverage"]["stores"]
+                 if item["store"] == store_name)
+    assert store["status"] == "unrecognized"
+    assert payload["coverage"]["complete"] is False
+    assert str(outside) not in json.dumps(payload)
+
+
+def test_gemini_session_listing_reads_only_bounded_leading_metadata(
+        tmp_path, monkeypatch):
+    workspace = "/Users/example/large-gemini"
+    digest = hashlib.sha256(workspace.encode()).hexdigest()
+    registry = tmp_path / ".gemini" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps({"projects": {workspace: {}}}), encoding="utf-8")
+    chat = tmp_path / ".gemini" / "tmp" / "demo" / "chats" / "large.json"
+    chat.parent.mkdir(parents=True)
+    chat.write_text(
+        '{"projectHash":' + json.dumps(digest)
+        + ',"messages":[{"content":' + json.dumps("body" * 100_000) + '}]}',
+        encoding="utf-8",
+    )
+    original_read_text = Path.read_text
+
+    def reject_chat_body(path, *args, **kwargs):
+        if path == chat:
+            raise AssertionError("session listing read the Gemini conversation body")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", reject_chat_body)
+    payload = scree.build_sessions(tmp_path)
+    gemini = [item for item in payload["sessions"] if item["tool"] == "Gemini"]
+    assert len(gemini) == 1
+    assert gemini[0]["workspace"] == workspace
+    assert gemini[0]["sizeBytes"] == chat.stat().st_size
+
+
+def test_gemini_listing_uses_only_a_top_level_project_hash(tmp_path):
+    real_workspace = "/Users/example/real-gemini-project"
+    nested_workspace = "/Users/example/payload-lookalike"
+    real_hash = hashlib.sha256(real_workspace.encode()).hexdigest()
+    nested_hash = hashlib.sha256(nested_workspace.encode()).hexdigest()
+    registry = tmp_path / ".gemini" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps({
+        "projects": {real_workspace: {}, nested_workspace: {}},
+    }), encoding="utf-8")
+    chat = tmp_path / ".gemini" / "tmp" / "demo" / "chats" / "chat.json"
+    chat.parent.mkdir(parents=True)
+    chat.write_text(json.dumps({
+        "messages": [{"tool": {"projectHash": nested_hash}}],
+        "projectHash": real_hash,
+        "sessionId": "chat",
+    }), encoding="utf-8")
+
+    payload = scree.build_sessions(tmp_path)
+    gemini = [item for item in payload["sessions"]
+              if item["tool"] == "Gemini"]
+    assert len(gemini) == 1
+    assert gemini[0]["workspace"] == real_workspace
+
+
+def test_gemini_listing_reports_metadata_beyond_prefix_as_truncated(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(scree, "GEMINI_CHAT_METADATA_PREFIX_BYTES", 128)
+    workspace = "/Users/example/late-gemini-metadata"
+    digest = hashlib.sha256(workspace.encode()).hexdigest()
+    registry = tmp_path / ".gemini" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps({"projects": {workspace: {}}}), encoding="utf-8")
+    chat = tmp_path / ".gemini" / "tmp" / "demo" / "chats" / "chat.json"
+    chat.parent.mkdir(parents=True)
+    chat.write_text(json.dumps({
+        "messages": [{"content": "x" * 1000}],
+        "projectHash": digest,
+    }), encoding="utf-8")
+
+    payload = scree.build_sessions(tmp_path)
+    listed = [item for item in payload["sessions"]
+              if item["tool"] == "Gemini"]
+    gemini = next(item for item in payload["coverage"]["stores"]
+                  if item["store"] == "Gemini")
+    assert len(listed) == 1
+    assert listed[0]["workspace"] == ""
+    assert gemini["status"] == "truncated"
+    assert payload["coverage"]["complete"] is False
+
+
+@pytest.mark.parametrize("relative", [
+    Path("unexpected.json"),
+    Path("demo") / "not-chats" / "chat.json",
+    Path("demo") / "chats" / "nested" / "chat.json",
+])
+def test_gemini_listing_marks_json_outside_chat_layout_unrecognized(
+        tmp_path, relative):
+    leaf = tmp_path / ".gemini" / "tmp" / relative
+    leaf.parent.mkdir(parents=True)
+    leaf.write_text('{"messages":[]}', encoding="utf-8")
+
+    payload = scree.build_sessions(tmp_path)
+    gemini = next(item for item in payload["coverage"]["stores"]
+                  if item["store"] == "Gemini")
+    assert gemini["status"] == "unrecognized"
+    assert gemini["unrecognized"] >= 1
+    assert payload["coverage"]["complete"] is False
 
 
 def test_gemini_chats_without_a_registry_entry_admit_they_have_no_workspace(tmp_path):
@@ -3677,6 +4107,71 @@ def test_search_returns_a_window_not_the_whole_turn(tmp_path):
     assert len(snippet) < scree.SEARCH_SNIPPET_CHARS + 40
 
 
+def test_search_skips_an_oversized_jsonl_line_without_allocating_it_as_a_turn(
+        tmp_path):
+    source = tmp_path / ".claude" / "projects" / "-tmp-work" / "large.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(
+        _jsonl({"cwd": "/tmp/work"}).encode()
+        + b'{"damaged":"' + (b"x" * (scree.MAX_LINE_BYTES * 3)) + b'"}\n'
+        + _jsonl({"message": {"role": "user", "content": "bounded phrase"}}).encode()
+    )
+
+    out = scree.build_search("bounded phrase", tmp_path)
+
+    assert out["matches"], "a healthy record after the giant line remains searchable"
+    assert out["truncatedSessions"] == 1
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "content"
+    assert out["definitive"] is False
+
+
+def test_search_reports_a_per_file_byte_cap_instead_of_claiming_no_match(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(scree, "SEARCH_PROBE_MAX_BYTES", 1024)
+    source = tmp_path / ".claude" / "projects" / "-tmp-work" / "capped.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(
+        _jsonl({"cwd": "/tmp/work"}).encode()
+        + (b" " * 2048)
+        + _jsonl({"message": {"role": "user", "content": "after byte cap"}}).encode()
+    )
+
+    out = scree.build_search("after byte cap", tmp_path)
+
+    assert out["matches"] == []
+    assert out["truncatedSessions"] == 1
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "content"
+    assert out["definitive"] is False
+
+
+def test_oversized_gemini_chat_is_listed_but_content_read_is_truncated(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(scree, "SESSION_CONTENT_MAX_BYTES", 1024)
+    workspace = "/Users/example/gemini-cap"
+    digest = hashlib.sha256(workspace.encode()).hexdigest()
+    registry = tmp_path / ".gemini" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps({"projects": {workspace: {}}}), encoding="utf-8")
+    chat = tmp_path / ".gemini" / "tmp" / "demo" / "chats" / "large.json"
+    chat.parent.mkdir(parents=True)
+    chat.write_text(json.dumps({
+        "projectHash": digest,
+        "messages": [{"type": "user", "content": "gemini capped phrase" + "x" * 4000}],
+    }), encoding="utf-8")
+
+    sessions = scree.build_sessions(tmp_path)
+    gemini = [item for item in sessions["sessions"] if item["tool"] == "Gemini"]
+    assert len(gemini) == 1, "metadata listing does not need the oversized body"
+    assert scree.build_inspect(chat, tmp_path)["status"] == "truncated"
+    search = scree.build_search("gemini capped phrase", tmp_path)
+    assert search["matches"] == []
+    assert search["truncatedSessions"] == 1
+    assert search["truncatedReason"] == "content"
+    assert search["definitive"] is False
+
+
 def test_search_caps_matches_per_session_so_one_file_cannot_fill_the_answer(tmp_path):
     turns = [("user", f"찾는말 {i}") for i in range(30)]
     _stored_session(tmp_path, "a", *turns)
@@ -3697,6 +4192,27 @@ def test_search_of_nothing_is_not_a_scan(tmp_path):
     _stored_session(tmp_path, "a", ("user", "무언가"))
     out = scree.build_search("   ", tmp_path)
     assert out["matches"] == [] and out["scannedSessions"] == 0
+
+
+def test_content_scans_exclude_editor_workspace_state_from_denominator(
+        tmp_path):
+    _stored_session(tmp_path, "conversation", ("user", "ordinary content"))
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    for folder in ("Code", "Kiro"):
+        manifest = (tmp_path / "Library" / "Application Support" / folder
+                    / "User" / "workspaceStorage" / folder / "workspace.json")
+        _write(manifest, json.dumps({"folder": workspace.as_uri()}))
+
+    search = scree.build_search("phrase not present", tmp_path)
+    evidence = scree.build_evidence("phrase not present", tmp_path)
+
+    for result in (search, evidence):
+        assert result["totalSessions"] == 1
+        assert result["scannedSessions"] == 1
+        assert result["unreadableSessions"] == 0
+        assert result["coverage"] == "complete"
+        assert result["definitive"] is True
 
 
 def test_search_is_not_reachable_from_the_judgment_path(bind_home):
@@ -3764,6 +4280,35 @@ def test_search_accepts_the_query_from_a_file_so_it_is_not_in_argv(tmp_path, cap
     assert json.loads(capsys.readouterr().out)["matches"]
 
 
+def test_search_query_file_is_bounded_before_decoding(tmp_path, capsys):
+    query_file = tmp_path / "oversized-query.txt"
+    query_file.write_bytes(b"x" * 4097)
+
+    assert scree.main(["search", "--query-file", str(query_file),
+                       "--home", str(tmp_path)]) == 2
+    assert "at most 4096 UTF-8 bytes" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("damage", ["symlink", "fifo"])
+def test_search_query_file_rejects_nonregular_or_linked_input(
+        tmp_path, capsys, damage):
+    query_file = tmp_path / "query-input"
+    if damage == "symlink":
+        outside = tmp_path / "outside-query"
+        outside.write_text("private query", encoding="utf-8")
+        query_file.symlink_to(outside)
+    else:
+        os.mkfifo(query_file)
+
+    started = time.monotonic()
+    result = scree.main([
+        "search", "--query-file", str(query_file), "--home", str(tmp_path),
+    ])
+    assert time.monotonic() - started < 1.0
+    assert result == 1
+    assert "regular file" in capsys.readouterr().err
+
+
 def test_search_without_a_query_is_an_error_not_an_empty_scan(tmp_path, capsys):
     assert scree.main(["search", "--home", str(tmp_path)]) == 2
 
@@ -3822,6 +4367,56 @@ def test_evidence_keeps_a_mention_and_an_execution_apart(tmp_path):
     assert all(isinstance(row["lastActiveEpoch"], (int, float))
                for row in mentions + invocations)
     assert mentions[0]["at"] == "2026-08-14T00:00:00Z"
+
+
+def test_evidence_reads_visible_turns_from_gemini_single_json(tmp_path):
+    workspace = "/Users/example/gemini-evidence"
+    digest = hashlib.sha256(workspace.encode("utf-8")).hexdigest()
+    registry = tmp_path / ".gemini" / "projects.json"
+    _write(registry, json.dumps({"projects": {workspace: {}}}))
+    chat = tmp_path / ".gemini" / "tmp" / "bucket" / "chats" / "chat.json"
+    _write(chat, json.dumps({
+        "projectHash": digest,
+        "sessionId": "gemini-evidence",
+        "messages": [{
+            "uuid": "gemini-turn-1",
+            "timestamp": "2026-08-31T01:02:03Z",
+            "type": "user",
+            "content": [{"text": "Gemini cache recovery phrase"}],
+        }],
+    }))
+
+    out = scree.build_evidence("cache recovery phrase", tmp_path)
+
+    assert len(out["conversationMentions"]) == 1
+    mention = out["conversationMentions"][0]
+    assert mention["tool"] == "Gemini"
+    assert mention["source"] == str(chat)
+    assert "cache recovery phrase" in mention["snippet"]
+    assert out["totalSessions"] == out["scannedSessions"] == 1
+    assert out["definitive"] is True
+
+
+def test_evidence_withholds_absence_for_unrecognized_gemini_messages(
+        tmp_path):
+    workspace = "/Users/example/damaged-gemini"
+    digest = hashlib.sha256(workspace.encode("utf-8")).hexdigest()
+    _write(tmp_path / ".gemini" / "projects.json",
+           json.dumps({"projects": {workspace: {}}}))
+    _write(tmp_path / ".gemini" / "tmp" / "bucket" / "chats" / "bad.json",
+           json.dumps({
+               "projectHash": digest,
+               "sessionId": "damaged",
+               "messages": {"not": "an array"},
+           }))
+
+    out = scree.build_evidence("phrase not present", tmp_path)
+
+    assert out["conversationMentions"] == []
+    assert out["unreadableSessions"] == 1
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "unreadable"
+    assert out["definitive"] is False
 
 
 def test_evidence_never_returns_a_merged_total(tmp_path):

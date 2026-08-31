@@ -111,6 +111,13 @@ CLAUDE_META_KEYS = ("cwd", "gitBranch", "sessionId")
 CODEX_META_KEYS = ("id", "cwd")
 CLAUDE_SCAN_LINES = 25
 MAX_LINE_BYTES = 65536
+SESSION_DISCOVERY_MAX_ENTRIES = 50000
+SESSION_DISCOVERY_MAX_DEPTH = 16
+SESSION_METADATA_MAX_BYTES = 4 * 1024 * 1024
+GEMINI_CHAT_METADATA_PREFIX_BYTES = 64 * 1024
+SESSION_CONTENT_MAX_BYTES = 32 * 1024 * 1024
+SEARCH_PROBE_MAX_BYTES = 32 * 1024 * 1024
+SEARCH_IO_CHUNK_BYTES = 64 * 1024
 
 # Claude Desktop's Code surface is a separate store from Claude Code.  One
 # conversation is a metadata JSON beside a same-named directory; the hundreds
@@ -204,8 +211,9 @@ def _uri_to_path(uri: str) -> Optional[str]:
 
 def _record(tool: str, kind: str, source: Path, workspace: Optional[str], *,
             repo_url: Optional[str] = None, branch: Optional[str] = None,
-            weight: int = 1) -> dict:
-    stat = source.stat()
+            weight: int = 1,
+            source_info: Optional[os.stat_result] = None) -> dict:
+    source_stat = source_info or source.lstat()
     return {
         "tool": tool,
         "kind": kind,
@@ -213,10 +221,277 @@ def _record(tool: str, kind: str, source: Path, workspace: Optional[str], *,
         "workspace": _canon_workspace(workspace) if workspace else None,
         "repo_url": normalize_repo_url(repo_url) if repo_url else None,
         "branch": branch,
-        "size_bytes": stat.st_size,
-        "last_active": stat.st_mtime,
+        "size_bytes": source_stat.st_size,
+        "last_active": source_stat.st_mtime,
         "weight": weight,
     }
+
+
+@dataclass(frozen=True)
+class _DiscoveredRegularFile:
+    path: Path
+    info: os.stat_result
+
+
+def _incomplete_store_status(root: Path, store: str, *, count: int = 0) -> dict:
+    """Classify a store root without following a hostile replacement."""
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError:
+        status = "missing"
+        unrecognized = 0
+    except OSError:
+        status = "unreadable"
+        unrecognized = 0
+    else:
+        status = "unrecognized" if not stat.S_ISDIR(root_info.st_mode) else "unreadable"
+        unrecognized = 1 if status == "unrecognized" else 0
+    return {"store": store, "status": status, "count": count,
+            "unrecognized": unrecognized}
+
+
+def _discover_regular_files_nofollow(
+        root: Path, store: str, suffix: str, *,
+        maximum_entries: int = SESSION_DISCOVERY_MAX_ENTRIES,
+        maximum_depth: int = SESSION_DISCOVERY_MAX_DEPTH,
+        ) -> tuple[list[_DiscoveredRegularFile], dict]:
+    """Walk one provider namespace without crossing links or special files.
+
+    A symlinked directory can hide an arbitrary second namespace and a FIFO
+    with a transcript suffix can block forever when opened. Both are rejected
+    from descriptor-relative metadata discovery and make coverage incomplete.
+    """
+    try:
+        root_descriptor = _open_directory_nofollow(root)
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError):
+        return ([], _incomplete_store_status(root, store))
+
+    try:
+        if os.fstat(root_descriptor).st_uid != os.getuid():
+            os.close(root_descriptor)
+            return ([], {"store": store, "status": "unrecognized",
+                         "count": 0, "unrecognized": 1})
+    except OSError:
+        os.close(root_descriptor)
+        return ([], {"store": store, "status": "unreadable",
+                     "count": 0, "unrecognized": 0})
+
+    files: list[_DiscoveredRegularFile] = []
+    # Keep only bounded relative names and the identity observed for each
+    # component.  Keeping an open child descriptor for every queued sibling
+    # makes a wide provider namespace consume one FD per directory and can
+    # exhaust the process limit before the walk reaches those children.
+    # Reopening from the pinned root at pop time keeps only the pinned root,
+    # the current component, and the next component live at once.
+    stack: list[
+        tuple[tuple[str, ...], tuple[tuple[int, int], ...], int]
+    ] = [((), (), 0)]
+    entries_seen = 0
+    unrecognized = 0
+    unreadable = False
+    truncated = False
+    try:
+        while stack:
+            relative, expected_identities, depth = stack.pop()
+            descriptor = -1
+            try:
+                try:
+                    descriptor = os.dup(root_descriptor)
+                except OSError:
+                    unreadable = True
+                    break
+                reopen_failed = False
+                for component, expected_identity in zip(
+                        relative, expected_identities):
+                    child = -1
+                    try:
+                        child = os.open(
+                            component,
+                            os.O_RDONLY | os.O_DIRECTORY
+                            | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=descriptor,
+                        )
+                        opened = os.fstat(child)
+                        current = os.stat(
+                            component, dir_fd=descriptor,
+                            follow_symlinks=False)
+                        if (not stat.S_ISDIR(opened.st_mode)
+                                or opened.st_uid != os.getuid()
+                                or _stat_identity(opened)
+                                != expected_identity
+                                or _stat_identity(opened)
+                                != _stat_identity(current)):
+                            unrecognized += 1
+                            reopen_failed = True
+                            break
+                        os.close(descriptor)
+                        descriptor = child
+                        child = -1
+                    except OSError:
+                        unreadable = True
+                        reopen_failed = True
+                        break
+                    finally:
+                        if child >= 0:
+                            os.close(child)
+                if reopen_failed:
+                    continue
+                try:
+                    with os.scandir(descriptor) as iterator:
+                        for entry in iterator:
+                            if entries_seen >= maximum_entries:
+                                truncated = True
+                                break
+                            entries_seen += 1
+                            name = entry.name
+                            try:
+                                info = os.stat(
+                                    name, dir_fd=descriptor,
+                                    follow_symlinks=False)
+                            except OSError:
+                                unreadable = True
+                                continue
+                            mode = info.st_mode
+                            if stat.S_ISLNK(mode):
+                                # A linked directory may contain arbitrarily
+                                # many sessions; ignoring it while claiming
+                                # completeness is a false negative even if its
+                                # own name has no transcript suffix.
+                                unrecognized += 1
+                                continue
+                            if stat.S_ISDIR(mode):
+                                if depth >= maximum_depth:
+                                    truncated = True
+                                    continue
+                                child = -1
+                                try:
+                                    child = os.open(
+                                        name,
+                                        os.O_RDONLY | os.O_DIRECTORY
+                                        | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                        dir_fd=descriptor,
+                                    )
+                                    opened = os.fstat(child)
+                                    current = os.stat(
+                                        name, dir_fd=descriptor,
+                                        follow_symlinks=False)
+                                    if (not stat.S_ISDIR(opened.st_mode)
+                                            or opened.st_uid != os.getuid()
+                                            or _stat_identity(opened)
+                                            != _stat_identity(current)):
+                                        unrecognized += 1
+                                        os.close(child)
+                                        child = -1
+                                        continue
+                                    stack.append((
+                                        (*relative, name),
+                                        (*expected_identities,
+                                         _stat_identity(opened)),
+                                        depth + 1,
+                                    ))
+                                except OSError:
+                                    unreadable = True
+                                finally:
+                                    if child >= 0:
+                                        os.close(child)
+                                continue
+                            if not name.endswith(suffix):
+                                continue
+                            if (not stat.S_ISREG(mode)
+                                    or info.st_uid != os.getuid()
+                                    or info.st_nlink != 1):
+                                unrecognized += 1
+                                continue
+                            files.append(_DiscoveredRegularFile(
+                                root.joinpath(*relative, name), info))
+                except OSError:
+                    unreadable = True
+                    continue
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+            if truncated:
+                break
+    finally:
+        os.close(root_descriptor)
+
+    status = (
+        "truncated" if truncated else
+        "unreadable" if unreadable else
+        "unrecognized" if unrecognized else
+        "ok"
+    )
+    return (sorted(files, key=lambda item: str(item.path)), {
+        "store": store,
+        "status": status,
+        "count": len(files),
+        "unrecognized": unrecognized,
+    })
+
+
+def _open_regular_nofollow(
+        path: Path, *, allowed_uids: Optional[set[int]] = None,
+        ) -> tuple[Optional[int], Optional[os.stat_result], str]:
+    """Pin one regular leaf through a no-follow parent descriptor."""
+    owners = {os.getuid()} if allowed_uids is None else allowed_uids
+    parent_descriptor = -1
+    descriptor = -1
+    try:
+        parent_descriptor = _open_directory_nofollow(path.parent)
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=parent_descriptor,
+        )
+        opened = os.fstat(descriptor)
+        named = os.stat(
+            path.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (not stat.S_ISREG(opened.st_mode)
+                or opened.st_uid not in owners
+                or opened.st_nlink != 1
+                or _stat_identity(opened) != _stat_identity(named)):
+            os.close(descriptor)
+            descriptor = -1
+            return (None, None, "unrecognized")
+        result = descriptor
+        descriptor = -1
+        return (result, opened, "ok")
+    except FileNotFoundError:
+        return (None, None, "missing")
+    except PermissionError:
+        return (None, None, "unreadable")
+    except (OSError, ValueError):
+        return (None, None, "unrecognized")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+
+
+def _read_regular_bytes_nofollow(
+        path: Path, maximum_bytes: int, *, prefix: bool = False,
+        allowed_uids: Optional[set[int]] = None,
+        ) -> tuple[Optional[bytes], Optional[os.stat_result], str]:
+    descriptor, before, status = _open_regular_nofollow(
+        path, allowed_uids=allowed_uids)
+    if descriptor is None or before is None:
+        return (None, None, status)
+    try:
+        if not prefix and before.st_size > maximum_bytes:
+            return (None, before, "truncated")
+        with os.fdopen(os.dup(descriptor), "rb") as handle:
+            raw = handle.read(maximum_bytes if prefix else maximum_bytes + 1)
+        after = os.fstat(descriptor)
+        if _stat_signature(before) != _stat_signature(after):
+            return (None, after, "unrecognized")
+        if not prefix and len(raw) > maximum_bytes:
+            return (None, after, "truncated")
+        return (raw, after, "ok")
+    except OSError:
+        return (None, before, "unreadable")
+    finally:
+        os.close(descriptor)
 
 
 def _claude_desktop_root(home: Path) -> Path:
@@ -251,7 +526,10 @@ def _claude_desktop_metadata_scan(
         # every store component below the canonical home remains no-follow.
         canonical_home = original_home.resolve(strict=True)
         descriptor = _open_directory_nofollow(canonical_home)
-        home_device = os.fstat(descriptor).st_dev
+        home_info = os.fstat(descriptor)
+        if home_info.st_uid != os.getuid():
+            raise OSError("home directory is not owned by current user")
+        home_device = home_info.st_dev
     except FileNotFoundError:
         if descriptor >= 0:
             os.close(descriptor)
@@ -278,6 +556,7 @@ def _claude_desktop_metadata_scan(
                     component, dir_fd=descriptor,
                     follow_symlinks=False)
                 if (not stat.S_ISDIR(child_info.st_mode)
+                        or child_info.st_uid != os.getuid()
                         or child_info.st_dev != home_device
                         or _stat_identity(child_info)
                         != _stat_identity(named_child)):
@@ -356,6 +635,7 @@ def _claude_desktop_metadata_scan(
         try:
             before = os.fstat(file_descriptor)
             if (not stat.S_ISREG(before.st_mode)
+                    or before.st_uid != os.getuid()
                     or before.st_dev != home_device
                     or before.st_nlink != 1
                     or before.st_size > CLAUDE_DESKTOP_METADATA_MAX_BYTES):
@@ -400,6 +680,7 @@ def _claude_desktop_metadata_scan(
                 unit_name, dir_fd=parent_descriptor,
                 follow_symlinks=False)
             if (not stat.S_ISDIR(unit_info.st_mode)
+                    or unit_info.st_uid != os.getuid()
                     or unit_info.st_dev != home_device
                     or _stat_identity(unit_info) != _stat_identity(named_unit)):
                 return (None, "unrecognized", len(raw))
@@ -759,6 +1040,8 @@ def _read_claude_desktop_metadata(
     try:
         home_descriptor = _open_directory_nofollow(canonical_home)
         home_info = os.fstat(home_descriptor)
+        if home_info.st_uid != os.getuid():
+            return (None, "unrecognized")
         parent_descriptor = os.dup(home_descriptor)
         for component in Path(relative).parts[:-1]:
             child = -1
@@ -792,6 +1075,7 @@ def _read_claude_desktop_metadata(
         )
         before = os.fstat(descriptor)
         if (not stat.S_ISREG(before.st_mode)
+                or before.st_uid != os.getuid()
                 or before.st_dev != home_info.st_dev
                 or before.st_nlink != 1
                 or before.st_size > CLAUDE_DESKTOP_METADATA_MAX_BYTES):
@@ -842,6 +1126,8 @@ def _open_claude_desktop_primary(
     try:
         home_descriptor = _open_directory_nofollow(canonical_home)
         home_info = os.fstat(home_descriptor)
+        if home_info.st_uid != os.getuid():
+            return (None, None, "unrecognized")
         parent_descriptor = os.dup(home_descriptor)
         relative_path = Path(relative)
         for component in relative_path.parts[:-1]:
@@ -877,6 +1163,7 @@ def _open_claude_desktop_primary(
         )
         metadata_before = os.fstat(metadata_descriptor)
         if (not stat.S_ISREG(metadata_before.st_mode)
+                or metadata_before.st_uid != os.getuid()
                 or metadata_before.st_dev != home_info.st_dev
                 or metadata_before.st_nlink != 1
                 or metadata_before.st_size
@@ -911,6 +1198,7 @@ def _open_claude_desktop_primary(
             unit_name, dir_fd=parent_descriptor,
             follow_symlinks=False)
         if (not stat.S_ISDIR(unit_info.st_mode)
+                or unit_info.st_uid != os.getuid()
                 or unit_info.st_dev != home_info.st_dev
                 or _stat_identity(unit_info) != _stat_identity(named_unit)):
             return (None, None, "unrecognized")
@@ -971,6 +1259,7 @@ def _open_claude_desktop_primary(
                             name, dir_fd=current_descriptor,
                             follow_symlinks=False)
                         if (not stat.S_ISREG(opened.st_mode)
+                                or opened.st_uid != os.getuid()
                                 or opened.st_dev != home_info.st_dev
                                 or opened.st_nlink != 1
                                 or _stat_signature(opened)
@@ -1227,15 +1516,33 @@ def collect_codex(home: Path) -> tuple[list[dict], dict]:
     unrecognized = 0
     roots = [home / ".codex" / "sessions", home / ".codex" / "archived_sessions"]
     seen_root = False
+    root_statuses: list[str] = []
     for root in roots:
-        if not root.is_dir():
+        discovered, discovery = _discover_regular_files_nofollow(
+            root, "Codex", ".jsonl")
+        if discovery["status"] == "missing":
             continue
         seen_root = True
-        for path in sorted(root.rglob("*.jsonl")):
+        root_statuses.append(discovery["status"])
+        unrecognized += int(discovery.get("unrecognized", 0))
+        for candidate in discovered:
+            path = candidate.path
+            descriptor, opened, status = _open_regular_nofollow(path)
+            if descriptor is None or opened is None:
+                unrecognized += 1
+                continue
             try:
-                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                with os.fdopen(os.dup(descriptor), "rb") as handle:
                     first = _read_json_line(handle)
+                after = os.fstat(descriptor)
             except OSError:
+                unrecognized += 1
+                continue
+            finally:
+                os.close(descriptor)
+            if (_stat_signature(opened) != _stat_signature(after)
+                    or _stat_identity(opened)
+                    != _stat_identity(candidate.info)):
                 unrecognized += 1
                 continue
             payload = (first or {}).get("payload")
@@ -1245,8 +1552,17 @@ def collect_codex(home: Path) -> tuple[list[dict], dict]:
             git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
             records.append(_record(
                 "Codex", "session", path, payload.get("cwd"),
-                repo_url=git.get("repository_url"), branch=git.get("branch")))
-    status = {"store": "Codex", "status": "ok" if seen_root else "missing",
+                repo_url=git.get("repository_url"), branch=git.get("branch"),
+                source_info=opened))
+    status_value = "missing"
+    if seen_root:
+        status_value = (
+            "truncated" if "truncated" in root_statuses else
+            "unreadable" if "unreadable" in root_statuses else
+            "unrecognized" if "unrecognized" in root_statuses or unrecognized else
+            "ok"
+        )
+    status = {"store": "Codex", "status": status_value,
               "count": len(records), "unrecognized": unrecognized}
     return records, status
 
@@ -1357,71 +1673,85 @@ def _decode_claude_project_dir(
 def collect_claude(home: Path) -> tuple[list[dict], dict]:
     records: list[dict] = []
     root = home / ".claude" / "projects"
-    # Do not let a relocated Claude root or one linked bucket turn a local
-    # metadata scan into an arbitrary protected/network directory walk.
-    claude_root = home / ".claude"
-    try:
-        claude_info = claude_root.lstat()
-        root_info = root.lstat()
-    except FileNotFoundError:
-        return records, {
-            "store": "Claude", "status": "missing",
-            "count": 0, "unrecognized": 0,
-        }
-    except OSError:
-        return records, {
-            "store": "Claude", "status": "unreadable",
-            "count": 0, "unrecognized": 0,
-        }
-    if (not stat.S_ISDIR(claude_info.st_mode)
-            or not stat.S_ISDIR(root_info.st_mode)):
-        return records, {
-            "store": "Claude", "status": "unrecognized",
-            "count": 0, "unrecognized": 1,
-        }
-    try:
-        with os.scandir(root) as entries:
-            project_dirs = sorted(
-                Path(entry.path) for entry in entries
-                if entry.is_dir(follow_symlinks=False)
-            )
-    except OSError:
-        return records, {
-            "store": "Claude", "status": "unreadable",
-            "count": 0, "unrecognized": 0,
-        }
+    discovered, discovery = _discover_regular_files_nofollow(
+        root, "Claude", ".jsonl")
+    if discovery["status"] == "missing":
+        return records, discovery
+
+    by_project: dict[str, list[_DiscoveredRegularFile]] = {}
+    for candidate in discovered:
+        try:
+            relative = candidate.path.relative_to(root)
+        except ValueError:
+            discovery["unrecognized"] += 1
+            continue
+        if len(relative.parts) < 2:
+            discovery["unrecognized"] += 1
+            continue
+        by_project.setdefault(relative.parts[0], []).append(candidate)
+
     unresolved = 0
     sessions = 0
     subtranscripts = 0
-    for project_dir in project_dirs:
+    for project_name, project_files in sorted(by_project.items()):
+        project_dir = root / project_name
         # The transcript's own cwd is stronger evidence than Claude's lossy
         # bucket name and avoids filesystem-wide reverse lookup. Read every
         # top-level session first, then use a no-directory-listing fallback
         # only when the bucket contains no explicit cwd at all.
         pending_sessions: list[
-            tuple[Path, Optional[str], Optional[str], set[str]]
+            tuple[Path, Optional[str], Optional[str], set[str], os.stat_result]
         ] = []
-        for path in sorted(
-                candidate for candidate in project_dir.glob("*.jsonl")
-                if not candidate.is_symlink() and candidate.is_file()):
+        top_level = [candidate for candidate in project_files
+                     if candidate.path.parent == project_dir]
+        for candidate in sorted(top_level, key=lambda item: str(item.path)):
+            path = candidate.path
             workspace = None
             branch = None
             identifiers = {path.stem}
-            try:
-                with path.open("r", encoding="utf-8", errors="replace") as handle:
-                    for _ in range(CLAUDE_SCAN_LINES):
-                        line = _read_json_line(handle)
-                        if line is None:
-                            break
-                        if isinstance(line.get("sessionId"), str) and line["sessionId"]:
-                            identifiers.add(line["sessionId"])
-                        if not workspace and isinstance(line.get("cwd"), str):
-                            workspace = line["cwd"]
-                            branch = line.get("gitBranch") if isinstance(line.get("gitBranch"), str) else None
-                            break
-            except OSError:
-                pass
-            pending_sessions.append((path, workspace, branch, identifiers))
+            verified_info: Optional[os.stat_result] = None
+            descriptor, before, open_status = _open_regular_nofollow(path)
+            if descriptor is not None and before is not None:
+                try:
+                    with os.fdopen(os.dup(descriptor), "rb") as handle:
+                        for _ in range(CLAUDE_SCAN_LINES):
+                            line = _read_json_line(handle)
+                            if line is None:
+                                break
+                            if isinstance(line.get("sessionId"), str) and line["sessionId"]:
+                                identifiers.add(line["sessionId"])
+                            if not workspace and isinstance(line.get("cwd"), str):
+                                workspace = line["cwd"]
+                                branch = line.get("gitBranch") \
+                                    if isinstance(line.get("gitBranch"), str) else None
+                                break
+                    after = os.fstat(descriptor)
+                    if (_stat_signature(before) != _stat_signature(after)
+                            or _stat_identity(before)
+                            != _stat_identity(candidate.info)):
+                        workspace = None
+                        branch = None
+                        discovery["unrecognized"] += 1
+                    else:
+                        verified_info = after
+                except OSError:
+                    discovery["unrecognized"] += 1
+                finally:
+                    os.close(descriptor)
+            else:
+                if open_status == "unreadable":
+                    # Discovery already pinned a current-owner, one-link
+                    # regular leaf. Keep that session in the index so search
+                    # can count the content failure instead of silently
+                    # shrinking its denominator.
+                    verified_info = candidate.info
+                    if discovery["status"] == "ok":
+                        discovery["status"] = "unreadable"
+                else:
+                    discovery["unrecognized"] += 1
+            if verified_info is not None:
+                pending_sessions.append(
+                    (path, workspace, branch, identifiers, verified_info))
 
         # Never borrow one session's cwd for a different session that did not
         # record one. Distinct non-ASCII paths can share the same lossy bucket;
@@ -1429,19 +1759,22 @@ def collect_claude(home: Path) -> tuple[list[dict], dict]:
         # fallback is admissible only when the bucket has no explicit cwd and
         # the restricted decoder independently identifies one exact path.
         fallback = None
-        if pending_sessions and not any(workspace for _, workspace, _, _ in pending_sessions):
+        if pending_sessions and not any(
+                workspace for _, workspace, _, _, _ in pending_sessions):
             fallback = _decode_claude_project_dir(
                 project_dir.name, allow_directory_listing=False)
 
         owner_workspaces: dict[str, set[str]] = {}
-        for path, workspace, branch, identifiers in pending_sessions:
+        for path, workspace, branch, identifiers, source_info in pending_sessions:
             workspace = workspace or fallback
             if not workspace:
                 unresolved += 1
             else:
                 for identifier in identifiers:
                     owner_workspaces.setdefault(identifier, set()).add(workspace)
-            records.append(_record("Claude", "session", path, workspace, branch=branch))
+            records.append(_record(
+                "Claude", "session", path, workspace, branch=branch,
+                source_info=source_info))
             sessions += 1
 
         # Nested files are per-session subagent/workflow transcripts. Walk
@@ -1450,35 +1783,31 @@ def collect_claude(home: Path) -> tuple[list[dict], dict]:
         # different cwd values, so a bucket-wide first-cwd aggregate is unsafe.
         nested_by_workspace: dict[str, list[os.stat_result]] = {}
         observed_nested = 0
-        for current, dirs, files in os.walk(project_dir, followlinks=False):
-            current_path = Path(current)
-            dirs[:] = sorted(
-                name for name in dirs
-                if not (current_path / name).is_symlink()
-            )
-            if current_path == project_dir:
+        for nested_candidate in project_files:
+            nested = nested_candidate.path
+            if nested.parent == project_dir:
+                continue
+            nested_descriptor, nested_info, _ = _open_regular_nofollow(nested)
+            if nested_descriptor is None or nested_info is None:
+                discovery["unrecognized"] += 1
+                continue
+            os.close(nested_descriptor)
+            if _stat_identity(nested_info) != _stat_identity(
+                    nested_candidate.info):
+                discovery["unrecognized"] += 1
                 continue
             try:
-                owner = current_path.relative_to(project_dir).parts[0]
+                owner = nested.relative_to(project_dir).parts[0]
             except (ValueError, IndexError):
                 continue
             candidates = owner_workspaces.get(owner, set())
             owner_workspace = fallback or (
                 next(iter(candidates)) if len(candidates) == 1 else None
             )
-            for name in sorted(files):
-                nested = current_path / name
-                if not name.endswith(".jsonl") or nested.is_symlink():
-                    continue
-                try:
-                    nested_info = nested.lstat()
-                    if not stat.S_ISREG(nested_info.st_mode):
-                        continue
-                except OSError:
-                    continue
-                observed_nested += 1
-                if owner_workspace:
-                    nested_by_workspace.setdefault(owner_workspace, []).append(nested_info)
+            observed_nested += 1
+            if owner_workspace:
+                nested_by_workspace.setdefault(owner_workspace, []).append(
+                    nested_info)
 
         subtranscripts += observed_nested
         for workspace, nested_info in sorted(nested_by_workspace.items()):
@@ -1492,8 +1821,13 @@ def collect_claude(home: Path) -> tuple[list[dict], dict]:
                 "last_active": max(info.st_mtime for info in nested_info),
                 "weight": 0,
             })
-    return records, {"store": "Claude", "status": "ok", "count": sessions,
-                     "unrecognized": unresolved, "subtranscripts": subtranscripts}
+    unsafe = int(discovery.get("unrecognized", 0))
+    status = discovery["status"]
+    if status == "ok" and unsafe:
+        status = "unrecognized"
+    return records, {"store": "Claude", "status": status, "count": sessions,
+                     "unrecognized": unresolved + unsafe,
+                     "subtranscripts": subtranscripts}
 
 
 def collect_vscode_forks(home: Path) -> tuple[list[dict], list[dict]]:
@@ -1501,14 +1835,26 @@ def collect_vscode_forks(home: Path) -> tuple[list[dict], list[dict]]:
     statuses: list[dict] = []
     for tool, dir_name in VSCODE_FORKS:
         root = home / "Library" / "Application Support" / dir_name / "User" / "workspaceStorage"
-        if not root.is_dir():
-            statuses.append({"store": tool, "status": "missing", "count": 0, "unrecognized": 0})
+        discovered, discovery = _discover_regular_files_nofollow(
+            root, tool, "workspace.json")
+        if discovery["status"] == "missing":
+            statuses.append(discovery)
             continue
         count = 0
-        unrecognized = 0
-        for meta_path in sorted(root.glob("*/workspace.json")):
+        unrecognized = int(discovery.get("unrecognized", 0))
+        for candidate in discovered:
+            meta_path = candidate.path
+            if meta_path.name != "workspace.json":
+                continue
+            raw, current, read_status = _read_regular_bytes_nofollow(
+                meta_path, SESSION_METADATA_MAX_BYTES)
+            if raw is None or current is None:
+                unrecognized += 1
+                if read_status == "truncated":
+                    discovery["status"] = "truncated"
+                continue
             try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+                meta = json.loads(raw.decode("utf-8-sig"))
             except JSON_FILE_ERRORS:
                 unrecognized += 1
                 continue
@@ -1520,27 +1866,64 @@ def collect_vscode_forks(home: Path) -> tuple[list[dict], list[dict]]:
             if not workspace:
                 unrecognized += 1
                 continue
-            records.append(_record(tool, "workspace_state", meta_path.parent, workspace))
+            parent_descriptor = -1
+            try:
+                parent_descriptor = _open_directory_nofollow(meta_path.parent)
+                parent_info = os.fstat(parent_descriptor)
+                if parent_info.st_uid != os.getuid():
+                    raise ValueError("workspace state directory owner changed")
+            except (OSError, ValueError):
+                unrecognized += 1
+                continue
+            finally:
+                if parent_descriptor >= 0:
+                    os.close(parent_descriptor)
+            records.append(_record(
+                tool, "workspace_state", meta_path.parent, workspace,
+                source_info=parent_info))
             count += 1
-        statuses.append({"store": tool, "status": "ok", "count": count,
+        status = discovery["status"]
+        if status == "ok" and unrecognized:
+            status = "unrecognized"
+        statuses.append({"store": tool, "status": status, "count": count,
                          "unrecognized": unrecognized})
     return records, statuses
 
 
+def _gemini_registry(
+        home: Path) -> tuple[Optional[dict], Optional[os.stat_result], dict]:
+    registry = home / ".gemini" / "projects.json"
+    raw, info, read_status = _read_regular_bytes_nofollow(
+        registry, SESSION_METADATA_MAX_BYTES)
+    if raw is None or info is None:
+        status = "missing" if read_status == "missing" else (
+            "truncated" if read_status == "truncated" else "unrecognized")
+        return (None, info, {"store": "Gemini", "status": status,
+                            "count": 0,
+                            "unrecognized": 0 if status == "missing" else 1})
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except JSON_FILE_ERRORS:
+        return (None, info, {"store": "Gemini", "status": "unrecognized",
+                            "count": 0, "unrecognized": 1})
+    if not isinstance(data, dict) or not isinstance(data.get("projects"), dict):
+        return (None, info, {"store": "Gemini", "status": "unrecognized",
+                            "count": 0, "unrecognized": 1})
+    if len(data["projects"]) > SESSION_DISCOVERY_MAX_ENTRIES:
+        return (None, info, {"store": "Gemini", "status": "truncated",
+                            "count": 0, "unrecognized": 0})
+    return (data, info, {"store": "Gemini", "status": "ok",
+                        "count": len(data["projects"]), "unrecognized": 0})
+
+
 def collect_gemini(home: Path) -> tuple[list[dict], dict]:
     registry = home / ".gemini" / "projects.json"
-    if not registry.is_file():
-        return [], {"store": "Gemini", "status": "missing", "count": 0, "unrecognized": 0}
-    try:
-        data = json.loads(registry.read_text(encoding="utf-8-sig"))
-    except JSON_FILE_ERRORS:
-        return [], {"store": "Gemini", "status": "unrecognized", "count": 0, "unrecognized": 1}
-    if not isinstance(data, dict):
-        return [], {"store": "Gemini", "status": "unrecognized", "count": 0, "unrecognized": 1}
-    if not isinstance(data.get("projects"), dict):
-        return [], {"store": "Gemini", "status": "unrecognized", "count": 0, "unrecognized": 1}
+    data, info, registry_status = _gemini_registry(home)
+    if data is None or info is None:
+        return [], registry_status
     projects = data["projects"]
-    records = [_record("Gemini", "project_state", registry, workspace)
+    records = [_record(
+        "Gemini", "project_state", registry, workspace, source_info=info)
                for workspace in sorted(projects)]
     return records, {"store": "Gemini", "status": "ok", "count": len(records), "unrecognized": 0}
 
@@ -1569,7 +1952,9 @@ def _git(args: list[str], cwd: Path, *,
             os.fchdir(cwd_fd)
 
         proc = subprocess.run(
-            ["git", *args], pass_fds=(cwd_fd,),
+            ["/usr/bin/git", "--no-optional-locks",
+             "-c", "core.fsmonitor=false", *args],
+            pass_fds=(cwd_fd,),
             preexec_fn=chdir_to_verified_directory,
             capture_output=True, text=True, timeout=timeout,
         )
@@ -1593,6 +1978,24 @@ def _git(args: list[str], cwd: Path, *,
 def _lexical_abspath(value: str) -> Path:
     """Normalize spelling only; never resolve symlinks or touch the disk."""
     return Path(os.path.abspath(os.path.normpath(value)))
+
+
+def _physical_macos_root_alias(path: Path) -> Path:
+    """Map only macOS's fixed root aliases before a no-follow descriptor walk.
+
+    `/var` and `/tmp` are root-owned system aliases to `/private/...`. Treating
+    their first component like a provider-controlled symlink makes normal
+    NSTemporaryDirectory paths unreadable. No other component is resolved, so
+    a symlink inside a home or provider store remains rejected by O_NOFOLLOW.
+    """
+    normalized = _lexical_abspath(str(path))
+    if sys.platform != "darwin":
+        return normalized
+    spelling = str(normalized)
+    for alias in ("/var", "/tmp"):
+        if spelling == alias or spelling.startswith(alias + os.sep):
+            return Path("/private" + spelling)
+    return normalized
 
 
 def _worktree_containers_from_records(
@@ -1652,7 +2055,7 @@ def _worktree_containers_from_records(
 
 def _open_directory_nofollow(path: Path) -> int:
     """Open every lexical path component without crossing a symlink."""
-    normalized = _lexical_abspath(str(path))
+    normalized = _physical_macos_root_alias(path)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     fd = os.open(os.sep, flags)
     try:
@@ -1668,7 +2071,7 @@ def _open_directory_nofollow(path: Path) -> int:
 
 def _open_or_create_owned_output_parent(path: Path) -> tuple[int, Path]:
     """Open/create an export parent without following any path component."""
-    normalized = _lexical_abspath(str(path))
+    normalized = _physical_macos_root_alias(path)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     descriptor = os.open(os.sep, flags)
     try:
@@ -2595,13 +2998,19 @@ def build_lineage(records: list[dict]) -> dict:
 # so this is the one real path scree needs -- Linux/Windows equivalents exist
 # for Claude Code itself but never apply to a scree invocation.
 MANAGED_SETTINGS_PATH = Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+CLAUDE_SETTINGS_MAX_BYTES = 256 * 1024
 
 
-def _cleanup_period_days_from(path: Path) -> Optional[int]:
+def _cleanup_period_days_from(
+        path: Path, *, allowed_uids: Optional[set[int]] = None,
+        ) -> Optional[int]:
+    raw, _, status = _read_regular_bytes_nofollow(
+        path, CLAUDE_SETTINGS_MAX_BYTES, allowed_uids=allowed_uids)
+    if raw is None or status != "ok":
+        return None
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
+        data = json.loads(raw.decode("utf-8-sig"))
+    except JSON_FILE_ERRORS:
         return None
     if not isinstance(data, dict):
         return None
@@ -2636,7 +3045,8 @@ def read_claude_cleanup_period_days(home: Path) -> Optional[int]:
     ultimately to the observed-age heuristic, silently — this is a
     preference, not a requirement.
     """
-    managed = _cleanup_period_days_from(MANAGED_SETTINGS_PATH)
+    managed = _cleanup_period_days_from(
+        MANAGED_SETTINGS_PATH, allowed_uids={0, os.getuid()})
     if managed is not None:
         return managed
     claude_dir = home / ".claude"
@@ -2661,6 +3071,11 @@ EFFECTIVELY_INDEFINITE_DAYS = 3650
 # having decided a conversation was finished with.
 CLAUDE_DESKTOP_INDEX = ("Library", "Application Support", "Claude", "claude-code-sessions")
 _TOMBSTONE_PREFIX = "deleted_"
+CLAUDE_DESKTOP_TOMBSTONE_MAX_ENTRIES = 10000
+CLAUDE_DESKTOP_TOMBSTONE_MAX_DEPTH = 4
+CLAUDE_DESKTOP_TOMBSTONE_ID_MAX_CHARS = 200
+_TOMBSTONE_ID_RE = re.compile(
+    rf"[A-Za-z0-9_-]{{1,{CLAUDE_DESKTOP_TOMBSTONE_ID_MAX_CHARS}}}")
 
 
 def collect_claude_desktop_deletions(home: Path) -> set[str]:
@@ -2673,14 +3088,19 @@ def collect_claude_desktop_deletions(home: Path) -> set[str]:
     simply never matches one, so no pairing rule is needed here.
     """
     root = home.joinpath(*CLAUDE_DESKTOP_INDEX)
-    if not root.is_dir():
-        return set()
+    discovered, _ = _discover_regular_files_nofollow(
+        root, CLAUDE_DESKTOP_TOOL, "",
+        maximum_entries=CLAUDE_DESKTOP_TOMBSTONE_MAX_ENTRIES,
+        maximum_depth=CLAUDE_DESKTOP_TOMBSTONE_MAX_DEPTH,
+    )
     deleted: set[str] = set()
-    try:
-        for path in root.rglob(f"{_TOMBSTONE_PREFIX}*"):
-            deleted.add(path.name[len(_TOMBSTONE_PREFIX):])
-    except OSError:
-        pass
+    for candidate in discovered:
+        name = candidate.path.name
+        if not name.startswith(_TOMBSTONE_PREFIX):
+            continue
+        session_id = name[len(_TOMBSTONE_PREFIX):]
+        if _TOMBSTONE_ID_RE.fullmatch(session_id) is not None:
+            deleted.add(session_id)
     return deleted
 
 
@@ -2788,7 +3208,83 @@ def collect_all(home: Path) -> tuple[list[dict], list[dict]]:
     )
 
 
-def collect_gemini_chats(home: Path) -> list[dict]:
+def _top_level_json_string_from_prefix(
+        raw: bytes, key: str, *, incomplete_prefix: bool,
+        ) -> tuple[Optional[str], str]:
+    """Read one top-level string member without decoding a JSON body.
+
+    A regex cannot distinguish a top-level metadata key from the same spelling
+    inside a message or tool payload. This bounded scanner tracks container
+    depth, delegates quoted-string escapes to JSONDecoder, and stops as soon as
+    the requested leading member is complete.
+    """
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return (None, "truncated" if incomplete_prefix else "unrecognized")
+    decoder = json.JSONDecoder()
+    length = len(text)
+
+    def skip_space(position: int) -> int:
+        while position < length and text[position] in " \t\r\n":
+            position += 1
+        return position
+
+    position = skip_space(0)
+    if position >= length:
+        return (None, "truncated" if incomplete_prefix else "unrecognized")
+    if text[position] != "{":
+        return (None, "unrecognized")
+    depth = 1
+    position += 1
+    while position < length:
+        position = skip_space(position)
+        if position >= length:
+            break
+        character = text[position]
+        if character == '"':
+            try:
+                token, end = decoder.raw_decode(text, position)
+            except JSON_PARSE_ERRORS:
+                return (None, "truncated" if incomplete_prefix
+                        else "unrecognized")
+            after_token = skip_space(end)
+            if (depth == 1 and isinstance(token, str)
+                    and after_token < length
+                    and text[after_token] == ":"):
+                value_start = skip_space(after_token + 1)
+                if token == key:
+                    try:
+                        value, _ = decoder.raw_decode(text, value_start)
+                    except JSON_PARSE_ERRORS:
+                        return (None, "truncated" if incomplete_prefix
+                                else "unrecognized")
+                    return ((value, "ok") if isinstance(value, str)
+                            else (None, "unrecognized"))
+            position = end
+            continue
+        if character in "{[":
+            depth += 1
+        elif character in "}]":
+            depth -= 1
+            if depth == 0:
+                return (None, "ok")
+            if depth < 0:
+                return (None, "unrecognized")
+        position += 1
+    return (None, "truncated" if incomplete_prefix else "unrecognized")
+
+
+def _gemini_project_hash_from_prefix(path: Path) -> tuple[Optional[str], str]:
+    raw, info, status = _read_regular_bytes_nofollow(
+        path, GEMINI_CHAT_METADATA_PREFIX_BYTES, prefix=True)
+    if raw is None or info is None:
+        return (None, status)
+    return _top_level_json_string_from_prefix(
+        raw, "projectHash", incomplete_prefix=info.st_size > len(raw))
+
+
+def _collect_gemini_chats_with_coverage(home: Path) -> tuple[list[dict], dict]:
     """Gemini's actual conversations, for the session browser.
 
     `collect_gemini` deliberately reports the registry -- one
@@ -2800,62 +3296,98 @@ def collect_gemini_chats(home: Path) -> list[dict]:
 
     Workspace identity is `sha256(absolute path)`, recorded per chat as
     `projectHash`; `projects.json` supplies the paths to hash back. Every
-    chat in one directory shares a workspace, so one file per directory
-    is read to resolve it rather than all of them -- 75 reads instead of
-    4,005 on this machine. A directory whose hash is not in the registry
+    chat in one directory shares a workspace, so at most eight bounded
+    metadata prefixes per directory are read rather than all conversation
+    bodies. A directory whose hash is not in the registry
     keeps an empty workspace rather than a guessed one: the directory
     name resembles the workspace's last component, but resembling is not
     knowing, and this list is read by someone deciding what to delete.
     """
     chat_root = home / ".gemini" / "tmp"
-    if not chat_root.is_dir():
-        return []
+    discovered, discovery = _discover_regular_files_nofollow(
+        chat_root, "Gemini", ".json", maximum_depth=3)
+    if discovery["status"] == "missing":
+        return ([], discovery)
 
     known: dict[str, str] = {}
-    registry = home / ".gemini" / "projects.json"
-    if registry.is_file():
-        try:
-            payload = json.loads(registry.read_text(encoding="utf-8-sig"))
-        except JSON_FILE_ERRORS:
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
-        project_map = payload.get("projects")
-        if not isinstance(project_map, dict):
-            project_map = {}
+    payload, _, registry_status = _gemini_registry(home)
+    if payload is not None:
+        project_map = payload["projects"]
         for path in project_map:
             if isinstance(path, str):
                 known[hashlib.sha256(path.encode("utf-8")).hexdigest()] = path
 
     records: list[dict] = []
-    for chats_dir in sorted(chat_root.glob("*/chats")):
-        chats = sorted(chats_dir.glob("*.json"))
+    by_chat_directory: dict[tuple[str, str], list[_DiscoveredRegularFile]] = {}
+    for candidate in discovered:
+        try:
+            relative = candidate.path.relative_to(chat_root)
+        except ValueError:
+            discovery["unrecognized"] += 1
+            continue
+        if len(relative.parts) != 3 or relative.parts[1] != "chats":
+            # A JSON leaf elsewhere below tmp is a provider layout this build
+            # does not understand. It may be a chat, so omission cannot be
+            # reported as complete discovery.
+            discovery["unrecognized"] += 1
+            continue
+        by_chat_directory.setdefault(
+            (relative.parts[0], relative.parts[1]), []).append(candidate)
+
+    unsafe = int(discovery.get("unrecognized", 0))
+    metadata_truncated = False
+    for _, chat_candidates in sorted(by_chat_directory.items()):
+        chats = sorted(chat_candidates, key=lambda item: str(item.path))
         if not chats:
             continue
         workspace = ""
-        for probe in chats:
-            try:
-                head = json.loads(probe.read_text(encoding="utf-8-sig"))
-            except JSON_FILE_ERRORS:
-                continue
-            if isinstance(head, dict):
-                workspace = known.get(str(head.get("projectHash")), "")
+        # projectHash is top-level leading metadata in current Gemini files.
+        # Probe a bounded prefix of at most eight candidates; never decode the
+        # conversation body merely to populate a listing row.
+        for probe in chats[:8]:
+            project_hash, probe_status = _gemini_project_hash_from_prefix(
+                probe.path)
+            if probe_status == "truncated":
+                metadata_truncated = True
+            elif probe_status not in ("ok", "missing"):
+                unsafe += 1
+            if project_hash:
+                workspace = known.get(project_hash, "")
                 break
         for chat in chats:
-            try:
-                size = chat.stat().st_size
-                mtime = chat.stat().st_mtime
-            except OSError:
+            descriptor, current, status = _open_regular_nofollow(chat.path)
+            if descriptor is None or current is None:
+                unsafe += 1
+                continue
+            os.close(descriptor)
+            if _stat_identity(current) != _stat_identity(chat.info):
+                unsafe += 1
                 continue
             records.append({
                 "kind": "session",
                 "tool": "Gemini",
-                "source": str(chat),
+                "source": str(chat.path),
                 "workspace": workspace,
-                "size_bytes": size,
-                "last_active": mtime,
+                "size_bytes": current.st_size,
+                "last_active": current.st_mtime,
             })
-    return records
+    status = discovery["status"]
+    if status == "ok" and registry_status["status"] not in ("ok", "missing"):
+        status = registry_status["status"]
+    if status == "ok" and metadata_truncated:
+        status = "truncated"
+    if status == "ok" and unsafe:
+        status = "unrecognized"
+    return (records, {
+        "store": "Gemini",
+        "status": status,
+        "count": len(records),
+        "unrecognized": unsafe + int(registry_status.get("unrecognized", 0)),
+    })
+
+
+def collect_gemini_chats(home: Path) -> list[dict]:
+    return _collect_gemini_chats_with_coverage(home)[0]
 
 
 SESSIONS_DEFAULT_LIMIT = 0
@@ -2882,7 +3414,9 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
     # records are dropped in favour of the conversations themselves.
     shared, store_coverage = collect_all(home)
     records = [item for item in shared if item["tool"] != "Gemini"]
-    records += collect_gemini_chats(home)
+    gemini_chats, gemini_chat_coverage = (
+        _collect_gemini_chats_with_coverage(home))
+    records += gemini_chats
     sessions = []
     for item in records:
         # Editor workspace state is listed alongside agent transcripts.
@@ -2936,8 +3470,9 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
             "count": entry["count"],
             "unrecognized": entry.get("unrecognized", 0),
         }
-        for entry in store_coverage
+        for entry in store_coverage if entry["store"] != "Gemini"
     ]
+    coverage_stores.append(gemini_chat_coverage)
     complete = all(
         entry["status"] in ("ok", "missing")
         and entry["unrecognized"] == 0
@@ -3411,7 +3946,9 @@ def bind_claude_desktop(
     return (_bind_claude_desktop_candidates(candidates, workspace), complete)
 
 
-def _claude_subtranscripts(project_dir: Path, session_id: str) -> list[Path]:
+def _claude_subtranscripts(
+        project_dir: Path, session_id: str,
+        ) -> tuple[list[_DiscoveredRegularFile], bool]:
     """Subagent/workflow transcripts for one session.
 
     Kept separate from the top-level file because the provider's cleanup
@@ -3420,20 +3957,26 @@ def _claude_subtranscripts(project_dir: Path, session_id: str) -> list[Path]:
     the smaller half of the record.
     """
     nested = project_dir / session_id
-    if not nested.is_dir():
-        return []
-    return sorted(p for p in nested.rglob("*.jsonl") if p.is_file())
+    discovered, coverage = _discover_regular_files_nofollow(
+        nested, "Claude", ".jsonl")
+    return (discovered, coverage["status"] in ("ok", "missing")
+            and int(coverage.get("unrecognized", 0)) == 0)
 
 
 def _scans_for_paths(source: Path, root: str,
-                     ceiling: Optional[int] = None) -> tuple[bool, bool]:
+                     ceiling: Optional[int] = None, *,
+                     source_info: Optional[os.stat_result] = None,
+                     ) -> tuple[bool, bool]:
     """Single-workspace form, kept for callers with one question."""
-    matched, complete = _scan_for_any_path(source, [root], ceiling=ceiling)
+    matched, complete = _scan_for_any_path(
+        source, [root], ceiling=ceiling, source_info=source_info)
     return (bool(matched), complete)
 
 
 def _scan_for_any_path(source: Path, roots: list[str],
-                       ceiling: Optional[int] = None) -> tuple[set[str], bool]:
+                       ceiling: Optional[int] = None, *,
+                       source_info: Optional[os.stat_result] = None,
+                       ) -> tuple[set[str], bool]:
     """Deep scan: does this transcript mention any path inside `root`?
 
     Returns `(found, complete)`. Reads content and emits neither -- the
@@ -3466,14 +4009,24 @@ def _scan_for_any_path(source: Path, roots: list[str],
         return (set(), True)
     overlap = max(len(n) for n in needles.values()) - 1
     found: set[str] = set()
+    descriptor, before, _ = _open_regular_nofollow(source)
+    if descriptor is None or before is None:
+        return (found, False)
+    if (source_info is not None
+            and _stat_identity(before) != _stat_identity(source_info)):
+        os.close(descriptor)
+        return (found, False)
     try:
-        with source.open("r", encoding="utf-8", errors="replace") as handle:
+        with os.fdopen(
+                os.dup(descriptor), "r", encoding="utf-8",
+                errors="replace") as handle:
             read = 0
             carry = ""
             while True:
                 chunk = handle.read(1 << 20)
                 if not chunk:
-                    return (found, True)
+                    complete = True
+                    break
                 read += len(chunk)
                 window = carry + chunk.casefold()
                 for root, needle in needles.items():
@@ -3481,12 +4034,20 @@ def _scan_for_any_path(source: Path, roots: list[str],
                         found.add(root)
                 if len(found) == len(needles):
                     # Nothing left to look for in this file.
-                    return (found, True)
+                    complete = True
+                    break
                 carry = window[-overlap:] if overlap else ""
                 if read >= ceiling:
-                    return (found, False)
+                    complete = False
+                    break
+        after = os.fstat(descriptor)
+        if _stat_signature(before) != _stat_signature(after):
+            return (found, False)
+        return (found, complete)
     except OSError:
         return (found, False)
+    finally:
+        os.close(descriptor)
 
 
 def bind_codex(home: Path, workspace: str, repo_url: Optional[str], *,
@@ -3505,17 +4066,35 @@ def bind_codex(home: Path, workspace: str, repo_url: Optional[str], *,
     out: list[dict] = []
     complete = True
     for root in (home / ".codex" / "sessions", home / ".codex" / "archived_sessions"):
-        if not root.is_dir():
+        discovered, discovery = _discover_regular_files_nofollow(
+            root, "Codex", ".jsonl")
+        if discovery["status"] == "missing":
             continue
-        for path in sorted(root.rglob("*.jsonl")):
+        if (discovery["status"] != "ok"
+                or int(discovery.get("unrecognized", 0)) != 0):
+            complete = False
+        for candidate in discovered:
+            path = candidate.path
+            descriptor, opened, _ = _open_regular_nofollow(path)
+            if descriptor is None or opened is None:
+                complete = False
+                continue
             try:
-                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                with os.fdopen(os.dup(descriptor), "rb") as handle:
                     first = _read_json_line(handle)
+                after = os.fstat(descriptor)
             except OSError:
                 # A rollout that could not be opened was not examined. It
                 # may name this workspace; nobody knows. Skipping it and
                 # still reporting a completed look is how "no sessions"
                 # gets asserted about a store that was never read.
+                complete = False
+                continue
+            finally:
+                os.close(descriptor)
+            if (_stat_signature(opened) != _stat_signature(after)
+                    or _stat_identity(opened)
+                    != _stat_identity(candidate.info)):
                 complete = False
                 continue
             payload = (first or {}).get("payload")
@@ -3535,7 +4114,8 @@ def bind_codex(home: Path, workspace: str, repo_url: Optional[str], *,
             if not evidence and deep:
                 # Only the rollouts the header did not match: one that is
                 # already bound gains nothing from being read again.
-                found, scanned_fully = _scans_for_paths(path, workspace)
+                found, scanned_fully = _scans_for_paths(
+                    path, workspace, source_info=candidate.info)
                 if not scanned_fully:
                     complete = False
                 if found:
@@ -3550,7 +4130,7 @@ def bind_codex(home: Path, workspace: str, repo_url: Optional[str], *,
                 "subtranscripts": [],
                 "evidence": evidence,
                 "confidence": _binding_confidence(evidence),
-                "sizeBytes": path.stat().st_size,
+                "sizeBytes": opened.st_size,
             })
     return (out, complete)
 
@@ -3570,11 +4150,39 @@ def bind_vscode_forks(home: Path, workspace: str) -> tuple[list[dict], bool]:
     complete = True
     for tool, dir_name in VSCODE_FORKS:
         root = home / "Library" / "Application Support" / dir_name / "User" / "workspaceStorage"
-        if not root.is_dir():
+        discovered, discovery = _discover_regular_files_nofollow(
+            root, tool, "")
+        if discovery["status"] == "missing":
             continue
-        for meta_path in sorted(root.glob("*/workspace.json")):
+        if (discovery["status"] != "ok"
+                or int(discovery.get("unrecognized", 0)) != 0):
+            complete = False
+        by_entry: dict[str, list[_DiscoveredRegularFile]] = {}
+        metadata: list[_DiscoveredRegularFile] = []
+        for candidate in discovered:
             try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+                relative = candidate.path.relative_to(root)
+            except ValueError:
+                complete = False
+                continue
+            if not relative.parts:
+                complete = False
+                continue
+            by_entry.setdefault(relative.parts[0], []).append(candidate)
+            if len(relative.parts) == 2 and relative.name == "workspace.json":
+                metadata.append(candidate)
+        for candidate in sorted(metadata, key=lambda item: str(item.path)):
+            meta_path = candidate.path
+            raw, current, _ = _read_regular_bytes_nofollow(
+                meta_path, SESSION_METADATA_MAX_BYTES)
+            if raw is None or current is None:
+                complete = False
+                continue
+            if _stat_identity(current) != _stat_identity(candidate.info):
+                complete = False
+                continue
+            try:
+                meta = json.loads(raw.decode("utf-8-sig"))
             except JSON_FILE_ERRORS:
                 complete = False
                 continue
@@ -3589,18 +4197,15 @@ def bind_vscode_forks(home: Path, workspace: str) -> tuple[list[dict], bool]:
             if not _under(recorded, workspace):
                 continue
             entry = meta_path.parent
-            try:
-                size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
-            except OSError:
-                complete = False
-                size = 0
+            entry_files = by_entry.get(entry.name, [])
+            size = sum(item.info.st_size for item in entry_files)
             out.append({
                 "provider": VSCODE_PROVIDER_IDS[tool],
                 "sessionId": entry.name,
                 "source": str(meta_path),
                 "subtranscripts": sorted(
-                    str(f) for f in entry.rglob("*") if f.is_file() and f != meta_path
-                ),
+                    str(item.path) for item in entry_files
+                    if item.path != meta_path),
                 # The entry directory, not `workspace.json` minus its
                 # extension. An editor keeps `chat/` and `panels/` beside
                 # the manifest, and letting the sealer guess flattens
@@ -3628,9 +4233,26 @@ def bind_gemini(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
     hashes differently and is invisible to this binder, which is why a
     content scan still runs when `deep` is set.
     """
-    chats = sorted((home / ".gemini" / "tmp").glob("*/chats/*.json"))
-    if not chats:
+    chat_root = home / ".gemini" / "tmp"
+    discovered, discovery = _discover_regular_files_nofollow(
+        chat_root, "Gemini", ".json", maximum_depth=3)
+    if discovery["status"] == "missing":
         return ([], True)
+    complete = (discovery["status"] == "ok"
+                and int(discovery.get("unrecognized", 0)) == 0)
+    chats: list[_DiscoveredRegularFile] = []
+    for candidate in discovered:
+        try:
+            relative = candidate.path.relative_to(chat_root)
+        except ValueError:
+            complete = False
+            continue
+        if len(relative.parts) != 3 or relative.parts[1] != "chats":
+            complete = False
+            continue
+        chats.append(candidate)
+    if not chats:
+        return ([], complete)
 
     wanted: dict[str, str] = {}
 
@@ -3638,7 +4260,6 @@ def bind_gemini(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
         wanted[hashlib.sha256(path.encode("utf-8")).hexdigest()] = path
 
     remember(workspace)
-    registry = home / ".gemini" / "projects.json"
     # Without the registry the only hash we can compute is the workspace's
     # own, so a session held in a subdirectory or worktree is
     # unmatchable -- its `projectHash` is over a path we cannot enumerate.
@@ -3646,30 +4267,32 @@ def bind_gemini(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
     # files relatively, so reading every byte and finding nothing proves
     # nothing here. Sessions exist and their workspace identity cannot be
     # reconstructed, which is the definition of an incomplete look.
-    complete = not (chats and not registry.is_file())
-    if registry.is_file():
-        try:
-            projects = json.loads(registry.read_text(encoding="utf-8-sig"))
-        except JSON_FILE_ERRORS:
-            # Without the registry only the workspace itself can be
-            # hashed, so its subdirectories and worktrees go unchecked.
-            complete = False
-            projects = {}
-        if not isinstance(projects, dict):
-            complete = False
-            projects = {}
-        project_map = projects.get("projects")
-        if not isinstance(project_map, dict):
-            complete = False
-            project_map = {}
+    projects, _, registry_status = _gemini_registry(home)
+    if projects is None:
+        complete = False
+        project_map: dict = {}
+    else:
+        project_map = projects["projects"]
+    if registry_status["status"] not in ("ok", "missing"):
+        complete = False
+    if projects is not None:
         for path in project_map:
             if isinstance(path, str) and _under(_canon_workspace(path), workspace):
                 remember(_canon_workspace(path))
 
     out: list[dict] = []
-    for path in chats:
+    for candidate in chats:
+        path = candidate.path
+        raw, current, _ = _read_regular_bytes_nofollow(
+            path, SESSION_CONTENT_MAX_BYTES)
+        if raw is None or current is None:
+            complete = False
+            continue
+        if _stat_identity(current) != _stat_identity(candidate.info):
+            complete = False
+            continue
         try:
-            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            payload = json.loads(raw.decode("utf-8-sig"))
         except JSON_FILE_ERRORS:
             complete = False
             continue
@@ -3680,7 +4303,8 @@ def bind_gemini(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
         if payload.get("projectHash") in wanted:
             evidence.append("working-directory")
         elif deep:
-            found, scanned_fully = _scans_for_paths(path, workspace)
+            found, scanned_fully = _scans_for_paths(
+                path, workspace, source_info=candidate.info)
             if not scanned_fully:
                 complete = False
             if found:
@@ -3695,7 +4319,7 @@ def bind_gemini(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
             "subtranscripts": [],
             "evidence": evidence,
             "confidence": _binding_confidence(evidence),
-            "sizeBytes": path.stat().st_size,
+            "sizeBytes": current.st_size,
         })
     return (out, complete)
 
@@ -3707,53 +4331,83 @@ def bind_claude(home: Path, workspace: str, *, deep: bool) -> tuple[list[dict], 
     generic scanner: the Codex path reads one line, this one may have to
     read the file."""
     root = home / ".claude" / "projects"
-    if not root.is_dir():
+    discovered, discovery = _discover_regular_files_nofollow(
+        root, "Claude", ".jsonl")
+    if discovery["status"] == "missing":
         return ([], True)
     out: list[dict] = []
-    complete = True
-    for project_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        for path in sorted(project_dir.glob("*.jsonl")):
-            cwd = None
-            try:
-                with path.open("r", encoding="utf-8", errors="replace") as handle:
-                    for _ in range(CLAUDE_SCAN_LINES):
-                        line = _read_json_line(handle)
-                        if line is None:
-                            break
-                        if isinstance(line.get("cwd"), str):
-                            cwd = _canon_workspace(line["cwd"])
-                            break
-            except OSError:
-                # The metadata pre-read failed, so this transcript was
-                # never examined at all -- weaker than a scan that ran and
-                # found nothing.
+    complete = (discovery["status"] == "ok"
+                and int(discovery.get("unrecognized", 0)) == 0)
+    for candidate in discovered:
+        path = candidate.path
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            complete = False
+            continue
+        # Nested JSONLs are subagent/workflow artifacts owned by their
+        # top-level session, not additional primary-session candidates.
+        if len(relative.parts) != 2:
+            continue
+        project_dir = path.parent
+        descriptor, opened, _ = _open_regular_nofollow(path)
+        if descriptor is None or opened is None:
+            complete = False
+            continue
+        cwd = None
+        try:
+            with os.fdopen(os.dup(descriptor), "rb") as handle:
+                for _ in range(CLAUDE_SCAN_LINES):
+                    line = _read_json_line(handle)
+                    if line is None:
+                        break
+                    if isinstance(line.get("cwd"), str):
+                        cwd = _canon_workspace(line["cwd"])
+                        break
+            after = os.fstat(descriptor)
+        except OSError:
+            # The metadata pre-read failed, so this transcript was
+            # never examined at all -- weaker than a scan that ran and
+            # found nothing.
+            complete = False
+            continue
+        finally:
+            os.close(descriptor)
+        if (_stat_signature(opened) != _stat_signature(after)
+                or _stat_identity(opened)
+                != _stat_identity(candidate.info)):
+            complete = False
+            continue
+        evidence: list[str] = []
+        if cwd and _under(cwd, workspace):
+            evidence.append("working-directory")
+        elif deep:
+            # Only when the cheap signal missed. A session already
+            # bound by its cwd gains nothing from also having read
+            # files there, and scanning it would be pure cost.
+            found, scanned_fully = _scans_for_paths(
+                path, workspace, source_info=candidate.info)
+            if not scanned_fully:
                 complete = False
-                continue
-            evidence: list[str] = []
-            if cwd and _under(cwd, workspace):
-                evidence.append("working-directory")
-            elif deep:
-                # Only when the cheap signal missed. A session already
-                # bound by its cwd gains nothing from also having read
-                # files there, and scanning it would be pure cost.
-                found, scanned_fully = _scans_for_paths(path, workspace)
-                if not scanned_fully:
-                    complete = False
-                if found:
-                    evidence.append("file-access")
-            if not evidence:
-                continue
-            session_id = path.stem
-            subs = _claude_subtranscripts(project_dir, session_id)
-            out.append({
-                "provider": "claude",
-                "sessionId": session_id,
-                "source": str(path),
-                "subtranscripts": [str(p) for p in subs],
-                "evidence": evidence,
-                "confidence": _binding_confidence(evidence),
-                "sizeBytes": path.stat().st_size + sum(p.stat().st_size for p in subs),
-            })
+            if found:
+                evidence.append("file-access")
+        if not evidence:
+            continue
+        session_id = path.stem
+        subs, subs_complete = _claude_subtranscripts(
+            project_dir, session_id)
+        if not subs_complete:
+            complete = False
+        out.append({
+            "provider": "claude",
+            "sessionId": session_id,
+            "source": str(path),
+            "subtranscripts": [str(item.path) for item in subs],
+            "evidence": evidence,
+            "confidence": _binding_confidence(evidence),
+            "sizeBytes": opened.st_size + sum(
+                item.info.st_size for item in subs),
+        })
     return (out, complete)
 
 
@@ -3852,7 +4506,12 @@ def build_bindings_many(home: Path, targets: list[dict], *, deep: bool = False) 
 
     if deep:
         bound_sources = {w: {b["source"] for b in per_workspace[w]} for w in workspaces}
-        for provider, path in _deep_scan_candidates(home):
+        deep_candidates, deep_complete = _deep_scan_candidates(home)
+        claude_complete = claude_complete and deep_complete["claude"]
+        codex_complete = codex_complete and deep_complete["codex"]
+        gemini_complete = gemini_complete and deep_complete["gemini"]
+        for provider, candidate in deep_candidates:
+            path = candidate.path
             # `str`, not `Path`: `bound_sources` holds the same strings the
             # binders emit, and comparing the two types silently never
             # matches -- which rescans every already-bound file and adds a
@@ -3861,7 +4520,8 @@ def build_bindings_many(home: Path, targets: list[dict], *, deep: bool = False) 
             unbound = [w for w in workspaces if source not in bound_sources[w]]
             if not unbound:
                 continue
-            matched, scanned_fully = _scan_for_any_path(path, unbound)
+            matched, scanned_fully = _scan_for_any_path(
+                path, unbound, source_info=candidate.info)
             if not scanned_fully:
                 if provider == "claude":
                     claude_complete = False
@@ -3871,7 +4531,8 @@ def build_bindings_many(home: Path, targets: list[dict], *, deep: bool = False) 
                     gemini_complete = False
             for workspace in matched:
                 per_workspace[workspace].append(
-                    _file_access_binding(provider, path)
+                    _file_access_binding(
+                        provider, path, source_info=candidate.info)
                 )
 
     unbound_stores = unbound_stores_present(home)
@@ -3891,20 +4552,66 @@ def build_bindings_many(home: Path, targets: list[dict], *, deep: bool = False) 
     return {"results": results}
 
 
-def _deep_scan_candidates(home: Path):
-    """Every file a content scan would consider, tagged by store."""
-    for path in sorted((home / ".claude" / "projects").glob("*/*.jsonl")):
-        yield ("claude", path)
-    for root in (home / ".codex" / "sessions", home / ".codex" / "archived_sessions"):
-        if root.is_dir():
-            for path in sorted(root.rglob("*.jsonl")):
-                yield ("codex", path)
-    for path in sorted((home / ".gemini" / "tmp").glob("*/chats/*.json")):
-        yield ("gemini", path)
+def _deep_scan_candidates(
+        home: Path,
+        ) -> tuple[list[tuple[str, _DiscoveredRegularFile]], dict[str, bool]]:
+    """Every bounded regular file a content scan may consider.
+
+    Discovery status travels with the list. A FIFO, symlink, over-depth
+    namespace, or unreadable directory is omitted from content reads but must
+    still make that provider's coverage incomplete.
+    """
+    candidates: list[tuple[str, _DiscoveredRegularFile]] = []
+    complete = {"claude": True, "codex": True, "gemini": True}
+
+    claude_root = home / ".claude" / "projects"
+    discovered, coverage = _discover_regular_files_nofollow(
+        claude_root, "Claude", ".jsonl")
+    complete["claude"] = (
+        coverage["status"] in ("ok", "missing")
+        and int(coverage.get("unrecognized", 0)) == 0)
+    for candidate in discovered:
+        try:
+            relative = candidate.path.relative_to(claude_root)
+        except ValueError:
+            complete["claude"] = False
+            continue
+        if len(relative.parts) == 2:
+            candidates.append(("claude", candidate))
+
+    for root in (home / ".codex" / "sessions",
+                 home / ".codex" / "archived_sessions"):
+        discovered, coverage = _discover_regular_files_nofollow(
+            root, "Codex", ".jsonl")
+        if (coverage["status"] not in ("ok", "missing")
+                or int(coverage.get("unrecognized", 0)) != 0):
+            complete["codex"] = False
+        candidates.extend(("codex", candidate) for candidate in discovered)
+
+    gemini_root = home / ".gemini" / "tmp"
+    discovered, coverage = _discover_regular_files_nofollow(
+        gemini_root, "Gemini", ".json", maximum_depth=3)
+    complete["gemini"] = (
+        coverage["status"] in ("ok", "missing")
+        and int(coverage.get("unrecognized", 0)) == 0)
+    for candidate in discovered:
+        try:
+            relative = candidate.path.relative_to(gemini_root)
+        except ValueError:
+            complete["gemini"] = False
+            continue
+        if len(relative.parts) != 3 or relative.parts[1] != "chats":
+            complete["gemini"] = False
+            continue
+        candidates.append(("gemini", candidate))
+
+    candidates.sort(key=lambda item: (item[0], str(item[1].path)))
+    return (candidates, complete)
 
 
 def _file_access_session_id(
-        provider: str, path: Path, home: Optional[Path] = None) -> str:
+        provider: str, path: Path, home: Optional[Path] = None, *,
+        source_info: Optional[os.stat_result] = None) -> str:
     """The id each store's own binder would have used.
 
     Falling back to the filename would give the same session two
@@ -3926,31 +4633,53 @@ def _file_access_session_id(
             return metadata.stem
     if provider == "claude":
         return path.stem
-    try:
-        if provider == "gemini":
-            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if provider == "gemini":
+        raw, current, _ = _read_regular_bytes_nofollow(
+            path, SESSION_CONTENT_MAX_BYTES)
+        if (raw is not None and current is not None
+                and (source_info is None or _stat_identity(current)
+                     == _stat_identity(source_info))):
+            try:
+                payload = json.loads(raw.decode("utf-8-sig"))
+            except JSON_FILE_ERRORS:
+                payload = None
             if isinstance(payload, dict) and payload.get("sessionId"):
                 return str(payload["sessionId"])
-        else:
-            with path.open("r", encoding="utf-8", errors="replace") as handle:
-                first = _read_json_line(handle)
-            payload = (first or {}).get("payload")
-            if isinstance(payload, dict) and payload.get("id"):
-                return str(payload["id"])
-    except JSON_FILE_ERRORS:
-        pass
+    else:
+        descriptor, current, _ = _open_regular_nofollow(path)
+        if descriptor is not None and current is not None:
+            try:
+                if (source_info is None or _stat_identity(current)
+                        == _stat_identity(source_info)):
+                    with os.fdopen(os.dup(descriptor), "rb") as handle:
+                        first = _read_json_line(handle)
+                    payload = (first or {}).get("payload")
+                    if isinstance(payload, dict) and payload.get("id"):
+                        return str(payload["id"])
+            except OSError:
+                pass
+            finally:
+                os.close(descriptor)
     return path.stem
 
 
-def _file_access_binding(provider: str, path: Path) -> dict:
+def _file_access_binding(
+        provider: str, path: Path, *,
+        source_info: Optional[os.stat_result] = None) -> dict:
+    current = source_info
+    if current is None:
+        descriptor, current, _ = _open_regular_nofollow(path)
+        if descriptor is not None:
+            os.close(descriptor)
     return {
         "provider": provider,
-        "sessionId": _file_access_session_id(provider, path),
+        "sessionId": _file_access_session_id(
+            provider, path, source_info=source_info),
         "source": str(path),
         "subtranscripts": [],
         "evidence": ["file-access"],
         "confidence": _binding_confidence(["file-access"]),
-        "sizeBytes": path.stat().st_size,
+        "sizeBytes": current.st_size if current is not None else 0,
     }
 
 
@@ -4407,13 +5136,82 @@ TITLE_BOILERPLATE = {
 }
 
 
-def _read_jsonl_turns(handle) -> tuple[list[VisibleTurn], bool]:
-    """Decode visible records from an already-open text stream."""
+class _BoundedBinaryLines:
+    """Iterate complete binary lines without ever allocating a giant line."""
+
+    def __init__(self, handle, *, maximum_bytes: int,
+                 deadline: Optional[float] = None):
+        self.handle = handle
+        self.maximum_bytes = maximum_bytes
+        self.deadline = deadline
+        self.consumed = 0
+        self.truncated = False
+        self.timed_out = False
+        self.reached_eof = False
+
+    def _past_deadline(self) -> bool:
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            self.timed_out = True
+            self.truncated = True
+            return True
+        return False
+
+    def __iter__(self):
+        while not self._past_deadline():
+            remaining = self.maximum_bytes - self.consumed
+            if remaining <= 0:
+                # One byte is enough to distinguish an exact-boundary EOF
+                # from omitted content, and is still a fixed allocation.
+                if self.handle.read(1):
+                    self.truncated = True
+                else:
+                    self.reached_eof = True
+                return
+            line = self.handle.readline(min(MAX_LINE_BYTES + 1, remaining + 1))
+            if not line:
+                self.reached_eof = True
+                return
+            self.consumed += len(line)
+            if self.consumed > self.maximum_bytes:
+                self.truncated = True
+                return
+            oversized = len(line) > MAX_LINE_BYTES
+            if oversized:
+                self.truncated = True
+            # readline(limit) returns a prefix when a line exceeds the cap.
+            # Drain that one line in equally bounded chunks so a later healthy
+            # record remains visible without ever materialising the damaged
+            # line. Draining still spends the per-file byte/deadline budget.
+            while line and not line.endswith(b"\n") and oversized:
+                if self._past_deadline():
+                    return
+                remaining = self.maximum_bytes - self.consumed
+                if remaining <= 0:
+                    self.truncated = True
+                    return
+                line = self.handle.readline(min(MAX_LINE_BYTES + 1, remaining + 1))
+                self.consumed += len(line)
+                if self.consumed > self.maximum_bytes:
+                    self.truncated = True
+                    return
+            if oversized:
+                continue
+            yield line
+
+
+def _read_jsonl_turns(
+        handle, *, deadline: Optional[float] = None,
+        maximum_bytes: Optional[int] = None,
+        ) -> tuple[list[VisibleTurn], bool, bool, bool]:
+    """Decode bounded visible records from an already-open binary stream."""
     turns: list[VisibleTurn] = []
     decoded_any = False
-    for line in handle:
-        if len(line) > MAX_LINE_BYTES:
-            continue
+    lines = _BoundedBinaryLines(
+        handle,
+        maximum_bytes=(SESSION_CONTENT_MAX_BYTES
+                       if maximum_bytes is None else maximum_bytes),
+        deadline=deadline)
+    for line in lines:
         try:
             parsed = json.loads(line)
         except JSON_PARSE_ERRORS:
@@ -4423,11 +5221,12 @@ def _read_jsonl_turns(handle) -> tuple[list[VisibleTurn], bool]:
             turn = _extract_turn(parsed)
             if turn:
                 turns.append(turn)
-    return (turns, decoded_any)
+    return (turns, decoded_any, lines.truncated, lines.timed_out)
 
 
 def _read_session_turns(
-        source: Path, home: Optional[Path] = None
+        source: Path, home: Optional[Path] = None, *,
+        deadline: Optional[float] = None,
         ) -> tuple[list[VisibleTurn], str]:
     """`(turns, status)` for one session.
 
@@ -4439,7 +5238,8 @@ def _read_session_turns(
     same collapse the coverage work spent its length preventing, and it
     reappeared the moment a new reader was written.
 
-    Status is one of `ok`, `missing`, `unreadable`, `unrecognized`.
+    Status is one of `ok`, `missing`, `unreadable`, `unrecognized`,
+    `truncated`, or `time`.
     """
     desktop_descriptor, _, desktop_status = _open_claude_desktop_primary(
         source, home)
@@ -4448,9 +5248,9 @@ def _read_session_turns(
             return ([], desktop_status)
         try:
             before = os.fstat(desktop_descriptor)
-            with os.fdopen(os.dup(desktop_descriptor), "r", encoding="utf-8",
-                           errors="replace") as handle:
-                turns, decoded_any = _read_jsonl_turns(handle)
+            with os.fdopen(os.dup(desktop_descriptor), "rb") as handle:
+                turns, decoded_any, truncated, timed_out = _read_jsonl_turns(
+                    handle, deadline=deadline)
             after = os.fstat(desktop_descriptor)
         except OSError:
             return ([], "unreadable")
@@ -4458,25 +5258,39 @@ def _read_session_turns(
             os.close(desktop_descriptor)
         if _stat_signature(before) != _stat_signature(after):
             return ([], "unreadable")
+        if timed_out:
+            return (turns, "time")
+        if truncated:
+            return (turns, "truncated")
         if not decoded_any and before.st_size > 0:
             return ([], "unrecognized")
         return (turns, "ok")
-    if not source.exists():
-        return ([], "missing")
     turns: list[VisibleTurn] = []
     if source.suffix == ".json":
+        if deadline is not None and time.monotonic() >= deadline:
+            return ([], "time")
+        raw, _, read_status = _read_regular_bytes_nofollow(
+            source, SESSION_CONTENT_MAX_BYTES)
+        if raw is None:
+            return ([], read_status)
         try:
-            payload = json.loads(source.read_text(encoding="utf-8-sig"))
-        except OSError:
-            return ([], "unreadable")
+            payload = json.loads(raw.decode("utf-8-sig"))
         except JSON_PARSE_ERRORS:
             return ([], "unrecognized")
+        if deadline is not None and time.monotonic() >= deadline:
+            return ([], "time")
         if not isinstance(payload, dict):
             return ([], "unrecognized")
         messages = payload.get("messages")
-        for message in messages or []:
+        if not isinstance(messages, list):
+            # A JSON object that happens to sit in Gemini's chats directory
+            # is not evidence of an empty conversation.  Only the provider's
+            # messages array is a structure this reader can exhaustively
+            # inspect; anything else must withhold a definitive absence.
+            return ([], "unrecognized")
+        for message in messages:
             if not isinstance(message, dict):
-                continue
+                return ([], "unrecognized")
             # Gemini names the speaker `type`, where the JSONL stores use
             # `role`. Without normalising it every Gemini turn arrives
             # with an unknown speaker and no user request is ever found,
@@ -4493,14 +5307,27 @@ def _read_session_turns(
                 turns.append(turn)
         return (turns, "ok")
 
+    descriptor, before, open_status = _open_regular_nofollow(source)
+    if descriptor is None or before is None:
+        return ([], open_status)
     try:
-        with source.open("r", encoding="utf-8", errors="replace") as handle:
-            turns, decoded_any = _read_jsonl_turns(handle)
+        with os.fdopen(os.dup(descriptor), "rb") as handle:
+            turns, decoded_any, truncated, timed_out = _read_jsonl_turns(
+                handle, deadline=deadline)
+        after = os.fstat(descriptor)
     except OSError:
         return ([], "unreadable")
+    finally:
+        os.close(descriptor)
+    if _stat_signature(before) != _stat_signature(after):
+        return ([], "unreadable")
+    if timed_out:
+        return (turns, "time")
+    if truncated:
+        return (turns, "truncated")
     # A JSONL file none of whose lines parsed is not an empty
     # conversation; it is a file this build cannot read.
-    if not decoded_any and source.stat().st_size > 0:
+    if not decoded_any and before.st_size > 0:
         return ([], "unrecognized")
     return (turns, "ok")
 
@@ -4525,7 +5352,8 @@ def _canonical_visible_turns(turns: list[VisibleTurn]) -> list[VisibleTurn]:
 
 
 def visible_turns(
-        source: Path, home: Optional[Path] = None
+        source: Path, home: Optional[Path] = None, *,
+        deadline: Optional[float] = None,
         ) -> tuple[list[VisibleTurn], str]:
     """`(turns, status)` for one session, as a person would read it.
 
@@ -4548,10 +5376,10 @@ def visible_turns(
     not the conversation. They are the longest thing in a Codex rollout,
     and treating them as content pushes the actual exchange off screen.
     """
-    turns, status = _read_session_turns(source, home)
-    if status != "ok":
+    turns, status = _read_session_turns(source, home, deadline=deadline)
+    if status not in ("ok", "truncated", "time"):
         return ([], status)
-    return (_canonical_visible_turns(turns), "ok")
+    return (_canonical_visible_turns(turns), status)
 
 
 def _turns_from_session(
@@ -4697,16 +5525,37 @@ def _session_workspace(
             location = _safe_location(payload.get("cwd"))
             return location["basename"] if location else None
         if provider == "claude":
-            with source.open("r", encoding="utf-8", errors="replace") as handle:
-                for _ in range(CLAUDE_SCAN_LINES):
-                    line = _read_json_line(handle)
-                    if line is None:
-                        break
-                    if isinstance(line.get("cwd"), str):
-                        return _canon_workspace(line["cwd"])
+            descriptor, before, status = _open_regular_nofollow(source)
+            if descriptor is None or before is None:
+                return None
+            workspace = None
+            try:
+                with os.fdopen(os.dup(descriptor), "rb") as handle:
+                    for _ in range(CLAUDE_SCAN_LINES):
+                        line = _read_json_line(handle)
+                        if line is None:
+                            break
+                        if isinstance(line.get("cwd"), str):
+                            workspace = _canon_workspace(line["cwd"])
+                            break
+                after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            if _stat_signature(before) != _stat_signature(after):
+                return None
+            return workspace
         elif provider == "codex":
-            with source.open("r", encoding="utf-8", errors="replace") as handle:
-                first = _read_json_line(handle)
+            descriptor, before, status = _open_regular_nofollow(source)
+            if descriptor is None or before is None:
+                return None
+            try:
+                with os.fdopen(os.dup(descriptor), "rb") as handle:
+                    first = _read_json_line(handle)
+                after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            if _stat_signature(before) != _stat_signature(after):
+                return None
             payload = (first or {}).get("payload")
             if isinstance(payload, dict) and isinstance(payload.get("cwd"), str):
                 return _canon_workspace(payload["cwd"])
@@ -6591,6 +7440,32 @@ SEARCH_SNIPPET_CHARS = 240
 SEARCH_DEFAULT_BUDGET_SECONDS = 60.0
 
 
+def _content_sessions_and_coverage(session_index: dict) -> tuple[list[dict], bool]:
+    """Conversation rows and discovery coverage relevant to content reads.
+
+    Editor workspace state belongs in the session browser because it is local
+    state a user may lose, but it is not a transcript.  Trying to open its
+    directory as a conversation inflated the denominator and converted a
+    complete content sweep into an unreadable one.  The editor-only stores
+    must likewise not invalidate conversation discovery coverage.
+    """
+    sessions = [
+        session for session in session_index["sessions"]
+        if session.get("kind") == "session"
+    ]
+    workspace_state_stores = {tool for tool, _ in VSCODE_FORKS}
+    relevant_stores = [
+        store for store in session_index["coverage"]["stores"]
+        if store.get("store") not in workspace_state_stores
+    ]
+    complete = all(
+        store.get("status") in ("ok", "missing")
+        and int(store.get("unrecognized", 0)) == 0
+        for store in relevant_stores
+    )
+    return (sessions, complete)
+
+
 def build_search(query: str, home: Path, *, raw: bool = False,
                  limit: int = SEARCH_DEFAULT_LIMIT,
                  budget_seconds: float = SEARCH_DEFAULT_BUDGET_SECONDS) -> dict:
@@ -6616,42 +7491,56 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     if not needle:
         return {"query": query, "matches": [], "scannedSessions": 0,
                 "totalSessions": 0, "unreadableSessions": 0,
+                "truncatedSessions": 0,
                 "coverage": "complete", "truncatedReason": None,
                 "definitive": False, "evidenceKind": "conversation_mention",
                 "masked": not raw}
 
     session_index = build_sessions(home, limit=0)
-    sessions = session_index["sessions"]
-    discovery_complete = session_index["coverage"]["complete"] is True
+    sessions, discovery_complete = _content_sessions_and_coverage(
+        session_index)
     started = time.monotonic()
+    deadline = started + max(0.0, budget_seconds)
     matches: list[dict] = []
-    scanned = unreadable = 0
+    scanned = unreadable = truncated_sessions = 0
     truncated_reason: Optional[str] = None
 
     for session in sessions:
         if len(matches) >= limit > 0:
             truncated_reason = "limit"
             break
-        if time.monotonic() - started > budget_seconds:
+        if time.monotonic() >= deadline:
             truncated_reason = "time"
             break
         source = Path(session["source"])
-        found, ok = _search_one_session(
-            source, needle, raw=raw, home=home)
+        found, read_status = _search_one_session_bounded(
+            source, needle, raw=raw, home=home, deadline=deadline)
         scanned += 1
-        if not ok:
+        if read_status == "time":
+            truncated_sessions += 1
+            truncated_reason = "time"
+        elif read_status == "truncated":
+            truncated_sessions += 1
+        elif read_status != "ok":
             unreadable += 1
-            continue
         for hit in found:
             matches.append({**hit, "tool": session["tool"],
                             "source": session["source"],
                             "workspace": session["workspace"],
                             "lastActive": session["lastActive"]})
+        if read_status == "time":
+            break
 
     swept = (truncated_reason is None and scanned == len(sessions)
-             and discovery_complete)
-    if truncated_reason is None and not discovery_complete:
-        truncated_reason = "discovery"
+             and discovery_complete and truncated_sessions == 0
+             and unreadable == 0)
+    if truncated_reason is None:
+        if truncated_sessions:
+            truncated_reason = "content"
+        elif not discovery_complete:
+            truncated_reason = "discovery"
+        elif unreadable:
+            truncated_reason = "unreadable"
     return {
         "query": query,
         # Newest first: the recent time you solved this is the one worth
@@ -6660,6 +7549,7 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         "scannedSessions": scanned,
         "totalSessions": len(sessions),
         "unreadableSessions": unreadable,
+        "truncatedSessions": truncated_sessions,
         # Did the sweep reach every session it knew about.
         "coverage": "complete" if swept else "truncated",
         "truncatedReason": truncated_reason,
@@ -6672,7 +7562,7 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         # someone the phrase never appears. The two failures are separate
         # -- stopping early, and being unable to read -- and either one
         # is enough to withhold the conclusion.
-        "definitive": swept and unreadable == 0,
+        "definitive": swept and unreadable == 0 and truncated_sessions == 0,
         # What kind of evidence a hit is. A phrase in a conversation is a
         # mention -- somebody said it. That it was ever run is a
         # different claim needing a different source, and collapsing the
@@ -6706,40 +7596,71 @@ def _search_probes(needle: str) -> tuple[tuple[str, ...], ...]:
 
 
 def _file_might_contain_handle(
-        handle, probes: tuple[tuple[str, ...], ...]) -> bool:
+        handle, probes: tuple[tuple[str, ...], ...], *,
+        maximum_bytes: Optional[int] = None,
+        deadline: Optional[float] = None,
+        ) -> tuple[bool, str]:
     if not probes:
-        return False
+        return (False, "ok")
+    if maximum_bytes is None:
+        maximum_bytes = SEARCH_PROBE_MAX_BYTES
     outstanding = set(range(len(probes)))
-    for line in handle:
-        folded = line.casefold()
+    overlap = max(
+        (len(probe.encode("utf-8")) for group in probes for probe in group),
+        default=1,
+    )
+    carry = b""
+    consumed = 0
+    while consumed < maximum_bytes:
+        if deadline is not None and time.monotonic() >= deadline:
+            return (False, "time")
+        chunk = handle.read(min(SEARCH_IO_CHUNK_BYTES, maximum_bytes - consumed))
+        if not chunk:
+            return (False, "ok")
+        consumed += len(chunk)
+        window = carry + chunk
+        folded = window.decode("utf-8", errors="replace").casefold()
         for position in tuple(outstanding):
             if any(probe in folded for probe in probes[position]):
                 outstanding.discard(position)
         if not outstanding:
-            return True
-    return False
+            return (True, "ok")
+        carry = window[-overlap:]
+    return ((False, "truncated") if handle.read(1) else (False, "ok"))
 
 
 def _file_might_contain(source: Path,
-                        probes: tuple[tuple[str, ...], ...]) -> tuple[bool, bool]:
-    """`(worth_parsing, readable)` from a raw byte scan of the file.
+                        probes: tuple[tuple[str, ...], ...], *,
+                        deadline: Optional[float] = None) -> tuple[bool, str]:
+    """`(worth_parsing, status)` from a bounded raw-byte scan.
 
     The cheap half of the search: a necessary condition, checked without
     decoding anything. Stops as soon as every word has been seen, so a
     file that matches early costs almost nothing.
     """
     if not probes:
-        return (False, True)
+        return (False, "ok")
+    descriptor, before, status = _open_regular_nofollow(source)
+    if descriptor is None or before is None:
+        return (False, status)
     try:
-        with source.open("r", encoding="utf-8", errors="replace") as handle:
-            return (_file_might_contain_handle(handle, probes), True)
+        with os.fdopen(os.dup(descriptor), "rb") as handle:
+            result = _file_might_contain_handle(
+                handle, probes, deadline=deadline)
+        after = os.fstat(descriptor)
+        if _stat_signature(before) != _stat_signature(after):
+            return (False, "unreadable")
+        return result
     except OSError:
-        return (False, False)
+        return (False, "unreadable")
+    finally:
+        os.close(descriptor)
 
 
-def _search_one_session(source: Path, needle: str, *,
-                        raw: bool, home: Optional[Path] = None
-                        ) -> tuple[list[dict], bool]:
+def _search_one_session_bounded(
+        source: Path, needle: str, *, raw: bool,
+        home: Optional[Path] = None, deadline: Optional[float] = None,
+        ) -> tuple[list[dict], str]:
     """Matching turns in one transcript, and whether it could be read.
 
     Reads through `visible_turns`, so a hit is something a person could
@@ -6750,39 +7671,44 @@ def _search_one_session(source: Path, needle: str, *,
         source, home)
     if desktop_status != "not-desktop":
         if desktop_status != "ok" or desktop_descriptor is None:
-            return ([], False)
+            return ([], desktop_status)
         try:
             before = os.fstat(desktop_descriptor)
             probes = _search_probes(needle)
-            with os.fdopen(os.dup(desktop_descriptor), "r", encoding="utf-8",
-                           errors="replace") as handle:
-                worth_parsing = _file_might_contain_handle(handle, probes)
+            with os.fdopen(os.dup(desktop_descriptor), "rb") as handle:
+                worth_parsing, probe_status = _file_might_contain_handle(
+                    handle, probes, deadline=deadline)
             if not worth_parsing:
-                return ([], _stat_signature(before) == _stat_signature(
-                    os.fstat(desktop_descriptor)))
+                if _stat_signature(before) != _stat_signature(
+                        os.fstat(desktop_descriptor)):
+                    return ([], "unreadable")
+                return ([], probe_status)
             os.lseek(desktop_descriptor, 0, os.SEEK_SET)
-            with os.fdopen(os.dup(desktop_descriptor), "r", encoding="utf-8",
-                           errors="replace") as handle:
-                turns, decoded_any = _read_jsonl_turns(handle)
+            with os.fdopen(os.dup(desktop_descriptor), "rb") as handle:
+                turns, decoded_any, truncated, timed_out = _read_jsonl_turns(
+                    handle, deadline=deadline)
             after = os.fstat(desktop_descriptor)
             if (_stat_signature(before) != _stat_signature(after)
                     or (not decoded_any and before.st_size > 0)):
-                return ([], False)
+                return ([], "unreadable")
             turns = _canonical_visible_turns(turns)
         except OSError:
-            return ([], False)
+            return ([], "unreadable")
         finally:
             os.close(desktop_descriptor)
+        read_status = "time" if timed_out else "truncated" if truncated else "ok"
     else:
         probes = _search_probes(needle)
-        worth_parsing, readable = _file_might_contain(source, probes)
-        if not readable:
-            return ([], False)
+        worth_parsing, probe_status = _file_might_contain(
+            source, probes, deadline=deadline)
+        if probe_status not in ("ok", "truncated"):
+            return ([], probe_status)
         if not worth_parsing:
-            return ([], True)
-        turns, status = visible_turns(source, home)
-        if status != "ok":
-            return ([], False)
+            return ([], probe_status)
+        turns, read_status = visible_turns(
+            source, home, deadline=deadline)
+        if read_status not in ("ok", "truncated", "time"):
+            return ([], read_status)
 
     mask_home = home or Path.home()
 
@@ -6796,7 +7722,16 @@ def _search_one_session(source: Path, needle: str, *,
             position, turn, needle, raw=raw, home=mask_home))
         if len(hits) >= SEARCH_MATCHES_PER_SESSION:
             break
-    return (hits, True)
+    return (hits, read_status)
+
+
+def _search_one_session(source: Path, needle: str, *,
+                        raw: bool, home: Optional[Path] = None
+                        ) -> tuple[list[dict], bool]:
+    """Compatibility wrapper for callers that only distinguish readable."""
+    hits, status = _search_one_session_bounded(
+        source, needle, raw=raw, home=home)
+    return (hits, status == "ok")
 
 
 def _search_hit(position: int, turn: VisibleTurn, needle: str, *,
@@ -7021,9 +7956,10 @@ def _provider_outcomes(record: dict) -> list[tuple[str, str]]:
 
 
 def _session_evidence(source: Path, needle: str, *,
-                      raw: bool, home: Optional[Path] = None
-                      ) -> tuple[list[dict], list[dict], bool]:
-    """`(mentions, invocations, readable)` for one session, in one read.
+                      raw: bool, home: Optional[Path] = None,
+                      deadline: Optional[float] = None,
+                      ) -> tuple[list[dict], list[dict], str]:
+    """`(mentions, invocations, status)` for one session, in one read.
 
     One pass, not two. Invocation results can be on later lines, so the
     scan cannot stop at the call record -- but re-reading the
@@ -7034,23 +7970,52 @@ def _session_evidence(source: Path, needle: str, *,
     """
     desktop_descriptor, _, desktop_status = _open_claude_desktop_primary(
         source, home)
+    if desktop_status == "not-desktop" and source.suffix == ".json":
+        # Gemini stores one JSON object containing a messages array. Treating
+        # that object as a JSONL record can find the raw words but cannot turn
+        # any nested message into a visible turn, yielding a false definitive
+        # absence. Reuse the same bounded, no-follow reader used by inspect,
+        # title, and search so all content surfaces agree on the conversation.
+        turns, read_status = visible_turns(
+            source, home, deadline=deadline)
+        if read_status not in ("ok", "truncated", "time"):
+            return ([], [], read_status)
+        mask_home = home or Path.home()
+        mentions: list[dict] = []
+        for position, turn in enumerate(turns):
+            if needle not in " ".join(turn.text.split()).casefold():
+                continue
+            mentions.append(_search_hit(
+                position, turn, needle, raw=raw, home=mask_home,
+                include_identity=True,
+            ))
+            if len(mentions) >= SEARCH_MATCHES_PER_SESSION:
+                break
+        return (mentions, [], read_status)
     if desktop_status != "not-desktop":
         if desktop_status != "ok" or desktop_descriptor is None:
-            return ([], [], False)
+            return ([], [], desktop_status)
+        source_descriptor = desktop_descriptor
+    else:
+        source_descriptor, _, source_status = _open_regular_nofollow(source)
+        if source_descriptor is None:
+            return ([], [], source_status)
     mask_home = home or Path.home()
     probes = _search_probes(needle)
     if not probes:
-        if desktop_descriptor is not None:
-            os.close(desktop_descriptor)
-        return ([], [], True)
+        os.close(source_descriptor)
+        return ([], [], "ok")
     outstanding = set(range(len(probes)))
     invocations: list[dict] = []
     outcomes: dict[str, str] = {}
     raw_turns: list[VisibleTurn] = []
 
-    def scan(handle) -> None:
-        for line in handle:
-            folded = line.casefold()
+    def scan(handle) -> tuple[bool, bool]:
+        lines = _BoundedBinaryLines(
+            handle, maximum_bytes=SESSION_CONTENT_MAX_BYTES,
+            deadline=deadline)
+        for line in lines:
+            folded = line.decode("utf-8", errors="replace").casefold()
             if outstanding:
                 for position in tuple(outstanding):
                     if any(probe in folded for probe in probes[position]):
@@ -7073,24 +8038,23 @@ def _session_evidence(source: Path, needle: str, *,
                             for group in probes)):
                 invocations.extend(_provider_invocations(
                     record, needle, raw=raw, home=mask_home))
+        return (lines.truncated, lines.timed_out)
 
     try:
+        before = os.fstat(source_descriptor)
+        with os.fdopen(os.dup(source_descriptor), "rb") as handle:
+            truncated, timed_out = scan(handle)
         if desktop_descriptor is not None:
-            before = os.fstat(desktop_descriptor)
-            with os.fdopen(os.dup(desktop_descriptor), "r", encoding="utf-8",
-                           errors="replace") as handle:
-                scan(handle)
             if _stat_signature(before) != _stat_signature(
-                    os.fstat(desktop_descriptor)):
-                return ([], [], False)
-        else:
-            with source.open("r", encoding="utf-8", errors="replace") as handle:
-                scan(handle)
+                    os.fstat(source_descriptor)):
+                return ([], [], "unreadable")
+        elif _stat_signature(before) != _stat_signature(
+                os.fstat(source_descriptor)):
+            return ([], [], "unreadable")
     except OSError:
-        return ([], [], False)
+        return ([], [], "unreadable")
     finally:
-        if desktop_descriptor is not None:
-            os.close(desktop_descriptor)
+        os.close(source_descriptor)
 
     for invocation in invocations:
         call_id = invocation.get("callId", "")
@@ -7101,7 +8065,8 @@ def _session_evidence(source: Path, needle: str, *,
         )
 
     if outstanding:
-        return ([], [], True)
+        status = "time" if timed_out else "truncated" if truncated else "ok"
+        return ([], [], status)
 
     turns = _canonical_visible_turns(raw_turns)
     mentions: list[dict] = []
@@ -7114,7 +8079,8 @@ def _session_evidence(source: Path, needle: str, *,
         ))
         if len(mentions) >= SEARCH_MATCHES_PER_SESSION:
             break
-    return (mentions, invocations, True)
+    status = "time" if timed_out else "truncated" if truncated else "ok"
+    return (mentions, invocations, status)
 
 
 def read_cleanup_receipts(home: Path, *, limit: int = 50) -> list[dict]:
@@ -7207,29 +8173,36 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
     """
     needle = " ".join(query.split()).casefold()
     session_index = build_sessions(home, limit=0)
-    sessions = session_index["sessions"] if needle else []
-    discovery_complete = session_index["coverage"]["complete"] is True
+    content_sessions, discovery_complete = _content_sessions_and_coverage(
+        session_index)
+    sessions = content_sessions if needle else []
     started = time.monotonic()
+    deadline = started + max(0.0, budget_seconds)
     mentions: list[dict] = []
     invocations: list[dict] = []
     mention_ids: set[tuple] = set()
     invocation_ids: dict[tuple, int] = {}
-    scanned = unreadable = 0
+    scanned = unreadable = truncated_sessions = 0
     truncated_reason: Optional[str] = None
 
     for session in sessions:
         if len(mentions) + len(invocations) >= limit > 0:
             truncated_reason = "limit"
             break
-        if time.monotonic() - started > budget_seconds:
+        if time.monotonic() >= deadline:
             truncated_reason = "time"
             break
-        found_mentions, found_invocations, ok = _session_evidence(
-            Path(session["source"]), needle, raw=raw, home=home)
+        found_mentions, found_invocations, read_status = _session_evidence(
+            Path(session["source"]), needle, raw=raw, home=home,
+            deadline=deadline)
         scanned += 1
-        if not ok:
+        if read_status == "time":
+            truncated_sessions += 1
+            truncated_reason = "time"
+        elif read_status == "truncated":
+            truncated_sessions += 1
+        elif read_status != "ok":
             unreadable += 1
-            continue
         context = {"tool": session["tool"], "source": session["source"],
                    "workspace": session["workspace"],
                    "lastActive": session["lastActive"],
@@ -7269,11 +8242,19 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
                 continue
             invocation_ids[identity] = len(invocations)
             invocations.append(candidate)
+        if read_status == "time":
+            break
 
     swept = (bool(needle) and truncated_reason is None
-             and scanned == len(sessions) and discovery_complete)
-    if needle and truncated_reason is None and not discovery_complete:
-        truncated_reason = "discovery"
+             and scanned == len(sessions) and discovery_complete
+             and truncated_sessions == 0 and unreadable == 0)
+    if needle and truncated_reason is None:
+        if truncated_sessions:
+            truncated_reason = "content"
+        elif not discovery_complete:
+            truncated_reason = "discovery"
+        elif unreadable:
+            truncated_reason = "unreadable"
     return {
         "query": query,
         "conversationMentions": sorted(
@@ -7285,10 +8266,11 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
         "scannedSessions": scanned,
         "totalSessions": len(sessions),
         "unreadableSessions": unreadable,
+        "truncatedSessions": truncated_sessions,
         "coverage": "complete" if swept else "truncated",
         "truncatedReason": truncated_reason,
         # Whether the absence of matching mentions/invocations may be stated.
-        "definitive": swept and unreadable == 0,
+        "definitive": swept and unreadable == 0 and truncated_sessions == 0,
         "masked": not raw,
     }
 
@@ -7531,15 +8513,59 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if args.command in ("search", "evidence"):
+        maximum_query_bytes = 4096
         query = args.query
         if args.query_file is not None:
+            if str(args.query_file) in ("/dev/stdin", "/dev/fd/0"):
+                # The agent entrypoints deliberately transport the private
+                # query on stdin. This one named stream is not filesystem
+                # discovery; read one byte beyond the limit and let EOF be the
+                # caller's normal pipe close.
+                query_stream = getattr(sys.stdin, "buffer", sys.stdin)
+                query_bytes = query_stream.read(maximum_query_bytes + 1)
+                if isinstance(query_bytes, str):
+                    query_bytes = query_bytes.encode("utf-8")
+                query_status = (
+                    "truncated" if len(query_bytes) > maximum_query_bytes
+                    else "ok")
+            else:
+                query_bytes, _, query_status = _read_regular_bytes_nofollow(
+                    args.query_file, maximum_query_bytes)
+            if query_bytes is None:
+                if query_status == "truncated":
+                    print(
+                        f"{args.command}: query must be at most "
+                        f"{maximum_query_bytes} UTF-8 bytes",
+                        file=sys.stderr,
+                    )
+                    return 2
+                print(
+                    f"{args.command}: query file is not a readable "
+                    "current-user regular file",
+                    file=sys.stderr,
+                )
+                return 1
+            if query_status == "truncated":
+                print(
+                    f"{args.command}: query must be at most "
+                    f"{maximum_query_bytes} UTF-8 bytes",
+                    file=sys.stderr,
+                )
+                return 2
             try:
-                query = args.query_file.read_text(encoding="utf-8")
-            except OSError as exc:
+                query = query_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
                 print(f"{args.command}: {exc}", file=sys.stderr)
                 return 1
         if query is None:
             print(f"{args.command}: a query is required", file=sys.stderr)
+            return 2
+        if len(query.encode("utf-8")) > maximum_query_bytes:
+            print(
+                f"{args.command}: query must be at most "
+                f"{maximum_query_bytes} UTF-8 bytes",
+                file=sys.stderr,
+            )
             return 2
         if args.command == "evidence":
             _print_wire(json.dumps(

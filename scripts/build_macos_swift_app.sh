@@ -394,6 +394,10 @@ run_clean /usr/bin/xcrun strip -S -x "$bundled_executable"
 /bin/chmod +x "$bundled_executable"
 
 RUNTIME_DIR="$APP_DIR/Contents/Resources/runtime"
+# `bin/modore`, its `scripts/bounded_exec.py` timeout wrapper, and
+# `skills/modore-ops/` are source-checkout surfaces. The app neither installs
+# that command nor loads agent skills, so those files intentionally stay out of
+# this sealed runtime manifest.
 RUNTIME_FILES=(
     "scripts/scanner.sh"
     "scripts/cleanup.sh"
