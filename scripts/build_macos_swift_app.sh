@@ -18,6 +18,10 @@ ARCH_SPEC="${PCH_BUILD_ARCHS:-native}"
 STRICT_BUILD="${PCH_STRICT_BUILD:-1}"
 ALLOW_USER_TOOLCHAIN="${PCH_ALLOW_USER_TOOLCHAIN:-0}"
 KEEP_PREVIOUS_APP="${PCH_KEEP_PREVIOUS_APP:-0}"
+PYTHON_RUNTIME_VERSION="3.11.16+20260825"
+PYTHON_RUNTIME_RELEASE="20260825"
+PYTHON_RUNTIME_ARM64_SHA256="a84adc050a29e0c7387c885ff13e6ac4b0027f9e841359e200d647313dbb5b03"
+PYTHON_RUNTIME_X86_64_SHA256="77bfa2b959edc0d653830f14f08ab8260156d4b5930368886d4e1c6a76f1d2d4"
 
 if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     /usr/bin/printf 'ERROR: PCH_APP_VERSION must be a numeric X.Y.Z version: %s\n' "$APP_VERSION" >&2
@@ -215,7 +219,7 @@ done
     exit 1
 }
 
-required_commands=(xcrun codesign ditto plutil shasum)
+required_commands=(xcrun codesign curl ditto plutil shasum tar)
 for command_name in "${required_commands[@]}"; do
     if ! /usr/bin/command -v "$command_name" >/dev/null 2>&1; then
         /usr/bin/printf 'ERROR: required command missing: %s\n' "$command_name" >&2
@@ -250,6 +254,36 @@ if [[ "${#architectures[@]}" -eq 0 ]]; then
     /usr/bin/printf 'ERROR: PCH_BUILD_ARCHS resolved to an empty architecture list.\n' >&2
     exit 64
 fi
+
+python_runtime_archive_name() {
+    case "$1" in
+        arm64)
+            /usr/bin/printf 'cpython-%s-aarch64-apple-darwin-install_only_stripped.tar.gz\n' \
+                "$PYTHON_RUNTIME_VERSION"
+            ;;
+        x86_64)
+            /usr/bin/printf 'cpython-%s-x86_64-apple-darwin-install_only_stripped.tar.gz\n' \
+                "$PYTHON_RUNTIME_VERSION"
+            ;;
+        *) return 1 ;;
+    esac
+}
+python_runtime_archive_sha256() {
+    case "$1" in
+        arm64) /usr/bin/printf '%s\n' "$PYTHON_RUNTIME_ARM64_SHA256" ;;
+        x86_64) /usr/bin/printf '%s\n' "$PYTHON_RUNTIME_X86_64_SHA256" ;;
+        *) return 1 ;;
+    esac
+}
+python_runtime_archive_url() {
+    local archive_name
+    archive_name="$(python_runtime_archive_name "$1")" || return 1
+    # GitHub's asset path encodes the '+' in the immutable CPython build id.
+    archive_name="${archive_name/+/%2B}"
+    /usr/bin/printf \
+        'https://github.com/astral-sh/python-build-standalone/releases/download/%s/%s\n' \
+        "$PYTHON_RUNTIME_RELEASE" "$archive_name"
+}
 
 running_app_binary="$FINAL_APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
 existing_app_identity=""
@@ -407,6 +441,200 @@ for relative_path in "${RUNTIME_FILES[@]}"; do
 done
 /usr/bin/find "$RUNTIME_DIR/scripts" -type f -name '*.sh' -exec /bin/chmod +x {} \;
 
+# Work/session continuity is a shipping app feature, so it cannot borrow
+# `/usr/bin/python3` from Xcode or a package manager on the user's machine.
+# Assemble one relocatable, stdlib-only CPython helper from immutable
+# python-build-standalone archives. The executable is the only nested Mach-O;
+# build tools, pip, headers, Tk, site-packages, and extension bundles are not
+# shipped. A native app fetches one architecture; Universal 2 fetches both and
+# lipos the statically linked interpreter while sharing the pure-Python stdlib.
+PYTHON_RUNTIME_CACHE="$BUILD_DIR/.python-runtime-cache"
+if ! create_build_directory_without_symlinks "$BUILD_DIR" "$PYTHON_RUNTIME_CACHE"; then
+    /usr/bin/printf 'ERROR: cannot establish the pinned Python runtime cache.\n' >&2
+    exit 1
+fi
+PYTHON_RUNTIME_DIR="$APP_DIR/Contents/Resources/modore-python"
+PYTHON_RUNTIME_EXECUTABLE="$PYTHON_RUNTIME_DIR/bin/python3.11"
+/bin/mkdir -p "$PYTHON_RUNTIME_DIR/bin"
+python_stdlib_copied=0
+
+for architecture in "${architectures[@]}"; do
+    archive_name="$(python_runtime_archive_name "$architecture")"
+    archive_sha256="$(python_runtime_archive_sha256 "$architecture")"
+    archive_url="$(python_runtime_archive_url "$architecture")"
+    cached_archive="$PYTHON_RUNTIME_CACHE/$archive_name"
+    if [[ -e "$cached_archive" || -L "$cached_archive" ]]; then
+        if [[ ! -f "$cached_archive" || -L "$cached_archive" ]]; then
+            /usr/bin/printf 'ERROR: cached Python runtime is not a regular file: %s\n' \
+                "$cached_archive" >&2
+            exit 1
+        fi
+        actual_archive_sha256="$(run_clean /usr/bin/shasum -a 256 "$cached_archive" \
+            | /usr/bin/awk '{print $1}')"
+        if [[ "$actual_archive_sha256" != "$archive_sha256" ]]; then
+            /usr/bin/printf 'ERROR: cached Python runtime checksum mismatch: %s\n' \
+                "$cached_archive" >&2
+            exit 1
+        fi
+    else
+        downloaded_archive="$binary_staging/$archive_name.download"
+        /usr/bin/printf 'Fetching pinned CPython runtime for %s...\n' "$architecture"
+        run_clean /usr/bin/curl \
+            --fail \
+            --location \
+            --proto '=https' \
+            --retry 3 \
+            --retry-all-errors \
+            --show-error \
+            --silent \
+            --tlsv1.2 \
+            --output "$downloaded_archive" \
+            "$archive_url"
+        actual_archive_sha256="$(run_clean /usr/bin/shasum -a 256 "$downloaded_archive" \
+            | /usr/bin/awk '{print $1}')"
+        if [[ "$actual_archive_sha256" != "$archive_sha256" ]]; then
+            /usr/bin/printf 'ERROR: downloaded Python runtime checksum mismatch for %s.\n' \
+                "$architecture" >&2
+            exit 1
+        fi
+        /bin/mv "$downloaded_archive" "$cached_archive"
+    fi
+
+    archive_entries="$binary_staging/python-runtime-$architecture.entries"
+    run_clean /usr/bin/tar -tzf "$cached_archive" > "$archive_entries"
+    if ! /usr/bin/awk '
+        BEGIN { bad = 0; seen = 0 }
+        {
+            seen = 1
+            if ($0 !~ /^python\// || $0 ~ /(^|\/)\.\.(\/|$)/ || index($0, "\\") != 0) {
+                bad = 1
+            }
+        }
+        END { exit(!seen || bad) }
+    ' "$archive_entries"; then
+        /usr/bin/printf 'ERROR: pinned Python archive contains an unsafe path.\n' >&2
+        exit 1
+    fi
+    archive_types="$binary_staging/python-runtime-$architecture.types"
+    run_clean /usr/bin/tar -tvzf "$cached_archive" > "$archive_types"
+    if ! /usr/bin/awk '
+        BEGIN { bad = 0; binary = 0; stdlib = 0 }
+        {
+            selected = 0
+            for (i = 1; i <= NF; i++) {
+                if ($i == "python/bin/python3.11") { binary = 1; selected = 1 }
+                if ($i ~ /^python\/lib\/python3\.11(\/|$)/) { stdlib = 1; selected = 1 }
+            }
+            type = substr($1, 1, 1)
+            if (selected && type != "-" && type != "d") { bad = 1 }
+        }
+        END { exit(bad || !binary || !stdlib) }
+    ' "$archive_types"; then
+        /usr/bin/printf 'ERROR: selected Python runtime payload contains a link or special file.\n' >&2
+        exit 1
+    fi
+
+    extracted_runtime="$binary_staging/python-runtime-$architecture"
+    /bin/mkdir "$extracted_runtime"
+    run_clean /usr/bin/tar -xzf "$cached_archive" -C "$extracted_runtime" \
+        python/bin/python3.11 python/lib/python3.11
+    source_python="$extracted_runtime/python/bin/python3.11"
+    source_stdlib="$extracted_runtime/python/lib/python3.11"
+    if [[ ! -f "$source_python" || -L "$source_python" || ! -x "$source_python" \
+        || ! -d "$source_stdlib" || -L "$source_stdlib" ]]; then
+        /usr/bin/printf 'ERROR: pinned Python archive has an unexpected layout.\n' >&2
+        exit 1
+    fi
+    if /usr/bin/find "$source_stdlib" -type l -print -quit | /usr/bin/grep -q .; then
+        /usr/bin/printf 'ERROR: pinned Python stdlib contains an unexpected symlink.\n' >&2
+        exit 1
+    fi
+    /bin/cp "$source_python" "$binary_staging/modore-python-$architecture"
+
+    if [[ "$python_stdlib_copied" == "0" ]]; then
+        /usr/bin/ditto --norsrc --noextattr --noacl \
+            "$source_stdlib" "$PYTHON_RUNTIME_DIR/lib/python3.11"
+        for excluded in \
+            asyncio ctypes distutils email ensurepip http idlelib lib-dynload lib2to3 \
+            multiprocessing pydoc_data site-packages tkinter turtledemo unittest venv xml xmlrpc; do
+            /bin/rm -rf "$PYTHON_RUNTIME_DIR/lib/python3.11/$excluded"
+        done
+        # CPython's path bootstrap expects the platform-library directory to
+        # exist even when this stdlib-only runtime deliberately ships no
+        # extension modules. Without it every invocation writes a warning to
+        # stderr; Modore captures stdout and stderr together, so that warning
+        # would corrupt otherwise valid JSON responses from scree.
+        /bin/mkdir -p "$PYTHON_RUNTIME_DIR/lib/python3.11/lib-dynload"
+        /usr/bin/printf '%s\n' \
+            'Optional CPython extension modules are intentionally not bundled.' \
+            > "$PYTHON_RUNTIME_DIR/lib/python3.11/lib-dynload/README.txt"
+        /bin/rm -rf "$PYTHON_RUNTIME_DIR/lib/python3.11/config-3.11-darwin"
+        /bin/rm -f "$PYTHON_RUNTIME_DIR/lib/python3.11/_sysconfigdata__darwin_darwin.py"
+        /usr/bin/find "$PYTHON_RUNTIME_DIR/lib/python3.11" \
+            \( -name '__pycache__' -o -name '*.pyc' -o -name '*.pyo' \) -delete
+        python_stdlib_copied=1
+    fi
+done
+
+if [[ "${#architectures[@]}" -eq 1 ]]; then
+    /bin/cp "$binary_staging/modore-python-${architectures[0]}" \
+        "$PYTHON_RUNTIME_EXECUTABLE"
+else
+    run_clean /usr/bin/xcrun lipo -create \
+        "$binary_staging/modore-python-arm64" \
+        "$binary_staging/modore-python-x86_64" \
+        -output "$PYTHON_RUNTIME_EXECUTABLE"
+fi
+/bin/chmod +x "$PYTHON_RUNTIME_EXECUTABLE"
+/usr/bin/printf '%s\n%s%s\n%s\n%s  arm64\n%s  x86_64\n' \
+    'Modore embedded Python runtime' \
+    'Version: ' "$PYTHON_RUNTIME_VERSION" \
+    'Source: https://github.com/astral-sh/python-build-standalone' \
+    "$PYTHON_RUNTIME_ARM64_SHA256" \
+    "$PYTHON_RUNTIME_X86_64_SHA256" \
+    > "$PYTHON_RUNTIME_DIR/ORIGIN.txt"
+
+python_runtime_architectures="$(run_clean /usr/bin/xcrun lipo -archs \
+    "$PYTHON_RUNTIME_EXECUTABLE")"
+for architecture in "${architectures[@]}"; do
+    if [[ " $python_runtime_architectures " != *" $architecture "* ]]; then
+        /usr/bin/printf 'ERROR: embedded Python runtime is missing %s.\n' "$architecture" >&2
+        exit 1
+    fi
+    python_runtime_minimum="$(run_clean /usr/bin/xcrun vtool -show-build \
+        -arch "$architecture" "$PYTHON_RUNTIME_EXECUTABLE" \
+        | /usr/bin/awk '$1 == "minos" {print $2; exit}')"
+    if [[ ! "$python_runtime_minimum" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+        /usr/bin/printf 'ERROR: embedded Python runtime has no valid macOS minimum.\n' >&2
+        exit 1
+    fi
+    if ! /usr/bin/awk -v actual="$python_runtime_minimum" -v maximum="$MINIMUM_SYSTEM_VERSION" '
+        BEGIN {
+            split(actual, a, "."); split(maximum, m, ".")
+            exit((a[1] + 0 < m[1] + 0) ||
+                 (a[1] + 0 == m[1] + 0 && a[2] + 0 <= m[2] + 0) ? 0 : 1)
+        }
+    '; then
+        /usr/bin/printf 'ERROR: embedded Python runtime requires macOS %s (app minimum %s).\n' \
+            "${python_runtime_minimum:-unknown}" "$MINIMUM_SYSTEM_VERSION" >&2
+        exit 1
+    fi
+done
+
+# This smoke runs with no package-manager Python and with import isolation.
+# If pruning removed a transitive stdlib dependency, or CPython writes a path
+# warning that would corrupt LocalProcessRunner's combined JSON stream, the app
+# build stops here.
+python_smoke_stdout="$binary_staging/python-smoke.stdout"
+python_smoke_stderr="$binary_staging/python-smoke.stderr"
+run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B \
+    "$RUNTIME_DIR/scripts/scree.py" --help \
+    > "$python_smoke_stdout" 2> "$python_smoke_stderr"
+if [[ ! -s "$python_smoke_stdout" || -s "$python_smoke_stderr" ]]; then
+    /usr/bin/printf 'ERROR: embedded Python smoke produced no output or wrote to stderr.\n' >&2
+    exit 1
+fi
+
 runtime_hash="$({
     cd "$RUNTIME_DIR"
     /usr/bin/find . -type f | LC_ALL=C /usr/bin/sort | while IFS= read -r relative_path; do
@@ -436,14 +664,41 @@ run_clean /bin/bash -p "$icon_builder" \
 /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string $MINIMUM_SYSTEM_VERSION" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :NSHighResolutionCapable bool true" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :NSHumanReadableCopyright string Heznpc" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string $IDENTIFIER" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string modore" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleTypeRole string Viewer" "$APP_DIR/Contents/Info.plist"
 
 # Release payloads must not inherit Finder metadata, quarantine data, resource
 # forks, ACLs, or credentials hidden in extended attributes from the checkout.
 /usr/bin/xattr -cr "$APP_DIR"
 /bin/chmod -RN "$APP_DIR"
 
+generate_python_runtime_manifest() {
+    local destination temporary_manifest
+    destination="$PYTHON_RUNTIME_DIR/RUNTIME-MANIFEST.sha256"
+    temporary_manifest="$binary_staging/python-runtime-manifest.sha256"
+    (
+        cd "$PYTHON_RUNTIME_DIR"
+        /usr/bin/find . -type f ! -name './RUNTIME-MANIFEST.sha256' \
+            | LC_ALL=C /usr/bin/sort \
+            | while IFS= read -r relative_path; do
+                run_clean /usr/bin/shasum -a 256 "$relative_path"
+            done
+    ) > "$temporary_manifest"
+    /bin/mv "$temporary_manifest" "$destination"
+}
+
 if [[ "${PCH_SKIP_ADHOC_SIGN:-0}" != "1" ]]; then
+    # Sign nested code inside-out. `--deep` remains verification-only; using it
+    # to sign would hide which executable the release actually authorizes.
+    run_clean /usr/bin/codesign --force --sign - "$PYTHON_RUNTIME_EXECUTABLE" >/dev/null
+    generate_python_runtime_manifest
     run_clean /usr/bin/codesign --force --sign - "$APP_DIR" >/dev/null
+else
+    generate_python_runtime_manifest
 fi
 
 actual_architectures="$(run_clean /usr/bin/xcrun lipo -archs "$bundled_executable")"

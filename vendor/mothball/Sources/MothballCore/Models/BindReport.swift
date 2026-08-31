@@ -50,6 +50,7 @@ public struct BindReport: Codable, Sendable, Equatable {
 
     public struct CoverageDetail: Codable, Sendable, Equatable {
         public let claude: String?
+        public let claudeDesktop: String?
         public let codex: String?
         /// Session stores present on this machine that no binder reads.
         /// The loudest incompleteness there is: the scan never looked.

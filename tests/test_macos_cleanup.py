@@ -5,6 +5,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -105,13 +106,93 @@ def run_cleanup_with_token_file(
         )
 
 
+def project_residue_request(target: Path | str) -> bytes:
+    return (
+        "version\t1\n"
+        "kind\tproject_residue\n"
+        f"target\t{target}\n"
+    ).encode("utf-8")
+
+
+def run_project_residue_preview(
+    project_root: Path,
+    home: Path,
+    target: Path | str,
+    *,
+    processes: str = "",
+    processes_with_pid: str = "",
+    process_cwds: str = "",
+    request_data: bytes | None = None,
+):
+    extra_env: dict[str, str] = {}
+    if processes_with_pid or process_cwds:
+        home.mkdir(parents=True, exist_ok=True)
+        pid_file = home / "project-processes-with-pid.txt"
+        cwd_file = home / "project-process-cwds.tsv"
+        pid_file.write_text(processes_with_pid, encoding="utf-8")
+        cwd_file.write_text(process_cwds, encoding="utf-8")
+        extra_env = {
+            "PCH_PROCESS_LIST_WITH_PID_FILE": str(pid_file),
+            "PCH_TEST_PROCESS_CWD_FILE": str(cwd_file),
+        }
+    with tempfile.TemporaryFile() as request_file:
+        request_file.write(request_data or project_residue_request(target))
+        request_file.flush()
+        request_file.seek(0)
+        descriptor = request_file.fileno()
+        return run_cleanup(
+            project_root,
+            home,
+            "--preview",
+            "project_residue",
+            "--request-file",
+            f"/dev/fd/{descriptor}",
+            processes=processes,
+            extra_env=extra_env,
+            pass_fds=(descriptor,),
+        )
+
+
+def run_project_residue_execute(
+    project_root: Path,
+    home: Path,
+    target: Path | str,
+    token: str,
+    *,
+    processes: str = "",
+    request_data: bytes | None = None,
+):
+    with tempfile.TemporaryFile() as request_file, tempfile.TemporaryFile() as token_file:
+        request_file.write(request_data or project_residue_request(target))
+        request_file.flush()
+        request_file.seek(0)
+        token_file.write(token.encode("ascii"))
+        token_file.flush()
+        token_file.seek(0)
+        request_descriptor = request_file.fileno()
+        token_descriptor = token_file.fileno()
+        return run_cleanup(
+            project_root,
+            home,
+            "--execute",
+            "project_residue",
+            "--request-file",
+            f"/dev/fd/{request_descriptor}",
+            "--owner-approved",
+            "--approval-token-file",
+            f"/dev/fd/{token_descriptor}",
+            processes=processes,
+            pass_fds=(request_descriptor, token_descriptor),
+        )
+
+
 def test_macos_app_keeps_raw_approval_token_out_of_argv(project_root):
     source = (
         project_root
-        / "macos/Modore/Sources/Modore/Services/ScanModelActions.swift"
+        / "macos/Modore/Sources/Modore/Services/CleanupExecutionService.swift"
     ).read_text(encoding="utf-8")
-    execute_source = source.split("func executeCleanup", 1)[1].split(
-        "func retryCleanupPreview", 1
+    execute_source = source.split("static func execute(", 1)[1].split(
+        "private static func invocation", 1
     )[0]
     arguments = execute_source.split("arguments: [", 1)[1].split("],", 1)[0]
 
@@ -119,6 +200,23 @@ def test_macos_app_keeps_raw_approval_token_out_of_argv(project_root):
     assert '"--approval-token-file", "@pch-pinned:approval_token"' in arguments
     assert "preview.approvalToken" not in arguments
     assert '"--approval-token",' not in execute_source
+
+
+def test_macos_app_pins_project_residue_request_out_of_argv(project_root):
+    service = (
+        project_root
+        / "macos/Modore/Sources/Modore/Services/CleanupExecutionService.swift"
+    ).read_text(encoding="utf-8")
+    models = (
+        project_root
+        / "macos/Modore/Sources/Modore/Models/StorageRecoveryModels.swift"
+    ).read_text(encoding="utf-8")
+    invocation = service.split("private static func invocation", 1)[1]
+
+    assert 'pinnedFiles["cleanup_request"] = request.protocolData' in invocation
+    assert '["--request-file", "@pch-pinned:cleanup_request"]' in invocation
+    assert "request.target" not in invocation
+    assert 'Data("version\\t1\\nkind\\tproject_residue\\ntarget\\t\\(target)\\n".utf8)' in models
 
 
 def test_cleanup_preview_is_read_only_and_execute_requires_approval(project_root, tmp_path):
@@ -669,6 +767,318 @@ def test_cleanup_rejects_symlinked_target(project_root, tmp_path):
 
     assert payload["status"] == "blocked"
     assert protected_file.read_text(encoding="utf-8") == "keep"
+
+
+def make_node_project(home: Path, name: str = "webapp") -> tuple[Path, Path]:
+    project = home / "Projects" / name
+    target = project / "node_modules"
+    target.mkdir(parents=True)
+    (target / "dependency.js").write_bytes(b"rebuildable" * 1024)
+    (project / "package.json").write_text('{"name":"fixture"}\n', encoding="utf-8")
+    (project / "package-lock.json").write_text('{"lockfileVersion":3}\n', encoding="utf-8")
+    return project, target
+
+
+def test_project_residue_preview_and_execute_preserve_project_evidence(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    project, target = make_node_project(home)
+
+    preview = run_project_residue_preview(project_root, home, target)
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "ready"
+    assert payload["recipeId"] == "project_residue"
+    assert payload["targets"] == [str(target)]
+    expires_epoch = int(str(payload["approvalExpiresEpoch"]))
+    assert time.time() < expires_epoch <= time.time() + 901
+    token = approval_token(payload)
+
+    executed = run_project_residue_execute(project_root, home, target, token)
+    result = parse_protocol(executed.stdout)
+
+    assert executed.returncode == 0, executed.stderr
+    assert result["status"] == "complete"
+    assert not target.exists()
+    assert (project / "package.json").is_file()
+    assert (project / "package-lock.json").is_file()
+    receipt = Path(str(result["receipt"]))
+    assert receipt.is_file()
+    assert f"target\t{target}" in receipt.read_text(encoding="utf-8")
+
+    replayed = run_project_residue_execute(project_root, home, target, token)
+    assert replayed.returncode == 3
+    assert parse_protocol(replayed.stdout)["status"] == "blocked"
+
+
+@pytest.mark.parametrize(
+    ("basename", "marker", "lockfile"),
+    [
+        ("node_modules", "package.json", "pnpm-lock.yaml"),
+        ("target", "Cargo.toml", "Cargo.lock"),
+        (".build", "Package.swift", "Package.resolved"),
+        ("build", "pubspec.yaml", "pubspec.lock"),
+        ("build", "gradlew", "gradle.lockfile"),
+        (".dart_tool", "pubspec.yaml", "pubspec.lock"),
+        (".gradle", "gradlew", "gradle.lockfile"),
+        ("Pods", "Podfile", "Podfile.lock"),
+    ],
+)
+def test_project_residue_accepts_only_scanner_artifact_marker_pairs(
+    project_root, tmp_path, basename, marker, lockfile
+):
+    home = tmp_path / "home"
+    project = home / "Projects" / f"fixture-{basename.replace('.', 'dot')}"
+    target = project / basename
+    target.mkdir(parents=True)
+    (target / "output.bin").write_bytes(b"generated")
+    (project / marker).write_text("marker\n", encoding="utf-8")
+    (project / lockfile).write_text("lock\n", encoding="utf-8")
+
+    preview = run_project_residue_preview(project_root, home, target)
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "ready"
+    assert payload["targets"] == [str(target)]
+
+
+def test_project_residue_request_is_bounded_fd_protocol_not_raw_path(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    _, target = make_node_project(home)
+
+    raw_argv = run_cleanup(
+        project_root, home, "--preview", "project_residue", str(target)
+    )
+    assert raw_argv.returncode == 64
+
+    request_path = home / "request.tsv"
+    request_path.write_bytes(project_residue_request(target))
+    named_file = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        "project_residue",
+        "--request-file",
+        str(request_path),
+    )
+    assert named_file.returncode == 64
+
+    oversized = run_project_residue_preview(
+        project_root,
+        home,
+        target,
+        request_data=project_residue_request(target) + b"x" * 4096,
+    )
+    assert oversized.returncode == 64
+
+
+@pytest.mark.parametrize("condition", ["no_marker", "target_symlink", "traversal", "outside_home"])
+def test_project_residue_rejects_unproven_or_out_of_bounds_target(
+    project_root, tmp_path, condition
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    (protected / "keep.txt").write_text("keep", encoding="utf-8")
+
+    if condition == "no_marker":
+        target = home / "Projects" / "unknown" / "node_modules"
+        target.mkdir(parents=True)
+        (target / "data").write_text("keep", encoding="utf-8")
+    elif condition == "target_symlink":
+        project = home / "Projects" / "linked"
+        project.mkdir(parents=True)
+        (project / "package.json").write_text("{}", encoding="utf-8")
+        target = project / "node_modules"
+        target.symlink_to(protected, target_is_directory=True)
+    elif condition == "traversal":
+        container = home / "Projects" / "container"
+        project = home / "Projects" / "escaped"
+        container.mkdir(parents=True)
+        project.mkdir()
+        (project / "package.json").write_text("{}", encoding="utf-8")
+        real_target = project / "node_modules"
+        real_target.mkdir()
+        (real_target / "data").write_text("keep", encoding="utf-8")
+        target = Path(str(container / ".." / "escaped" / "node_modules"))
+    else:
+        # Exact prefix collision that previously passed `$target == $HOME_ROOT*`.
+        outside_project = Path(str(home) + "-escape") / "webapp"
+        target = outside_project / "node_modules"
+        target.mkdir(parents=True)
+        (target / "data").write_text("keep", encoding="utf-8")
+        (outside_project / "package.json").write_text("{}", encoding="utf-8")
+
+    preview = run_project_residue_preview(project_root, home, target)
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert Path(target).exists()
+    assert (protected / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_project_residue_rejects_tracked_target_and_broken_git_check(
+    project_root, tmp_path
+):
+    tracked_home = tmp_path / "tracked-home"
+    project, target = make_node_project(tracked_home)
+    subprocess.run(["/usr/bin/git", "init", str(project)], check=True, capture_output=True)
+    subprocess.run(
+        ["/usr/bin/git", "-C", str(project), "add", "node_modules/dependency.js"],
+        check=True,
+        capture_output=True,
+    )
+
+    tracked = run_project_residue_preview(project_root, tracked_home, target)
+    assert tracked.returncode == 0, tracked.stderr
+    assert parse_protocol(tracked.stdout)["status"] == "blocked"
+    assert target.exists()
+
+    broken_home = tmp_path / "broken-home"
+    broken_project, broken_target = make_node_project(broken_home)
+    (broken_project / ".git").write_text(
+        "gitdir: /definitely/missing/modore-test-gitdir\n", encoding="utf-8"
+    )
+    broken = run_project_residue_preview(
+        project_root, broken_home, broken_target
+    )
+    assert broken.returncode == 0, broken.stderr
+    assert parse_protocol(broken.stdout)["status"] == "blocked"
+    assert broken_target.exists()
+
+
+@pytest.mark.parametrize("drift", ["marker", "lock", "target"])
+def test_project_residue_consumes_approval_when_evidence_drifts(
+    project_root, tmp_path, drift
+):
+    home = tmp_path / "home"
+    project, target = make_node_project(home)
+    preview = run_project_residue_preview(project_root, home, target)
+    payload = parse_protocol(preview.stdout)
+    assert payload["status"] == "ready"
+    token = approval_token(payload)
+
+    if drift == "marker":
+        (project / "package.json").write_text('{"name":"changed"}\n', encoding="utf-8")
+    elif drift == "lock":
+        (project / "package-lock.json").write_text('{"lockfileVersion":2}\n', encoding="utf-8")
+    else:
+        (target / "new-output.bin").write_bytes(b"changed" * 2048)
+
+    executed = run_project_residue_execute(project_root, home, target, token)
+    result = parse_protocol(executed.stdout)
+    assert executed.returncode == 3
+    assert result["status"] == "blocked"
+    assert target.exists()
+
+    replayed = run_project_residue_execute(project_root, home, target, token)
+    assert replayed.returncode == 3
+    assert "일회성 실행으로 잠그지 못했습니다" in str(
+        parse_protocol(replayed.stdout)["blockedReason"]
+    )
+
+
+def test_project_residue_request_mismatch_consumes_approval(project_root, tmp_path):
+    home = tmp_path / "home"
+    _, first_target = make_node_project(home, "first")
+    _, second_target = make_node_project(home, "second")
+    preview = run_project_residue_preview(project_root, home, first_target)
+    token = approval_token(parse_protocol(preview.stdout))
+
+    mismatched = run_project_residue_execute(
+        project_root, home, second_target, token
+    )
+    assert mismatched.returncode == 3
+    assert parse_protocol(mismatched.stdout)["status"] == "blocked"
+    assert first_target.exists() and second_target.exists()
+
+    replayed = run_project_residue_execute(
+        project_root, home, first_target, token
+    )
+    assert replayed.returncode == 3
+
+
+def test_project_residue_blocks_process_that_names_the_project(project_root, tmp_path):
+    home = tmp_path / "home"
+    project, target = make_node_project(home)
+    preview = run_project_residue_preview(
+        project_root,
+        home,
+        target,
+        processes=f"/usr/bin/node {project}/scripts/build.js\n",
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert "Node/npm" in str(payload["runningProcesses"])
+    assert target.exists()
+
+
+@pytest.mark.parametrize(
+    ("basename", "marker", "command", "display_name"),
+    [
+        ("node_modules", "package.json", "/usr/local/bin/npm install", "Node/npm"),
+        ("target", "Cargo.toml", "/Users/test/.cargo/bin/cargo build", "Cargo/Rust"),
+        (".build", "Package.swift", "/usr/bin/swift build", "Swift build"),
+        ("build", "pubspec.yaml", "/opt/flutter/bin/flutter build macos", "Dart/Flutter"),
+        ("Pods", "Podfile", "/opt/homebrew/bin/pod install", "CocoaPods"),
+        (".gradle", "gradlew", "./gradlew assemble", "Gradle"),
+    ],
+)
+def test_project_residue_blocks_real_build_command_running_from_project_cwd(
+    project_root, tmp_path, basename, marker, command, display_name
+):
+    home = tmp_path / "home"
+    project = home / "Projects" / "active-build"
+    target = project / basename
+    target.mkdir(parents=True)
+    (target / "output.bin").write_bytes(b"generated")
+    (project / marker).write_text("marker\n", encoding="utf-8")
+
+    preview = run_project_residue_preview(
+        project_root,
+        home,
+        target,
+        processes_with_pid=f"4242 {command}\n",
+        process_cwds=f"4242\t{project}\n",
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert display_name in str(payload["runningProcesses"])
+    assert target.exists()
+
+
+def test_project_residue_does_not_block_same_tool_in_another_project_cwd(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    project, target = make_node_project(home)
+    other_project = home / "Projects" / "other"
+    other_project.mkdir()
+    (other_project / "package.json").write_text("{}", encoding="utf-8")
+
+    preview = run_project_residue_preview(
+        project_root,
+        home,
+        target,
+        processes_with_pid="4242 /usr/local/bin/npm install\n",
+        process_cwds=f"4242\t{other_project}\n",
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "ready"
+    assert payload["runningProcesses"] == ""
 
 
 def test_execute_rejects_target_drift_and_consumed_approval(project_root, tmp_path):

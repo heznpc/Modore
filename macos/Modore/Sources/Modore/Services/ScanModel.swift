@@ -4,6 +4,17 @@ import SwiftUI
 
 @MainActor
 final class ScanModel: ObservableObject {
+    enum TrackedTaskScope: Hashable {
+        case workScreen
+        case activityScreen
+        case application
+    }
+
+    struct TrackedApplicationTask {
+        let scope: TrackedTaskScope
+        let task: Task<Void, Never>
+    }
+
     @Published var state: ScanState = .idle
     @Published private(set) var deepScanSnapshot = DeepScanSnapshot.empty
     @Published var selectedReportURL: URL?
@@ -12,6 +23,9 @@ final class ScanModel: ObservableObject {
     @Published var reportRevision = 0
     @Published var virusTotalEnabled = false
     @Published var cleanupPreview: CleanupPreview?
+    @Published var cleanupRecoveryPlan: CleanupRecoveryPlan?
+    @Published var cleanupRecoveryProgress: CleanupRecoveryProgress?
+    @Published var cleanupRecoveryResult: CleanupRecoveryResult?
     @Published var cleanupInFlight = false
     @Published var cleanupIsExecuting = false
     @Published var browserAutomationStopPreview: BrowserAutomationStopPreview?
@@ -34,8 +48,18 @@ final class ScanModel: ObservableObject {
     @Published private(set) var deepScanFailure: DeepScanFailure?
     @Published private(set) var deepScanAt: Date?
     @Published var screeReport: ScreeReport?
+    @Published var screeReportRevision = 0
     @Published var screeLoading = false
     @Published var screeError: String?
+    /// The Work screen owns its automatic audit. Keeping both the task and
+    /// a generation prevents a cancelled/superseded subprocess from writing
+    /// a late result after the person has left the screen.
+    var screeGeneration = 0
+    var screeTask: Task<Void, Never>?
+    /// True only while a requested refresh has not produced a current success
+    /// or explicit failure. Screen cancellation keeps this true so re-entry
+    /// cannot present the previous report indefinitely as if it were current.
+    var screeNeedsRefresh = true
     @Published var screePreserveInFlightSource: String?
     /// Every repo the scan judged, archivable or not. Named for what it
     /// is: `rankCandidates` drops `.unsafe` repos, which is right for a
@@ -51,10 +75,14 @@ final class ScanModel: ObservableObject {
     /// `loadConversation`. Display-only cache; never consulted by any
     /// judgment.
     @Published var conversationLoads: [String: ConversationLoadState] = [:]
+    var conversationLoadTokens: [String: UUID] = [:]
     /// The session browser's index, and how fetching it went.
     @Published var sessionIndex: SessionIndex?
     @Published var sessionIndexLoading = false
     @Published var sessionIndexError: String?
+    var sessionIndexGeneration = 0
+    var sessionIndexTask: Task<Void, Never>?
+    var sessionIndexNeedsRefresh = true
     /// What the person typed into the browser's search field.
     @Published var sessionSearch = ""
     /// Content-search results, and whether one is running. Separate from
@@ -81,34 +109,75 @@ final class ScanModel: ObservableObject {
     /// Sources already asked for, so a scrolling list does not re-request
     /// the same rows every time it redraws.
     var titleRequests: Set<String> = []
+    var sessionTitleRequestTokens: [String: UUID] = [:]
+    var candidateTitleRequestTokens: [String: UUID] = [:]
     /// Which project the Work screen has selected, and which session
     /// inside it. Selection, not navigation: the panes are always there.
     @Published var selectedProjectID: String?
     @Published var selectedSessionSource: String?
+    /// A body-search hit may have been created after the metadata index was
+    /// loaded. Keep the selected hit itself so the detail pane does not need
+    /// to find it again in an older snapshot.
+    @Published var selectedSearchMatch: SessionSearchMatch?
     /// The project whose retirement sheet is open. Retirement is an action
     /// on a project, not a place in the sidebar.
     @Published var retirementReview: RetirementReviewTarget?
     @Published var archiveInspectionFailures = 0
     @Published var archiveLoading = false
+    /// Repository inspection and continuity binding are automatic Work-screen
+    /// loaders too. Binding may scan every local session for up to 15 minutes,
+    /// so it must share the screen's cancellation and stale-result contract.
+    var archiveGeneration = 0
+    var archiveTask: Task<Void, Never>?
+    var archiveBindingComplete = false
+    /// Raw backup/verify/restore is model-owned so Cmd-Q can cancel the
+    /// subprocess and wait for its exact-inode cleanup before the host exits.
+    var sessionBackupGeneration = 0
+    var sessionBackupTask: Task<Void, Never>?
+    /// Masked exports share one model-owned lease across every UI entry point.
+    var sessionExportGeneration = 0
+    var sessionExportTask: Task<Void, Never>?
     @Published var pendingLoginItemRemoval: PendingLoginItemRemoval?
     @Published var loginItemActionInFlight: String?
+    var loginItemActionTask: Task<Void, Never>?
     @Published var archiveError: String?
     @Published var observationResult: ObservationResult?
     @Published var observationInFlight = false
     @Published var observationErrorMessage: String?
-    @Published var timeQuotaSnapshot: TimeQuotaSnapshot?
+    /// Invalidates a cancelled Activity-screen observation so its late
+    /// completion cannot overwrite a newer run or clear the newer spinner.
+    var observationGeneration = 0
+    @Published var timeQuotaCardState: TimeQuotaCardState?
 
     let logStore = ScanLogStore()
     let projectRoot: URL
     private let normalReportName = "검사결과.html"
     private let shareReportName = "검사결과_공유용.html"
     private let terminationSafetyGate = AppTerminationSafetyGate()
-    private var scanTask: Task<Void, Never>?
+    /// Retained so application termination can cancel the scan and await the
+    /// LocalProcessRunner cancellation handler before the host process exits.
+    var scanTask: Task<Void, Never>?
     private var liveStateTask: Task<Void, Never>?
+    var applicationTerminationWaitGeneration = 0
+    var applicationTerminationWaitTask: Task<Void, Never>?
+    var applicationTerminationDeadlineTask: Task<Void, Never>?
+    /// One-way latch: after Cmd-Q begins, delayed UI/init tasks may finish
+    /// cleanup but cannot start a fresh scan or subprocess outside the captured
+    /// termination wait set.
+    var applicationTerminationStarted = false
     private var initialResultsLoaded = false
     private var lastScanAttemptAt: Date?
     var cleanupTask: Task<Void, Never>?
     var browserAutomationStopTask: Task<Void, Never>?
+    /// Short-lived UI helpers used to start unstructured tasks. Registering
+    /// their handles here gives screen navigation and Cmd-Q one place to
+    /// cancel and await every subprocess they may own.
+    var trackedApplicationTasks: [UUID: TrackedApplicationTask] = [:]
+    /// Screen navigation cancels work immediately, but LocalProcessRunner's
+    /// TERM-to-KILL escalation still needs an in-process owner for a bounded
+    /// grace period. Keep those cancelled handles until they actually finish;
+    /// Cmd-Q can then fold them back into its awaited snapshot.
+    var pendingDrainTasks: [UUID: Task<Void, Never>] = [:]
 
     /// Deep evidence is deliberately much slower-moving than the five-second
     /// live free-space signal. Re-entering the app must not turn one current
@@ -123,14 +192,17 @@ final class ScanModel: ObservableObject {
         let keepState = SimulatorKeepStore.load()
         self.simulatorKeepUUIDs = keepState.uuids
         self.simulatorLegacyKeepEntries = keepState.legacyEntries
-        Task {
+        startTrackedApplicationTask { [weak self] in
+            guard let self else { return }
             await refreshExistingResults()
             initialResultsLoaded = true
             if automaticallyScansStaleResults {
                 runAutomaticScanIfNeeded()
             }
         }
-        Task { await refreshStorageWatchStatus() }
+        startTrackedApplicationTask { [weak self] in
+            await self?.refreshStorageWatchStatus()
+        }
     }
 
     var isRunning: Bool { state == .running }
@@ -139,6 +211,7 @@ final class ScanModel: ObservableObject {
             || cleanupInFlight
             || browserAutomationStopInFlight
             || storageWatchInFlight
+            || loginItemActionInFlight != nil
             // An observation measures what this Mac is doing on its own. A
             // scan or cleanup started underneath it lands in its own results
             // -- the scanner's du/lsof become the top "real CPU use" rows and
@@ -154,6 +227,9 @@ final class ScanModel: ObservableObject {
     var collectionIsIncomplete: Bool { collectionCoverage?.complete == false }
     var macOSSecurity: MacOSSecurityStatus? { content.macOSSecurity }
     var storage: StorageSnapshot? { content.storage }
+    var currentFreeGB: Double? {
+        liveState.freeSpace?.value.freeGB ?? storage?.freeGB
+    }
     var findings: [ScanFinding] { content.findings }
     var securityFindings: [ScanFinding] { content.securityAttentionFindings }
     var storageAttentionFindings: [ScanFinding] { content.storageAttentionFindings }
@@ -234,7 +310,7 @@ final class ScanModel: ObservableObject {
     }
 
     func setApplicationActive(_ active: Bool) {
-        if active {
+        if active && !applicationTerminationStarted {
             startLiveStateUpdates()
             runAutomaticScanIfNeeded()
         } else {
@@ -264,8 +340,15 @@ final class ScanModel: ObservableObject {
         liveState.recordFreeSpaceAttempt(freeSpace, attemptedAt: date)
     }
 
+    func recordLiveFreeSpaceObservation(
+        _ observation: Observation<LiveFreeSpace>,
+        attemptedAt: Date = Date()
+    ) {
+        liveState.recordFreeSpaceAttempt(observation, attemptedAt: attemptedAt)
+    }
+
     private func startScan(at date: Date) {
-        guard !isBusy else { return }
+        guard !applicationTerminationStarted, !isBusy else { return }
         lastScanAttemptAt = date
         state = .running
         errorMessage = nil
@@ -339,18 +422,136 @@ final class ScanModel: ObservableObject {
         scanTask?.cancel()
     }
 
+    /// Cancels model-wide background work that is safe to interrupt and
+    /// returns the captured handles so the application delegate can await
+    /// subprocess cleanup. Destructive cleanup is deliberately excluded: its
+    /// separate termination safety gate lets the transaction finish instead.
+    func cancelNonDestructiveApplicationTaskHandles() -> [Task<Void, Never>] {
+        var tasks = [scanTask, liveStateTask].compactMap { $0 }
+        observationGeneration += 1
+        observationInFlight = false
+        tasks.append(contentsOf: cancelTrackedApplicationTasks())
+
+        scanTask?.cancel()
+        scanTask = nil
+        if state == .running { state = .idle }
+
+        liveStateTask?.cancel()
+        liveStateTask = nil
+
+        if !cleanupIsExecuting, let cleanupTask {
+            tasks.append(cleanupTask)
+            cleanupTask.cancel()
+            self.cleanupTask = nil
+            cleanupInFlight = false
+        }
+
+        if let browserAutomationStopTask {
+            tasks.append(browserAutomationStopTask)
+            browserAutomationStopTask.cancel()
+            self.browserAutomationStopTask = nil
+            browserAutomationStopInFlight = false
+            browserAutomationStopIsExecuting = false
+        }
+
+        return tasks
+    }
+
+    /// Starts a task whose subprocess lifetime must not outlive the owning
+    /// screen or application. The operation still runs when cancellation was
+    /// already requested so its own `defer` cleanup can clear loading state.
+    @discardableResult
+    func startTrackedApplicationTask(
+        scope: TrackedTaskScope = .application,
+        operation: @escaping @MainActor () async -> Void
+    ) -> UUID? {
+        guard !applicationTerminationStarted else { return nil }
+        let identifier = UUID()
+        let task = Task<Void, Never> { @MainActor [weak self] in
+            await operation()
+            self?.trackedApplicationTasks[identifier] = nil
+        }
+        trackedApplicationTasks[identifier] = TrackedApplicationTask(
+            scope: scope,
+            task: task
+        )
+        return identifier
+    }
+
+    /// Removes matching handles from the registry before cancelling them so a
+    /// completion racing on the main actor cannot be mistaken for new work.
+    func cancelTrackedApplicationTasks(
+        in scope: TrackedTaskScope? = nil
+    ) -> [Task<Void, Never>] {
+        let selected = trackedApplicationTasks.filter { _, tracked in
+            scope == nil || tracked.scope == scope
+        }
+        // A screen-scoped cancellation keeps the entry until the task's own
+        // completion removes it. Termination has captured strong handles in
+        // its local wait set, so it may clear the dictionary atomically.
+        if scope == nil {
+            for identifier in selected.keys {
+                trackedApplicationTasks[identifier] = nil
+            }
+        }
+        let tasks = selected.values.map(\.task)
+        for task in tasks { task.cancel() }
+        return tasks
+    }
+
+    func retainPendingDrainTasks(_ tasks: [Task<Void, Never>]) {
+        for task in tasks {
+            let identifier = UUID()
+            pendingDrainTasks[identifier] = task
+            Task { @MainActor [weak self] in
+                await task.value
+                self?.pendingDrainTasks[identifier] = nil
+            }
+        }
+    }
+
+    /// A superseding request still owns the cancelled task until its process
+    /// group has completed TERM/KILL cleanup. Preserve that handle so Cmd-Q
+    /// can await it even after the public task slot points at the new request.
+    func cancelAndRetainForDrain(_ task: Task<Void, Never>?) {
+        guard let task else { return }
+        task.cancel()
+        retainPendingDrainTasks([task])
+    }
+
+    func takePendingDrainTasksForTermination() -> [Task<Void, Never>] {
+        let tasks = Array(pendingDrainTasks.values)
+        pendingDrainTasks.removeAll()
+        return tasks
+    }
+
+    func cancelActivityScreenTasks() {
+        observationGeneration += 1
+        let tasks = cancelTrackedApplicationTasks(in: .activityScreen)
+        retainPendingDrainTasks(tasks)
+        observationInFlight = false
+    }
+
     func cancelCleanupPreviewRequest() {
         guard cleanupInFlight, !cleanupIsExecuting else { return }
         cleanupTask?.cancel()
     }
 
     func beginDestructiveCleanupTransaction() {
-        terminationSafetyGate.beginDestructiveTransaction()
+        beginApplicationDestructiveTransaction()
         cleanupIsExecuting = true
     }
 
     func finishDestructiveCleanupTransaction() {
         cleanupIsExecuting = false
+        finishApplicationDestructiveTransaction()
+    }
+
+    func beginApplicationDestructiveTransaction() {
+        terminationSafetyGate.beginDestructiveTransaction()
+    }
+
+    func finishApplicationDestructiveTransaction() {
         terminationSafetyGate.finishDestructiveTransaction()
     }
 

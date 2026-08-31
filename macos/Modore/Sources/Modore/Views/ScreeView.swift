@@ -1,105 +1,150 @@
 import SwiftUI
 
-/// TimeQuota's quota.json, read-only -- the deliberate boundary between the
-/// two products (see TimeQuotaCardService). The section only exists while
-/// the file is present, fresh, and parseable, so machines without TimeQuota
-/// never see a trace of it.
+/// QuotaPie's quota.json, read-only -- the deliberate boundary between the
+/// collector and Modore (see TimeQuotaCardService). A missing file remains
+/// invisible, while an existing stale or invalid boundary remains visible as
+/// a local health finding instead of silently taking the whole card away.
 struct TimeQuotaSection: View {
-    let snapshot: TimeQuotaSnapshot
+    let state: TimeQuotaCardState
 
     var body: some View {
         Section {
-            if !snapshot.collectionHealthy {
+            if case .invalid = state {
                 ScreeNoticeRow(
                     symbol: "exclamationmark.triangle",
-                    title: "TimeQuota 수집이 끊겼습니다",
-                    detail: "마지막 기록이 신선하지 않아 수치를 표시하지 않습니다. TimeQuota 쪽 수집 상태를 확인하세요.",
+                    title: "QuotaPie 기록을 읽을 수 없습니다",
+                    detail: "quota.json이 v2 계약과 맞지 않거나 안전하게 읽을 수 없습니다. 사용량 수치는 표시하지 않습니다.",
                     tint: Color.secondary
                 )
-            } else {
-                if let window = snapshot.window {
-                    HStack(spacing: 12) {
-                        Image(systemName: "gauge.with.needle")
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 24)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(window.provider) 주간 사용량")
-                                .font(.body.weight(.medium))
-                            if let resetsAt = window.resetsAt {
-                                Text("리셋 \(resetsAt.formatted(date: .abbreviated, time: .shortened))")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer()
-                        Text(Self.percentText(window.usedPercent))
-                            .font(.callout.weight(.semibold))
-                            .monospacedDigit()
-                    }
-                    .padding(.vertical, 2)
-                }
-                ForEach(snapshot.topBurn.prefix(3)) { row in
-                    HStack(spacing: 12) {
-                        Image(systemName: "flame")
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 24)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(row.remote)
-                                .font(.body.weight(.medium))
-                                .lineLimit(1)
-                            if let lastActiveAt = row.lastActiveAt {
-                                Text("마지막 활동 \(lastActiveAt.formatted(date: .abbreviated, time: .shortened))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer()
-                        Text(Self.percentText(row.percent))
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    .padding(.vertical, 2)
-                }
-                ForEach(inactiveProviders) { provider in
+            }
+
+            if let snapshot = state.snapshot {
+                if isStale {
                     ScreeNoticeRow(
                         symbol: "clock.badge.questionmark",
-                        title: "\(provider.name): \(Self.stateText(provider.state))",
-                        detail: "이 공급자의 사용량은 아직 수집되지 않고 있습니다.",
+                        title: "QuotaPie 기록이 오래됐습니다",
+                        detail: "\(snapshot.generatedAt.formatted(date: .abbreviated, time: .shortened)) 이후 새 기록이 없습니다. 수집기가 멈췄을 수 있어 사용량 수치는 숨겼습니다.",
+                        tint: Color.secondary
+                    )
+                } else {
+                    if let notice = TimeQuotaCardPresentation.headlineNotice(for: snapshot) {
+                        ScreeNoticeRow(
+                            symbol: notice.symbol,
+                            title: notice.title,
+                            detail: notice.detail,
+                            tint: Color.secondary
+                        )
+                    } else if !snapshot.collectionHealthy {
+                        ScreeNoticeRow(
+                            symbol: "exclamationmark.triangle",
+                            title: "QuotaPie 공급자 수집이 실패했습니다",
+                            detail: "경계 파일은 갱신됐지만 표시할 공급자의 최근 수집이 성공하지 않았습니다. 마지막 수치는 숨겼습니다.",
+                            tint: Color.secondary
+                        )
+                    }
+
+                    if showsNumbers, let window = snapshot.window {
+                        HStack(spacing: 12) {
+                            Image(systemName: "gauge.with.needle")
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(Self.windowTitle(window: window, headline: snapshot.headline))
+                                    .font(.body.weight(.medium))
+                                if let resetsAt = window.resetsAt {
+                                    Text("리셋 \(resetsAt.formatted(date: .abbreviated, time: .shortened))")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Text(window.usedPercent.map(TimeQuotaCardPresentation.percentText) ?? "확인 중")
+                                .font(.callout.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                if showsNumbers {
+                    ForEach(snapshot.topBurn.prefix(3)) { row in
+                        HStack(spacing: 12) {
+                            Image(systemName: "flame")
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.remote)
+                                    .font(.body.weight(.medium))
+                                    .lineLimit(1)
+                                if let lastActiveAt = row.lastActiveAt {
+                                    Text("마지막 활동 \(lastActiveAt.formatted(date: .abbreviated, time: .shortened))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Text(TimeQuotaCardPresentation.percentText(row.percent))
+                                .font(.callout.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                ForEach(snapshot.providerStates) { provider in
+                    let status = TimeQuotaCardPresentation.providerStatus(
+                        provider,
+                        boundaryIsStale: isStale
+                    )
+                    ScreeNoticeRow(
+                        symbol: status.symbol,
+                        title: status.title,
+                        detail: status.detail,
                         tint: Color.secondary
                     )
                 }
             }
         } header: {
             NativeSectionHeader(
-                title: "AI 사용량 (TimeQuota)",
-                subtitle: "TimeQuota가 로컬에 기록한 quota.json을 읽기만 합니다. 소진 상위는 세션 메타데이터 집계이며 대화 내용은 관여하지 않습니다.",
-                value: snapshot.window.map { "\($0.provider) \(Self.percentText($0.usedPercent))" } ?? ""
+                title: "AI 사용량 (QuotaPie)",
+                subtitle: "QuotaPie가 로컬에 기록한 quota.json을 읽기만 합니다. 자격증명과 네트워크 수집은 QuotaPie에 남습니다.",
+                value: TimeQuotaCardPresentation.headerValue(for: state)
             )
         }
     }
 
-    /// Providers whose collection is not currently succeeding -- the healthy
-    /// ones are already represented by the numbers above.
-    private var inactiveProviders: [TimeQuotaSnapshot.ProviderState] {
-        snapshot.providerStates.filter { $0.state != "recent-success" }
+    private var isStale: Bool {
+        if case .stale = state { return true }
+        return false
     }
 
-    private static func percentText(_ value: Double) -> String {
-        value == value.rounded()
-            ? String(format: "%.0f%%", value)
-            : String(format: "%.1f%%", value)
-    }
-
-    private static func stateText(_ state: String) -> String {
-        switch state {
-        case "never-attempted": return "수집 시작 전"
-        case "attempted-then-failed": return "수집 실패"
-        case "stale-success": return "마지막 성공이 오래됨"
-        default: return state
+    private var showsNumbers: Bool {
+        guard case .current(let snapshot) = state,
+              snapshot.collectionHealthy else { return false }
+        switch snapshot.headline?.kind {
+        case .setup, .degraded: return false
+        case .normal, .paceRisk, nil: return true
         }
+    }
+
+    private static func windowTitle(
+        window: TimeQuotaSnapshot.Window,
+        headline: TimeQuotaSnapshot.Headline?
+    ) -> String {
+        let kind: String
+        switch headline?.windowKind {
+        case .fiveHour: kind = "5시간"
+        case .weekly: kind = "주간"
+        case .monthly: kind = "월간"
+        case .other: kind = ""
+        case nil: kind = ""
+        }
+        return kind.isEmpty
+            ? "\(TimeQuotaCardPresentation.providerName(window.provider)) 사용량"
+            : "\(TimeQuotaCardPresentation.providerName(window.provider)) \(kind) 사용량"
     }
 }
 
@@ -213,15 +258,15 @@ struct ScreeExpiringSection: View {
                         }
                         .buttonStyle(.borderless)
                         .disabled(preserveInFlightSource != nil)
-                        .help("이 세션을 마스킹된 Markdown으로 보존")
-                        .accessibilityLabel("세션 보존")
+                        .help("대화 텍스트만 마스킹하여 Markdown으로 내보내기 — 원본 백업은 작업의 대화 상세에서")
+                        .accessibilityLabel("대화 내보내기")
                     }
                 }
             }
         } header: {
             NativeSectionHeader(
                 title: "곧 만료되는 세션",
-                subtitle: "롤링 보존 기한을 파일 나이로 추정한 예보입니다. 실제 삭제 시점은 각 도구가 결정합니다. 아이콘을 눌러 마스킹된 Markdown으로 미리 보존할 수 있습니다.",
+                subtitle: "파일 나이로 추정한 보존 기한입니다. 아이콘은 대화 텍스트 내보내기이며, 도구 기록을 포함한 원본 백업은 대화 상세에서 실행합니다.",
                 value: expiring.isEmpty ? "" : "\(expiring.count)건"
             )
         }
@@ -231,11 +276,13 @@ struct ScreeExpiringSection: View {
 struct ScreeWorktreeSection: View {
     let items: [ScreeWorktreeItem]
     let protectedCount: Int
+    let registeredMissing: [ScreeRegisteredMissing]
+    let discovery: ScreeWorktreeDiscovery
 
     var body: some View {
         Section {
-            if items.isEmpty {
-                Text("등록된 에이전트 워크트리가 없습니다.")
+            if items.isEmpty && registeredMissing.isEmpty {
+                Text(discovery.emptyStateText)
                     .foregroundStyle(.secondary)
             }
             ForEach(items) { item in
@@ -256,11 +303,34 @@ struct ScreeWorktreeSection: View {
                         .foregroundStyle(Color.secondary)
                 }
             }
+            ForEach(registeredMissing) { missing in
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(missing.displayLabel)
+                            .font(.body.weight(.medium))
+                        Text("git 등록 기록은 남았지만 작업 경로가 사라졌습니다.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("경로 소멸")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
         } header: {
+            let missingText = registeredMissing.isEmpty
+                ? ""
+                : " · 경로 소멸 \(registeredMissing.count)"
             NativeSectionHeader(
                 title: "에이전트 워크트리",
-                subtitle: "git 증거(dirty·미푸시 커밋)만으로 판정한 미리보기 등급입니다. 삭제 전 재검증이 필요합니다.",
-                value: items.isEmpty ? "" : "보호 \(protectedCount)/\(items.count)"
+                subtitle: "git 증거(dirty·미푸시 커밋)만으로 판정한 미리보기 등급입니다. \(discovery.coverageText)",
+                value: items.isEmpty && registeredMissing.isEmpty
+                    ? ""
+                    : "보호 \(protectedCount)/\(items.count)\(missingText)"
             )
         }
     }

@@ -76,3 +76,58 @@ final class LoginItemServiceTests: XCTestCase {
         XCTAssertEqual(name, "Bar")
     }
 }
+
+@MainActor
+final class LoginItemActionLifecycleTests: XCTestCase {
+    private func readyModel() async -> ScanModel {
+        let model = ScanModel(automaticallyScansStaleResults: false)
+        let tasks = model.cancelTrackedApplicationTasks()
+        for task in tasks { await task.value }
+        return model
+    }
+
+    func testSuccessfulExecuteSchedulesARescan() async {
+        let model = await readyModel()
+        model.pendingLoginItemRemoval = PendingLoginItemRemoval(
+            name: "Bar",
+            approvalToken: String(repeating: "a", count: 64)
+        )
+        var rescans = 0
+
+        model.confirmLoginItemRemoval(
+            using: { _ in .ok(name: "Bar") },
+            rescan: { rescans += 1 }
+        )
+        let task = model.loginItemActionTask
+        await task?.value
+
+        XCTAssertEqual(rescans, 1)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertNil(model.loginItemActionTask)
+    }
+
+    func testFailedExecuteStillSchedulesARescanAndKeepsFailure() async {
+        let model = await readyModel()
+        model.pendingLoginItemRemoval = PendingLoginItemRemoval(
+            name: "Bar",
+            approvalToken: String(repeating: "a", count: 64)
+        )
+        var rescans = 0
+
+        model.confirmLoginItemRemoval(
+            using: { _ in .failure("status line lost", name: "Bar") },
+            rescan: {
+                // Mirrors runScan's start contract: a new scan clears the
+                // generic error before starting its owned task.
+                model.errorMessage = nil
+                rescans += 1
+            }
+        )
+        let task = model.loginItemActionTask
+        await task?.value
+
+        XCTAssertEqual(rescans, 1)
+        XCTAssertEqual(model.errorMessage, "status line lost")
+        XCTAssertNil(model.loginItemActionTask)
+    }
+}

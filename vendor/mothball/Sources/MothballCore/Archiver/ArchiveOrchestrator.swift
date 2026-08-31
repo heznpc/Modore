@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct ArchiveOrchestrator: Sendable {
@@ -406,6 +407,13 @@ public struct ArchiveOrchestrator: Sendable {
     }
 
     static func removeIfExists(_ url: URL) {
-        try? FileManager.default.removeItem(at: url)
+        // Every archive-plan temporary/final artifact is a file. `unlink`
+        // makes cleanup idempotent without allowing a secondary Foundation
+        // remove error to replace the archive operation's real error while a
+        // throwing async scope is unwinding.
+        url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return }
+            _ = Darwin.unlink(path)
+        }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import ModoreDomain
 
 enum ObservationSource: String, Equatable, Sendable {
     case systemVolume
@@ -29,6 +30,10 @@ struct LiveFreeSpace: Equatable, Sendable {
         guard totalBytes > 0 else { return 0 }
         return (1 - Double(freeBytes) / Double(totalBytes)) * 100
     }
+
+    var pressure: StoragePressure {
+        StoragePressure.classify(freeBytes: freeBytes)
+    }
 }
 
 enum ObservationStatus: Equatable, Sendable {
@@ -45,6 +50,10 @@ struct LiveState: Equatable, Sendable {
         freeSpace: nil,
         freeSpaceStatus: .observing
     )
+
+    var storagePressure: StoragePressure? {
+        freeSpace?.value.pressure
+    }
 
     mutating func recordFreeSpaceAttempt(
         _ observation: Observation<LiveFreeSpace>?,

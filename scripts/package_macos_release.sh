@@ -690,7 +690,23 @@ fi
 PACKAGE_BUILD_DIR="$package_workspace/build"
 APP_DIR="$PACKAGE_BUILD_DIR/$APP_NAME"
 EXECUTABLE="$APP_DIR/Contents/MacOS/Modore"
+EMBEDDED_PYTHON="$APP_DIR/Contents/Resources/modore-python/bin/python3.11"
+EMBEDDED_PYTHON_ROOT="$APP_DIR/Contents/Resources/modore-python"
 AUDIT_SCRIPT="$BUILD_ROOT/scripts/artifact_audit.py"
+refresh_embedded_python_manifest() {
+    local destination temporary_manifest
+    destination="$EMBEDDED_PYTHON_ROOT/RUNTIME-MANIFEST.sha256"
+    temporary_manifest="$package_workspace/python-runtime-manifest.sha256"
+    (
+        cd "$EMBEDDED_PYTHON_ROOT"
+        /usr/bin/find . -type f ! -name './RUNTIME-MANIFEST.sha256' \
+            | LC_ALL=C /usr/bin/sort \
+            | while IFS= read -r relative_path; do
+                run_clean /usr/bin/shasum -a 256 "$relative_path"
+            done
+    ) > "$temporary_manifest"
+    /bin/mv "$temporary_manifest" "$destination"
+}
 build_environment=(
     "PCH_APP_VERSION=$VERSION"
     "PCH_MINIMUM_SYSTEM_VERSION=$MINIMUM_SYSTEM_VERSION"
@@ -718,6 +734,10 @@ fi
 
 if [[ ! -x "$EXECUTABLE" ]]; then
     /usr/bin/printf 'ERROR: app executable is missing.\n' >&2
+    exit 3
+fi
+if [[ ! -f "$EMBEDDED_PYTHON" || -L "$EMBEDDED_PYTHON" || ! -x "$EMBEDDED_PYTHON" ]]; then
+    /usr/bin/printf 'ERROR: standalone session engine is missing.\n' >&2
     exit 3
 fi
 bundle_identifier="$(/usr/bin/plutil -extract CFBundleIdentifier raw "$APP_DIR/Contents/Info.plist")"
@@ -782,6 +802,40 @@ if [[ "$ARCH_REQUEST" == "universal" || "$ARCH_REQUEST" == "universal2" ]]; then
     fi
 fi
 
+python_architectures="$(run_clean /usr/bin/xcrun lipo -archs "$EMBEDDED_PYTHON")"
+for architecture in $actual_architectures; do
+    if [[ " $python_architectures " != *" $architecture "* ]]; then
+        /usr/bin/printf 'ERROR: embedded Python is missing the app %s slice.\n' \
+            "$architecture" >&2
+        exit 3
+    fi
+    python_minimum="$(run_clean /usr/bin/xcrun vtool -show-build \
+        -arch "$architecture" "$EMBEDDED_PYTHON" \
+        | /usr/bin/awk '$1 == "minos" {print $2; exit}')"
+    if [[ ! "$python_minimum" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+        /usr/bin/printf 'ERROR: embedded Python has no valid macOS minimum.\n' >&2
+        exit 3
+    fi
+    if ! /usr/bin/awk -v actual="$python_minimum" -v maximum="$MINIMUM_SYSTEM_VERSION" '
+        BEGIN {
+            split(actual, a, "."); split(maximum, m, ".")
+            exit((a[1] + 0 < m[1] + 0) ||
+                 (a[1] + 0 == m[1] + 0 && a[2] + 0 <= m[2] + 0) ? 0 : 1)
+        }
+    '; then
+        /usr/bin/printf 'ERROR: embedded Python requires macOS %s (app minimum %s).\n' \
+            "${python_minimum:-unknown}" "$MINIMUM_SYSTEM_VERSION" >&2
+        exit 3
+    fi
+done
+for architecture in $python_architectures; do
+    if [[ " $actual_architectures " != *" $architecture "* ]]; then
+        /usr/bin/printf 'ERROR: embedded Python has an unexpected %s slice.\n' \
+            "$architecture" >&2
+        exit 3
+    fi
+done
+
 run_clean /usr/bin/python3 -I -B "$AUDIT_SCRIPT" "$APP_DIR"
 
 signature_kind="ad-hoc"
@@ -789,6 +843,23 @@ notarized=false
 stapled=false
 gatekeeper=false
 if [[ "$MODE" == "distribution" ]]; then
+    # Nested executables are signed explicitly, inside-out. Never use
+    # `codesign --deep` for signing; it obscures the actual authorization set.
+    run_clean /usr/bin/codesign \
+        --force \
+        --strict \
+        --options runtime \
+        --timestamp \
+        --sign "$identity" \
+        "$EMBEDDED_PYTHON"
+    run_clean /usr/bin/codesign --verify --strict --verbose=2 "$EMBEDDED_PYTHON"
+    verify_developer_signature_identity "$EMBEDDED_PYTHON"
+    if [[ "$last_codesign_artifact_kind" != "regular" \
+        || ! "$last_codesign_snapshot_sha256" =~ ^[a-f0-9]{64}$ ]]; then
+        /usr/bin/printf 'ERROR: embedded Python signature evidence is incomplete.\n' >&2
+        exit 3
+    fi
+    refresh_embedded_python_manifest
     run_clean /usr/bin/codesign \
         --force \
         --strict \

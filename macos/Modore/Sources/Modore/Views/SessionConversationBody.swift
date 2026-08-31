@@ -42,7 +42,7 @@ struct SessionConversationBody: View {
                     }
                 }
                 if conversation.omittedTurns > 0 {
-                    Text("이전 \(conversation.omittedTurns)개 턴은 생략됨 — 전체는 '보존'으로 내보내기")
+                    Text("이전 \(conversation.omittedTurns)개 턴은 생략됨. 대화 내보내기는 텍스트만 포함하며, 도구 기록은 원본 백업이 필요합니다.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
