@@ -287,8 +287,6 @@ final class StorageWatchSnapshotTests: XCTestCase {
         try writePrivate(
             """
             lastAttemptAt\t2026-08-12T02:00:00Z
-            lastExitCode\t1
-            lastFinishedAt\t2026-08-12T02:00:05Z
             """,
             to: heartbeatURL
         )
@@ -363,6 +361,104 @@ final class StorageWatchSnapshotTests: XCTestCase {
             now: freshestSuccessAt.addingTimeInterval(StorageWatchService.heartbeatStalenessInterval + 1)
         )
         XCTAssertEqual(state, .staleSuccess)
+    }
+
+    func testFutureSuccessCannotMaskTheCurrentFailedAttempt() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        try writePrivate(
+            """
+            lastAttemptAt\t2026-08-12T02:00:00Z
+            """,
+            to: heartbeatURL
+        )
+
+        let state = StorageWatchService.healthState(
+            heartbeatURL: heartbeatURL,
+            freshestSuccessAt: ISO8601DateFormatter().date(
+                from: "2026-08-13T02:00:00Z"
+            )!,
+            now: ISO8601DateFormatter().date(from: "2026-08-12T02:01:00Z")!
+        )
+
+        XCTAssertEqual(state, .attemptedThenFailed)
+    }
+
+    func testMalformedCompletedHeartbeatFailsClosed() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        let success = ISO8601DateFormatter().date(from: "2026-08-12T02:00:05Z")!
+
+        for heartbeat in [
+            "lastAttemptAt\t2026-08-12T02:00:00Z\nlastExitCode\tbogus\nlastFinishedAt\t2026-08-12T02:00:05Z\n",
+            "lastAttemptAt\t2026-08-12T02:00:00Z\nlastExitCode\t0\n",
+            "lastAttemptAt\t2026-08-12T02:00:00Z\nlastFinishedAt\t2026-08-12T02:00:05Z\n",
+        ] {
+            try writePrivate(heartbeat, to: heartbeatURL)
+            XCTAssertEqual(
+                StorageWatchService.healthState(
+                    heartbeatURL: heartbeatURL,
+                    freshestSuccessAt: success,
+                    now: success.addingTimeInterval(60)
+                ),
+                .attemptedThenFailed,
+                heartbeat
+            )
+        }
+    }
+
+    func testExplicitFailedHeartbeatOutranksNearFutureAndEqualSuccessRows() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        try writePrivate(
+            """
+            lastAttemptAt\t2026-08-12T02:00:00Z
+            lastExitCode\t1
+            lastFinishedAt\t2026-08-12T02:00:05Z
+            """,
+            to: heartbeatURL
+        )
+        let now = ISO8601DateFormatter().date(from: "2026-08-12T02:00:30Z")!
+
+        for successTimestamp in [
+            "2026-08-12T02:00:00Z",
+            "2026-08-12T02:01:00Z",
+        ] {
+            let state = StorageWatchService.healthState(
+                heartbeatURL: heartbeatURL,
+                freshestSuccessAt: ISO8601DateFormatter().date(from: successTimestamp)!,
+                now: now
+            )
+            XCTAssertEqual(state, .attemptedThenFailed, successTimestamp)
+        }
+    }
+
+    func testFreeSpaceSampleLoaderDropsFarFutureRowsBeforeSorting() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sampleURL = directory.appendingPathComponent("storage-samples.tsv")
+        try writePrivate(
+            """
+            2026-08-12T02:00:00Z\t10485760\t0\tok
+            2026-08-13T02:00:00Z\t9437184\t1048576\twarning
+            """,
+            to: sampleURL
+        )
+
+        let samples = StorageHistoryStore.loadFreeSpaceSamples(
+            from: sampleURL,
+            now: ISO8601DateFormatter().date(from: "2026-08-12T02:01:00Z")!
+        )
+
+        XCTAssertEqual(samples.count, 1)
+        XCTAssertEqual(samples.first?.status, "ok")
+        XCTAssertEqual(
+            samples.first?.checkedAt,
+            ISO8601DateFormatter().date(from: "2026-08-12T02:00:00Z")!
+        )
     }
 
     private func makePrivateDirectory() throws -> URL {

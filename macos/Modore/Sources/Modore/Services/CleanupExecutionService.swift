@@ -10,6 +10,43 @@ struct CleanupExecutionContext: Sendable {
     let environment: [String: String]
 }
 
+struct CleanupInvocation: Equatable, Sendable {
+    let pinnedFiles: [String: Data]
+    let arguments: [String]
+}
+
+struct CleanupExecutionClient: Sendable {
+    let prepare: @Sendable (URL) async -> CleanupExecutionContext?
+    let preview: @Sendable (
+        String,
+        CleanupExecutionRequest?,
+        CleanupExecutionContext
+    ) async -> CapturedProcessResult
+    let execute: @Sendable (
+        CleanupPreview,
+        CleanupExecutionRequest?,
+        CleanupExecutionContext
+    ) async -> CapturedProcessResult?
+
+    static let live = CleanupExecutionClient(
+        prepare: { await CleanupExecutionService.prepare(projectRoot: $0) },
+        preview: { recipeID, request, context in
+            await CleanupExecutionService.preview(
+                recipeID: recipeID,
+                request: request,
+                using: context
+            )
+        },
+        execute: { preview, request, context in
+            await CleanupExecutionService.execute(
+                preview,
+                request: request,
+                using: context
+            )
+        }
+    )
+}
+
 enum CleanupExecutionService {
     static let executionTimeout: TimeInterval = 15 * 60
     static let stagingRecoveryDisplayPath = "~/Library/Application Support/Modore/cleanup-staging"
@@ -43,10 +80,10 @@ enum CleanupExecutionService {
         request: CleanupExecutionRequest? = nil,
         using context: CleanupExecutionContext
     ) async -> CapturedProcessResult {
-        guard let invocation = invocation(
+        guard let invocation = previewInvocation(
             recipeID: recipeID,
             request: request,
-            context: context
+            pinnedFiles: context.pinnedFiles
         ) else {
             return invalidInvocationResult()
         }
@@ -68,51 +105,72 @@ enum CleanupExecutionService {
         request: CleanupExecutionRequest? = nil,
         using context: CleanupExecutionContext
     ) async -> CapturedProcessResult? {
-        guard preview.canExecute,
-              let invocation = invocation(
-                recipeID: preview.recipeID,
-                request: request,
-                context: context
-              ),
-              invocation.pinnedFiles["approval_token"] == nil else {
+        guard let invocation = executionInvocation(
+            preview: preview,
+            request: request,
+            pinnedFiles: context.pinnedFiles
+        ) else {
             return nil
         }
-        var pinnedFiles = invocation.pinnedFiles
-        pinnedFiles["approval_token"] = Data(preview.approvalToken.utf8)
         return await LocalProcessRunner.capture(
             executable: "/bin/bash",
             arguments: [
                 context.invocationArgument, "--execute", preview.recipeID,
-                "--owner-approved", "--approval-token-file", "@pch-pinned:approval_token",
             ] + invocation.arguments,
             currentDirectory: context.execution.runtimeRoot,
             expectedCurrentDirectoryIdentity: context.execution.runtimeRootIdentity,
             expectedSignedBundleURL: context.execution.signedBundleURL,
-            pinnedFiles: pinnedFiles,
+            pinnedFiles: invocation.pinnedFiles,
             environment: context.environment,
             timeout: executionTimeout,
             maxOutputBytes: 512_000
         )
     }
 
-    private static func invocation(
+    static func previewInvocation(
         recipeID: String,
         request: CleanupExecutionRequest?,
-        context: CleanupExecutionContext
-    ) -> (pinnedFiles: [String: Data], arguments: [String])? {
-        guard context.pinnedFiles["cleanup_request"] == nil else { return nil }
+        pinnedFiles: [String: Data]
+    ) -> CleanupInvocation? {
+        guard pinnedFiles["cleanup_request"] == nil else { return nil }
         guard let request else {
             return recipeID == "project_residue"
                 ? nil
-                : (context.pinnedFiles, [])
+                : CleanupInvocation(pinnedFiles: pinnedFiles, arguments: [])
         }
         guard request.recipeID == recipeID else { return nil }
-        var pinnedFiles = context.pinnedFiles
-        pinnedFiles["cleanup_request"] = request.protocolData
-        return (
-            pinnedFiles,
-            ["--request-file", "@pch-pinned:cleanup_request"]
+        var requestFiles = pinnedFiles
+        requestFiles["cleanup_request"] = request.protocolData
+        return CleanupInvocation(
+            pinnedFiles: requestFiles,
+            arguments: ["--request-file", "@pch-pinned:cleanup_request"]
         )
+    }
+
+    static func executionInvocation(
+        preview: CleanupPreview,
+        request: CleanupExecutionRequest?,
+        pinnedFiles: [String: Data]
+    ) -> CleanupInvocation? {
+        guard preview.canExecute,
+              var invocation = previewInvocation(
+                recipeID: preview.recipeID,
+                request: request,
+                pinnedFiles: pinnedFiles
+              ),
+              invocation.pinnedFiles["approval_token"] == nil else {
+            return nil
+        }
+        invocation = CleanupInvocation(
+            pinnedFiles: invocation.pinnedFiles.merging([
+                "approval_token": Data(preview.approvalToken.utf8)
+            ]) { current, _ in current },
+            arguments: [
+                "--owner-approved",
+                "--approval-token-file", "@pch-pinned:approval_token",
+            ] + invocation.arguments
+        )
+        return invocation
     }
 
     private static func invalidInvocationResult() -> CapturedProcessResult {

@@ -20,6 +20,7 @@ struct StagedScanOutput: Equatable, Sendable {
 enum ScanPublication {
     static let currentDirectoryName = ".modore-scan-current"
     private static let stagingPrefix = ".modore-scan-run-"
+    private static let cleanupMutationMarkerName = ".cleanup-mutation-pending"
 
     static func prepare(
         in outputRoot: URL,
@@ -73,7 +74,8 @@ enum ScanPublication {
     static func publish(
         _ staged: StagedScanOutput,
         in outputRoot: URL,
-        expectedParentIdentity: FilesystemIdentity
+        expectedParentIdentity: FilesystemIdentity,
+        synchronizeParent: (Int32) -> Bool = { Darwin.fsync($0) == 0 }
     ) -> Bool {
         guard staged.directoryURL.deletingLastPathComponent().standardizedFileURL
                 == outputRoot.standardizedFileURL,
@@ -130,7 +132,11 @@ enum ScanPublication {
             }
         }
         guard status == 0 else { return false }
-        _ = Darwin.fsync(parentDescriptor)
+        // Do not remove the previous generation until the namespace swap is
+        // proven durable. If fsync fails, the new generation is visible now
+        // but a crash may roll the swap back; retaining the previous directory
+        // preserves its cleanup-mutation marker in that rollback case.
+        guard synchronizeParent(parentDescriptor) else { return false }
 
         if let supersededIdentity {
             removeOwnedDirectory(
@@ -147,6 +153,55 @@ enum ScanPublication {
             at: staged.directoryURL,
             expectedIdentity: staged.directoryIdentity
         )
+    }
+
+    /// A cleanup can mutate storage after the last canonical scan and the app
+    /// may terminate before its follow-up scan starts. Keep that fact inside
+    /// the canonical generation so a successful directory swap clears it
+    /// atomically, while a restart still knows the previous result is stale.
+    static func markCleanupMutationPending(in outputRoot: URL) -> Bool {
+        guard let current = canonicalDirectory(in: outputRoot) else {
+            // With no prior canonical result, startup already treats the scan as
+            // missing and schedules one without a marker.
+            return true
+        }
+        do {
+            try SecureLocalFileIO.atomicWrite(
+                Data("pending\n".utf8),
+                to: current.url.appendingPathComponent(cleanupMutationMarkerName),
+                permissions: 0o600,
+                expectedParentIdentity: current.identity
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    static func cleanupMutationIsPending(in outputRoot: URL) -> Bool {
+        guard let current = canonicalDirectory(in: outputRoot) else { return false }
+        let marker = current.url.appendingPathComponent(cleanupMutationMarkerName)
+        var metadata = stat()
+        let status = marker.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return Darwin.lstat(path, &metadata)
+        }
+        if status != 0 { return errno != ENOENT }
+        guard metadata.st_mode & S_IFMT == S_IFREG,
+              metadata.st_uid == Darwin.geteuid() else {
+            return true
+        }
+        guard (try? SecureLocalFileIO.boundedRead(
+            from: marker,
+            maximumBytes: 64,
+            requireCurrentOwner: true,
+            expectedParentIdentity: current.identity
+        )) != nil else {
+            return true
+        }
+        // The marker's existence is the durable fact. Unknown contents fail
+        // closed instead of reviving a potentially stale scan.
+        return true
     }
 
     static func outputsAreConsistent(_ staged: StagedScanOutput) -> Bool {

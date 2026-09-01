@@ -27,6 +27,7 @@ WATCH_SCRIPT="${PCH_STORAGE_WATCH_SCRIPT:-$ROOT_DIR/scripts/storage_watch.sh}"
 # it to post a notification under its own identity instead of an Apple binary's.
 # Empty is a fully supported value (osascript-only, today's behavior).
 APP_BUNDLE_PATH="${PCH_STORAGE_WATCH_APP_BUNDLE:-}"
+APP_EXECUTABLE_SHA256=""
 HOME_ROOT=""
 OWNER_APPROVED="false"
 SAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
@@ -141,6 +142,58 @@ secure_owned_regular_file() {
         && $((8#$permissions & 0022)) -eq 0 ]]
 }
 
+path_has_unexpected_symlink() {
+    local path="$1" current="" remainder component
+    [[ "$path" == /* && "$path" != *$'\n'* && "$path" != *$'\r'* ]] || return 0
+    remainder="${path#/}"
+    while [[ -n "$remainder" ]]; do
+        component="${remainder%%/*}"
+        if [[ "$remainder" == */* ]]; then
+            remainder="${remainder#*/}"
+        else
+            remainder=""
+        fi
+        [[ -n "$component" ]] || continue
+        current="$current/$component"
+        if [[ "$current" != "/var" && "$current" != "/tmp" && -L "$current" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+validated_app_executable_sha256() {
+    local bundle="$1" identifier executable_name executable digest
+    [[ -n "$bundle" && "$bundle" == /* && "$bundle" == *.app ]] || return 1
+    [[ -d "$bundle" && ! -L "$bundle" ]] || return 1
+    path_has_unexpected_symlink "$bundle" && return 1
+    [[ -x /usr/bin/plutil && -x /usr/bin/codesign && -x /usr/bin/shasum ]] || return 1
+    /usr/bin/codesign --verify --strict "$bundle" >/dev/null 2>&1 || return 1
+    identifier="$(/usr/bin/plutil -extract CFBundleIdentifier raw \
+        "$bundle/Contents/Info.plist" 2>/dev/null)" || return 1
+    [[ "$identifier" == "me.heznpc.modore" ]] || return 1
+    executable_name="$(/usr/bin/plutil -extract CFBundleExecutable raw \
+        "$bundle/Contents/Info.plist" 2>/dev/null)" || return 1
+    [[ -n "$executable_name" && "$executable_name" != "." \
+        && "$executable_name" != ".." && "$executable_name" != */* \
+        && "$executable_name" != *$'\t'* && "$executable_name" != *$'\n'* \
+        && "$executable_name" != *$'\r'* && "${#executable_name}" -le 255 ]] || return 1
+    executable="$bundle/Contents/MacOS/$executable_name"
+    [[ -f "$executable" && ! -L "$executable" && -x "$executable" ]] || return 1
+    path_has_unexpected_symlink "$executable" && return 1
+    digest="$(/usr/bin/shasum -a 256 "$executable" 2>/dev/null \
+        | /usr/bin/awk '{print $1; exit}')"
+    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+    /usr/bin/printf '%s' "$digest"
+}
+
+refresh_app_executable_pin() {
+    APP_EXECUTABLE_SHA256=""
+    [[ -n "$APP_BUNDLE_PATH" ]] || return 0
+    APP_EXECUTABLE_SHA256="$(validated_app_executable_sha256 "$APP_BUNDLE_PATH")" \
+        || return 1
+}
+
 launch_directories_are_safe() {
     safe_existing_directory "$HOME_ROOT" \
         && safe_existing_directory "$HOME_ROOT/Library" \
@@ -180,6 +233,7 @@ loaded_definition_is_current() {
         "LANG=$SAFE_LOCALE" \
         "LC_ALL=$SAFE_LOCALE" \
         "PCH_STORAGE_WATCH_APP_BUNDLE=$APP_BUNDLE_PATH" \
+        "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256=$APP_EXECUTABLE_SHA256" \
         /bin/bash \
         -p \
         -c \
@@ -198,6 +252,7 @@ status() {
     local enabled="false"
     local job_loaded="false"
     local definition_current="false"
+    refresh_app_executable_pin || true
     loaded && job_loaded="true"
     if [[ "$job_loaded" == "true" ]] \
         && launch_directories_are_safe \
@@ -236,6 +291,10 @@ install_agent() {
             exit 1
             ;;
     esac
+    if ! refresh_app_executable_pin; then
+        /usr/bin/printf 'ERROR: app bundle identity, strict code signature, or executable hash is invalid.\n' >&2
+        exit 1
+    fi
     case "$APP_BUNDLE_PATH" in
         /Volumes/*|*/AppTranslocation/*)
             /usr/bin/printf 'ERROR: move the app to a stable local folder before enabling storage watch.\n' >&2
@@ -267,6 +326,7 @@ install_agent() {
         "LANG=$SAFE_LOCALE" \
         "LC_ALL=$SAFE_LOCALE" \
         "PCH_STORAGE_WATCH_APP_BUNDLE=$APP_BUNDLE_PATH" \
+        "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256=$APP_EXECUTABLE_SHA256" \
         /bin/bash \
         -p \
         -c \

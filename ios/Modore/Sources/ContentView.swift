@@ -25,7 +25,7 @@ struct ContentView: View {
                     .accessibilityLabel("Refresh")
                 }
             }
-            .task { model.refresh() }
+            .task { await model.refreshForViewLifetime() }
         }
     }
 

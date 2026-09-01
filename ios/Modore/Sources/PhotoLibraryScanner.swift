@@ -11,7 +11,70 @@ struct PhotoVideoAsset: Equatable, Sendable {
 protocol PhotoLibraryAccessing: Sendable {
     func authorizationStatus() async -> PhotoAuthorization
     func requestAuthorization() async -> PhotoAuthorization
-    func fetchVideoAssets() async -> [PhotoVideoAsset]
+    func summarizeVideoAssets(authorization: PhotoAuthorization) async -> MediaSummary
+}
+
+enum PhotoLibraryWorker {
+    /// PhotoKit's synchronous fetch has no cancellation API. Keep it off the
+    /// caller's executor and propagate cancellation to the worker so it stops
+    /// before enumeration, or at the next asset if fetch has already returned.
+    static func run<T: Sendable>(
+        _ operation: @escaping @Sendable () -> T
+    ) async -> T {
+        let worker = Task.detached(priority: .userInitiated, operation: operation)
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+}
+
+struct PhotoVideoSummaryAccumulator: Sendable {
+    private(set) var videoCount = 0
+    private(set) var videoDuration: TimeInterval = 0
+    private(set) var screenRecordingCount = 0
+    private(set) var screenRecordingDuration: TimeInterval = 0
+    private var longestVideos: [MediaCandidate] = []
+
+    var retainedCandidateCount: Int { longestVideos.count }
+
+    @discardableResult
+    mutating func consume(_ asset: PhotoVideoAsset) -> Bool {
+        guard !Task.isCancelled else { return false }
+        let candidate = MediaCandidate(
+            id: asset.id,
+            duration: max(0, asset.duration),
+            createdAt: asset.createdAt,
+            isScreenRecording: asset.isScreenRecording
+        )
+        videoCount += 1
+        videoDuration += candidate.duration
+        if candidate.isScreenRecording {
+            screenRecordingCount += 1
+            screenRecordingDuration += candidate.duration
+        }
+        longestVideos.append(candidate)
+        longestVideos.sort(by: Self.longerFirst)
+        if longestVideos.count > 5 { longestVideos.removeLast() }
+        return true
+    }
+
+    func summary(authorization: PhotoAuthorization) -> MediaSummary {
+        MediaSummary(
+            videoCount: videoCount,
+            videoDuration: videoDuration,
+            screenRecordingCount: screenRecordingCount,
+            screenRecordingDuration: screenRecordingDuration,
+            longestVideos: longestVideos,
+            authorization: authorization
+        )
+    }
+
+    private static func longerFirst(_ lhs: MediaCandidate, _ rhs: MediaCandidate) -> Bool {
+        if lhs.duration == rhs.duration { return lhs.id < rhs.id }
+        return lhs.duration > rhs.duration
+    }
 }
 
 struct SystemPhotoLibraryAccess: PhotoLibraryAccessing {
@@ -24,23 +87,31 @@ struct SystemPhotoLibraryAccess: PhotoLibraryAccessing {
         return PhotoAuthorization(status)
     }
 
-    func fetchVideoAssets() async -> [PhotoVideoAsset] {
-        await Task.detached(priority: .userInitiated) {
+    func summarizeVideoAssets(authorization: PhotoAuthorization) async -> MediaSummary {
+        await PhotoLibraryWorker.run {
+            var accumulator = PhotoVideoSummaryAccumulator()
+            guard !Task.isCancelled else {
+                return accumulator.summary(authorization: authorization)
+            }
             let options = PHFetchOptions()
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             let assets = PHAsset.fetchAssets(with: .video, options: options)
-            var snapshots: [PhotoVideoAsset] = []
-            snapshots.reserveCapacity(assets.count)
-            assets.enumerateObjects { asset, _, _ in
-                snapshots.append(PhotoVideoAsset(
+            guard !Task.isCancelled else {
+                return accumulator.summary(authorization: authorization)
+            }
+            assets.enumerateObjects { asset, _, stop in
+                let consumed = accumulator.consume(PhotoVideoAsset(
                     id: asset.localIdentifier,
                     duration: asset.duration,
                     createdAt: asset.creationDate,
                     isScreenRecording: asset.mediaSubtypes.contains(.videoScreenRecording)
                 ))
+                if !consumed {
+                    stop.pointee = true
+                }
             }
-            return snapshots
-        }.value
+            return accumulator.summary(authorization: authorization)
+        }
     }
 }
 
@@ -65,46 +136,7 @@ struct PhotoLibraryScanner: PhotoLibraryScanning {
         guard authorization == .authorized || authorization == .limited else {
             return Self.emptySummary(authorization: authorization)
         }
-        let assets = await library.fetchVideoAssets()
-        return Self.summarize(assets, authorization: authorization)
-    }
-
-    private static func summarize(
-        _ assets: [PhotoVideoAsset],
-        authorization: PhotoAuthorization
-    ) -> MediaSummary {
-        var videoCount = 0
-        var videoDuration: TimeInterval = 0
-        var screenRecordingCount = 0
-        var screenRecordingDuration: TimeInterval = 0
-        var longestVideos: [MediaCandidate] = []
-
-        for asset in assets {
-            let candidate = MediaCandidate(
-                id: asset.id,
-                duration: max(0, asset.duration),
-                createdAt: asset.createdAt,
-                isScreenRecording: asset.isScreenRecording
-            )
-            videoCount += 1
-            videoDuration += candidate.duration
-            if candidate.isScreenRecording {
-                screenRecordingCount += 1
-                screenRecordingDuration += candidate.duration
-            }
-            longestVideos.append(candidate)
-            longestVideos.sort(by: Self.longerFirst)
-            if longestVideos.count > 5 { longestVideos.removeLast() }
-        }
-
-        return MediaSummary(
-            videoCount: videoCount,
-            videoDuration: videoDuration,
-            screenRecordingCount: screenRecordingCount,
-            screenRecordingDuration: screenRecordingDuration,
-            longestVideos: longestVideos,
-            authorization: authorization
-        )
+        return await library.summarizeVideoAssets(authorization: authorization)
     }
 
     private static func emptySummary(authorization: PhotoAuthorization) -> MediaSummary {
@@ -116,10 +148,5 @@ struct PhotoLibraryScanner: PhotoLibraryScanning {
             longestVideos: [],
             authorization: authorization
         )
-    }
-
-    private static func longerFirst(_ lhs: MediaCandidate, _ rhs: MediaCandidate) -> Bool {
-        if lhs.duration == rhs.duration { return lhs.id < rhs.id }
-        return lhs.duration > rhs.duration
     }
 }

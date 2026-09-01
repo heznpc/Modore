@@ -227,20 +227,20 @@ enum SessionInspectionFixtures {
     static func entry(
         tool: String = "Claude",
         workspace: String = "/Users/example/IdeaProjects/Modore",
-        workspaceExists: Bool = true,
+        workspaceExists: Bool? = true,
         source: String? = nil,
         kind: String? = nil,
         lastActive: String = "2026-08-20 10:00"
     ) -> SessionIndexEntry {
-        let json: [String: Any] = [
+        var json: [String: Any] = [
             "tool": tool,
             "kind": kind ?? (tool == "VS Code" || tool == "Kiro" ? "workspace_state" : "session"),
             "source": source ?? "/Users/example/.claude/projects/x/\(UUID().uuidString).jsonl",
             "workspace": workspace,
-            "workspaceExists": workspaceExists,
             "sizeBytes": 2048,
             "lastActive": lastActive,
         ]
+        json["workspaceExists"] = workspaceExists ?? NSNull()
         let data = try! JSONSerialization.data(withJSONObject: json)
         return try! JSONDecoder().decode(SessionIndexEntry.self, from: data)
     }
@@ -324,6 +324,13 @@ final class WorkSearchTests: XCTestCase {
             .subtitle.contains("작업 경로 소멸"))
         XCTAssertFalse(SessionInspectionFixtures.entry(workspace: "", workspaceExists: false)
             .subtitle.contains("작업 경로 소멸"))
+    }
+
+    func test_anUnreachableWorkspaceIsNotMisreportedAsDeleted() {
+        let entry = SessionInspectionFixtures.entry(workspaceExists: nil)
+
+        XCTAssertTrue(entry.subtitle.contains("작업 경로 확인 못함"))
+        XCTAssertFalse(entry.subtitle.contains("작업 경로 소멸"))
     }
 }
 

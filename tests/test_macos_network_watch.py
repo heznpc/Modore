@@ -11,6 +11,7 @@ genuinely new destination or listening port is.
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ def run_watcher(
     first_listen: str = BASELINE_LISTEN,
     second_listen: str = BASELINE_LISTEN,
     *args: str,
+    sample_statuses=None,
 ):
     files = {
         "first_established.txt": first_established,
@@ -55,6 +57,8 @@ def run_watcher(
             "PCH_NETWORK_WATCH_SECOND_LISTEN": str(paths["second_listen.txt"]),
         }
     )
+    for key, value in (sample_statuses or {}).items():
+        env[key] = str(value)
     return subprocess.run(
         [str(project_root / "scripts" / "network_watch.sh"), *args],
         capture_output=True,
@@ -188,16 +192,20 @@ def test_a_failed_first_sample_does_not_suppress_new_reports(project_root, tmp_p
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
 def test_an_unreadable_closing_sample_is_reported_not_read_as_a_quiet_window(project_root, tmp_path):
-    # lsof exits non-zero with no output both on failure and on zero matches,
-    # and `|| true` erases the difference. Emitting newEstablished/newListen 0
-    # off a closing sample we may never have taken is a false all-clear on a
-    # security surface: the window looks quiet precisely because nothing was
-    # read. Every real Mac has listening sockets, so an empty closing LISTEN
-    # list is the usable liveness signal.
+    # The sample's exit status is carried separately from its output. An empty
+    # successful sample is a quiet window; an empty failed sample is incomplete.
     established = 'Chrome     1000 ren   23u  IPv4 0xaaa      0t0  TCP 192.168.0.156:51000->1.1.1.1:443 (ESTABLISHED)\n'
 
     result = run_watcher(
-        project_root, tmp_path, established, established, BASELINE_LISTEN, "", "--window", "5"
+        project_root,
+        tmp_path,
+        established,
+        established,
+        BASELINE_LISTEN,
+        "",
+        "--window",
+        "5",
+        sample_statuses={"PCH_NETWORK_WATCH_SECOND_LISTEN_STATUS": 2},
     )
 
     assert result.returncode == 0, result.stderr
@@ -206,6 +214,216 @@ def test_an_unreadable_closing_sample_is_reported_not_read_as_a_quiet_window(pro
     # A caller must not be able to read this as "0 new connections".
     assert "newEstablished" not in values
     assert "newListen" not in values
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
+def test_failed_established_sample_is_not_hidden_by_a_healthy_listen_sample(
+    project_root, tmp_path
+):
+    established = 'Chrome 1000 ren 23u IPv4 0xaaa 0t0 TCP 127.0.0.1:5000->1.1.1.1:443 (ESTABLISHED)\n'
+    result = run_watcher(
+        project_root,
+        tmp_path,
+        established,
+        "",
+        BASELINE_LISTEN,
+        BASELINE_LISTEN,
+        "--window",
+        "5",
+        sample_statuses={"PCH_NETWORK_WATCH_SECOND_ESTABLISHED_STATUS": 2},
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = parse_values(result.stdout)
+    assert values["secondEstablishedStatus"] == "failed"
+    assert values["secondListenStatus"] == "ok"
+    assert "error" in values
+    assert "newEstablished" not in values
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
+def test_real_lsof_invocations_preserve_each_exit_status(project_root, tmp_path):
+    counter = tmp_path / "lsof-count"
+    fake_lsof = tmp_path / "lsof"
+    fake_lsof.write_text(
+        "#!/bin/bash\n"
+        f'count="$(/bin/cat "{counter}" 2>/dev/null || printf 0)"\n'
+        'count=$((count + 1))\n'
+        f'/usr/bin/printf "%s" "$count" > "{counter}"\n'
+        "if [[ \"$count\" -eq 3 ]]; then echo 'fault' >&2; exit 2; fi\n"
+        f"printf '%s\\n' '{LSOF_HEADER}'\n"
+        "if [[ \"$*\" == *LISTEN* ]]; then "
+        f"printf '%s' '{BASELINE_LISTEN}'; fi\n",
+        encoding="utf-8",
+    )
+    fake_lsof.chmod(0o755)
+    env = {
+        **os.environ,
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_LSOF_BIN": str(fake_lsof),
+        "PCH_TEST_NETWORK_LSOF_TIMEOUT_TICKS": "5",
+    }
+
+    result = subprocess.run(
+        [str(project_root / "scripts" / "network_watch.sh"), "--window", "1"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = parse_values(result.stdout)
+    assert counter.read_text(encoding="utf-8") == "4"
+    assert values["firstEstablishedStatus"] == "ok"
+    assert values["firstListenStatus"] == "ok"
+    assert values["secondEstablishedStatus"] == "failed"
+    assert values["secondListenStatus"] == "ok"
+    assert "newEstablished" not in values
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the network observer is macOS-only")
+def test_network_watch_refuses_to_compute_from_output_limited_samples(
+    project_root, tmp_path
+):
+    fake_lsof = tmp_path / "large-lsof"
+    fake_lsof.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' '{LSOF_HEADER}'\n"
+        "i=0\n"
+        "while [[ $i -lt 500 ]]; do printf 'x%080d\\n' \"$i\"; i=$((i + 1)); done\n",
+        encoding="utf-8",
+    )
+    fake_lsof.chmod(0o755)
+    env = {
+        **os.environ,
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_LSOF_BIN": str(fake_lsof),
+        "PCH_TEST_NETWORK_LSOF_TIMEOUT_TICKS": "10",
+        "PCH_TEST_NETWORK_LSOF_OUTPUT_LIMIT_KB": "1",
+    }
+
+    result = subprocess.run(
+        [str(project_root / "scripts/network_watch.sh"), "--window", "1"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = parse_values(result.stdout)
+    assert values["firstEstablishedStatus"] == "output_limited"
+    assert values["secondListenStatus"] == "output_limited"
+    assert "error" in values
+    assert "newEstablished" not in values
+
+
+def test_scanner_lsof_timeout_keeps_partial_rows_and_reaps_descendants(
+    project_root, tmp_path
+):
+    module = project_root / "scripts/modules/macos/network.sh"
+    child_pid_file = tmp_path / "scanner-lsof-child.pid"
+    fake_lsof = tmp_path / "scanner-lsof"
+    fake_lsof.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' '{LSOF_HEADER}'\n"
+        "printf '%s\\n' 'Codex 42 ren 2u IPv4 0x1 0t0 TCP 127.0.0.1:1->1.1.1.1:443 (ESTABLISHED)'\n"
+        "trap '' TERM\n"
+        "( trap - TERM; exec /bin/sleep 30 ) &\n"
+        "child=$!\n"
+        f'printf "%s" "$child" > "{child_pid_file}"\n'
+        "wait\n",
+        encoding="utf-8",
+    )
+    fake_lsof.chmod(0o755)
+    env = {
+        **os.environ,
+        "TMP_DIR": str(tmp_path),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_NETWORK_LSOF_BIN": str(fake_lsof),
+        "PCH_NETWORK_COMMAND_TIMEOUT_TICKS": "5",
+    }
+    harness = (
+        'record_collection_status() { printf "%s\\t%s\\t%s\\t%s\\t%s\\n" "$@" >> "$TMP_DIR/status.tsv"; }\n'
+        'collection_failure_status() { [[ "$1" -eq 124 ]] && printf timed_out || printf failed; }\n'
+        '. "$1"\n'
+        'collect_network\n'
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", harness, "bash", str(module)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Codex 42" in (tmp_path / "net.txt").read_text(encoding="utf-8")
+    status = (tmp_path / "status.tsv").read_text(encoding="utf-8").split("\t")
+    assert status[0] == "network_connections"
+    assert status[2] == "timed_out"
+    assert "일부 행" in status[4]
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    for _ in range(50):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("timed-out lsof left a descendant running")
+
+
+def test_scanner_lsof_output_is_bounded_without_discarding_its_prefix(
+    project_root, tmp_path
+):
+    module = project_root / "scripts/modules/macos/network.sh"
+    fake_lsof = tmp_path / "scanner-lsof-large"
+    fake_lsof.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' '{LSOF_HEADER}'\n"
+        "i=0\n"
+        "while [[ $i -lt 500 ]]; do "
+        "printf 'Codex %d ren 2u IPv4 0x1 0t0 TCP 127.0.0.1:1->1.1.1.1:443 (ESTABLISHED)\\n' \"$i\"; "
+        "i=$((i + 1)); done\n",
+        encoding="utf-8",
+    )
+    fake_lsof.chmod(0o755)
+    env = {
+        **os.environ,
+        "TMP_DIR": str(tmp_path),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_NETWORK_LSOF_BIN": str(fake_lsof),
+        "PCH_NETWORK_COMMAND_TIMEOUT_TICKS": "20",
+        "PCH_NETWORK_OUTPUT_LIMIT_KB": "1",
+    }
+    harness = (
+        'record_collection_status() { printf "%s\\t%s\\t%s\\t%s\\t%s\\n" "$@" >> "$TMP_DIR/status.tsv"; }\n'
+        'collection_failure_status() { [[ "$1" -eq 124 ]] && printf timed_out || printf failed; }\n'
+        '. "$1"\ncollect_network\n'
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", harness, "bash", str(module)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = (tmp_path / "net.txt").read_bytes()
+    assert output.startswith(LSOF_HEADER.encode("utf-8"))
+    assert 0 < len(output) <= 1024
+    status = (tmp_path / "status.tsv").read_text(encoding="utf-8").split("\t")
+    assert status[2] == "failed"
+    assert "일부 행" in status[4]
 
 
 def test_watcher_refuses_an_unbounded_window(project_root, tmp_path):

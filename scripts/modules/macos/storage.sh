@@ -261,27 +261,94 @@ _pch_storage_regular_identity() {
     /usr/bin/printf '%s' "$identity"
 }
 
+_pch_storage_process_snapshot() (
+    local snapshot_file="$TMP_DIR/storage_process_snapshot.$$.$RANDOM.out"
+    local snapshot_pid="" ticks=0 status=0
+    # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+    cleanup_process_snapshot() {
+        trap - HUP INT TERM EXIT
+        if [[ -n "${snapshot_pid:-}" ]]; then
+            /bin/kill -KILL "$snapshot_pid" 2>/dev/null || true
+            wait "$snapshot_pid" 2>/dev/null || true
+        fi
+        /bin/rm -f "$snapshot_file" 2>/dev/null || true
+    }
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap cleanup_process_snapshot EXIT
+    : > "$snapshot_file" || return 1
+    ( ulimit -f 2048 || exit 1; exec /bin/ps -axo pid=,ppid=,pgid=,state= ) \
+        > "$snapshot_file" 2>/dev/null &
+    snapshot_pid=$!
+    while jobs -pr | /usr/bin/grep -qx "$snapshot_pid"; do
+        if [[ "$ticks" -ge 10 ]]; then
+            /bin/kill -KILL "$snapshot_pid" 2>/dev/null || true
+            wait "$snapshot_pid" 2>/dev/null || true
+            snapshot_pid=""
+            return 124
+        fi
+        /bin/sleep 0.1
+        ticks=$((ticks + 1))
+    done
+    if wait "$snapshot_pid" 2>/dev/null; then status=0; else status=$?; fi
+    snapshot_pid=""
+    [[ "$status" -eq 0 ]] || return "$status"
+    /bin/cat "$snapshot_file"
+)
+
+_pch_storage_process_is_live() {
+    local process_pid="$1" process_state process_snapshot
+    case "$process_pid" in ''|*[!0-9]*|0) return 1 ;; esac
+    process_snapshot="$(_pch_storage_process_snapshot 2>/dev/null || true)"
+    process_state="$(
+        /usr/bin/printf '%s\n' "$process_snapshot" \
+            | /usr/bin/awk -v target="$process_pid" \
+                '$1 == target { print $4; exit }'
+    )"
+    case "$process_state" in
+        ''|*Z*) return 1 ;;
+    esac
+    return 0
+}
+
 _pch_storage_tool_to_file() (
     local output_file="$1"
     local timeout_seconds="$2"
     shift 2
-    local command_pid="" timer_pid="" command_status=0 timed_out=0
+    local command_pid="" command_status=0 ticks=0 guard_ticks=0
+    local controller_pid="$$"
+    local controller_dead=0
     local output_limit_kb="${_pch_storage_tool_output_limit_kb:-8}"
+    local preserve_partial="${_pch_storage_tool_preserve_partial:-0}"
     local output_limit_blocks output_limit_bytes output_size
-    local timeout_marker="$output_file.timeout"
+    local guard_directory="" guard_ready="" guard_done="" start_marker=""
+    local status_marker="" status_staging="" guard_fd_open=0
     # shellcheck disable=SC2329 # Invoked through EXIT/HUP/INT/TERM traps below.
     cleanup_bounded_tool() {
-        local cleanup_timer="${timer_pid:-}" cleanup_command="${command_pid:-}"
+        local cleanup_command="${command_pid:-}"
         trap - HUP INT TERM EXIT
-        timer_pid=""
-        command_pid=""
-        if [[ -n "$cleanup_timer" ]]; then
-            _pch_project_git_kill_tree "$cleanup_timer"
-            wait "$cleanup_timer" 2>/dev/null || true
+        if [[ "${guard_fd_open:-0}" == "1" ]]; then
+            /usr/bin/printf 'done\n' >&19 2>/dev/null || true
+            exec 19>&-
+            guard_fd_open=0
         fi
         if [[ -n "$cleanup_command" ]]; then
-            _pch_project_git_kill_tree "$cleanup_command"
+            /bin/kill -TERM -- "-$cleanup_command" 2>/dev/null || true
+            /bin/kill -KILL -- "-$cleanup_command" 2>/dev/null || true
             wait "$cleanup_command" 2>/dev/null || true
+        fi
+        command_pid=""
+        guard_ticks=0
+        while [[ -n "${guard_done:-}" && ! -f "$guard_done" \
+            && "$guard_ticks" -lt 20 ]]; do
+            /bin/sleep 0.01
+            guard_ticks=$((guard_ticks + 1))
+        done
+        if [[ -n "${guard_directory:-}" ]]; then
+            /bin/rm -f "$guard_ready" "$guard_done" "$start_marker" \
+                "$status_marker" "$status_staging" 2>/dev/null || true
+            /bin/rmdir "$guard_directory" 2>/dev/null || true
         fi
     }
     trap 'exit 129' HUP
@@ -290,51 +357,129 @@ _pch_storage_tool_to_file() (
     trap cleanup_bounded_tool EXIT
     case "$timeout_seconds" in ''|*[!0-9]*|0) return 124 ;; esac
     case "$output_limit_kb" in ''|*[!0-9]*|0) output_limit_kb=8 ;; esac
-    [[ "$output_limit_kb" -le 64 ]] || output_limit_kb=64
-    output_limit_blocks=$((output_limit_kb * 2))
+    [[ "$output_limit_kb" -le 4096 ]] || output_limit_kb=4096
+    output_limit_blocks="$output_limit_kb"
     output_limit_bytes=$((output_limit_kb * 1024))
     : > "$output_file" || return 1
-    : > "$timeout_marker" || return 1
+    guard_directory="$(/usr/bin/mktemp -d "${output_file}.guard.XXXXXX")" \
+        || return 1
+    /bin/chmod 700 "$guard_directory" 2>/dev/null || return 1
+    guard_ready="$guard_directory/ready"
+    guard_done="$guard_directory/done"
+    start_marker="$guard_directory/start"
+    status_marker="$guard_directory/status"
+    status_staging="$guard_directory/status.tmp"
 
-    # Keep the tool in the collector's process group: a real outer cancellation
-    # then reaches the collector, helper, tool, and descendants together. The
-    # watchdog uses the bounded descendant-tree killer for its own deadline.
+    # A provider gets its own process group, while a second private-group guardian
+    # watches an inherited pipe while this helper also checks the top-level
+    # collector PID. If either collector layer is killed, the write end closes
+    # and the guardian terminates the provider group. The start gate prevents the
+    # external command from running before that guardian is ready, so cancellation
+    # cannot escape through the setup window.
+    exec 2>/dev/null
+    set -m
+    exec 19> >(
+        exec 1>/dev/null 2>/dev/null
+        exec 18<&0
+        set -m
+        (
+            local watched_pid="" guardian_wait_ticks=0 guard_message=""
+            trap '' HUP INT TERM
+            : > "$guard_ready" 2>/dev/null || exit 1
+            if IFS= read -r watched_pid <&18; then
+                while IFS= read -r guard_message <&18; do
+                    [[ "$guard_message" == "done" ]] && break
+                done
+                if [[ -z "$watched_pid" || "$watched_pid" == *[!0-9]* ]]; then
+                    watched_pid=""
+                fi
+                if [[ -n "$watched_pid" ]] \
+                    && /bin/kill -0 -- "-$watched_pid" 2>/dev/null; then
+                    /bin/kill -TERM -- "-$watched_pid" 2>/dev/null || true
+                    while /bin/kill -0 -- "-$watched_pid" 2>/dev/null \
+                        && [[ "$guardian_wait_ticks" -lt 5 ]]; do
+                        /bin/sleep 0.02
+                        guardian_wait_ticks=$((guardian_wait_ticks + 1))
+                    done
+                    /bin/kill -KILL -- "-$watched_pid" 2>/dev/null || true
+                fi
+            fi
+            : > "$guard_done" 2>/dev/null || true
+            exec 18<&-
+        ) &
+        wait "$!" 2>/dev/null || true
+    )
+    guard_fd_open=1
+    while [[ ! -f "$guard_ready" ]]; do
+        if [[ "$guard_ticks" -ge 50 ]]; then
+            exec 19>&-
+            guard_fd_open=0
+            return 1
+        fi
+        /bin/sleep 0.01
+        guard_ticks=$((guard_ticks + 1))
+    done
     (
+        exec 19>&-
+        gate_ticks=0
+        while [[ ! -f "$start_marker" && "$gate_ticks" -lt 50 ]]; do
+            /bin/sleep 0.02
+            gate_ticks=$((gate_ticks + 1))
+        done
+        [[ -f "$start_marker" ]] || exit 143
         ulimit -f "$output_limit_blocks" || exit 1
-        exec "$@"
+        "$@"
+        provider_status=$?
+        if /usr/bin/printf '%s' "$provider_status" > "$status_staging" 2>/dev/null; then
+            /bin/mv -f "$status_staging" "$status_marker" 2>/dev/null || true
+        fi
+        exit "$provider_status"
     ) > "$output_file" 2>/dev/null &
     command_pid=$!
-    (
-        /bin/sleep "$timeout_seconds"
-        /usr/bin/printf 'timed_out' > "$timeout_marker" 2>/dev/null || true
-        _pch_project_git_kill_tree "$command_pid"
-    ) &
-    timer_pid=$!
-
-    if wait "$command_pid"; then
-        command_status=0
-    else
-        command_status=$?
-    fi
-    if [[ "$(/bin/cat "$timeout_marker" 2>/dev/null || true)" == "timed_out" ]]; then
-        timed_out=1
-    fi
-    if [[ "$timed_out" -eq 1 ]]; then
-        # Let the watchdog finish its TERM/KILL sequence so a child retained by
-        # the inspected tool cannot survive after the group leader exits.
-        wait "$timer_pid" 2>/dev/null || true
-        timer_pid=""
-    else
-        _pch_project_git_kill_tree "$timer_pid"
-        wait "$timer_pid" 2>/dev/null || true
-        timer_pid=""
-    fi
+    /usr/bin/printf '%s\n' "$command_pid" >&19 || return 1
+    : > "$start_marker" || return 1
+    while [[ ! -f "$status_marker" ]]; do
+        controller_dead=0
+        if ! /bin/kill -0 "$controller_pid" 2>/dev/null; then
+            controller_dead=1
+        elif [[ "$ticks" -gt 0 && $((ticks % 10)) -eq 0 ]] \
+            && ! _pch_storage_process_is_live "$controller_pid"; then
+            controller_dead=1
+        fi
+        if [[ "$controller_dead" -eq 1 ]]; then
+            /usr/bin/printf 'done\n' >&19 2>/dev/null || true
+            exec 19>&-
+            guard_fd_open=0
+            wait "$command_pid" 2>/dev/null || true
+            command_pid=""
+            [[ "$preserve_partial" == "1" ]] || : > "$output_file" 2>/dev/null || true
+            return 143
+        fi
+        if [[ "$ticks" -ge $((timeout_seconds * 10)) ]]; then
+            /usr/bin/printf 'done\n' >&19 2>/dev/null || true
+            exec 19>&-
+            guard_fd_open=0
+            wait "$command_pid" 2>/dev/null || true
+            command_pid=""
+            [[ "$preserve_partial" == "1" ]] || : > "$output_file" 2>/dev/null || true
+            return 124
+        fi
+        /bin/sleep 0.1
+        ticks=$((ticks + 1))
+    done
+    command_status="$(/bin/cat "$status_marker" 2>/dev/null || true)"
+    case "$command_status" in ''|*[!0-9]*) command_status=1 ;; esac
+    /usr/bin/printf 'done\n' >&19 2>/dev/null || true
+    exec 19>&-
+    guard_fd_open=0
+    wait "$command_pid" 2>/dev/null || true
     command_pid=""
-    /bin/rm -f "$timeout_marker" 2>/dev/null || true
-    if [[ "$timed_out" -eq 1 ]]; then
-        : > "$output_file" 2>/dev/null || true
-        return 124
-    fi
+    guard_ticks=0
+    while [[ ! -f "$guard_done" && "$guard_ticks" -lt 20 ]]; do
+        /bin/sleep 0.01
+        guard_ticks=$((guard_ticks + 1))
+    done
+    [[ -f "$guard_done" ]] || return 1
     if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
         output_size="$(/usr/bin/stat -f '%z' "$output_file" 2>/dev/null || true)"
     else
@@ -342,7 +487,7 @@ _pch_storage_tool_to_file() (
     fi
     case "$output_size" in ''|*[!0-9]*) output_size=0 ;; esac
     if [[ "$command_status" -ne 0 || "$output_size" -ge "$output_limit_bytes" ]]; then
-        : > "$output_file" 2>/dev/null || true
+        [[ "$preserve_partial" == "1" ]] || : > "$output_file" 2>/dev/null || true
         [[ "$output_size" -lt "$output_limit_bytes" ]] || return 65
     fi
     return "$command_status"
@@ -463,11 +608,49 @@ _pch_collect_storage_applications() {
 }
 
 _pch_collect_storage_simulators() {
-    local simctl_devices
+    local simctl_devices="" simctl_status=0 simctl_collection_status="ok"
+    local simctl_bin="/usr/bin/xcrun"
+    local simctl_output="$TMP_DIR/storage_simctl.$$.$RANDOM.out"
+    local simctl_timeout="${PCH_STORAGE_SIMCTL_TIMEOUT:-4}"
+    local simctl_output_limit_kb="${PCH_STORAGE_SIMCTL_OUTPUT_LIMIT_KB:-1024}"
+    case "$simctl_timeout" in ''|*[!0-9]*|0) simctl_timeout=4 ;; esac
+    case "$simctl_output_limit_kb" in ''|*[!0-9]*|0) simctl_output_limit_kb=1024 ;; esac
+    [[ "$simctl_timeout" -le 15 ]] || simctl_timeout=15
+    [[ "$simctl_output_limit_kb" -le 4096 ]] || simctl_output_limit_kb=4096
     if [[ "${PCH_TEST_MODE:-}" == "1" && -n "${PCH_TEST_STORAGE_SIMCTL_LIST_FILE:-}" ]]; then
-        simctl_devices="$(/bin/cat "$PCH_TEST_STORAGE_SIMCTL_LIST_FILE" 2>/dev/null || true)"
+        simctl_devices="$(/usr/bin/head -c $((simctl_output_limit_kb * 1024)) \
+            "$PCH_TEST_STORAGE_SIMCTL_LIST_FILE" 2>/dev/null || true)"
     else
-        simctl_devices="$(/usr/bin/xcrun simctl list devices available 2>/dev/null || true)"
+        if [[ "${PCH_TEST_MODE:-}" == "1" && -n "${PCH_TEST_STORAGE_SIMCTL_BIN:-}" ]]; then
+            simctl_bin="$(_pch_storage_test_tool "$PCH_TEST_STORAGE_SIMCTL_BIN")" \
+                || simctl_bin=""
+        fi
+        if [[ -n "$simctl_bin" && -x "$simctl_bin" ]]; then
+            local _pch_storage_tool_output_limit_kb="$simctl_output_limit_kb"
+            local _pch_storage_tool_preserve_partial=1
+            _pch_storage_tool_to_file "$simctl_output" "$simctl_timeout" \
+                "$simctl_bin" simctl list devices available || simctl_status=$?
+            simctl_devices="$(/bin/cat "$simctl_output" 2>/dev/null || true)"
+        else
+            simctl_status=127
+        fi
+    fi
+    case "$simctl_status" in
+        0) simctl_collection_status="ok" ;;
+        124) simctl_collection_status="timed_out" ;;
+        126|127) simctl_collection_status="unavailable" ;;
+        *) simctl_collection_status="failed" ;;
+    esac
+    if [[ "$simctl_collection_status" == "ok" ]]; then
+        record_collection_status "storage_simulators" "Simulator 장치" "ok" "false" \
+            "사용 가능한 Simulator 장치를 확인했습니다."
+    elif [[ -n "$simctl_devices" ]]; then
+        record_collection_status "storage_simulators" "Simulator 장치" \
+            "$simctl_collection_status" "false" \
+            "Simulator 목록을 완전히 읽지 못했습니다. 제한 전까지의 일부 장치는 보존했습니다."
+    else
+        record_collection_status "storage_simulators" "Simulator 장치" \
+            "$simctl_collection_status" "false" "Simulator 목록을 읽지 못했습니다."
     fi
     if [[ -n "$simctl_devices" ]]; then
         local runtime=""
@@ -508,6 +691,7 @@ _pch_collect_storage_simulators() {
             esac
         done <<< "$simctl_devices"
     fi
+    /bin/rm -f "$simctl_output" 2>/dev/null || true
 }
 
 # 개발 프로젝트 내부의 재생성 가능한 빌드 산출물 행 1개를 기록한다.
@@ -615,7 +799,7 @@ _pch_project_git_kill_tree() {
     local root_pid="$1"
     local process_snapshot descendant_pids descendant_pid
     case "$root_pid" in ''|*[!0-9]*|0|1) return 0 ;; esac
-    process_snapshot="$(/bin/ps -axo pid=,ppid= 2>/dev/null || true)"
+    process_snapshot="$(_pch_storage_process_snapshot 2>/dev/null || true)"
     descendant_pids="$(/usr/bin/printf '%s\n' "$process_snapshot" | /usr/bin/awk -v root="$root_pid" '
         BEGIN { included[root] = 1 }
         {
@@ -1287,7 +1471,11 @@ _pch_collect_storage_runtime_signals() {
             "$browser_tree_memory_kb" \
             "$browser_tree_process_count"
     done < <(/usr/bin/printf '%s\n' "$ps_detailed" | _pch_browser_automation_roots)
-    if [[ "$browser_analysis_bounded" -eq 1 ]]; then
+    if [[ "${_pch_runtime_process_status:-ok}" != "ok" ]]; then
+        record_collection_status "browser_automation" "브라우저 자동화 프로세스" \
+            "${_pch_runtime_process_status}" "false" \
+            "프로세스 표본을 완전히 읽지 못해 제한 전까지 확인한 브라우저 자동화만 기록했습니다."
+    elif [[ "$browser_analysis_bounded" -eq 1 ]]; then
         record_collection_status "browser_automation" "브라우저 자동화 프로세스" \
             "timed_out" "false" "행·시간 상한 안에서 확인한 브라우저 자동화만 기록했습니다."
     else
@@ -1544,14 +1732,48 @@ collect_storage() {
         /usr/bin/printf "%s\t%s\t%s\t%s\t%s\n" "$kind" "$label" "$target_path" "$status" "$note" >> "$TMP_DIR/storage_access.tsv"
     }
 
-    local ps_commands ps_detailed
-    ps_commands="$(/bin/ps -axo command= 2>/dev/null || true)"
-    ps_detailed="$(/bin/ps -axo pid=,ppid=,etime=,rss=,command= 2>/dev/null || true)"
-    if [[ -n "$ps_detailed" ]]; then
-        record_collection_status "runtime_processes" "개발 런타임 프로세스" "ok" "false" "실행 중인 개발 도구와 자동화 프로세스를 확인했습니다."
-    else
-        record_collection_status "runtime_processes" "개발 런타임 프로세스" "failed" "false" "개발 런타임 프로세스를 읽지 못했습니다."
+    local ps_commands="" ps_detailed="" ps_status=0
+    local ps_bin="/bin/ps"
+    local ps_output="$TMP_DIR/storage_ps.$$.$RANDOM.out"
+    local ps_timeout="${PCH_STORAGE_PS_TIMEOUT:-3}"
+    local ps_output_limit_kb="${PCH_STORAGE_PS_OUTPUT_LIMIT_KB:-2048}"
+    local _pch_runtime_process_status="ok"
+    case "$ps_timeout" in ''|*[!0-9]*|0) ps_timeout=3 ;; esac
+    case "$ps_output_limit_kb" in ''|*[!0-9]*|0) ps_output_limit_kb=2048 ;; esac
+    [[ "$ps_timeout" -le 10 ]] || ps_timeout=10
+    [[ "$ps_output_limit_kb" -le 4096 ]] || ps_output_limit_kb=4096
+    if [[ "${PCH_TEST_MODE:-}" == "1" && -n "${PCH_TEST_STORAGE_PS_BIN:-}" ]]; then
+        ps_bin="$(_pch_storage_test_tool "$PCH_TEST_STORAGE_PS_BIN")" || ps_bin=""
     fi
+    if [[ -n "$ps_bin" && -x "$ps_bin" ]]; then
+        local _pch_storage_tool_output_limit_kb="$ps_output_limit_kb"
+        local _pch_storage_tool_preserve_partial=1
+        _pch_storage_tool_to_file "$ps_output" "$ps_timeout" \
+            "$ps_bin" -axo pid=,ppid=,etime=,rss=,command= || ps_status=$?
+        ps_detailed="$(/bin/cat "$ps_output" 2>/dev/null || true)"
+        ps_commands="$ps_detailed"
+    else
+        ps_status=127
+    fi
+    case "$ps_status" in
+        0) _pch_runtime_process_status="ok" ;;
+        124) _pch_runtime_process_status="timed_out" ;;
+        126|127) _pch_runtime_process_status="unavailable" ;;
+        *) _pch_runtime_process_status="failed" ;;
+    esac
+    [[ -n "$ps_detailed" || "$_pch_runtime_process_status" != "ok" ]] \
+        || _pch_runtime_process_status="failed"
+    if [[ "$_pch_runtime_process_status" == "ok" && -n "$ps_detailed" ]]; then
+        record_collection_status "runtime_processes" "개발 런타임 프로세스" "ok" "false" "실행 중인 개발 도구와 자동화 프로세스를 확인했습니다."
+    elif [[ -n "$ps_detailed" ]]; then
+        record_collection_status "runtime_processes" "개발 런타임 프로세스" \
+            "$_pch_runtime_process_status" "false" \
+            "프로세스 표본을 완전히 읽지 못했습니다. 제한 전까지의 일부 행은 진단 자료로 보존했습니다."
+    else
+        record_collection_status "runtime_processes" "개발 런타임 프로세스" \
+            "$_pch_runtime_process_status" "false" "개발 런타임 프로세스를 읽지 못했습니다."
+    fi
+    /bin/rm -f "$ps_output" 2>/dev/null || true
     count_processes() {
         local pattern="$1"
         /usr/bin/printf "%s\n" "$ps_commands" \

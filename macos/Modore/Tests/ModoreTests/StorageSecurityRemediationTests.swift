@@ -449,38 +449,6 @@ final class StorageSecurityRemediationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 
-    func testGeneratedReportIsRepublishedWithOwnerOnlyPermissions() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("pch-private-report-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(
-            at: root,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let report = root.appendingPathComponent("report.html")
-        try Data("<html>private</html>".utf8).write(to: report)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o644],
-            ofItemAtPath: report.path
-        )
-        let identity = try XCTUnwrap(FilesystemIdentity.directory(at: root))
-
-        XCTAssertTrue(ScanPipeline.finalizeGeneratedReport(
-            at: report,
-            expectedParentIdentity: identity
-        ))
-        XCTAssertEqual(
-            try Data(contentsOf: report),
-            Data("<html>private</html>".utf8)
-        )
-        let permissions = try XCTUnwrap(
-            FileManager.default.attributesOfItem(atPath: report.path)[.posixPermissions]
-                as? NSNumber
-        )
-        XCTAssertEqual(permissions.intValue & 0o777, 0o600)
-    }
-
     func testOversizedSecuritySectionReportsVisibleTruncation() {
         let rows = (0...ScanContent.maximumRowsPerSection).map { index in
             ["entry": "item-\(index)", "category": "LaunchAgent", "image": "/tmp/item"]

@@ -83,7 +83,7 @@ struct StatusPage: View {
                         assessment: assessment,
                         storage: storage,
                         isBusy: model.isBusy,
-                        runScan: model.runScan,
+                        runScan: { model.runScan() },
                         onOpenStorage: onOpenStorage,
                         onOpenSecurity: onOpenSecurity,
                         onOpenActivity: onOpenActivity
@@ -157,7 +157,7 @@ struct StatusPage: View {
                         assessment: assessment,
                         storage: nil,
                         isBusy: model.isBusy,
-                        runScan: model.runScan,
+                        runScan: { model.runScan() },
                         onOpenStorage: onOpenStorage,
                         onOpenSecurity: onOpenSecurity,
                         onOpenActivity: onOpenActivity

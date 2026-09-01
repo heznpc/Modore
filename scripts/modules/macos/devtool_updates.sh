@@ -24,10 +24,84 @@ if ! declare -F record_collection_status >/dev/null 2>&1; then
     record_collection_status() { :; }
 fi
 
+_pch_devtool_to_file() (
+    local output_file="$1"
+    local error_file="$2"
+    shift 2
+    local timeout_ticks="${PCH_DEVTOOL_COMMAND_TIMEOUT_TICKS:-80}"
+    local output_limit_kb="${PCH_DEVTOOL_OUTPUT_LIMIT_KB:-256}"
+    local output_limit_blocks output_limit_bytes output_size
+    local command_pid="" ticks=0 command_status=0
+    local status_marker="${output_file}.status.$$.$RANDOM"
+    # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+    cleanup_devtool() {
+        local cleanup_pid="${command_pid:-}"
+        trap - HUP INT TERM EXIT
+        command_pid=""
+        if [[ -n "$cleanup_pid" ]]; then
+            /bin/kill -TERM -- "-$cleanup_pid" 2>/dev/null || true
+            /bin/sleep 0.2
+            /bin/kill -KILL -- "-$cleanup_pid" 2>/dev/null || true
+            wait "$cleanup_pid" 2>/dev/null || true
+        fi
+        /bin/rm -f "$status_marker" 2>/dev/null || true
+    }
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap cleanup_devtool EXIT
+    case "$timeout_ticks" in ''|*[!0-9]*|0) timeout_ticks=80 ;; esac
+    case "$output_limit_kb" in ''|*[!0-9]*|0) output_limit_kb=256 ;; esac
+    [[ "$timeout_ticks" -le 300 ]] || timeout_ticks=300
+    [[ "$output_limit_kb" -le 1024 ]] || output_limit_kb=1024
+    output_limit_blocks="$output_limit_kb"
+    output_limit_bytes=$((output_limit_kb * 1024))
+    : > "$output_file" || return 1
+    : > "$error_file" || return 1
+    /bin/rm -f "$status_marker" 2>/dev/null || return 1
+    exec 2>/dev/null
+    set -m
+    (
+        ulimit -f "$output_limit_blocks" || exit 1
+        "$@"
+        provider_status=$?
+        /usr/bin/printf '%s' "$provider_status" > "$status_marker" 2>/dev/null || true
+        exit "$provider_status"
+    ) > "$output_file" 2> "$error_file" &
+    command_pid=$!
+    while [[ ! -f "$status_marker" ]]; do
+        if [[ "$ticks" -ge "$timeout_ticks" ]]; then
+            /bin/kill -TERM -- "-$command_pid" 2>/dev/null || true
+            /bin/sleep 0.2
+            /bin/kill -KILL -- "-$command_pid" 2>/dev/null || true
+            wait "$command_pid" 2>/dev/null || true
+            command_pid=""
+            /bin/rm -f "$status_marker" 2>/dev/null || true
+            return 124
+        fi
+        /bin/sleep 0.1
+        ticks=$((ticks + 1))
+    done
+    command_status="$(/bin/cat "$status_marker" 2>/dev/null || true)"
+    case "$command_status" in ''|*[!0-9]*) command_status=1 ;; esac
+    wait "$command_pid" 2>/dev/null || true
+    if /bin/kill -0 -- "-$command_pid" 2>/dev/null; then
+        /bin/kill -TERM -- "-$command_pid" 2>/dev/null || true
+        /bin/sleep 0.2
+        /bin/kill -KILL -- "-$command_pid" 2>/dev/null || true
+    fi
+    command_pid=""
+    /bin/rm -f "$status_marker" 2>/dev/null || true
+    output_size="$(/usr/bin/wc -c < "$output_file" 2>/dev/null | /usr/bin/tr -d ' ')"
+    case "$output_size" in ''|*[!0-9]*) output_size=0 ;; esac
+    [[ "$output_size" -lt "$output_limit_bytes" ]] || return 65
+    return "$command_status"
+)
+
 collect_devtool_updates() {
     local out_file="$TMP_DIR/devtool_updates.txt"
     local error_file="$TMP_DIR/devtool_updates.err"
-    local brew_bin="" candidate status row_count
+    local brew_bin="" candidate status row_count collection_status detail
 
     : > "$out_file"
     for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
@@ -46,8 +120,8 @@ collect_devtool_updates() {
         return 0
     fi
 
-    HOMEBREW_NO_AUTO_UPDATE=1 "$brew_bin" outdated --verbose \
-        > "$out_file" 2> "$error_file"
+    HOMEBREW_NO_AUTO_UPDATE=1 _pch_devtool_to_file "$out_file" "$error_file" \
+        "$brew_bin" outdated --verbose
     status=$?
     if [[ "$status" -eq 0 ]]; then
         row_count="$(/usr/bin/wc -l < "$out_file" | /usr/bin/tr -d ' ')"
@@ -59,9 +133,18 @@ collect_devtool_updates() {
                 "Homebrew 패키지 ${row_count}개에 업데이트가 있습니다(로컬 캐시 기준, 네트워크 조회 없음)."
         fi
     else
-        : > "$out_file"
-        record_collection_status "devtool_updates" "개발도구 업데이트" "unavailable" "false" \
-            "Homebrew 업데이트 상태를 확인하지 못했습니다."
+        case "$status" in
+            124) collection_status="timed_out" ;;
+            126|127) collection_status="unavailable" ;;
+            *) collection_status="failed" ;;
+        esac
+        if [[ -s "$out_file" ]]; then
+            detail="Homebrew 업데이트 상태를 완전히 읽지 못했습니다. 제한 전까지의 일부 출력은 진단 자료로 보존했습니다."
+        else
+            detail="Homebrew 업데이트 상태를 확인하지 못했습니다."
+        fi
+        record_collection_status "devtool_updates" "개발도구 업데이트" "$collection_status" "false" \
+            "$detail"
     fi
     /bin/rm -f "$error_file"
 }

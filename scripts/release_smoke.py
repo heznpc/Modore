@@ -384,6 +384,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/build_macos_icon.sh",
     "scripts/package_macos_release.sh",
     "scripts/artifact_audit.py",
+    "scripts/modules/build_support.sh",
     "scripts/modules/support_dir.sh",
     "scripts/modules/approval_token.sh",
     "scripts/modules/macos/cpu.sh",

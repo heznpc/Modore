@@ -47,9 +47,16 @@ if [[ "$(/usr/bin/uname -s)" != "Darwin" ]]; then
 fi
 
 LSOF_BIN="/usr/sbin/lsof"
+LSOF_TIMEOUT_TICKS=30
+LSOF_OUTPUT_LIMIT_KB=256
 if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
     LSOF_BIN="${PCH_TEST_LSOF_BIN:-$LSOF_BIN}"
+    LSOF_TIMEOUT_TICKS="${PCH_TEST_NETWORK_LSOF_TIMEOUT_TICKS:-$LSOF_TIMEOUT_TICKS}"
+    LSOF_OUTPUT_LIMIT_KB="${PCH_TEST_NETWORK_LSOF_OUTPUT_LIMIT_KB:-$LSOF_OUTPUT_LIMIT_KB}"
 fi
+case "$LSOF_TIMEOUT_TICKS" in ''|*[!0-9]*|0) exit 64 ;; esac
+case "$LSOF_OUTPUT_LIMIT_KB" in ''|*[!0-9]*|0) exit 64 ;; esac
+[[ "$LSOF_TIMEOUT_TICKS" -le 100 && "$LSOF_OUTPUT_LIMIT_KB" -le 1024 ]] || exit 64
 
 emit() {
     local key="$1"
@@ -72,25 +79,85 @@ WORKSPACE="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/modore-network-watch.XXXXXX")" 
 cleanup() { /bin/rm -rf "$WORKSPACE"; }
 trap cleanup EXIT
 
-sample_established() {
-    "$LSOF_BIN" -nP -iTCP -sTCP:ESTABLISHED 2>/dev/null || true
-}
+capture_lsof_sample() (
+    local destination="$1"
+    local error_destination="$2"
+    shift 2
+    local command_pid ticks=0 command_status=0 output_size
+    local output_limit_blocks="$LSOF_OUTPUT_LIMIT_KB"
+    local output_limit_bytes=$((LSOF_OUTPUT_LIMIT_KB * 1024))
+    local status_marker="${destination}.status.$$.$RANDOM"
+    # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+    cleanup_lsof_sample() {
+        local cleanup_pid="${command_pid:-}"
+        trap - HUP INT TERM EXIT
+        command_pid=""
+        if [[ -n "$cleanup_pid" ]]; then
+            /bin/kill -TERM -- "-$cleanup_pid" 2>/dev/null || true
+            /bin/sleep 0.2
+            /bin/kill -KILL -- "-$cleanup_pid" 2>/dev/null || true
+            wait "$cleanup_pid" 2>/dev/null || true
+        fi
+        /bin/rm -f "$status_marker" 2>/dev/null || true
+    }
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap cleanup_lsof_sample EXIT
+    : > "$destination" || return 1
+    : > "$error_destination" || return 1
+    /bin/rm -f "$status_marker" 2>/dev/null || return 1
+    exec 2>/dev/null
+    set -m
+    (
+        ulimit -f "$output_limit_blocks" || exit 1
+        "$LSOF_BIN" "$@"
+        provider_status=$?
+        /usr/bin/printf '%s' "$provider_status" > "$status_marker" 2>/dev/null || true
+        exit "$provider_status"
+    ) > "$destination" 2> "$error_destination" &
+    command_pid=$!
+    while [[ ! -f "$status_marker" ]]; do
+        if [[ "$ticks" -ge "$LSOF_TIMEOUT_TICKS" ]]; then
+            /bin/kill -TERM -- "-$command_pid" 2>/dev/null || true
+            /bin/sleep 0.2
+            /bin/kill -KILL -- "-$command_pid" 2>/dev/null || true
+            wait "$command_pid" 2>/dev/null || true
+            command_pid=""
+            /bin/rm -f "$status_marker" 2>/dev/null || true
+            return 124
+        fi
+        /bin/sleep 0.1
+        ticks=$((ticks + 1))
+    done
+    command_status="$(/bin/cat "$status_marker" 2>/dev/null || true)"
+    case "$command_status" in ''|*[!0-9]*) command_status=1 ;; esac
+    wait "$command_pid" 2>/dev/null || true
+    if /bin/kill -0 -- "-$command_pid" 2>/dev/null; then
+        /bin/kill -TERM -- "-$command_pid" 2>/dev/null || true
+        /bin/sleep 0.2
+        /bin/kill -KILL -- "-$command_pid" 2>/dev/null || true
+    fi
+    command_pid=""
+    /bin/rm -f "$status_marker" 2>/dev/null || true
+    output_size="$(/usr/bin/wc -c < "$destination" 2>/dev/null | /usr/bin/tr -d ' ')"
+    case "$output_size" in ''|*[!0-9]*) output_size=0 ;; esac
+    [[ "$output_size" -lt "$output_limit_bytes" ]] || return 65
+    return "$command_status"
+)
 
-sample_listen() {
-    "$LSOF_BIN" -nP -iTCP -sTCP:LISTEN 2>/dev/null || true
-}
-
-# lsof exits non-zero with no output both when it fails and when nothing
-# matches, and `|| true` cannot tell those apart -- so an empty closing
-# sample is indistinguishable from "the window was quiet". Reporting 0 new
-# connections off a sample we may never have taken is a false all-clear on a
-# security surface, so the closing LISTEN set is used as the liveness probe:
-# a real Mac always has listening sockets (launchd/rapportd/mDNSResponder),
-# making an empty closing list overwhelmingly a failed read rather than a
-# genuine state. The opening sample needs no such probe -- an empty opening
-# baseline just makes everything look new, which errs toward over-reporting.
-closing_sample_looks_unreadable() {
-    [[ ! -s "$WORKSPACE/second_listen" ]]
+sample_status_label() {
+    local status="$1"
+    local error_file="$2"
+    if [[ "$status" -eq 0 || ( "$status" -eq 1 && ! -s "$error_file" ) ]]; then
+        /usr/bin/printf 'ok'
+    elif [[ "$status" -eq 124 ]]; then
+        /usr/bin/printf 'timed_out'
+    elif [[ "$status" -eq 65 ]]; then
+        /usr/bin/printf 'output_limited'
+    else
+        /usr/bin/printf 'failed'
+    fi
 }
 
 # 테스트는 네 표본 파일을 직접 주입한다. 실제 lsof 표는 재현할 수 없으므로,
@@ -98,33 +165,64 @@ closing_sample_looks_unreadable() {
 inject_or_empty() {
     local var_name="$1"
     local destination="$2"
+    local status_var_name="$3"
     local source="${!var_name:-}"
+    local injected_status="${!status_var_name:-0}"
     if [[ -n "$source" && -f "$source" && ! -L "$source" ]]; then
         /bin/cat "$source" > "$destination"
     else
         : > "$destination"
     fi
+    case "$injected_status" in ''|*[!0-9]*) return 64 ;; esac
+    return "$injected_status"
 }
 
-if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
-    inject_or_empty PCH_NETWORK_WATCH_FIRST_ESTABLISHED "$WORKSPACE/first_established"
-    inject_or_empty PCH_NETWORK_WATCH_FIRST_LISTEN "$WORKSPACE/first_listen"
-    inject_or_empty PCH_NETWORK_WATCH_SECOND_ESTABLISHED "$WORKSPACE/second_established"
-    inject_or_empty PCH_NETWORK_WATCH_SECOND_LISTEN "$WORKSPACE/second_listen"
+first_established_status=0
+first_listen_status=0
+second_established_status=0
+second_listen_status=0
+for sample_error in first_established first_listen second_established second_listen; do
+    : > "$WORKSPACE/${sample_error}.err"
+done
+
+if [[ "${PCH_TEST_MODE:-0}" == "1" \
+    && -n "${PCH_NETWORK_WATCH_FIRST_ESTABLISHED:-}${PCH_NETWORK_WATCH_FIRST_LISTEN:-}${PCH_NETWORK_WATCH_SECOND_ESTABLISHED:-}${PCH_NETWORK_WATCH_SECOND_LISTEN:-}" ]]; then
+    inject_or_empty PCH_NETWORK_WATCH_FIRST_ESTABLISHED "$WORKSPACE/first_established" PCH_NETWORK_WATCH_FIRST_ESTABLISHED_STATUS \
+        || first_established_status=$?
+    inject_or_empty PCH_NETWORK_WATCH_FIRST_LISTEN "$WORKSPACE/first_listen" PCH_NETWORK_WATCH_FIRST_LISTEN_STATUS \
+        || first_listen_status=$?
+    inject_or_empty PCH_NETWORK_WATCH_SECOND_ESTABLISHED "$WORKSPACE/second_established" PCH_NETWORK_WATCH_SECOND_ESTABLISHED_STATUS \
+        || second_established_status=$?
+    inject_or_empty PCH_NETWORK_WATCH_SECOND_LISTEN "$WORKSPACE/second_listen" PCH_NETWORK_WATCH_SECOND_LISTEN_STATUS \
+        || second_listen_status=$?
 else
-    sample_established > "$WORKSPACE/first_established"
-    sample_listen > "$WORKSPACE/first_listen"
+    capture_lsof_sample "$WORKSPACE/first_established" "$WORKSPACE/first_established.err" \
+        -nP -iTCP -sTCP:ESTABLISHED || first_established_status=$?
+    capture_lsof_sample "$WORKSPACE/first_listen" "$WORKSPACE/first_listen.err" \
+        -nP -iTCP -sTCP:LISTEN || first_listen_status=$?
     /bin/sleep "$WINDOW_SECONDS"
-    sample_established > "$WORKSPACE/second_established"
-    sample_listen > "$WORKSPACE/second_listen"
+    capture_lsof_sample "$WORKSPACE/second_established" "$WORKSPACE/second_established.err" \
+        -nP -iTCP -sTCP:ESTABLISHED || second_established_status=$?
+    capture_lsof_sample "$WORKSPACE/second_listen" "$WORKSPACE/second_listen.err" \
+        -nP -iTCP -sTCP:LISTEN || second_listen_status=$?
 fi
+
+first_established_label="$(sample_status_label "$first_established_status" "$WORKSPACE/first_established.err")"
+first_listen_label="$(sample_status_label "$first_listen_status" "$WORKSPACE/first_listen.err")"
+second_established_label="$(sample_status_label "$second_established_status" "$WORKSPACE/second_established.err")"
+second_listen_label="$(sample_status_label "$second_listen_status" "$WORKSPACE/second_listen.err")"
 
 emit "version" "$PROTOCOL_VERSION"
 emit "operation" "network-watch"
 emit "windowSeconds" "$WINDOW_SECONDS"
+emit "firstEstablishedStatus" "$first_established_label"
+emit "firstListenStatus" "$first_listen_label"
+emit "secondEstablishedStatus" "$second_established_label"
+emit "secondListenStatus" "$second_listen_label"
 
-if closing_sample_looks_unreadable; then
-    emit "error" "관찰 종료 시점의 네트워크 목록을 읽지 못했습니다."
+if [[ "$first_established_label" != "ok" || "$first_listen_label" != "ok" \
+    || "$second_established_label" != "ok" || "$second_listen_label" != "ok" ]]; then
+    emit "error" "네트워크 표본 일부를 읽지 못해 변화량을 계산하지 않았습니다."
     exit 0
 fi
 

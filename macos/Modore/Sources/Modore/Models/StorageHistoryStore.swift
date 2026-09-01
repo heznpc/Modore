@@ -6,6 +6,7 @@ enum StorageHistoryStore {
     static let maximumHistoryBytes = 16 * 1_024 * 1_024
     static let maximumSampleBytes = 4 * 1_024 * 1_024
     static let maximumSamples = 10_000
+    static let futureTimestampTolerance: TimeInterval = 60
 
     static var stateDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -76,7 +77,10 @@ enum StorageHistoryStore {
         return try secureWrite(entries, to: url, expectedParentIdentity: parentIdentity)
     }
 
-    static func loadFreeSpaceSamples(from url: URL = sampleURL) -> [FreeSpaceSample] {
+    static func loadFreeSpaceSamples(
+        from url: URL = sampleURL,
+        now: Date = Date()
+    ) -> [FreeSpaceSample] {
         guard let parentIdentity = FilesystemIdentity.directory(
             at: url.deletingLastPathComponent()
         ),
@@ -91,7 +95,8 @@ enum StorageHistoryStore {
             guard fields.count >= 4,
                   let date = try? isoFormat.parse(String(fields[0])),
                   let freeKB = Double(fields[1]),
-                  let dropKB = Double(fields[2]) else {
+                  let dropKB = Double(fields[2]),
+                  date.timeIntervalSince(now) <= futureTimestampTolerance else {
                 return nil
             }
             return FreeSpaceSample(
