@@ -92,12 +92,14 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
     HISTORY_LIMIT="${PCH_WATCH_HISTORY_LIMIT:-336}"
     FREE_THRESHOLD_GB="${PCH_WATCH_FREE_GB:-20}"
     DROP_THRESHOLD_GB="${PCH_WATCH_DROP_GB:-8}"
+    PRESSURE_DROP_THRESHOLD_MB="${PCH_WATCH_PRESSURE_DROP_MB:-512}"
     NOTIFY="${PCH_WATCH_NOTIFY:-1}"
     APP_BUNDLE_PATH="${PCH_STORAGE_WATCH_APP_BUNDLE:-}"
     APP_EXECUTABLE_SHA256="${PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256:-}"
     SNAPSHOT_TEST_ROOT="${PCH_WATCH_SNAPSHOT_ROOT:-}"
     SNAPSHOT_TOTAL_SECONDS="${PCH_WATCH_SNAPSHOT_TOTAL_SECONDS:-8}"
     SNAPSHOT_ITEM_SECONDS="${PCH_WATCH_SNAPSHOT_ITEM_SECONDS:-2}"
+    SNAPSHOT_DEVICE_SECONDS="${PCH_WATCH_SNAPSHOT_DEVICE_SECONDS:-15}"
     SNAPSHOT_EVENT_LIMIT="${PCH_WATCH_SNAPSHOT_EVENT_LIMIT:-24}"
     PRIVATE_TMP_TEST_ROOT="${PCH_WATCH_PRIVATE_TMP_ROOT:-}"
     SWAP_TEST_FILE="${PCH_WATCH_SWAP_TEST_FILE:-}"
@@ -109,6 +111,11 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
     METADATA_PS_BIN="${PCH_TEST_WATCH_PS_BIN:-/bin/ps}"
     METADATA_SYSCTL_BIN="${PCH_TEST_WATCH_SYSCTL_BIN:-/usr/sbin/sysctl}"
     DU_BIN="${PCH_TEST_WATCH_DU_BIN:-/usr/bin/du}"
+    TEST_NOW_ISO="${PCH_TEST_WATCH_NOW_ISO:-}"
+    TEST_NEXT_ISO="${PCH_TEST_WATCH_NEXT_ISO:-}"
+    TEST_EVENT_FRACTION="${PCH_TEST_WATCH_EVENT_FRACTION:-}"
+    TEST_LOGICAL_UNAME="${PCH_TEST_WATCH_LOGICAL_UNAME:-}"
+    LOGICAL_DATE_BIN="${PCH_TEST_WATCH_LOGICAL_DATE_BIN:-/bin/date}"
     WATCH_LOCK_ATTEMPTS="${PCH_TEST_WATCH_LOCK_ATTEMPTS:-120}"
     WATCH_LOCK_SECONDS="${PCH_TEST_WATCH_LOCK_SECONDS:-12}"
     WATCH_LOCK_HOLDER_SECONDS="${PCH_TEST_WATCH_LOCK_HOLDER_SECONDS:-60}"
@@ -138,6 +145,13 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
             || "$test_tool" == /var/folders/?* ]] || exit 64
         [[ -x "$test_tool" && ! -L "$test_tool" ]] || exit 64
     done
+    [[ "$TEST_LOGICAL_UNAME" == "" || "$TEST_LOGICAL_UNAME" == "Darwin" \
+        || "$TEST_LOGICAL_UNAME" == "Linux" ]] || exit 64
+    [[ "$LOGICAL_DATE_BIN" == "/bin/date" || "$LOGICAL_DATE_BIN" == /tmp/?* \
+        || "$LOGICAL_DATE_BIN" == /private/tmp/?* \
+        || "$LOGICAL_DATE_BIN" == /private/var/folders/?* \
+        || "$LOGICAL_DATE_BIN" == /var/folders/?* ]] || exit 64
+    [[ -x "$LOGICAL_DATE_BIN" && ! -L "$LOGICAL_DATE_BIN" ]] || exit 64
     [[ "$STATE_DIR" == /tmp/?* || "$STATE_DIR" == /private/tmp/?* \
         || "$STATE_DIR" == /private/var/folders/?* || "$STATE_DIR" == /var/folders/?* ]] || exit 64
 else
@@ -155,12 +169,14 @@ else
     HISTORY_LIMIT=336
     FREE_THRESHOLD_GB=20
     DROP_THRESHOLD_GB=8
+    PRESSURE_DROP_THRESHOLD_MB=512
     NOTIFY=1
     APP_BUNDLE_PATH="${PCH_STORAGE_WATCH_APP_BUNDLE:-}"
     APP_EXECUTABLE_SHA256="${PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256:-}"
     SNAPSHOT_TEST_ROOT=""
     SNAPSHOT_TOTAL_SECONDS=8
     SNAPSHOT_ITEM_SECONDS=2
+    SNAPSHOT_DEVICE_SECONDS=15
     SNAPSHOT_EVENT_LIMIT=24
     PRIVATE_TMP_TEST_ROOT=""
     SWAP_TEST_FILE=""
@@ -170,6 +186,11 @@ else
     METADATA_PS_BIN="/bin/ps"
     METADATA_SYSCTL_BIN="/usr/sbin/sysctl"
     DU_BIN="/usr/bin/du"
+    TEST_NOW_ISO=""
+    TEST_NEXT_ISO=""
+    TEST_EVENT_FRACTION=""
+    TEST_LOGICAL_UNAME=""
+    LOGICAL_DATE_BIN="/bin/date"
     WATCH_LOCK_ATTEMPTS=120
     WATCH_LOCK_SECONDS=12
     WATCH_LOCK_HOLDER_SECONDS=60
@@ -182,14 +203,28 @@ emit() {
 case "$FREE_THRESHOLD_GB$DROP_THRESHOLD_GB" in
     *[!0-9]*) /usr/bin/printf 'ERROR: thresholds must be whole GB values.\n' >&2; exit 64 ;;
 esac
+case "$PRESSURE_DROP_THRESHOLD_MB" in
+    ''|*[!0-9]*|0) /usr/bin/printf 'ERROR: pressure drop threshold must be a positive whole MB value.\n' >&2; exit 64 ;;
+esac
+[[ "$PRESSURE_DROP_THRESHOLD_MB" -le 8192 ]] || exit 64
 case "$HISTORY_LIMIT" in
     ''|*[!0-9]*|0) /usr/bin/printf 'ERROR: history limit must be a positive whole number.\n' >&2; exit 64 ;;
 esac
-case "$SNAPSHOT_TOTAL_SECONDS$SNAPSHOT_ITEM_SECONDS$SNAPSHOT_EVENT_LIMIT" in
+case "$SNAPSHOT_TOTAL_SECONDS$SNAPSHOT_ITEM_SECONDS$SNAPSHOT_DEVICE_SECONDS$SNAPSHOT_EVENT_LIMIT" in
     *[!0-9]*) /usr/bin/printf 'ERROR: snapshot limits must be whole numbers.\n' >&2; exit 64 ;;
 esac
 [[ "$SNAPSHOT_TOTAL_SECONDS" -gt 0 && "$SNAPSHOT_ITEM_SECONDS" -gt 0 \
+    && "$SNAPSHOT_DEVICE_SECONDS" -gt 0 && "$SNAPSHOT_DEVICE_SECONDS" -le 30 \
     && "$SNAPSHOT_EVENT_LIMIT" -gt 0 ]] || exit 64
+for test_iso in "$TEST_NOW_ISO" "$TEST_NEXT_ISO"; do
+    [[ -z "$test_iso" || "$test_iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+        || exit 64
+done
+case "$TEST_EVENT_FRACTION" in
+    '') ;;
+    *[!0-9]*) exit 64 ;;
+    *) [[ "$TEST_EVENT_FRACTION" -le 999999 ]] || exit 64 ;;
+esac
 case "$WATCH_LOCK_ATTEMPTS" in ''|*[!0-9]*|0) exit 64 ;; esac
 [[ "$WATCH_LOCK_ATTEMPTS" -le 120 ]] || exit 64
 case "$WATCH_LOCK_SECONDS" in ''|*[!0-9]*) exit 64 ;; esac
@@ -542,14 +577,22 @@ PREVIOUS_STATUS="normal"
 LAST_NOTIFY=0
 LAST_SNAPSHOT=0
 SNAPSHOT_COMPLETENESS="unknown"
+EVIDENCE_POINTER_VERSION=""
 LAST_EVIDENCE_AT=""
+PREVIOUS_EVIDENCE_AT=""
+LAST_PATH_EVIDENCE_AT=""
+PREVIOUS_PATH_EVIDENCE_AT=""
 if [[ -f "$STATE_FILE" ]]; then
     PREVIOUS_KB="$(/usr/bin/awk -F '\t' '$1 == "freeKB" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     PREVIOUS_STATUS="$(/usr/bin/awk -F '\t' '$1 == "status" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_NOTIFY="$(/usr/bin/awk -F '\t' '$1 == "lastNotify" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_SNAPSHOT="$(/usr/bin/awk -F '\t' '$1 == "lastSnapshot" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     SNAPSHOT_COMPLETENESS="$(/usr/bin/awk -F '\t' '$1 == "snapshotCompleteness" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
+    EVIDENCE_POINTER_VERSION="$(/usr/bin/awk -F '\t' '$1 == "evidencePointerVersion" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_EVIDENCE_AT="$(/usr/bin/awk -F '\t' '$1 == "lastEvidenceAt" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
+    PREVIOUS_EVIDENCE_AT="$(/usr/bin/awk -F '\t' '$1 == "previousEvidenceAt" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
+    LAST_PATH_EVIDENCE_AT="$(/usr/bin/awk -F '\t' '$1 == "lastPathEvidenceAt" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
+    PREVIOUS_PATH_EVIDENCE_AT="$(/usr/bin/awk -F '\t' '$1 == "previousPathEvidenceAt" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
 fi
 case "$PREVIOUS_KB" in ''|*[!0-9]*) PREVIOUS_KB=0 ;; esac
 NOW_EPOCH="$(/bin/date '+%s')"
@@ -569,26 +612,66 @@ normalize_past_epoch() {
 LAST_NOTIFY="$(normalize_past_epoch "$LAST_NOTIFY")"
 LAST_SNAPSHOT="$(normalize_past_epoch "$LAST_SNAPSHOT")"
 case "$SNAPSHOT_COMPLETENESS" in complete|partial|unknown) ;; *) SNAPSHOT_COMPLETENESS="unknown" ;; esac
+[[ "$EVIDENCE_POINTER_VERSION" == "2" ]] || EVIDENCE_POINTER_VERSION=""
 case "$LAST_EVIDENCE_AT" in
     *$'\t'*|*$'\n'*|*$'\r'*) LAST_EVIDENCE_AT="" ;;
 esac
 [[ "${#LAST_EVIDENCE_AT}" -le 64 ]] || LAST_EVIDENCE_AT=""
+case "$PREVIOUS_EVIDENCE_AT" in
+    *$'\t'*|*$'\n'*|*$'\r'*) PREVIOUS_EVIDENCE_AT="" ;;
+esac
+[[ "${#PREVIOUS_EVIDENCE_AT}" -le 64 ]] || PREVIOUS_EVIDENCE_AT=""
+case "$LAST_PATH_EVIDENCE_AT" in
+    *$'\t'*|*$'\n'*|*$'\r'*) LAST_PATH_EVIDENCE_AT="" ;;
+esac
+[[ "${#LAST_PATH_EVIDENCE_AT}" -le 64 ]] || LAST_PATH_EVIDENCE_AT=""
+case "$PREVIOUS_PATH_EVIDENCE_AT" in
+    *$'\t'*|*$'\n'*|*$'\r'*) PREVIOUS_PATH_EVIDENCE_AT="" ;;
+esac
+[[ "${#PREVIOUS_PATH_EVIDENCE_AT}" -le 64 ]] || PREVIOUS_PATH_EVIDENCE_AT=""
 
-# Older watcher versions had no committed evidence pointer. While holding the
-# exclusive lock, migrate only an event present in both bounded histories (or
-# the sole legacy history when only one exists). A partial event left by a
-# killed writer is never promoted merely because its timestamp is newest.
-if [[ -z "$LAST_EVIDENCE_AT" ]]; then
-    if [[ -s "$SIGNALS_FILE" && -s "$SNAPSHOT_FILE" ]]; then
-        LAST_EVIDENCE_AT="$({
-            /usr/bin/awk -F '\t' 'NR == FNR { seen[$1] = 1; next } seen[$1] { print $1 }' \
-                "$SIGNALS_FILE" "$SNAPSHOT_FILE"
-        } | /usr/bin/sort | /usr/bin/tail -n 1)"
-    elif [[ -s "$SIGNALS_FILE" ]]; then
-        LAST_EVIDENCE_AT="$(/usr/bin/awk -F '\t' 'NF {value=$1} END {print value}' "$SIGNALS_FILE")"
-    elif [[ -s "$SNAPSHOT_FILE" ]]; then
-        LAST_EVIDENCE_AT="$(/usr/bin/awk -F '\t' 'NF {value=$1} END {print value}' "$SNAPSHOT_FILE")"
+# Version 2 separates the latest committed evidence event from the two path
+# events used for a size delta. A signal-only capture must advance the former,
+# but must never become the previous endpoint of the next path comparison.
+#
+# Migrate once while holding the exclusive lock. Existing state pointers are
+# authoritative; history is consulted only when an old state has no pointer at
+# all, and a path anchor is derived only from an exact committed timestamp.
+# This avoids promoting a newer history tail left by a killed writer.
+if [[ "$EVIDENCE_POINTER_VERSION" != "2" ]]; then
+    if [[ -z "$LAST_EVIDENCE_AT" ]]; then
+        if [[ -s "$SIGNALS_FILE" && -s "$SNAPSHOT_FILE" ]]; then
+            LAST_EVIDENCE_AT="$({
+                /usr/bin/awk -F '\t' 'NR == FNR { seen[$1] = 1; next } seen[$1] { print $1 }' \
+                    "$SIGNALS_FILE" "$SNAPSHOT_FILE"
+            } | /usr/bin/sort | /usr/bin/tail -n 1)"
+        elif [[ -s "$SIGNALS_FILE" ]]; then
+            LAST_EVIDENCE_AT="$(/usr/bin/awk -F '\t' 'NF {value=$1} END {print value}' "$SIGNALS_FILE")"
+        elif [[ -s "$SNAPSHOT_FILE" ]]; then
+            LAST_EVIDENCE_AT="$(/usr/bin/awk -F '\t' 'NF {value=$1} END {print value}' "$SNAPSHOT_FILE")"
+        fi
     fi
+    if [[ -z "$LAST_PATH_EVIDENCE_AT" && -s "$SNAPSHOT_FILE" ]]; then
+        if [[ -n "$LAST_EVIDENCE_AT" ]] \
+            && /usr/bin/awk -F '\t' -v target="$LAST_EVIDENCE_AT" \
+                '$1 == target {found=1; exit} END {exit !found}' "$SNAPSHOT_FILE"; then
+            LAST_PATH_EVIDENCE_AT="$LAST_EVIDENCE_AT"
+        elif [[ -n "$PREVIOUS_EVIDENCE_AT" ]] \
+            && /usr/bin/awk -F '\t' -v target="$PREVIOUS_EVIDENCE_AT" \
+                '$1 == target {found=1; exit} END {exit !found}' "$SNAPSHOT_FILE"; then
+            LAST_PATH_EVIDENCE_AT="$PREVIOUS_EVIDENCE_AT"
+        fi
+    fi
+    if [[ -n "$LAST_PATH_EVIDENCE_AT" && -z "$PREVIOUS_PATH_EVIDENCE_AT" ]]; then
+        PREVIOUS_PATH_EVIDENCE_AT="$(/usr/bin/awk -F '\t' -v target="$LAST_PATH_EVIDENCE_AT" '
+            $1 != current {
+                if ($1 == target) { print previous; exit }
+                previous = $1
+                current = $1
+            }
+        ' "$SNAPSHOT_FILE" 2>/dev/null)"
+    fi
+    EVIDENCE_POINTER_VERSION="2"
 fi
 
 DROP_KB=0
@@ -597,6 +680,7 @@ if [[ "$PREVIOUS_KB" -gt "$FREE_KB" ]]; then
 fi
 FREE_THRESHOLD_KB=$((FREE_THRESHOLD_GB * 1024 * 1024))
 DROP_THRESHOLD_KB=$((DROP_THRESHOLD_GB * 1024 * 1024))
+PRESSURE_DROP_THRESHOLD_KB=$((PRESSURE_DROP_THRESHOLD_MB * 1024))
 STATUS="normal"
 MESSAGE="저장공간 변화가 정상 범위입니다."
 if [[ "$FREE_KB" -lt "$FREE_THRESHOLD_KB" ]]; then
@@ -608,11 +692,58 @@ elif [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
 fi
 
 NOW_ISO="$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
+[[ -z "$TEST_NOW_ISO" ]] || NOW_ISO="$TEST_NOW_ISO"
 # A manual kickstart can produce two samples inside one wall-clock second.
 # Keep the state timestamp human-sized, but give each evidence event a stable
-# fractional component derived from this short-lived watcher process so the
-# native app never merges two separate captures into one event.
-EVENT_ISO="${NOW_ISO%Z}.$(/usr/bin/printf '%06d' "$(( $$ % 1000000 ))")Z"
+# fractional component derived from this short-lived watcher process. When a
+# second run has a lower PID fraction, advance from the committed pointer. The
+# only overflow waits for the next wall-clock second under a two-second bound.
+event_fraction=$(( $$ % 1000000 ))
+[[ -z "$TEST_EVENT_FRACTION" ]] || event_fraction=$((10#$TEST_EVENT_FRACTION))
+event_base="${NOW_ISO%Z}"
+last_event_base=""
+last_event_fraction=""
+if [[ "$LAST_EVIDENCE_AT" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})\.([0-9]{6})Z$ ]]; then
+    last_event_base="${BASH_REMATCH[1]}"
+    last_event_fraction="${BASH_REMATCH[2]}"
+elif [[ "$LAST_EVIDENCE_AT" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})Z$ ]]; then
+    last_event_base="${BASH_REMATCH[1]}"
+    last_event_fraction="000000"
+fi
+if [[ "$last_event_base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$ \
+    && "$event_base" < "$last_event_base" ]]; then
+    # Wall clocks can move backwards after NTP correction or VM resume. Keep a
+    # bounded logical clock at the last committed second instead of waiting for
+    # real time to catch up, which could stall the LaunchAgent indefinitely.
+    event_base="$last_event_base"
+fi
+if [[ "$last_event_base" == "$event_base" && "${#last_event_fraction}" -eq 6 \
+    && "$last_event_fraction" != *[!0-9]* \
+    && $((10#$last_event_fraction)) -ge "$event_fraction" ]]; then
+    if [[ $((10#$last_event_fraction)) -lt 999999 ]]; then
+        event_fraction=$((10#$last_event_fraction + 1))
+    else
+        next_iso="$TEST_NEXT_ISO"
+        if [[ -z "$next_iso" ]]; then
+            logical_uname="$TEST_LOGICAL_UNAME"
+            [[ -n "$logical_uname" ]] || logical_uname="$(/usr/bin/uname -s)"
+            if [[ "$logical_uname" == "Darwin" ]]; then
+                next_iso="$("$LOGICAL_DATE_BIN" -j -u -v+1S \
+                    -f '%Y-%m-%dT%H:%M:%S' "$event_base" \
+                    '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"
+            else
+                next_iso="$("$LOGICAL_DATE_BIN" -u -d "$event_base UTC + 1 second" \
+                    '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"
+            fi
+        fi
+        [[ "$next_iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
+            && "${next_iso%Z}" > "$event_base" ]] || exit 1
+        NOW_ISO="$next_iso"
+        event_base="${NOW_ISO%Z}"
+    fi
+fi
+NOW_ISO="$event_base"Z
+EVENT_ISO="$event_base.$(/usr/bin/printf '%06d' "$event_fraction")Z"
 SNAPSHOT_CAPTURED=0
 SIGNALS_CAPTURED=0
 
@@ -693,17 +824,20 @@ capture_drop_snapshot() {
     local signal_tmp signal_history_tmp metadata_tmp swap_input rss_input
     local swap_used_kb swap_allocated_kb rss_kb rss_pid rss_reference rss_label
     local swap_capture_status="ok" rss_capture_status="ok" capture_status=0
-    local result_file pid waited_ticks size_kb status modified_epoch
+    local result_file pid waited_ticks size_kb status modified_epoch command_status
     local priority_rows remaining_rows
     local elapsed_ticks=0
     local total_ticks=$((SNAPSHOT_TOTAL_SECONDS * 10))
     local item_ticks=$((SNAPSHOT_ITEM_SECONDS * 10))
-    local maximum_rows=8
+    local device_ticks=$((SNAPSHOT_DEVICE_SECONDS * 10))
+    local maximum_rows=12
     local maximum_history_rows=$((SNAPSHOT_EVENT_LIMIT * maximum_rows))
     local maximum_rss_rows=3
     local maximum_signal_rows=$((maximum_rss_rows + 1))
     local maximum_signal_history_rows=$((SNAPSHOT_EVENT_LIMIT * maximum_signal_rows))
     local -a candidates=()
+    local -a simulator_fast_candidates=()
+    local deferred_simulator_device=""
     local capture_is_complete=1
 
     # These are common short-lived AI/tooling workspaces that can grow between
@@ -724,7 +858,7 @@ capture_drop_snapshot() {
         fi
         # Random suffixes make lexical "first three" unrelated to the active
         # incident. Admit a bounded recent set and let the measured-size sort
-        # below decide which rows survive the eight-row event cap.
+        # below decide which rows survive the twelve-row event cap.
         while IFS=$'\t' read -r _ path; do
             [[ -n "$path" ]] || continue
             candidates+=("Modore 임시 작업"$'\t'"$path")
@@ -749,7 +883,16 @@ capture_drop_snapshot() {
             && ! path_has_unexpected_symlink "$SNAPSHOT_TEST_ROOT"; then
             for path in "$SNAPSHOT_TEST_ROOT"/*; do
                 [[ -e "$path" && ! -L "$path" ]] || continue
-                candidates+=("$(/usr/bin/basename "$path")"$'\t'"$path")
+                label="$(/usr/bin/basename "$path")"
+                case "$label" in
+                    "Simulator 기기 데이터")
+                        deferred_simulator_device="$label"$'\t'"$path"
+                        ;;
+                    "Simulator 공유 dyld 캐시"|"Simulator 런타임 · "*)
+                        simulator_fast_candidates+=("$label"$'\t'"$path")
+                        ;;
+                    *) candidates+=("$label"$'\t'"$path") ;;
+                esac
             done
         fi
     else
@@ -760,15 +903,27 @@ capture_drop_snapshot() {
                 && "$(path_owner_uid "$path")" == "$(/usr/bin/id -u)" ]] || continue
             candidates+=("Chrome code-sign clone"$'\t'"$path")
         done
+        simulator_fast_candidates+=("Simulator 런타임 · iOS"$'\t'"/System/Volumes/Data/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime")
+        simulator_fast_candidates+=("Simulator 런타임 · watchOS"$'\t'"/System/Volumes/Data/System/Library/AssetsV2/com_apple_MobileAsset_watchOSSimulatorRuntime")
+        simulator_fast_candidates+=("Simulator 런타임 · tvOS"$'\t'"/System/Volumes/Data/System/Library/AssetsV2/com_apple_MobileAsset_appleTVOSSimulatorRuntime")
+        simulator_fast_candidates+=("Simulator 런타임 · xrOS"$'\t'"/System/Volumes/Data/System/Library/AssetsV2/com_apple_MobileAsset_xrOSSimulatorRuntime")
+        simulator_fast_candidates+=("Simulator 공유 dyld 캐시"$'\t'"/Library/Developer/CoreSimulator/Caches/dyld")
         candidates+=("Codex 로컬 데이터"$'\t'"$HOME_ROOT/.codex")
         candidates+=("Claude 로컬 에이전트"$'\t'"$HOME_ROOT/Library/Application Support/Claude")
         candidates+=("Playwright 브라우저"$'\t'"$HOME_ROOT/Library/Caches/ms-playwright")
         candidates+=("npm 캐시"$'\t'"$HOME_ROOT/.npm")
         candidates+=("pnpm 저장소"$'\t'"$HOME_ROOT/Library/pnpm")
-        candidates+=("CoreSimulator 기기"$'\t'"$HOME_ROOT/Library/Developer/CoreSimulator")
         candidates+=("Xcode 개발 데이터"$'\t'"$HOME_ROOT/Library/Developer/Xcode")
         candidates+=("사용자 캐시"$'\t'"$HOME_ROOT/Library/Caches")
+        # Devices is the slowest known root on a machine with many simulators.
+        # Keep it last so its bounded timeout cannot consume the slots needed by
+        # runtimes, dyld, and fast agent/cache roots. Never add CoreSimulator's
+        # Volumes mountpoints: they mirror runtime assets rather than new bytes.
+        deferred_simulator_device="Simulator 기기 데이터"$'\t'"$HOME_ROOT/Library/Developer/CoreSimulator/Devices"
     fi
+    candidates=("${simulator_fast_candidates[@]+"${simulator_fast_candidates[@]}"}" \
+        "${candidates[@]+"${candidates[@]}"}")
+    [[ -z "$deferred_simulator_device" ]] || candidates+=("$deferred_simulator_device")
 
     event_tmp="$(/usr/bin/mktemp ./.storage-watch-event.XXXXXX)" || return 1
     sorted_tmp="$(/usr/bin/mktemp ./.storage-watch-sorted.XXXXXX)" || {
@@ -793,11 +948,16 @@ capture_drop_snapshot() {
         path_has_unexpected_symlink "$path" && continue
         status="ok"
         size_kb=0
-        if [[ "$elapsed_ticks" -ge "$total_ticks" ]]; then
+        command_status=0
+        local is_simulator_device=0
+        [[ "$label" != "Simulator 기기 데이터" ]] || is_simulator_device=1
+        if [[ "$is_simulator_device" -eq 0 && "$elapsed_ticks" -ge "$total_ticks" ]]; then
             status="timed_out"
         else
             local allowed_ticks="$item_ticks"
-            if [[ $((total_ticks - elapsed_ticks)) -lt "$allowed_ticks" ]]; then
+            if [[ "$is_simulator_device" -eq 1 ]]; then
+                allowed_ticks="$device_ticks"
+            elif [[ $((total_ticks - elapsed_ticks)) -lt "$allowed_ticks" ]]; then
                 allowed_ticks=$((total_ticks - elapsed_ticks))
             fi
             result_file="$(/usr/bin/mktemp ./.storage-watch-du.XXXXXX)" || {
@@ -819,17 +979,21 @@ capture_drop_snapshot() {
                     waited_ticks=$((waited_ticks + 1))
                 done
                 if [[ "$status" == "ok" ]]; then
-                    # du that exited on its own is NOT a timeout. It returns
-                    # nonzero when a subdirectory is unreadable (routine without
-                    # Full Disk Access) while still printing a valid total, so
-                    # keep the measured size; a genuinely empty result is caught
-                    # as "unavailable" when the total is parsed below.
-                    wait "$pid" 2>/dev/null || true
+                    # A nonzero du can leave a useful lower bound, but it did
+                    # not prove an exact total. Preserve the number as partial
+                    # evidence and use the existing incomplete status understood
+                    # by the history loader and path-delta model.
+                    wait "$pid" 2>/dev/null || command_status=$?
                 fi
-                elapsed_ticks=$((elapsed_ticks + waited_ticks))
+                if [[ "$is_simulator_device" -eq 0 ]]; then
+                    elapsed_ticks=$((elapsed_ticks + waited_ticks))
+                fi
                 if [[ "$status" == "ok" ]]; then
                     size_kb="$(/usr/bin/awk '{print $1; exit}' "$result_file" 2>/dev/null)"
                     case "$size_kb" in ''|*[!0-9]*) size_kb=0; status="unavailable" ;; esac
+                    if [[ "$status" == "ok" && "$command_status" -ne 0 ]]; then
+                        status="timed_out"
+                    fi
                 fi
             fi
             [[ -z "${result_file:-}" ]] || /bin/rm -f "$result_file"
@@ -994,15 +1158,23 @@ capture_drop_snapshot() {
         }
     fi
 
-    # Reserve four of the eight event rows for transient workspaces. Without
-    # this split, persistent roots such as CoreSimulator, .codex, and the whole
-    # cache tree can crowd out the short-lived directory that caused the drop.
+    # Reserve category slots inside the twelve-row event. Transient workspaces
+    # retain four slots, every installed runtime retains one, and device/dyld
+    # each retain one. This
+    # keeps the fast runtime/cache facts visible even when the Devices walk is
+    # slow or a broad persistent root is larger.
     : > "$metadata_tmp" || return 1
     {
         /usr/bin/awk -F '\t' '$4 == "Claude 임시 작업"' "$event_tmp" \
             | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 1
         /usr/bin/awk -F '\t' '$4 == "Modore 임시 작업"' "$event_tmp" \
             | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 3
+        /usr/bin/awk -F '\t' '$4 ~ /^Simulator 런타임 · /' "$event_tmp" \
+            | /usr/bin/sort -t $'\t' -k2,2nr
+        /usr/bin/awk -F '\t' '$4 == "Simulator 공유 dyld 캐시"' "$event_tmp" \
+            | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 1
+        /usr/bin/awk -F '\t' '$4 == "Simulator 기기 데이터"' "$event_tmp" \
+            | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 1
     } > "$metadata_tmp" || {
         /bin/rm -f "$event_tmp" "$sorted_tmp" "$signal_tmp" "$metadata_tmp"
         return 1
@@ -1092,6 +1264,13 @@ if [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
 elif [[ "$STATUS" == "warning" ]]; then
     if [[ "$PREVIOUS_STATUS" != "warning" ]]; then
         SNAPSHOT_REASON="entered-low-free"
+    elif [[ "$DROP_KB" -ge "$PRESSURE_DROP_THRESHOLD_KB" \
+        && $((NOW_EPOCH - LAST_SNAPSHOT)) -ge 300 ]]; then
+        # Notification cadence remains intentionally coarse, but once the disk
+        # is already under pressure a 512MB sample-to-sample loss is enough to
+        # justify fresh attribution evidence. The five-minute floor prevents a
+        # rapidly writing process from turning diagnosis into additional I/O.
+        SNAPSHOT_REASON="pressure-drop"
     elif [[ "$SNAPSHOT_COMPLETENESS" == "partial" \
         && $((NOW_EPOCH - LAST_SNAPSHOT)) -ge 300 ]]; then
         SNAPSHOT_REASON="incomplete-pressure-evidence"
@@ -1108,7 +1287,14 @@ fi
 if [[ -n "$SNAPSHOT_REASON" ]]; then
     if capture_drop_snapshot; then
         LAST_SNAPSHOT="$NOW_EPOCH"
-        LAST_EVIDENCE_AT="$EVENT_ISO"
+        if [[ "$SNAPSHOT_CAPTURED" -gt 0 || "$SIGNALS_CAPTURED" -gt 0 ]]; then
+            PREVIOUS_EVIDENCE_AT="$LAST_EVIDENCE_AT"
+            LAST_EVIDENCE_AT="$EVENT_ISO"
+        fi
+        if [[ "$SNAPSHOT_CAPTURED" -gt 0 ]]; then
+            PREVIOUS_PATH_EVIDENCE_AT="$LAST_PATH_EVIDENCE_AT"
+            LAST_PATH_EVIDENCE_AT="$EVENT_ISO"
+        fi
     fi
 fi
 # osascript's "display notification" can only ever post as com.apple.ScriptEditor2
@@ -1243,7 +1429,11 @@ trap cleanup EXIT
     /usr/bin/printf 'lastNotify\t%s\n' "$LAST_NOTIFY"
     /usr/bin/printf 'lastSnapshot\t%s\n' "$LAST_SNAPSHOT"
     /usr/bin/printf 'snapshotCompleteness\t%s\n' "$SNAPSHOT_COMPLETENESS"
+    /usr/bin/printf 'evidencePointerVersion\t%s\n' "$EVIDENCE_POINTER_VERSION"
     /usr/bin/printf 'lastEvidenceAt\t%s\n' "$LAST_EVIDENCE_AT"
+    /usr/bin/printf 'previousEvidenceAt\t%s\n' "$PREVIOUS_EVIDENCE_AT"
+    /usr/bin/printf 'lastPathEvidenceAt\t%s\n' "$LAST_PATH_EVIDENCE_AT"
+    /usr/bin/printf 'previousPathEvidenceAt\t%s\n' "$PREVIOUS_PATH_EVIDENCE_AT"
     /usr/bin/printf 'snapshotReason\t%s\n' "$SNAPSHOT_REASON"
     /usr/bin/printf 'message\t%s\n' "$MESSAGE"
 } > "$TMP_FILE" || exit 1
@@ -1268,5 +1458,10 @@ emit "freeKB" "$FREE_KB"
 emit "dropKB" "$DROP_KB"
 emit "snapshotRows" "$SNAPSHOT_CAPTURED"
 emit "signalsRows" "$SIGNALS_CAPTURED"
+emit "evidencePointerVersion" "$EVIDENCE_POINTER_VERSION"
+emit "lastEvidenceAt" "$LAST_EVIDENCE_AT"
+emit "previousEvidenceAt" "$PREVIOUS_EVIDENCE_AT"
+emit "lastPathEvidenceAt" "$LAST_PATH_EVIDENCE_AT"
+emit "previousPathEvidenceAt" "$PREVIOUS_PATH_EVIDENCE_AT"
 emit "snapshotReason" "$SNAPSHOT_REASON"
 emit "message" "$MESSAGE"

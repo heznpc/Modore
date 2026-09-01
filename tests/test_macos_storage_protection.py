@@ -285,6 +285,91 @@ def test_application_collector_rejects_special_linked_and_oversized_plists(
     assert not (sandbox / "facts" / "apps.tsv").exists()
 
 
+def test_storage_test_mode_without_inventory_overrides_never_reads_host_roots(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    sandbox = tmp_path / "sandbox"
+    home = sandbox / "home"
+    facts = sandbox / "facts"
+    facts.mkdir(parents=True)
+    npm = home / ".npm"
+    homebrew = home / "Library/Caches/Homebrew"
+    android_sdk = home / "Library/Android/sdk"
+    for path in (npm, homebrew, android_sdk):
+        path.mkdir(parents=True)
+    inherited_project = sandbox / "inherited-project"
+    (inherited_project / ".git").mkdir(parents=True)
+    (inherited_project / "Package.swift").write_text("// marker\n", encoding="utf-8")
+    (inherited_project / ".build").mkdir()
+    metadata_trace = sandbox / "metadata.trace"
+    du_trace = sandbox / "du.trace"
+    status_trace = sandbox / "status.trace"
+    project_trace = sandbox / "project.trace"
+    plist_tool = _storage_tool(
+        sandbox / "plist-tool", f'printf "plist\\n" >> "{metadata_trace}"\n'
+    )
+    mdls_tool = _storage_tool(
+        sandbox / "mdls-tool", f'printf "mdls\\n" >> "{metadata_trace}"\n'
+    )
+    du_tool = _storage_tool(
+        sandbox / "du-tool",
+        f'printf "%s\\n" "${{!#}}" >> "{du_trace}"\n'
+        "printf '1\\t%s\\n' \"${!#}\"\n",
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "STATUS_TRACE": str(status_trace),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_STORAGE_TOOL_ROOT": str(sandbox),
+        "PCH_TEST_STORAGE_PLISTBUDDY_BIN": str(plist_tool),
+        "PCH_TEST_STORAGE_MDLS_BIN": str(mdls_tool),
+        "PCH_TEST_STORAGE_DU_BIN": str(du_tool),
+        "PCH_TEST_PROJECT_GIT_TRACE_FILE": str(project_trace),
+        "PROJECT_DIR": str(inherited_project),
+    }
+    env.pop("PCH_PROJECT_SCAN_ROOTS", None)
+    env.pop("PCH_PROJECT_DIR", None)
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                "record_collection_status() { "
+                "printf '%s\\t%s\\t%s\\n' \"$1\" \"$2\" \"$3\" "
+                '>> "$STATUS_TRACE"; }; '
+                '. "$1"; collect_storage'
+            ),
+            "bash",
+            str(script),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not metadata_trace.exists(), "omitted app root must mean an empty fixture"
+    assert (facts / "storage_df.txt").read_text(encoding="utf-8").startswith(
+        "/dev/modore-test\t"
+    )
+    status_rows = status_trace.read_text(encoding="utf-8").splitlines()
+    assert "runtime_processes\t개발 런타임 프로세스\tunavailable" in status_rows
+    measured = du_trace.read_text(encoding="utf-8").splitlines()
+    assert str(npm) in measured
+    assert str(homebrew) not in measured
+    assert str(android_sdk) not in measured
+    assert not any(path.startswith(str(inherited_project)) for path in measured)
+    assert project_trace.read_text(encoding="utf-8") == ""
+    assert "/private/tmp" not in measured
+    assert not any("com.google.Chrome.code_sign_clone" in path for path in measured)
+
+
 @pytest.mark.parametrize("slow_tool", ["plist", "mdls"])
 def test_application_metadata_tools_have_process_group_timeout(
     project_root, tmp_path, slow_tool
@@ -446,7 +531,7 @@ def test_application_metadata_tool_is_reaped_when_collector_is_cancelled(
     )
     mdls_tool = _storage_tool(sandbox / "mdls-tool", 'printf "1048576\\n"\n')
     facts = sandbox / "facts"
-    facts.mkdir()
+    facts.mkdir(parents=True)
     env = os.environ.copy()
     env.update(
         {
@@ -602,13 +687,14 @@ wait "$helper" 2>/dev/null || true
                 pass
 
 
-def test_storage_du_budget_is_shared_by_simulators_and_later_paths(
+def test_storage_batches_simulators_with_a_longer_deadline_than_general_paths(
     project_root, tmp_path
 ):
     script = project_root / "scripts" / "modules" / "macos" / "storage.sh"
-    home = tmp_path / "home"
-    facts = tmp_path / "facts"
-    facts.mkdir()
+    sandbox = tmp_path / "sandbox"
+    home = sandbox / "home"
+    facts = sandbox / "facts"
+    facts.mkdir(parents=True)
     uuids = [
         "11111111-1111-4111-8111-111111111111",
         "22222222-2222-4222-8222-222222222222",
@@ -619,28 +705,31 @@ def test_storage_du_budget_is_shared_by_simulators_and_later_paths(
         (devices_root / uuid).mkdir(parents=True)
     (home / ".npm").mkdir()
 
-    simctl_list = tmp_path / "simctl.txt"
-    simctl_list.write_text(
-        "-- iOS 27.0 --\n"
+    simctl_calls = sandbox / "simctl-calls.txt"
+    simctl = _storage_tool(
+        sandbox / "simctl-tool",
+        f'printf "%s\\n" "$*" >> "{simctl_calls}"\n'
+        "printf '%s\\n' '-- iOS 27.0 --'\n"
         + "".join(
-            f"    Budget Phone {index} ({uuid}) (Shutdown)\n"
+            f"printf '%s\\n' '    Budget Phone {index} ({uuid}) (Shutdown)'\n"
             for index, uuid in enumerate(uuids, start=1)
         ),
-        encoding="utf-8",
     )
-    du_trace = tmp_path / "du-trace.tsv"
+    du_trace = sandbox / "du-trace.tsv"
     env = os.environ.copy()
     env.update(
         {
             "HOME": str(home),
             "TMP_DIR": str(facts),
             "PCH_TEST_MODE": "1",
-            "PCH_TEST_STORAGE_SIMCTL_LIST_FILE": str(simctl_list),
-            "PCH_TEST_STORAGE_DU_DURATION_TICKS": "4",
+            "PCH_TEST_STORAGE_TOOL_ROOT": str(sandbox),
+            "PCH_TEST_STORAGE_SIMCTL_BIN": str(simctl),
+            "PCH_TEST_STORAGE_DU_DURATION_TICKS": "90",
             "PCH_TEST_STORAGE_DU_SIZE_KB": "4096",
             "PCH_TEST_STORAGE_DU_TRACE_FILE": str(du_trace),
-            "PCH_STORAGE_DU_TIMEOUT": "5",
-            "PCH_STORAGE_TOTAL_DU_BUDGET": "1",
+            "PCH_STORAGE_DU_TIMEOUT": "8",
+            "PCH_STORAGE_SIMULATOR_DU_TIMEOUT": "15",
+            "PCH_STORAGE_TOTAL_DU_BUDGET": "30",
         }
     )
 
@@ -667,14 +756,26 @@ def test_storage_du_budget_is_shared_by_simulators_and_later_paths(
         ).splitlines()
     ]
     assert [row[1] for row in simulator_rows] == uuids
-    assert [row[4] for row in simulator_rows] == ["4096", "4096", "0"]
-    assert [row[5] for row in simulator_rows] == ["ok", "ok", "timed_out"]
+    assert all(len(row) == 7 for row in simulator_rows)
+    assert [row[4] for row in simulator_rows] == ["4096"] * 3
+    assert [row[5] for row in simulator_rows] == ["ok"] * 3
+    assert all(row[6].isdigit() for row in simulator_rows)
+    assert simctl_calls.read_text(encoding="utf-8").splitlines() == [
+        "simctl list devices available"
+    ]
 
     path_rows = [
         line.split("\t")
         for line in (facts / "storage_paths.tsv").read_text(
             encoding="utf-8"
         ).splitlines()
+    ]
+    devices_row = next(row for row in path_rows if row[0] == "simulator_devices")
+    assert devices_row[1:5] == [
+        "Simulator 기기 데이터",
+        str(devices_root),
+        str(3 * 4096),
+        "ok",
     ]
     npm_row = next(row for row in path_rows if row[2] == str(home / ".npm"))
     assert npm_row[3:5] == ["0", "timed_out"]
@@ -683,18 +784,476 @@ def test_storage_du_budget_is_shared_by_simulators_and_later_paths(
         line.split("\t")
         for line in du_trace.read_text(encoding="utf-8").splitlines()
     ]
-    simulator_trace = trace_rows[:3]
+    simulator_trace = [row for row in trace_rows if row[0].startswith(str(devices_root))]
     assert [row[0] for row in simulator_trace] == [
         str(devices_root / uuid) for uuid in uuids
     ]
     assert [row[1:] for row in simulator_trace] == [
-        ["4", "4", "ok"],
-        ["4", "4", "ok"],
-        ["4", "2", "timed_out"],
+        ["90", "90", "ok"],
+        ["90", "0", "ok"],
+        ["90", "0", "ok"],
     ]
-    assert sum(int(row[2]) for row in trace_rows) == 10
+    assert sum(int(row[2]) for row in simulator_trace) == 90
     npm_trace = next(row for row in trace_rows if row[0] == str(home / ".npm"))
-    assert npm_trace[1:] == ["4", "0", "timed_out"]
+    assert npm_trace[1:] == ["90", "80", "timed_out"]
+
+
+def test_storage_measures_simulator_assets_before_general_caches_without_volumes(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    home = tmp_path / "home"
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    uuid = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
+    device = home / "Library/Developer/CoreSimulator/Devices" / uuid
+    device.mkdir(parents=True)
+    orphan_uuid = "BBBBBBBB-CCCC-4DDD-8EEE-FFFFFFFFFFFF"
+    orphan_device = device.parent / orphan_uuid
+    orphan_device.mkdir()
+    assets = home / "simulator-assets"
+    runtime_names = [
+        "com_apple_MobileAsset_iOSSimulatorRuntime",
+        "com_apple_MobileAsset_watchOSSimulatorRuntime",
+        "com_apple_MobileAsset_appleTVOSSimulatorRuntime",
+        "com_apple_MobileAsset_xrOSSimulatorRuntime",
+    ]
+    for name in runtime_names:
+        (assets / name).mkdir(parents=True)
+    core_root = home / "CoreSimulator"
+    dyld = core_root / "Caches/dyld"
+    volumes = core_root / "Volumes/never-count-this-mount"
+    dyld.mkdir(parents=True)
+    volumes.mkdir(parents=True)
+    (home / ".npm").mkdir()
+    simctl_list = tmp_path / "simctl.txt"
+    simctl_list.write_text(
+        f"-- iOS 27.0 --\n    Asset Phone ({uuid}) (Shutdown)\n",
+        encoding="utf-8",
+    )
+    trace = tmp_path / "du-trace.tsv"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_STORAGE_SIMCTL_LIST_FILE": str(simctl_list),
+        "PCH_TEST_STORAGE_SIMULATOR_ASSETS_ROOT": str(assets),
+        "PCH_TEST_STORAGE_CORESIMULATOR_ROOT": str(core_root),
+        "PCH_TEST_STORAGE_DU_DURATION_TICKS": "1",
+        "PCH_TEST_STORAGE_DU_SIZE_KB": "4096",
+        "PCH_TEST_STORAGE_DU_TRACE_FILE": str(trace),
+    }
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; collect_storage', "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    rows = [
+        line.split("\t")
+        for line in (facts / "storage_paths.tsv").read_text(encoding="utf-8").splitlines()
+    ]
+    simulator_rows = [row for row in rows if row[0].startswith("simulator_")]
+    assert [row[0] for row in simulator_rows] == [
+        "simulator_devices",
+        "simulator_runtime",
+        "simulator_runtime",
+        "simulator_runtime",
+        "simulator_runtime",
+        "simulator_cache",
+    ]
+    assert [row[1] for row in simulator_rows] == [
+        "Simulator 기기 데이터",
+        "iOS Simulator 런타임",
+        "watchOS Simulator 런타임",
+        "tvOS Simulator 런타임",
+        "xrOS Simulator 런타임",
+        "Simulator 공유 dyld 캐시",
+    ]
+    assert all("/Volumes" not in row[2] for row in rows)
+    assert str(core_root / "Caches") not in {row[2] for row in rows}
+    aggregate = simulator_rows[0]
+    assert aggregate[3:5] == [str(2 * 4096), "ok"]
+    detail_rows = (facts / "storage_simulators.tsv").read_text(encoding="utf-8").splitlines()
+    assert len(detail_rows) == 1
+    assert uuid in detail_rows[0]
+    assert orphan_uuid not in detail_rows[0]
+    trace_paths = [line.split("\t")[0] for line in trace.read_text(encoding="utf-8").splitlines()]
+    assert trace_paths[:2] == [str(device), str(orphan_device)]
+    assert trace_paths[2:7] == [
+        *(str(assets / name) for name in runtime_names),
+        str(dyld),
+    ]
+    assert str(volumes) not in trace_paths
+    assert trace_paths.index(str(dyld)) < trace_paths.index(str(home / ".npm"))
+
+
+@pytest.mark.parametrize("target_exists", [True, False])
+def test_storage_does_not_report_a_symlinked_devices_root_as_zero_ok(
+    project_root, tmp_path, target_exists
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    sandbox = tmp_path / "sandbox"
+    home = sandbox / "home"
+    facts = sandbox / "facts"
+    facts.mkdir(parents=True)
+    uuid = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
+    external_devices = sandbox / "external-devices"
+    if target_exists:
+        (external_devices / uuid).mkdir(parents=True)
+    core_simulator = home / "Library/Developer/CoreSimulator"
+    core_simulator.mkdir(parents=True)
+    (core_simulator / "Devices").symlink_to(external_devices, target_is_directory=True)
+    simctl_list = sandbox / "simctl.txt"
+    simctl_list.write_text(
+        f"-- iOS 27.0 --\n    Symlink Phone ({uuid}) (Shutdown)\n",
+        encoding="utf-8",
+    )
+    du_trace = sandbox / "du.trace"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_STORAGE_TOOL_ROOT": str(sandbox),
+        "PCH_TEST_STORAGE_SIMCTL_LIST_FILE": str(simctl_list),
+        "PCH_TEST_STORAGE_DU_DURATION_TICKS": "1",
+        "PCH_TEST_STORAGE_DU_SIZE_KB": "4096",
+        "PCH_TEST_STORAGE_DU_TRACE_FILE": str(du_trace),
+    }
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; collect_storage', "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    aggregate = next(
+        line.split("\t")
+        for line in (facts / "storage_paths.tsv").read_text(encoding="utf-8").splitlines()
+        if line.startswith("simulator_devices\t")
+    )
+    assert aggregate[3:5] == ["0", "timed_out"]
+    detail = (facts / "storage_simulators.tsv").read_text(encoding="utf-8").split("\t")
+    assert detail[4:6] == ["0", "timed_out"]
+    traced_paths = (
+        du_trace.read_text(encoding="utf-8").splitlines() if du_trace.exists() else []
+    )
+    assert str(external_devices / uuid) not in {row.split("\t")[0] for row in traced_paths}
+
+
+def test_storage_marks_simctl_device_with_missing_path_incomplete(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    sandbox = tmp_path / "sandbox"
+    home = sandbox / "home"
+    facts = sandbox / "facts"
+    facts.mkdir(parents=True)
+    devices = home / "Library/Developer/CoreSimulator/Devices"
+    devices.mkdir(parents=True)
+    uuid = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
+    simctl_list = sandbox / "simctl.txt"
+    simctl_list.write_text(
+        f"-- iOS 27.0 --\n    Missing Phone ({uuid}) (Shutdown)\n",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_STORAGE_TOOL_ROOT": str(sandbox),
+        "PCH_TEST_STORAGE_SIMCTL_LIST_FILE": str(simctl_list),
+    }
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; collect_storage', "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    aggregate = next(
+        line.split("\t")
+        for line in (facts / "storage_paths.tsv").read_text(encoding="utf-8").splitlines()
+        if line.startswith("simulator_devices\t")
+    )
+    assert aggregate[3:5] == ["0", "ok"], "a real empty Devices root is an exact zero"
+    detail = (facts / "storage_simulators.tsv").read_text(encoding="utf-8").split("\t")
+    assert detail[4:6] == ["0", "timed_out"]
+
+
+@pytest.mark.parametrize("du_timeout", ["8", "0"])
+def test_storage_marks_nonzero_du_output_as_an_incomplete_lower_bound(
+    project_root, tmp_path, du_timeout
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    sandbox = tmp_path / "sandbox"
+    home = sandbox / "home"
+    facts = sandbox / "facts"
+    facts.mkdir(parents=True)
+    assets = home / "simulator-assets"
+    ios_runtime = assets / "com_apple_MobileAsset_iOSSimulatorRuntime"
+    core_root = home / "CoreSimulator"
+    dyld = core_root / "Caches/dyld"
+    npm = home / ".npm"
+    for path in (ios_runtime, dyld, npm):
+        path.mkdir(parents=True)
+    du = _storage_tool(
+        sandbox / "du-tool",
+        'target="${!#}"\n'
+        "printf '4096\\t%s\\n' \"$target\"\n"
+        "exit 1\n",
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_STORAGE_TOOL_ROOT": str(sandbox),
+        "PCH_TEST_STORAGE_DU_BIN": str(du),
+        "PCH_TEST_STORAGE_SIMULATOR_ASSETS_ROOT": str(assets),
+        "PCH_TEST_STORAGE_CORESIMULATOR_ROOT": str(core_root),
+        "PCH_STORAGE_DU_TIMEOUT": du_timeout,
+        "PCH_STORAGE_TOTAL_DU_BUDGET": "8",
+    }
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; collect_storage', "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    rows = [
+        line.split("\t")
+        for line in (facts / "storage_paths.tsv").read_text(encoding="utf-8").splitlines()
+    ]
+    by_path = {row[2]: row for row in rows}
+    for path in (ios_runtime, dyld, npm):
+        row = by_path[str(path)]
+        assert row[3:5] == ["4096", "timed_out"]
+        assert "최소 확인량" in row[5]
+
+
+def test_storage_preserves_partial_simulator_sum_as_a_timed_out_lower_bound(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    sandbox = tmp_path / "sandbox"
+    home = sandbox / "home"
+    facts = sandbox / "facts"
+    facts.mkdir(parents=True)
+    uuids = [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+    ]
+    devices = home / "Library/Developer/CoreSimulator/Devices"
+    for uuid in uuids:
+        (devices / uuid).mkdir(parents=True)
+    simctl = _storage_tool(
+        sandbox / "simctl-tool",
+        "printf '%s\\n' '-- iOS 27.0 --'\n"
+        + "".join(
+            f"printf '%s\\n' '    Partial Phone ({uuid}) (Shutdown)'\n"
+            for uuid in uuids
+        ),
+    )
+    du_calls = sandbox / "du-calls.txt"
+    du = _storage_tool(
+        sandbox / "du-tool",
+        f'printf "%s\\n" "$*" >> "{du_calls}"\n'
+        "shift 2\n"
+        "printf '4096\\t%s\\n' \"$1\"\n"
+        "exec /bin/sleep 30\n",
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_STORAGE_TOOL_ROOT": str(sandbox),
+        "PCH_TEST_STORAGE_SIMCTL_BIN": str(simctl),
+        "PCH_TEST_STORAGE_DU_BIN": str(du),
+        "PCH_STORAGE_DU_TIMEOUT": "1",
+        "PCH_STORAGE_SIMULATOR_DU_TIMEOUT": "1",
+        "PCH_STORAGE_TOTAL_DU_BUDGET": "2",
+    }
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; collect_storage', "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        # The fixture deliberately forces the one-second batch timeout and its
+        # process-group guardian cleanup. On a loaded macOS runner that bounded
+        # cleanup can approach ten seconds even though the leaked 30-second
+        # provider is killed correctly, so keep a finite 2x scheduling margin.
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    device_rows = [
+        line.split("\t")
+        for line in (facts / "storage_simulators.tsv").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row[4:6] for row in device_rows] == [
+        ["4096", "ok"],
+        ["0", "timed_out"],
+        ["0", "timed_out"],
+    ]
+    aggregate = next(
+        line.split("\t")
+        for line in (facts / "storage_paths.tsv").read_text(encoding="utf-8").splitlines()
+        if line.startswith("simulator_devices\t")
+    )
+    assert aggregate[3:5] == ["4096", "timed_out"]
+    assert "최소 확인량" in aggregate[5]
+    batch_calls = [
+        line
+        for line in du_calls.read_text(encoding="utf-8").splitlines()
+        if line.startswith("-sk -- ")
+    ]
+    assert len(batch_calls) == 1
+    assert all(str(devices / uuid) in batch_calls[0] for uuid in uuids)
+
+
+def test_storage_propagates_non_timeout_batch_failure_to_every_device_detail(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    sandbox = tmp_path / "sandbox"
+    home = sandbox / "home"
+    facts = sandbox / "facts"
+    facts.mkdir(parents=True)
+    uuids = [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    ]
+    devices = home / "Library/Developer/CoreSimulator/Devices"
+    for uuid in uuids:
+        (devices / uuid).mkdir(parents=True)
+    simctl = _storage_tool(
+        sandbox / "simctl-tool",
+        "printf '%s\\n' '-- iOS 27.0 --'\n"
+        + "".join(
+            f"printf '%s\\n' '    Failed Phone ({uuid}) (Shutdown)'\n"
+            for uuid in uuids
+        ),
+    )
+    du = _storage_tool(
+        sandbox / "du-tool",
+        "shift\n"
+        "[[ \"${1:-}\" != '--' ]] || shift\n"
+        "for target in \"$@\"; do printf '4096\\t%s\\n' \"$target\"; done\n"
+        "exit 1\n",
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_STORAGE_TOOL_ROOT": str(sandbox),
+        "PCH_TEST_STORAGE_SIMCTL_BIN": str(simctl),
+        "PCH_TEST_STORAGE_DU_BIN": str(du),
+        "PCH_STORAGE_DU_TIMEOUT": "0",
+    }
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; collect_storage', "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    details = [
+        line.split("\t")
+        for line in (facts / "storage_simulators.tsv").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row[4:6] for row in details] == [
+        ["4096", "timed_out"],
+        ["4096", "timed_out"],
+    ]
+    aggregate = next(
+        line.split("\t")
+        for line in (facts / "storage_paths.tsv").read_text(encoding="utf-8").splitlines()
+        if line.startswith("simulator_devices\t")
+    )
+    assert aggregate[3:5] == ["8192", "timed_out"]
+
+
+def test_storage_precision_mode_keeps_simulator_batch_unbounded_when_not_overridden(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    sandbox = tmp_path / "sandbox"
+    home = sandbox / "home"
+    facts = sandbox / "facts"
+    facts.mkdir(parents=True)
+    uuid = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
+    device = home / "Library/Developer/CoreSimulator/Devices" / uuid
+    device.mkdir(parents=True)
+    simctl = _storage_tool(
+        sandbox / "simctl-tool",
+        f"printf '%s\\n' '-- iOS 27.0 --' '    Precision Phone ({uuid}) (Shutdown)'\n",
+    )
+    du = _storage_tool(
+        sandbox / "du-tool",
+        "shift\n"
+        "[[ \"${1:-}\" != '--' ]] || shift\n"
+        "for target in \"$@\"; do printf '8192\\t%s\\n' \"$target\"; done\n",
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_STORAGE_TOOL_ROOT": str(sandbox),
+        "PCH_TEST_STORAGE_SIMCTL_BIN": str(simctl),
+        "PCH_TEST_STORAGE_DU_BIN": str(du),
+        "PCH_STORAGE_DU_TIMEOUT": "0",
+    }
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; collect_storage', "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    detail = (facts / "storage_simulators.tsv").read_text(encoding="utf-8").split("\t")
+    assert detail[4:6] == ["8192", "ok"]
+    aggregate = next(
+        line.split("\t")
+        for line in (facts / "storage_paths.tsv").read_text(encoding="utf-8").splitlines()
+        if line.startswith("simulator_devices\t")
+    )
+    assert aggregate[3:5] == ["8192", "ok"]
 
 
 def test_storage_provider_timeouts_keep_partial_ps_and_simctl_evidence(
@@ -917,15 +1476,30 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
         "/dev/disk 104857600 52428800 52428800 50% /\n", encoding="utf-8"
     )
     (temp / "storage_simulators.tsv").write_text(
-        f"Renamed QA Phone\t{uuid.lower()}\tiOS 27\tShutdown\t1048576\tok\n",
+        f"Renamed QA Phone\t{uuid.lower()}\tiOS 27\tShutdown\t1048576\tok\t1234567890\n",
         encoding="utf-8",
+    )
+    developer_rows = "".join(
+        f"toolchain\tToolchain {index}\t/Users/test/toolchain-{index}"
+        f"\t{(100 - index) * 1048576}\tok\t\t\n"
+        for index in range(21)
+    )
+    simulator_storage_rows = (
+        "simulator_devices\tSimulator 기기 데이터\t/Users/test/Devices\t1048576\tok\t\t\n"
+        "simulator_runtime\tiOS Simulator 런타임\t/Assets/iOS\t1048576\tok\t\t\n"
+        "simulator_runtime\twatchOS Simulator 런타임\t/Assets/watchOS\t1048576\tok\t\t\n"
+        "simulator_runtime\ttvOS Simulator 런타임\t/Assets/tvOS\t1048576\tok\t\t\n"
+        "simulator_runtime\txrOS Simulator 런타임\t/Assets/xrOS\t1048576\tok\t\t\n"
+        "simulator_cache\tSimulator 공유 dyld 캐시\t/CoreSimulator/Caches/dyld\t1048576\tok\t\t\n"
     )
     (temp / "storage_paths.tsv").write_text(
         "temp\tManual temporary path\t/private/tmp\t3145728\tok\t\t\n"
         "cache\tExecutable cache\t/Users/test/cache\t3145728\tok\t\tcache_recipe\n"
         "cache\tSmall allowlisted cache\t/Users/test/small-cache\t1024\tok\t\tcleanup_small\n"
         "project_residue\tnode_modules · web\t/Users/test/web/node_modules"
-        "\t5120\tok\t재생성 가능\tproject_residue\n",
+        "\t5120\tok\t재생성 가능\tproject_residue\n"
+        + developer_rows
+        + simulator_storage_rows,
         encoding="utf-8",
     )
     executable_with_spaces = (
@@ -984,6 +1558,10 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
     scan = json.loads(output.read_text(encoding="utf-8"))
     simulator = scan["sections"]["storage"]["simulatorDevices"][0]
     assert simulator["uuid"] == uuid
+    assert simulator["path"] == str(
+        Path.home() / "Library/Developer/CoreSimulator/Devices" / uuid
+    )
+    assert simulator["createdAtEpoch"] == 1234567890
     assert simulator["protected"] is True
     assert simulator["protectionReason"] == "사용자 보존 목록"
     cleanup = scan["sections"]["storage"]["cleanupCandidates"]
@@ -994,6 +1572,15 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
         "cleanup_small",
         "project_residue",
     }
+    developer_items = scan["sections"]["storage"]["developerToolchains"]
+    assert len(developer_items) == 26
+    assert sum(item["kind"] == "simulator_runtime" for item in developer_items) == 4
+    assert {item["kind"] for item in developer_items if item["kind"].startswith("simulator_")} == {
+        "simulator_devices",
+        "simulator_runtime",
+        "simulator_cache",
+    }
+    assert sum(item["kind"] == "toolchain" for item in developer_items) == 20
     raw_facts = json.loads(raw.read_text(encoding="utf-8"))
     assert raw_facts["sections"]["cpu"][0]["path"] == executable_with_spaces
     assert raw_facts["sections"]["cpu"][0]["name"] == "Modore"

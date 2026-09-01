@@ -587,10 +587,375 @@ def test_storage_watch_reserves_rows_for_transient_workspaces(project_root, tmp_
         .read_text(encoding="utf-8")
         .splitlines()
     ]
-    assert len(rows) == 8
+    assert len(rows) == 12
     assert sum(row[3] == "Claude 임시 작업" for row in rows) == 1
     retained_modore = {row[4] for row in rows if row[3] == "Modore 임시 작업"}
     assert retained_modore == {str(path) for path in modore_temps[-3:]}
+
+
+def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twice(
+    project_root, tmp_path
+):
+    state_dir = tmp_path / "state"
+    snapshot_root = tmp_path / "snapshot-roots"
+    private_tmp = tmp_path / "private-tmp"
+    claude_tmp = private_tmp / f"claude-{os.getuid()}"
+    claude_tmp.mkdir(parents=True)
+    (claude_tmp / "busy.bin").write_bytes(b"x")
+    for index in range(5):
+        path = private_tmp / f"modore-work-{index}"
+        path.mkdir()
+        (path / "payload.bin").write_bytes(b"m" * ((index + 1) * 1024))
+    labels = [
+        "Simulator 런타임 · iOS",
+        "Simulator 런타임 · watchOS",
+        "Simulator 런타임 · tvOS",
+        "Simulator 런타임 · xrOS",
+        "Simulator 공유 dyld 캐시",
+        "Simulator 기기 데이터",
+    ]
+    roots = {}
+    for label in labels:
+        path = snapshot_root / label
+        path.mkdir(parents=True)
+        roots[label] = path
+    for index in range(10):
+        path = snapshot_root / f"general-{index}"
+        path.mkdir()
+        (path / "payload.bin").write_bytes(b"g" * 1024)
+    device_payload = roots["Simulator 기기 데이터"] / "devices.bin"
+    device_payload.write_bytes(b"d" * (2 * 1024 * 1024))
+    du_log = tmp_path / "du.log"
+    fake_du = tmp_path / "du"
+    fake_du.write_text(
+        "#!/bin/bash\n"
+        "target=\"${!#}\"\n"
+        f'printf "%s\\n" "$target" >> "{du_log}"\n'
+        f'if [[ "$target" == "{claude_tmp}" ]]; then exec /bin/sleep 30; fi\n'
+        f'if [[ "$target" == "{roots["Simulator 기기 데이터"]}" ]]; then /bin/sleep 2; fi\n'
+        'exec /usr/bin/du -sk "$target"\n',
+        encoding="utf-8",
+    )
+    fake_du.chmod(0o755)
+    env = {
+        **os.environ,
+        "PCH_TEST_MODE": "1",
+        "PCH_STATE_DIR": str(state_dir),
+        "PCH_TEST_FREE_KB": str(50 * 1024 * 1024),
+        "PCH_WATCH_NOTIFY": "0",
+        "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
+        "PCH_WATCH_PRIVATE_TMP_ROOT": str(private_tmp),
+        "PCH_TEST_WATCH_DU_BIN": str(fake_du),
+        "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "2",
+        "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "1",
+        "PCH_WATCH_SNAPSHOT_DEVICE_SECONDS": "3",
+        "PCH_WATCH_SNAPSHOT_EVENT_LIMIT": "2",
+    }
+    script = project_root / "scripts/storage_watch.sh"
+    baseline = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=5
+    )
+    assert baseline.returncode == 0, baseline.stderr
+
+    env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
+    first = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=8
+    )
+    assert first.returncode == 0, first.stderr
+    first_state = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))
+    first_event = first_state["lastEvidenceAt"]
+    assert first_event
+    assert first_state["previousEvidenceAt"] == ""
+
+    device_payload.write_bytes(b"d" * (6 * 1024 * 1024))
+    env["PCH_TEST_FREE_KB"] = str(30 * 1024 * 1024)
+    second = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=8
+    )
+    assert second.returncode == 0, second.stderr
+    second_state = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))
+    assert second_state["previousEvidenceAt"] == first_event
+    assert second_state["lastEvidenceAt"] != first_event
+    assert second_state["lastEvidenceAt"] > first_event
+
+    rows = [
+        line.split("\t")
+        for line in (state_dir / "storage-watch-paths.tsv").read_text(encoding="utf-8").splitlines()
+    ]
+    latest = [row for row in rows if row[0] == second_state["lastEvidenceAt"]]
+    assert len(latest) == 12
+    assert {row[3] for row in latest if row[3].startswith("Simulator 런타임 · ")} == {
+        label for label in labels if label.startswith("Simulator 런타임 · ")
+    }
+    assert "Simulator 공유 dyld 캐시" in {row[3] for row in latest}
+    device_rows = [row for row in rows if row[3] == "Simulator 기기 데이터"]
+    assert len(device_rows) == 2
+    assert all(row[2] == "ok" for row in device_rows)
+    assert int(device_rows[1][1]) > int(device_rows[0][1]) > 0
+    calls = du_log.read_text(encoding="utf-8").splitlines()
+    first_claude = calls.index(str(claude_tmp))
+    assert all(calls.index(str(roots[label])) < first_claude for label in labels[:-1])
+    assert calls.index(str(roots["Simulator 기기 데이터"])) > first_claude
+    assert calls.count(str(roots["Simulator 기기 데이터"])) == 2
+
+
+def test_storage_watch_separates_signal_commit_from_path_delta_across_three_captures(
+    project_root, tmp_path
+):
+    state_dir = tmp_path / "state"
+    snapshot_root = tmp_path / "snapshot"
+    path_candidate = snapshot_root / "fast-root"
+    path_candidate.mkdir(parents=True)
+    swap = tmp_path / "swap.txt"
+    swap.write_text(
+        "vm.swapusage: total = 1024.00M used = 512.00M free = 512.00M\n",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "PCH_TEST_MODE": "1",
+        "PCH_STATE_DIR": str(state_dir),
+        "PCH_TEST_FREE_KB": str(50 * 1024 * 1024),
+        "PCH_WATCH_NOTIFY": "0",
+        "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
+        "PCH_WATCH_SWAP_TEST_FILE": str(swap),
+        "PCH_TEST_WATCH_NOW_ISO": "2026-09-01T12:00:00Z",
+        "PCH_TEST_WATCH_EVENT_FRACTION": "100000",
+    }
+    script = project_root / "scripts/storage_watch.sh"
+    baseline = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert baseline.returncode == 0, baseline.stderr
+
+    env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
+    first_path = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert first_path.returncode == 0, first_path.stderr
+    first_state = parse_protocol(
+        (state_dir / "storage-watch.tsv").read_text(encoding="utf-8")
+    )
+    first_path_event = "2026-09-01T12:00:00.100000Z"
+    assert first_state["evidencePointerVersion"] == "2"
+    assert first_state["lastEvidenceAt"] == first_path_event
+    assert first_state["previousEvidenceAt"] == ""
+    assert first_state["lastPathEvidenceAt"] == first_path_event
+    assert first_state["previousPathEvidenceAt"] == ""
+
+    path_candidate.rmdir()
+    env["PCH_TEST_FREE_KB"] = str(30 * 1024 * 1024)
+    env["PCH_TEST_WATCH_EVENT_FRACTION"] = "200000"
+    signal_only = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert signal_only.returncode == 0, signal_only.stderr
+    signal_state = parse_protocol(
+        (state_dir / "storage-watch.tsv").read_text(encoding="utf-8")
+    )
+    signal_event = "2026-09-01T12:00:00.200000Z"
+    assert signal_state["signalsRows"] == "1"
+    assert signal_state["snapshotRows"] == "0"
+    assert signal_state["lastEvidenceAt"] == signal_event
+    assert signal_state["previousEvidenceAt"] == first_path_event
+    assert signal_state["lastPathEvidenceAt"] == first_path_event
+    assert signal_state["previousPathEvidenceAt"] == ""
+
+    path_candidate.mkdir()
+    env["PCH_TEST_FREE_KB"] = str(20 * 1024 * 1024)
+    env["PCH_TEST_WATCH_EVENT_FRACTION"] = "300000"
+    second_path = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert second_path.returncode == 0, second_path.stderr
+    final_state = parse_protocol(
+        (state_dir / "storage-watch.tsv").read_text(encoding="utf-8")
+    )
+    second_path_event = "2026-09-01T12:00:00.300000Z"
+    assert final_state["lastEvidenceAt"] == second_path_event
+    assert final_state["previousEvidenceAt"] == signal_event
+    assert final_state["lastPathEvidenceAt"] == second_path_event
+    assert final_state["previousPathEvidenceAt"] == first_path_event
+
+    path_events = {
+        line.split("\t", 1)[0]
+        for line in (state_dir / "storage-watch-paths.tsv")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    }
+    signal_events = {
+        line.split("\t", 1)[0]
+        for line in (state_dir / "storage-watch-signals.tsv")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    }
+    assert path_events == {first_path_event, second_path_event}
+    assert signal_event in signal_events
+
+    # A later startup must not run the legacy migration again and reinterpret
+    # the signal-only event as a path-delta endpoint.
+    stable = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert stable.returncode == 0, stable.stderr
+    stable_state = parse_protocol(
+        (state_dir / "storage-watch.tsv").read_text(encoding="utf-8")
+    )
+    assert stable_state["lastPathEvidenceAt"] == second_path_event
+    assert stable_state["previousPathEvidenceAt"] == first_path_event
+
+
+def test_storage_watch_marks_nonzero_du_output_as_incomplete_lower_bound(
+    project_root, tmp_path
+):
+    state_dir = tmp_path / "state"
+    snapshot_root = tmp_path / "snapshot"
+    measured_path = snapshot_root / "partial-root"
+    measured_path.mkdir(parents=True)
+    du = tmp_path / "du"
+    du.write_text(
+        "#!/bin/bash\n"
+        'target="${!#}"\n'
+        "printf '4096\\t%s\\n' \"$target\"\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    du.chmod(0o755)
+    env = {
+        **os.environ,
+        "PCH_TEST_MODE": "1",
+        "PCH_STATE_DIR": str(state_dir),
+        "PCH_TEST_FREE_KB": str(50 * 1024 * 1024),
+        "PCH_WATCH_NOTIFY": "0",
+        "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
+        "PCH_TEST_WATCH_DU_BIN": str(du),
+        "PCH_TEST_WATCH_NOW_ISO": "2026-09-01T12:00:00Z",
+        "PCH_TEST_WATCH_EVENT_FRACTION": "400000",
+    }
+    script = project_root / "scripts/storage_watch.sh"
+    baseline = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert baseline.returncode == 0, baseline.stderr
+
+    env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
+    captured = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+
+    assert captured.returncode == 0, captured.stderr
+    state = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))
+    assert state["snapshotCompleteness"] == "partial"
+    assert state["lastEvidenceAt"] == "2026-09-01T12:00:00.400000Z"
+    rows = [
+        line.split("\t")
+        for line in (state_dir / "storage-watch-paths.tsv")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(rows) == 1
+    assert rows[0][1:5] == ["4096", "timed_out", "partial-root", str(measured_path)]
+
+
+def test_storage_watch_event_pointer_is_monotonic_within_a_second_and_at_overflow(
+    project_root, tmp_path
+):
+    state_dir = tmp_path / "state"
+    snapshot_root = tmp_path / "snapshot"
+    (snapshot_root / "fast-root").mkdir(parents=True)
+    env = {
+        **os.environ,
+        "PCH_TEST_MODE": "1",
+        "PCH_STATE_DIR": str(state_dir),
+        "PCH_TEST_FREE_KB": str(50 * 1024 * 1024),
+        "PCH_WATCH_NOTIFY": "0",
+        "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
+        "PCH_TEST_WATCH_NOW_ISO": "2026-09-01T12:00:00Z",
+        "PCH_TEST_WATCH_EVENT_FRACTION": "900000",
+    }
+    script = project_root / "scripts/storage_watch.sh"
+    baseline = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert baseline.returncode == 0, baseline.stderr
+
+    env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
+    first = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert first.returncode == 0, first.stderr
+    first_state = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))
+    assert first_state["lastEvidenceAt"] == "2026-09-01T12:00:00.900000Z"
+
+    env["PCH_TEST_FREE_KB"] = str(30 * 1024 * 1024)
+    env["PCH_TEST_WATCH_EVENT_FRACTION"] = "100000"
+    second = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert second.returncode == 0, second.stderr
+    second_state = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))
+    assert second_state["previousEvidenceAt"] == "2026-09-01T12:00:00.900000Z"
+    assert second_state["lastEvidenceAt"] == "2026-09-01T12:00:00.900001Z"
+
+    state_path = state_dir / "storage-watch.tsv"
+    state_text = state_path.read_text(encoding="utf-8")
+    state_path.write_text(
+        state_text.replace(
+            "lastEvidenceAt\t2026-09-01T12:00:00.900001Z",
+            "lastEvidenceAt\t2026-09-01T12:00:00.999999Z",
+        ),
+        encoding="utf-8",
+    )
+    env["PCH_TEST_FREE_KB"] = str(20 * 1024 * 1024)
+    logical_date_trace = tmp_path / "logical-date.trace"
+    logical_date = tmp_path / "logical-date"
+    logical_date.write_text(
+        "#!/bin/bash\n"
+        f'printf "%s\\n" "$*" >> "{logical_date_trace}"\n'
+        "printf '2026-09-01T12:00:01Z\\n'\n",
+        encoding="utf-8",
+    )
+    logical_date.chmod(0o755)
+    env["PCH_TEST_WATCH_LOGICAL_UNAME"] = "Darwin"
+    env["PCH_TEST_WATCH_LOGICAL_DATE_BIN"] = str(logical_date)
+    third = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert third.returncode == 0, third.stderr
+    third_state = parse_protocol(state_path.read_text(encoding="utf-8"))
+    assert third_state["previousEvidenceAt"] == "2026-09-01T12:00:00.999999Z"
+    assert third_state["lastEvidenceAt"] == "2026-09-01T12:00:01.100000Z"
+    assert logical_date_trace.read_text(encoding="utf-8").strip() == (
+        "-j -u -v+1S -f %Y-%m-%dT%H:%M:%S "
+        "2026-09-01T12:00:00 +%Y-%m-%dT%H:%M:%SZ"
+    )
+
+    env["PCH_TEST_FREE_KB"] = str(10 * 1024 * 1024)
+    env["PCH_TEST_WATCH_NOW_ISO"] = "2026-09-01T11:59:59Z"
+    env["PCH_TEST_WATCH_EVENT_FRACTION"] = "000010"
+    fourth = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert fourth.returncode == 0, fourth.stderr
+    fourth_state = parse_protocol(state_path.read_text(encoding="utf-8"))
+    assert fourth_state["previousEvidenceAt"] == "2026-09-01T12:00:01.100000Z"
+    assert fourth_state["lastEvidenceAt"] == "2026-09-01T12:00:01.100001Z"
+
+    state_path.write_text(
+        state_path.read_text(encoding="utf-8").replace(
+            "lastEvidenceAt\t2026-09-01T12:00:01.100001Z",
+            "lastEvidenceAt\t2026-09-01T12:00:02Z",
+        ),
+        encoding="utf-8",
+    )
+    env["PCH_TEST_FREE_KB"] = "0"
+    fifth = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert fifth.returncode == 0, fifth.stderr
+    fifth_state = parse_protocol(state_path.read_text(encoding="utf-8"))
+    assert fifth_state["previousEvidenceAt"] == "2026-09-01T12:00:02Z"
+    assert fifth_state["lastEvidenceAt"] == "2026-09-01T12:00:02.000010Z"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS ps field contract")
@@ -1647,6 +2012,62 @@ def test_storage_watch_captures_evidence_when_space_is_low_without_a_sudden_drop
     seeded = run(18)
     assert seeded["snapshotReason"] == "missing-pressure-evidence"
     assert int(seeded["snapshotRows"]) >= 1
+
+
+def test_storage_watch_recaptures_a_512mb_pressure_drop_after_five_minute_floor(
+    project_root, tmp_path
+):
+    state_dir = tmp_path / "state"
+    snapshot_root = tmp_path / "snapshot-roots"
+    (snapshot_root / "cache").mkdir(parents=True)
+    env = {
+        **os.environ,
+        "PCH_TEST_MODE": "1",
+        "PCH_STATE_DIR": str(state_dir),
+        "PCH_WATCH_NOTIFY": "0",
+        "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
+        "PCH_WATCH_PRESSURE_DROP_MB": "512",
+    }
+    script = project_root / "scripts/storage_watch.sh"
+
+    def run(free_kb):
+        env["PCH_TEST_FREE_KB"] = str(free_kb)
+        result = subprocess.run(
+            [str(script)], capture_output=True, text=True, encoding="utf-8", env=env
+        )
+        assert result.returncode == 0, result.stderr
+        return parse_protocol(result.stdout)
+
+    free_kb = 19 * 1024 * 1024
+    entered = run(free_kb)
+    assert entered["snapshotReason"] == "entered-low-free"
+    assert int(entered["snapshotRows"]) == 1
+
+    free_kb -= 511 * 1024
+    noise = run(free_kb)
+    assert noise["snapshotReason"] == ""
+    assert noise["snapshotRows"] == "0"
+
+    free_kb -= 512 * 1024
+    cooldown = run(free_kb)
+    assert cooldown["snapshotReason"] == ""
+    assert cooldown["snapshotRows"] == "0"
+
+    state_file = state_dir / "storage-watch.tsv"
+    state_file.write_text(
+        "\n".join(
+            f"lastSnapshot\t{int(time.time()) - 301}"
+            if line.startswith("lastSnapshot\t")
+            else line
+            for line in state_file.read_text(encoding="utf-8").splitlines()
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    free_kb -= 512 * 1024
+    captured = run(free_kb)
+    assert captured["snapshotReason"] == "pressure-drop"
+    assert int(captured["snapshotRows"]) == 1
 
 
 @pytest.mark.parametrize("invalid_epoch", ["9999999999", "99999999999"])

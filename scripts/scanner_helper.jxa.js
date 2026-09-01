@@ -661,21 +661,27 @@ function parseSimulatorDevices(text, keepUUIDs, legacyKeepNames) {
     if (parts.length < 4 || !/^[0-9A-Fa-f-]{36}$/.test(parts[1])) return null;
     const name = parts[0];
     const state = parts[3];
-    const isBooted = state === "Booted";
+    const isShutdown = state === "Shutdown";
     const uuid = parts[1].toUpperCase();
+    const createdAtEpochValue = Number(parts[6] || 0);
+    const createdAtEpoch = Number.isFinite(createdAtEpochValue) && createdAtEpochValue > 0
+      ? Math.floor(createdAtEpochValue)
+      : 0;
     const isLegacyKept = legacyKeep.has(name);
     const isKept = keep.has(uuid) || isLegacyKept;
     return {
       name,
       uuid,
+      path: homeDir() + "/Library/Developer/CoreSimulator/Devices/" + uuid,
       runtime: parts[2],
       state,
+      createdAtEpoch,
       sizeGB: Math.round((Number(parts[4] || 0) / 1048576) * 10) / 10,
       measureStatus: parts[5] || "ok",
-      risk: isBooted || isKept ? "safe" : "info",
-      protected: isBooted || isKept,
-      protectionReason: isBooted
-        ? "현재 Booted 상태"
+      risk: !isShutdown || isKept ? "safe" : "info",
+      protected: !isShutdown || isKept,
+      protectionReason: !isShutdown
+        ? `현재 ${state || "알 수 없는"} 상태`
         : (isLegacyKept ? "기존 이름 보존 목록 · UUID 전환 필요" : (isKept ? "사용자 보존 목록" : "")),
       cleanupId: `simulator_delete:${uuid}`
     };
@@ -1001,12 +1007,18 @@ const reviewKinds = ["ai_review", "protected_history"];
 // owner-review inventory (project_residue is additionally copied into the
 // separately approved recovery surface), which is exactly ai_cache's contract.
 const developerKinds = ["android_sdk", "android_component", "simulator_devices", "simulator_cache", "simulator_runtime", "toolchain", "archive", "project_residue", "ai_cache"];
+const simulatorDeveloperItems = storageItems
+  .filter(item => /^simulator_/.test(item.kind))
+  .slice(0, 6);
+const otherDeveloperItems = storageItems
+  .filter(item => developerKinds.includes(item.kind) && !/^simulator_/.test(item.kind))
+  .slice(0, 20);
 raw.sections.storage = {
   volume: storageVolume,
   cleanupCandidates: cleanupCandidates.slice(0, 20),
   recoveryCandidates: recoveryCandidates.slice(0, 40),
   reviewCandidates: storageItems.filter(item => reviewKinds.includes(item.kind)),
-  developerToolchains: storageItems.filter(item => developerKinds.includes(item.kind)).slice(0, 20),
+  developerToolchains: simulatorDeveloperItems.concat(otherDeveloperItems),
   applications: storageItems.filter(item => item.kind === "application").slice(0, 20),
   largestItems: storageItems.slice(0, 30),
   accessChecks: storageAccess.checks,

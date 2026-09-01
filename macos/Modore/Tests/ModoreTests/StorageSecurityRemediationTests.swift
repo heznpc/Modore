@@ -71,7 +71,7 @@ final class StorageSecurityRemediationTests: XCTestCase {
         XCTAssertNil(legacy.virusTotalEnabled)
     }
 
-    func testFreeSpaceLossUsesNewlyAppearedGrowthInsteadOfLargerDisappearance() throws {
+    func testFreeSpaceLossDoesNotAttributeNewOrDisappearedInventoryRows() throws {
         let before = try snapshot(
             freeGB: 30,
             cleanupItems: [
@@ -89,19 +89,21 @@ final class StorageSecurityRemediationTests: XCTestCase {
             history("after", time: 2, storage: after),
         ]))
 
-        XCTAssertEqual(summary.primaryCause?.label, "New cache")
-        XCTAssertEqual(summary.primaryCause?.beforeGB, 0)
-        XCTAssertEqual(summary.primaryCause?.afterGB, 2)
-        XCTAssertEqual(summary.primaryCause?.appearedInTrackedList, true)
-        XCTAssertEqual(summary.oppositeDirectionChanges.first?.label, "Disappeared archive")
-        XCTAssertEqual(summary.oppositeDirectionChanges.first?.afterGB, 0)
-        XCTAssertEqual(summary.oppositeDirectionChanges.first?.disappearedFromTrackedList, true)
+        XCTAssertNil(summary.primaryCause)
+        XCTAssertTrue(summary.oppositeDirectionChanges.isEmpty)
+        XCTAssertEqual(summary.largestChanges.map(\.label), [
+            "Disappeared archive",
+            "New cache",
+        ])
+        XCTAssertEqual(summary.largestChanges.map(\.deltaGB), [-6, 2])
+        XCTAssertEqual(summary.largestChanges[0].disappearedFromTrackedList, true)
+        XCTAssertEqual(summary.largestChanges[1].appearedInTrackedList, true)
         XCTAssertEqual(summary.observedGrowthGB, 0)
         XCTAssertEqual(summary.unattributedConsumedGB, 1, accuracy: 0.001)
-        XCTAssertFalse(summary.causeNotCaptured)
+        XCTAssertTrue(summary.causeNotCaptured)
     }
 
-    func testFreeSpaceRecoveryUsesDisappearedPathInsteadOfNewGrowth() throws {
+    func testFreeSpaceRecoveryDoesNotAttributeNewOrDisappearedInventoryRows() throws {
         let before = try snapshot(
             freeGB: 20,
             cleanupItems: [
@@ -119,16 +121,18 @@ final class StorageSecurityRemediationTests: XCTestCase {
             history("after", time: 2, storage: after),
         ]))
 
-        XCTAssertEqual(summary.primaryCause?.label, "Removed cache")
-        XCTAssertEqual(summary.primaryCause?.beforeGB, 4)
-        XCTAssertEqual(summary.primaryCause?.afterGB, 0)
-        XCTAssertEqual(summary.primaryCause?.disappearedFromTrackedList, true)
-        XCTAssertEqual(summary.oppositeDirectionChanges.first?.label, "New SDK")
-        XCTAssertEqual(summary.oppositeDirectionChanges.first?.beforeGB, 0)
-        XCTAssertEqual(summary.oppositeDirectionChanges.first?.appearedInTrackedList, true)
+        XCTAssertNil(summary.primaryCause)
+        XCTAssertTrue(summary.oppositeDirectionChanges.isEmpty)
+        XCTAssertEqual(summary.largestChanges.map(\.label), [
+            "New SDK",
+            "Removed cache",
+        ])
+        XCTAssertEqual(summary.largestChanges.map(\.deltaGB), [8, -4])
+        XCTAssertEqual(summary.largestChanges[0].appearedInTrackedList, true)
+        XCTAssertEqual(summary.largestChanges[1].disappearedFromTrackedList, true)
         XCTAssertEqual(summary.observedShrinkGB, 0)
         XCTAssertEqual(summary.unattributedRecoveredGB, 3, accuracy: 0.001)
-        XCTAssertFalse(summary.causeNotCaptured)
+        XCTAssertTrue(summary.causeNotCaptured)
     }
 
     func testDirectionWithoutMatchingPathEvidenceIsExplicitlyUncaptured() throws {

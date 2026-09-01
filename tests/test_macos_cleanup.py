@@ -1791,6 +1791,10 @@ def test_simulator_recipe_honors_keep_list_and_deletes_only_verified_uuid(projec
     device = home / "Library" / "Developer" / "CoreSimulator" / "Devices" / uuid
     device.mkdir(parents=True)
     (device / "data.bin").write_bytes(b"fixture")
+    sibling_uuid = "66666666-7777-4888-9999-AAAAAAAAAAAA"
+    sibling = device.parent / sibling_uuid
+    sibling.mkdir()
+    (sibling / "must-stay.bin").write_bytes(b"sibling fixture")
     support = home / "Library" / "Application Support" / "Modore"
     support.mkdir(parents=True)
     keep_file = support / "simulator-keep.txt"
@@ -1798,7 +1802,8 @@ def test_simulator_recipe_honors_keep_list_and_deletes_only_verified_uuid(projec
     simctl_list = home / "simctl.txt"
     simctl_list.write_text(
         "== Devices ==\n-- iOS 26.3 --\n"
-        f"    iPhone 17 Pro Max ({uuid}) (Shutdown)\n",
+        f"    iPhone 17 Pro Max ({uuid}) (Shutdown)\n"
+        f"    Sibling Phone ({sibling_uuid}) (Shutdown)\n",
         encoding="utf-8",
     )
     delete_log = home / "simctl-delete.log"
@@ -1857,7 +1862,82 @@ def test_simulator_recipe_honors_keep_list_and_deletes_only_verified_uuid(projec
     assert result["status"] == "complete"
     assert result["actionMode"] == "simulator"
     assert not device.exists()
+    assert (sibling / "must-stay.bin").read_bytes() == b"sibling fixture"
     assert delete_log.read_text(encoding="utf-8").strip() == uuid
+
+
+@pytest.mark.parametrize("state", ["Booted", "Creating", "Shutting Down"])
+def test_simulator_preview_allows_only_shutdown_devices(project_root, tmp_path, state):
+    home = tmp_path / "home"
+    uuid = "12345678-1234-4234-8234-123456789ABC"
+    device = home / "Library/Developer/CoreSimulator/Devices" / uuid
+    device.mkdir(parents=True)
+    simctl_list = home / "simctl.txt"
+    simctl_list.write_text(
+        f"-- iOS 27.0 --\n    State Phone ({uuid}) ({state})\n",
+        encoding="utf-8",
+    )
+
+    preview = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        f"simulator_delete:{uuid}",
+        extra_env={"PCH_SIMCTL_LIST_FILE": str(simctl_list)},
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert state in str(payload["blockedReason"])
+    assert device.is_dir()
+
+
+@pytest.mark.parametrize(
+    "keep_shape", ["symlink", "hardlink", "oversized", "unreadable", "many-lines"]
+)
+def test_simulator_preview_fails_closed_for_untrusted_keep_files(
+    project_root, tmp_path, keep_shape
+):
+    home = tmp_path / "home"
+    uuid = "12345678-1234-4234-8234-123456789ABC"
+    device = home / "Library/Developer/CoreSimulator/Devices" / uuid
+    device.mkdir(parents=True)
+    support = home / "Library/Application Support/Modore"
+    support.mkdir(parents=True)
+    keep = support / "simulator-keep.txt"
+    source = support / "keep-source.txt"
+    source.write_text("", encoding="utf-8")
+    if keep_shape == "symlink":
+        keep.symlink_to(source)
+    elif keep_shape == "hardlink":
+        os.link(source, keep)
+    elif keep_shape == "oversized":
+        keep.write_bytes(b"x" * 65537)
+    elif keep_shape == "many-lines":
+        keep.write_text("\n" * 5000, encoding="utf-8")
+    else:
+        keep.write_text("", encoding="utf-8")
+        keep.chmod(0)
+    simctl_list = home / "simctl.txt"
+    simctl_list.write_text(
+        f"-- iOS 27.0 --\n    Protected Phone ({uuid}) (Shutdown)\n",
+        encoding="utf-8",
+    )
+
+    preview = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        f"simulator_delete:{uuid}",
+        extra_env={"PCH_SIMCTL_LIST_FILE": str(simctl_list)},
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert "안전하게 읽을 수 없어" in str(payload["blockedReason"])
+    assert device.is_dir()
 
 
 @pytest.mark.parametrize(
@@ -1866,6 +1946,7 @@ def test_simulator_recipe_honors_keep_list_and_deletes_only_verified_uuid(projec
         ("booted", "Booted"),
         ("preserved", "보존 목록"),
         ("legacy", "이름 기반"),
+        ("invalid", "안전하게 읽을 수 없어"),
     ],
 )
 def test_simulator_delete_rechecks_state_and_keep_file_at_final_boundary(
@@ -1900,10 +1981,15 @@ def test_simulator_delete_rechecks_state_and_keep_file_at_final_boundary(
         extra_env["PCH_TEST_LATE_SIMCTL_LIST_FILE"] = str(late_simctl)
     else:
         late_keep = home / "late-keep.txt"
-        late_keep.write_text(
-            f"{uuid.lower()}\n" if late_condition == "preserved" else "Boundary Phone\n",
-            encoding="utf-8",
-        )
+        if late_condition == "invalid":
+            late_keep.write_bytes(b"x" * 65537)
+        else:
+            late_keep.write_text(
+                f"{uuid.lower()}\n"
+                if late_condition == "preserved"
+                else "Boundary Phone\n",
+                encoding="utf-8",
+            )
         extra_env["PCH_TEST_LATE_SIMULATOR_KEEP_FILE"] = str(late_keep)
 
     preview = run_cleanup(
@@ -1939,55 +2025,56 @@ def test_simulator_delete_rechecks_state_and_keep_file_at_final_boundary(
 
 
 def test_simulator_delete_postcondition_check_detects_leftover_data(project_root, tmp_path):
-    """`xcrun simctl delete` exiting 0 only means CoreSimulator's daemon
-    accepted the request -- unlike the staged-move path used for every other
-    recipe (whose remove_tree_same_device is a direct `find -delete`, so its
-    own exit code IS the postcondition), simctl is an opaque, daemon-mediated
-    tool. Confirmed directly against a real device: deletion is synchronous
-    on a healthy system (the device directory is gone the instant `simctl
-    delete` returns) and a hard failure (e.g. an immutable directory) makes
-    simctl itself exit non-zero -- both already handled before this check.
-    This check exists for the gap between those two: simctl reporting
-    success while the directory nonetheless survives. That specific failure
-    mode could not be reproduced through real simctl even with an immutable
-    file nested inside the device directory (simctl's removal proved more
-    robust than a plain `rm -rf`), so this proves the actual shipped
-    condition -- extracted from cleanup.sh, not a hand-duplicated copy that
-    could silently drift from it -- under direct bash execution against both
-    a present and an absent path, rather than through a full non-sandboxed
-    end-to-end run (which would require abandoning this suite's own
-    production-home isolation guard, see test_production_home_must_match_current_account)."""
-    source = (project_root / "scripts" / "cleanup.sh").read_text(encoding="utf-8")
-    marker = 'elif [[ -e "${TARGETS[0]}" || -L "${TARGETS[0]}" ]]; then'
-    assert marker in source, "the postcondition check's exact shape moved; update this test's extraction"
-    condition = marker.removeprefix("elif ").removesuffix(" then")
-
-    harness = tmp_path / "check.sh"
-    harness.write_text(
-        f'#!/bin/bash\nTARGETS=("$1")\nif {condition}\nthen echo LEFTOVER; else echo GONE; fi\n',
+    home = tmp_path / "home"
+    uuid = "ABCDEF12-3456-4789-8ABC-DEF123456789"
+    device = home / "Library/Developer/CoreSimulator/Devices" / uuid
+    device.mkdir(parents=True)
+    (device / "leftover.bin").write_bytes(b"leftover device data")
+    simctl_list = home / "simctl.txt"
+    simctl_list.write_text(
+        f"-- iOS 27.0 --\n    Leftover Phone ({uuid}) (Shutdown)\n",
         encoding="utf-8",
     )
-    harness.chmod(0o700)
-
-    present = tmp_path / "still-here.bin"
-    present.write_bytes(b"leftover device data")
-    result_present = subprocess.run(
-        ["/bin/bash", str(harness), str(present)], capture_output=True, text=True, encoding="utf-8"
+    calls = home / "fake-simctl.calls"
+    fake_simctl = home / "fake-simctl"
+    fake_simctl.write_text(
+        "#!/bin/bash\n"
+        f'printf "%s\\n" "$*" >> "{calls}"\n'
+        "exit 0\n",
+        encoding="utf-8",
     )
-    assert result_present.stdout.strip() == "LEFTOVER"
-
-    absent = tmp_path / "already-deleted.bin"
-    result_absent = subprocess.run(
-        ["/bin/bash", str(harness), str(absent)], capture_output=True, text=True, encoding="utf-8"
+    fake_simctl.chmod(0o700)
+    preview = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        f"simulator_delete:{uuid}",
+        extra_env={"PCH_SIMCTL_LIST_FILE": str(simctl_list)},
     )
-    assert result_absent.stdout.strip() == "GONE"
+    payload = parse_protocol(preview.stdout)
+    assert payload["status"] == "ready"
 
-    symlink = tmp_path / "dangling-symlink"
-    symlink.symlink_to(tmp_path / "nonexistent-target")
-    result_symlink = subprocess.run(
-        ["/bin/bash", str(harness), str(symlink)], capture_output=True, text=True, encoding="utf-8"
+    executed = run_cleanup(
+        project_root,
+        home,
+        "--execute",
+        f"simulator_delete:{uuid}",
+        "--owner-approved",
+        "--approval-token",
+        approval_token(payload),
+        extra_env={
+            "PCH_SIMCTL_LIST_FILE": str(simctl_list),
+            "PCH_TEST_SIMCTL_DELETE_BIN": str(fake_simctl),
+        },
     )
-    assert result_symlink.stdout.strip() == "LEFTOVER", "a dangling symlink left at the target path is still leftover state, not success"
+    result = parse_protocol(executed.stdout)
+
+    assert executed.returncode == 4
+    assert result["status"] == "partial"
+    assert result["reclaimedKB"] == "0"
+    assert "실제로 지워지지 않았습니다" in str(result["blockedReason"])
+    assert (device / "leftover.bin").read_bytes() == b"leftover device data"
+    assert calls.read_text(encoding="utf-8").strip() == f"delete {uuid}"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS bundle tools are required")

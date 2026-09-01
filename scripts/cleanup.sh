@@ -43,6 +43,8 @@ APPROVAL_DIR=""
 STAGING_DIR=""
 STAGING_RUN=""
 SIMULATOR_KEEP_FILE=""
+SIMULATOR_KEEP_POLICY="clear"
+TEST_SIMCTL_DELETE_BIN=""
 
 LABEL=""
 REMOVE_MODE="remove"
@@ -186,6 +188,7 @@ configure_roots() {
             "${PCH_TEST_PROCESS_CWD_FILE:-}" \
             "${PCH_SIMCTL_LIST_FILE:-}" \
             "${PCH_SIMCTL_DELETE_LOG:-}" \
+            "${PCH_TEST_SIMCTL_DELETE_BIN:-}" \
             "${PCH_TEST_APP_GROUPS_FILE:-}" \
             "${PCH_TEST_LATE_PROCESS_LIST_FILE:-}" \
             "${PCH_TEST_LATE_SIMCTL_LIST_FILE:-}" \
@@ -196,6 +199,13 @@ configure_roots() {
             [[ -z "$test_path" ]] || test_path_is_isolated "$test_path" \
                 || fail_usage "테스트 hook 경로가 격리 홈을 벗어났습니다."
         done
+        if [[ -n "${PCH_TEST_SIMCTL_DELETE_BIN:-}" ]]; then
+            [[ -f "$PCH_TEST_SIMCTL_DELETE_BIN" && ! -L "$PCH_TEST_SIMCTL_DELETE_BIN" \
+                && -x "$PCH_TEST_SIMCTL_DELETE_BIN" \
+                && "$(path_owner_uid "$PCH_TEST_SIMCTL_DELETE_BIN")" == "$(/usr/bin/id -u)" ]] \
+                || fail_usage "테스트 simctl은 소유자가 실행할 수 있는 격리된 정규 파일이어야 합니다."
+            TEST_SIMCTL_DELETE_BIN="$PCH_TEST_SIMCTL_DELETE_BIN"
+        fi
         for test_path in \
             "${PCH_TEST_FAIL_TRASH_MOVE_AT:-}" \
             "${PCH_TEST_FAIL_STAGED_REMOVE_AT:-}" \
@@ -738,35 +748,76 @@ simctl_devices() {
     fi
 }
 
-simulator_keep_has_legacy_entries() {
-    local line
-    [[ -f "$SIMULATOR_KEEP_FILE" && ! -L "$SIMULATOR_KEEP_FILE" ]] || return 1
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="$(/usr/bin/printf '%s' "$line" | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-        [[ -z "$line" ]] && continue
-        [[ "$line" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
-            || return 0
-    done < "$SIMULATOR_KEEP_FILE"
-    return 1
-}
-
 normalize_uuid() {
     /usr/bin/printf '%s' "$1" | /usr/bin/tr '[:lower:]' '[:upper:]'
 }
 
-simulator_keep_contains_uuid() {
+simulator_keep_file_identity() {
+    local identity device inode owner links size
+    [[ -f "$SIMULATOR_KEEP_FILE" && ! -L "$SIMULATOR_KEEP_FILE" \
+        && -r "$SIMULATOR_KEEP_FILE" ]] || return 1
+    if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+        identity="$(/usr/bin/stat -f '%d:%i:%u:%l:%z' "$SIMULATOR_KEEP_FILE" 2>/dev/null)" \
+            || return 1
+    else
+        identity="$(/usr/bin/stat -c '%d:%i:%u:%h:%s' "$SIMULATOR_KEEP_FILE" 2>/dev/null)" \
+            || return 1
+    fi
+    IFS=: read -r device inode owner links size <<< "$identity"
+    case "$device$inode$owner$links$size" in ''|*[!0-9]*) return 1 ;; esac
+    [[ "$owner" == "$(/usr/bin/id -u)" && "$links" == "1" \
+        && "$size" -le 65536 ]] || return 1
+    /usr/bin/printf '%s' "$identity"
+}
+
+# Missing means no explicit preserves. Any existing file must be a stable,
+# owner-owned, single-link regular file small enough to read in full. The same
+# identity is checked after parsing so a replacement during preview/final
+# boundary becomes `invalid` and blocks deletion.
+simulator_keep_policy_for_uuid() {
     local requested_upper="$1"
-    local line
-    [[ -f "$SIMULATOR_KEEP_FILE" && ! -L "$SIMULATOR_KEEP_FILE" ]] || return 1
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="$(/usr/bin/printf '%s' "$line" | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-        [[ "$line" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
-            || continue
-        if [[ "$(normalize_uuid "$line")" == "$requested_upper" ]]; then
-            return 0
-        fi
-    done < "$SIMULATOR_KEEP_FILE"
-    return 1
+    local identity_before identity_after parsed_policy
+    SIMULATOR_KEEP_POLICY="clear"
+    if [[ ! -e "$SIMULATOR_KEEP_FILE" && ! -L "$SIMULATOR_KEEP_FILE" ]]; then
+        return 0
+    fi
+    identity_before="$(simulator_keep_file_identity 2>/dev/null || true)"
+    if [[ -z "$identity_before" ]]; then
+        SIMULATOR_KEEP_POLICY="invalid"
+        return 0
+    fi
+    parsed_policy="$(/usr/bin/awk -v requested="$requested_upper" '
+        BEGIN { legacy = 0; kept = 0; bounded = 1 }
+        {
+            if (NR > 4096) { bounded = 0; exit }
+            value = $0
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            if (value == "") next
+            upper = toupper(value)
+            if (upper ~ /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/) {
+                if (upper == requested) kept = 1
+            } else {
+                legacy = 1
+            }
+        }
+        END {
+            if (!bounded) print "invalid"
+            else if (legacy) print "legacy"
+            else if (kept) print "kept"
+            else print "clear"
+        }
+    ' "$SIMULATOR_KEEP_FILE" 2>/dev/null)" || parsed_policy="invalid"
+    identity_after="$(simulator_keep_file_identity 2>/dev/null || true)"
+    if [[ -z "$identity_after" || "$identity_after" != "$identity_before" ]]; then
+        SIMULATOR_KEEP_POLICY="invalid"
+    else
+        case "$parsed_policy" in
+            clear|legacy|kept) SIMULATOR_KEEP_POLICY="$parsed_policy" ;;
+            *) SIMULATOR_KEEP_POLICY="invalid" ;;
+        esac
+    fi
+    return 0
 }
 
 simulator_state_for_uuid() {
@@ -795,18 +846,21 @@ simulator_delete_boundary_ready() {
         BLOCKED_REASON="현재 $state 상태인 Simulator는 삭제할 수 없습니다. 완전히 종료한 뒤 다시 미리보기하세요."
         return 1
     fi
-    if [[ -L "$SIMULATOR_KEEP_FILE" ]]; then
-        BLOCKED_REASON="Simulator 보존 목록 경로가 심볼릭 링크여서 삭제를 차단했습니다."
-        return 1
-    fi
-    if simulator_keep_has_legacy_entries; then
-        BLOCKED_REASON="기존 이름 기반 Simulator 보존 목록이 남아 있어 삭제를 차단했습니다. 앱에서 보존 목록을 다시 저장하세요."
-        return 1
-    fi
-    if simulator_keep_contains_uuid "$requested_upper"; then
-        BLOCKED_REASON="사용자 보존 목록에 있는 Simulator여서 삭제를 차단했습니다."
-        return 1
-    fi
+    simulator_keep_policy_for_uuid "$requested_upper"
+    case "$SIMULATOR_KEEP_POLICY" in
+        invalid)
+            BLOCKED_REASON="Simulator 보존 목록이 소유자 파일인지 안전하게 읽을 수 없어 삭제를 차단했습니다."
+            return 1
+            ;;
+        legacy)
+            BLOCKED_REASON="기존 이름 기반 Simulator 보존 목록이 남아 있어 삭제를 차단했습니다. 앱에서 보존 목록을 다시 저장하세요."
+            return 1
+            ;;
+        kept)
+            BLOCKED_REASON="사용자 보존 목록에 있는 Simulator여서 삭제를 차단했습니다."
+            return 1
+            ;;
+    esac
     return 0
 }
 
@@ -833,14 +887,21 @@ define_simulator_recipe() {
                     REMOVE_MODE="simulator"
                     PROCESS_NOTE="Booted Simulator는 먼저 종료해야 합니다."
                     WARNING="$runtime 기기 데이터만 삭제합니다. iOS Simulator 런타임 자체는 보존됩니다."
-                    if [[ "$state" == "Booted" ]]; then
-                        RECIPE_BLOCK_REASON="현재 Booted 상태인 Simulator는 삭제할 수 없습니다."
-                    elif [[ -L "$SIMULATOR_KEEP_FILE" ]]; then
-                        RECIPE_BLOCK_REASON="Simulator 보존 목록 경로가 심볼릭 링크여서 삭제를 차단했습니다."
-                    elif simulator_keep_has_legacy_entries; then
-                        RECIPE_BLOCK_REASON="기존 이름 기반 Simulator 보존 목록이 남아 있습니다. 앱에서 보존 목록을 UUID 형식으로 다시 저장한 뒤 검토하세요."
-                    elif simulator_keep_contains_uuid "$requested_upper"; then
-                        RECIPE_BLOCK_REASON="사용자 보존 목록에 있는 Simulator입니다. 보존 표시를 먼저 해제하세요."
+                    if [[ "$state" != "Shutdown" ]]; then
+                        RECIPE_BLOCK_REASON="현재 ${state:-알 수 없는} 상태인 Simulator는 삭제할 수 없습니다. 완전히 종료한 뒤 다시 미리보기하세요."
+                    else
+                        simulator_keep_policy_for_uuid "$requested_upper"
+                        case "$SIMULATOR_KEEP_POLICY" in
+                            invalid)
+                                RECIPE_BLOCK_REASON="Simulator 보존 목록이 소유자 파일인지 안전하게 읽을 수 없어 삭제를 차단했습니다."
+                                ;;
+                            legacy)
+                                RECIPE_BLOCK_REASON="기존 이름 기반 Simulator 보존 목록이 남아 있습니다. 앱에서 보존 목록을 UUID 형식으로 다시 저장한 뒤 검토하세요."
+                                ;;
+                            kept)
+                                RECIPE_BLOCK_REASON="사용자 보존 목록에 있는 Simulator입니다. 보존 표시를 먼저 해제하세요."
+                                ;;
+                        esac
                     fi
                     data_path="$HOME_ROOT/Library/Developer/CoreSimulator/Devices/$uuid"
                     add_target_if_present "$data_path"
@@ -2452,7 +2513,8 @@ run_execute() {
             emit_state "execute" "$PREVIEW_STATUS" "$ESTIMATED_KB"
             return 3
         }
-    elif [[ "$REMOVE_MODE" != "simulator" || "${PCH_TEST_MODE:-0}" == "1" ]]; then
+    elif [[ "$REMOVE_MODE" != "simulator" \
+        || ( "${PCH_TEST_MODE:-0}" == "1" && -z "$TEST_SIMCTL_DELETE_BIN" ) ]]; then
         prepare_staging_run || {
             PREVIEW_STATUS="blocked"
             BLOCKED_REASON="검증된 대상을 격리할 안전한 임시 폴더를 만들지 못했습니다."
@@ -2481,6 +2543,13 @@ run_execute() {
         elif ! simulator_delete_boundary_ready; then
             FAILED=1
             EXECUTION_FAILURE_STATUS="blocked"
+        elif [[ "${PCH_TEST_MODE:-0}" == "1" && -n "$TEST_SIMCTL_DELETE_BIN" ]]; then
+            if ! "$TEST_SIMCTL_DELETE_BIN" delete "$SIMULATOR_UUID"; then
+                FAILED=1
+            elif [[ -e "${TARGETS[0]}" || -L "${TARGETS[0]}" ]]; then
+                FAILED=1
+                BLOCKED_REASON="Simulator 삭제 명령은 성공했지만 기기 데이터가 실제로 지워지지 않았습니다."
+            fi
         elif [[ "${PCH_TEST_MODE:-0}" == "1" && -n "${PCH_SIMCTL_DELETE_LOG:-}" ]]; then
             if ! stage_and_remove_target "${TARGETS[0]}" 1; then
                 FAILED=1
