@@ -12,8 +12,8 @@ struct BackgroundNotificationRequest: Equatable, Sendable {
 /// <message>` so the resulting banner is attributed to Modore's own identity
 /// rather than com.apple.ScriptEditor2 — the only identity `osascript display
 /// notification` can ever use, an Apple-binary entitlement this app cannot
-/// acquire. `scripts/storage_watch.sh` still falls back to osascript whenever
-/// this path is unavailable, so this is additive and never a regression.
+/// acquire. The watcher deliberately stays quiet when this path is unavailable;
+/// presenting a Script Editor alert as though it came from Modore is misleading.
 ///
 /// Authorization is requested only from a clear foreground moment — when the
 /// owner turns the watch on in Settings, see `ScanModel.setStorageWatchEnabled`

@@ -1450,11 +1450,20 @@ def test_schedule_requires_approval_and_stays_inside_test_home(project_root, tmp
 
 # --- App-identity notification (PCH_STORAGE_WATCH_APP_BUNDLE) --------------------
 # osascript's "display notification" can only ever post as com.apple.ScriptEditor2
-# (an Apple-binary entitlement), so the watch now tries launching the app itself
-# under PCH_STORAGE_WATCH_APP_BUNDLE first and only accepts that route after
-# the app confirms Notification Center accepted the request. These tests pin
-# the private acknowledgement, signature/hash identity, and fallback behavior;
-# they deliberately do not claim that an on-screen banner was rendered.
+# (an Apple-binary entitlement), so the watch only launches the app itself under
+# PCH_STORAGE_WATCH_APP_BUNDLE and only accepts that route after the app confirms
+# Notification Center accepted the request. These tests pin the private
+# acknowledgement and signature/hash identity, and prove the old Script Editor
+# fallback can never be invoked. They deliberately do not claim that an
+# on-screen banner was rendered.
+
+
+def test_storage_watch_never_posts_as_script_editor(project_root):
+    source = (project_root / "scripts" / "storage_watch.sh").read_text(encoding="utf-8")
+
+    assert "-e 'display notification" not in source
+    assert 'OSASCRIPT_BIN="/usr/bin/osascript"' not in source
+
 
 def _plist_only_app_bundle(root, *, identifier="me.heznpc.modore", suffix=".app"):
     bundle = root / f"Fake{suffix}"
@@ -1495,10 +1504,10 @@ def _app_executable_hash(bundle):
 
 
 def _stub_binary(tmp_path, name, *, exit_code=0, acknowledge=False):
-    """Replaces the real /usr/bin/open or /usr/bin/osascript for a test via
-    PCH_TEST_OPEN_BIN / PCH_TEST_OSASCRIPT_BIN (storage_watch.sh only honors
-    these under PCH_TEST_MODE=1; production always uses the real absolute
-    paths, unchanged). `display notification` and `open -a` are real OS calls
+    """Replaces a notification binary for a test. `open` is injected through
+    PCH_TEST_OPEN_BIN under PCH_TEST_MODE=1. An osascript stub is also placed in
+    the environment as a tripwire: the watcher must never invoke it.
+    `display notification` and `open -a` are real OS calls
     with a real, on-screen effect — running the actual binaries from an
     automated test would post a genuine notification to whatever Mac the
     suite happens to run on, which is a real incident on a developer's own
@@ -1540,12 +1549,9 @@ def _stub_binary(tmp_path, name, *, exit_code=0, acknowledge=False):
 def _run_watch_with_stubbed_notifiers(
     project_root, env, tmp_path, *, open_exit=0, open_ack=False, osascript_exit=0
 ):
-    """Runs storage_watch.sh with both notification binaries stubbed out, and
-    reports which one(s) were actually invoked — the only way to tell
-    "rejected the bundle, correctly fell back" from "silently did neither"
-    (e.g. a validation guard fixed as `return 0` instead of `return 1`, which
-    would produce an equally quiet exit 0 with no notification attempted at
-    all) without ever touching the real Notification Center."""
+    """Runs storage_watch.sh with notification binaries stubbed out and reports
+    which were invoked without touching the real Notification Center. The
+    osascript stub is intentionally unreachable production-dead-code evidence."""
     open_stub, log = _stub_binary(
         tmp_path, "open", exit_code=open_exit, acknowledge=open_ack
     )
@@ -1590,10 +1596,12 @@ def test_storage_watch_accepts_app_notification_only_after_ack(project_root, tmp
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
-def test_storage_watch_falls_back_when_open_exits_zero_without_ack(project_root, tmp_path):
+def test_storage_watch_does_not_claim_delivery_when_open_exits_zero_without_ack(
+    project_root, tmp_path
+):
     """`open` only confirms launch dispatch. Without the app's private nonce
     acknowledgement it is not evidence that Notification Center accepted the
-    request, so the watcher must still use the fallback."""
+    request, so the watcher must leave the notification eligible for retry."""
     state_dir = tmp_path / "state"
     bundle = _signed_app_bundle(tmp_path)
     env = os.environ.copy()
@@ -1614,9 +1622,9 @@ def test_storage_watch_falls_back_when_open_exits_zero_without_ack(project_root,
 
     assert result.returncode == 0, result.stderr
     assert parse_protocol(result.stdout)["status"] == "warning"
-    assert int(parse_protocol((state_dir / "storage-watch.tsv").read_text())["lastNotify"]) > 0
+    assert parse_protocol((state_dir / "storage-watch.tsv").read_text())["lastNotify"] == "0"
     assert open_attempted, "a correctly pinned .app must reach the open call"
-    assert osascript_attempted, "open success without an acknowledgement must fall back"
+    assert not osascript_attempted, "a failed app notification must never become Script Editor"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
@@ -1643,10 +1651,11 @@ def test_storage_watch_does_not_rate_limit_a_notification_that_never_delivered(
     )
 
     assert first.returncode == second.returncode == 0
-    assert first_open and first_osascript and second_open and second_osascript
+    assert first_open and second_open
+    assert not first_osascript and not second_osascript
     calls = (tmp_path / "notify-calls.log").read_text(encoding="utf-8").splitlines()
     assert calls.count("open") == 2
-    assert calls.count("osascript") == 2
+    assert calls.count("osascript") == 0
     assert parse_protocol((state_dir / "storage-watch.tsv").read_text())["lastNotify"] == "0"
 
 
@@ -1685,7 +1694,8 @@ def test_storage_watch_never_reaches_open_for_a_structurally_invalid_bundle(
     assert result.returncode == 0, result.stderr
     assert parse_protocol(result.stdout)["status"] == "warning"
     assert not open_attempted, "an invalid bundle must be rejected before the open call"
-    assert osascript_attempted, "rejecting the bundle must still fall back to osascript"
+    assert not osascript_attempted, "an invalid bundle must never become Script Editor"
+    assert parse_protocol((state_dir / "storage-watch.tsv").read_text())["lastNotify"] == "0"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
@@ -1713,7 +1723,8 @@ def test_storage_watch_never_reaches_open_for_a_symlinked_app_bundle_path(projec
     assert result.returncode == 0, result.stderr
     assert parse_protocol(result.stdout)["status"] == "warning"
     assert not open_attempted, "a symlinked bundle path must be rejected before the open call"
-    assert osascript_attempted, "rejecting the bundle must still fall back to osascript"
+    assert not osascript_attempted, "a symlink rejection must never become Script Editor"
+    assert parse_protocol((state_dir / "storage-watch.tsv").read_text())["lastNotify"] == "0"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
@@ -1755,14 +1766,13 @@ def test_storage_watch_rejects_a_replaced_pinned_executable(project_root, tmp_pa
 
     assert result.returncode == 0, result.stderr
     assert not open_attempted, "a replaced executable must fail before app launch"
-    assert osascript_attempted, "a rejected app must retain the notification fallback"
+    assert not osascript_attempted, "a replaced app must never become Script Editor"
+    assert parse_protocol((state_dir / "storage-watch.tsv").read_text())["lastNotify"] == "0"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
 def test_storage_watch_never_reaches_open_when_no_app_bundle_is_configured(project_root, tmp_path):
-    """The default, unset case — every install predating this feature, and
-    every test above this line in the file. Must fall straight to osascript,
-    exactly as before this notification path existed."""
+    """An old or incomplete install stays quiet instead of impersonating Script Editor."""
     state_dir = tmp_path / "state"
     env = os.environ.copy()
     env.update(
@@ -1782,7 +1792,8 @@ def test_storage_watch_never_reaches_open_when_no_app_bundle_is_configured(proje
     assert result.returncode == 0, result.stderr
     assert parse_protocol(result.stdout)["status"] == "warning"
     assert not open_attempted, "no configured bundle path must never reach the open call"
-    assert osascript_attempted, "an unconfigured bundle path must still fall back to osascript"
+    assert not osascript_attempted, "an unconfigured path must never become Script Editor"
+    assert parse_protocol((state_dir / "storage-watch.tsv").read_text())["lastNotify"] == "0"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS process-group contract")
@@ -1790,8 +1801,9 @@ def test_storage_watch_notification_deadline_stops_the_entire_process_tree(
     project_root, tmp_path
 ):
     state_dir = tmp_path / "state"
+    bundle = _signed_app_bundle(tmp_path / "app")
     child_pid_file = tmp_path / "notification-child.pid"
-    hanging_notifier = tmp_path / "hanging-osascript"
+    hanging_notifier = tmp_path / "hanging-open"
     hanging_notifier.write_text(
         "#!/bin/bash\n"
         "/bin/sleep 20 &\n"
@@ -1809,10 +1821,11 @@ def test_storage_watch_notification_deadline_stops_the_entire_process_tree(
         "PCH_STATE_DIR": str(state_dir),
         "PCH_TEST_FREE_KB": str(19 * 1024 * 1024),
         "PCH_WATCH_NOTIFY": "1",
-        "PCH_TEST_OSASCRIPT_BIN": str(hanging_notifier),
+        "PCH_TEST_OPEN_BIN": str(hanging_notifier),
         "PCH_TEST_WATCH_NOTIFICATION_TICKS": "10",
+        "PCH_STORAGE_WATCH_APP_BUNDLE": str(bundle),
+        "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256": _app_executable_hash(bundle),
     }
-    env.pop("PCH_STORAGE_WATCH_APP_BUNDLE", None)
 
     started = time.monotonic()
     result = subprocess.run(
@@ -2075,6 +2088,7 @@ def test_storage_watch_normalizes_future_or_out_of_range_timestamps_and_retries(
     project_root, tmp_path, invalid_epoch
 ):
     state_dir = tmp_path / "state"
+    bundle = _signed_app_bundle(tmp_path / "app")
     state_dir.mkdir(mode=0o700)
     (state_dir / "storage-watch.tsv").write_text(
         "\n".join(
@@ -2107,17 +2121,18 @@ def test_storage_watch_normalizes_future_or_out_of_range_timestamps_and_retries(
         "PCH_TEST_FREE_KB": str(19 * 1024 * 1024),
         "PCH_WATCH_NOTIFY": "1",
         "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
+        "PCH_STORAGE_WATCH_APP_BUNDLE": str(bundle),
+        "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256": _app_executable_hash(bundle),
     }
-    env.pop("PCH_STORAGE_WATCH_APP_BUNDLE", None)
 
     result, open_attempted, osascript_attempted = _run_watch_with_stubbed_notifiers(
-        project_root, env, tmp_path
+        project_root, env, tmp_path, open_ack=True
     )
 
     assert result.returncode == 0, result.stderr
     values = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))
-    assert not open_attempted
-    assert osascript_attempted, "an invalid future lastNotify must not suppress retry"
+    assert open_attempted, "an invalid future lastNotify must not suppress retry"
+    assert not osascript_attempted
     assert 0 < int(values["lastNotify"]) <= int(time.time())
     assert values["snapshotReason"] == "still-low-free"
     assert 0 < int(values["lastSnapshot"]) <= int(time.time())

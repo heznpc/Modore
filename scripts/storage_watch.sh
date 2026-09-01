@@ -1297,29 +1297,23 @@ if [[ -n "$SNAPSHOT_REASON" ]]; then
         fi
     fi
 fi
-# osascript's "display notification" can only ever post as com.apple.ScriptEditor2
-# (an Apple-binary entitlement Modore cannot acquire), so the one alert this
-# product sends lives under an unrelated app's name in System Settings and can be
-# silenced by muting that unrelated tool. Launching the real app briefly lets it
-# post under its own identity via UNUserNotificationCenter instead. This only
-# works if the app was told its own bundle path at install time (APP_BUNDLE_PATH)
-# and its strict code signature plus executable hash still match the installed
-# identity — otherwise
-# fall through to the always-available osascript path so a stale or missing
-# path never makes the watch quieter than it was before this existed.
+# Notifications must remain under Modore's identity. `osascript display
+# notification` is always attributed to com.apple.ScriptEditor2, so using it as
+# a fallback produces a misleading Script Editor alert and click target. If the
+# signed app cannot acknowledge that Notification Center accepted the request,
+# keep `lastNotify` unchanged and retry later instead of impersonating an Apple
+# utility.
 # Test-only indirection so pytest can verify which branch fires without
 # actually posting to the real, live Notification Center on whatever Mac the
-# suite happens to run on — display notification/open are real OS calls with
+# suite happens to run on — open is a real OS call with
 # a real on-screen effect regardless of PCH_TEST_MODE, and that effect landing
 # on a developer's own daily-use Mac during an ordinary test run is a real
 # incident, not a harmless test artifact. Both still default to the real
 # absolute paths; only PCH_TEST_MODE=1 can move them, so production behavior
 # and its absolute-path hardening are unchanged.
 OPEN_BIN="/usr/bin/open"
-OSASCRIPT_BIN="/usr/bin/osascript"
 if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
     OPEN_BIN="${PCH_TEST_OPEN_BIN:-$OPEN_BIN}"
-    OSASCRIPT_BIN="${PCH_TEST_OSASCRIPT_BIN:-$OSASCRIPT_BIN}"
 fi
 
 notify_via_app_bundle() {
@@ -1394,13 +1388,6 @@ if [[ "$STATUS" == "warning" && "$NOTIFY" == "1" ]]; then
         notification_delivered=0
         if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
             if notify_via_app_bundle; then
-                notification_delivered=1
-            elif [[ -x "$OSASCRIPT_BIN" ]] \
-                && bounded_notification_command "$NOTIFICATION_TICKS" "$OSASCRIPT_BIN" \
-                        -e 'on run argv' \
-                        -e 'display notification (item 1 of argv) with title "Modore"' \
-                        -e 'end run' \
-                        "$MESSAGE"; then
                 notification_delivered=1
             fi
         fi
