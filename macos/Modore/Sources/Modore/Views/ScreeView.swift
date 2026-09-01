@@ -242,7 +242,7 @@ struct ScreeExpiringSection: View {
                             .font(.body.weight(.medium))
                         Text(session.ownerDeleted
                              ? "\(session.tool) · 앱에서 삭제됨 · 트랜스크립트 잔존"
-                             : "\(session.tool) · \(session.storyAlive ? "작업 경로 현존" : "작업 경로 소멸")")
+                             : "\(session.tool) · \(session.workspaceStateText)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -345,12 +345,13 @@ struct ScreeLineageSection: View {
             LabeledContent("현존 + git", value: "\(summary.aliveGit)")
             LabeledContent("현존 + 비git", value: "\(summary.alivePlain)")
             LabeledContent("소멸", value: "\(summary.vanished)")
+            LabeledContent("확인 못함", value: "\(summary.unknown)")
             LabeledContent("케이스 유령", value: "\(summary.caseGhosts)")
             LabeledContent("고아 세션", value: "\(unresolvedSessions)")
         } header: {
             NativeSectionHeader(
                 title: "작업 경로 계보",
-                subtitle: "세션 기록이 기억하는 모든 작업 경로를 현존·소멸로 분류한 집계입니다.",
+                subtitle: "세션 기록이 기억하는 모든 작업 경로를 현존·소멸·확인 못함으로 분류한 집계입니다.",
                 value: "\(summary.total)곳"
             )
         }

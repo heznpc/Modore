@@ -1,6 +1,6 @@
 import Foundation
 
-struct CleanupPreview: Identifiable {
+struct CleanupPreview: Identifiable, Sendable {
     let id = UUID()
     let operation: String
     let status: String

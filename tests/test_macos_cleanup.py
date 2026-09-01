@@ -191,18 +191,16 @@ def test_macos_app_keeps_raw_approval_token_out_of_argv(project_root):
         project_root
         / "macos/Modore/Sources/Modore/Services/CleanupExecutionService.swift"
     ).read_text(encoding="utf-8")
-    execute_source = source.split("static func execute(", 1)[1].split(
-        "private static func invocation", 1
-    )[0]
-    arguments = execute_source.split("arguments: [", 1)[1].split("],", 1)[0]
 
-    assert 'pinnedFiles["approval_token"] = Data(preview.approvalToken.utf8)' in execute_source
-    assert '"--approval-token-file", "@pch-pinned:approval_token"' in arguments
-    assert "preview.approvalToken" not in arguments
-    assert '"--approval-token",' not in execute_source
+    # The Swift unit test exercises the constructed invocation. This source
+    # boundary only guards the release against reintroducing the legacy raw
+    # argv option, which would expose the token to process inspection.
+    assert '"approval_token": Data(preview.approvalToken.utf8)' in source
+    assert '"--approval-token-file", "@pch-pinned:approval_token"' in source
+    assert '"--approval-token",' not in source
 
 
-def test_macos_app_pins_project_residue_request_out_of_argv(project_root):
+def test_macos_app_source_boundary_keeps_project_residue_request_out_of_argv(project_root):
     service = (
         project_root
         / "macos/Modore/Sources/Modore/Services/CleanupExecutionService.swift"
@@ -211,11 +209,12 @@ def test_macos_app_pins_project_residue_request_out_of_argv(project_root):
         project_root
         / "macos/Modore/Sources/Modore/Models/StorageRecoveryModels.swift"
     ).read_text(encoding="utf-8")
-    invocation = service.split("private static func invocation", 1)[1]
-
-    assert 'pinnedFiles["cleanup_request"] = request.protocolData' in invocation
-    assert '["--request-file", "@pch-pinned:cleanup_request"]' in invocation
-    assert "request.target" not in invocation
+    # Exact argument construction is covered by CleanupExecutionServiceTests;
+    # retain only the shipped-source boundary that the path travels through a
+    # pinned descriptor and never becomes a command-line argument.
+    assert 'requestFiles["cleanup_request"] = request.protocolData' in service
+    assert '["--request-file", "@pch-pinned:cleanup_request"]' in service
+    assert "request.target" not in service
     assert 'Data("version\\t1\\nkind\\tproject_residue\\ntarget\\t\\(target)\\n".utf8)' in models
 
 

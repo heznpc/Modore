@@ -165,6 +165,38 @@ def _storage_tool(path: Path, body: str) -> Path:
     return path
 
 
+def _process_parent_and_state() -> dict[int, tuple[int, str]]:
+    snapshot = subprocess.run(
+        ["/bin/ps", "-axo", "pid=,ppid=,state="],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    rows = {}
+    for line in snapshot.splitlines():
+        fields = line.split()
+        if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
+            rows[int(fields[0])] = (int(fields[1]), fields[2])
+    return rows
+
+
+def _descendant_pids(
+    root_pid: int, rows: dict[int, tuple[int, str]]
+) -> set[int]:
+    descendants = set()
+    parents = {root_pid}
+    while parents:
+        children = {
+            pid
+            for pid, (parent_pid, _) in rows.items()
+            if parent_pid in parents and pid not in descendants
+        }
+        descendants.update(children)
+        parents = children
+    return descendants
+
+
 def _run_application_collector(
     project_root: Path,
     sandbox: Path,
@@ -381,14 +413,26 @@ def test_fast_application_metadata_does_not_wait_for_watchdog(project_root, tmp_
     elapsed = time.monotonic() - started
 
     assert result.returncode == 0, result.stderr
-    assert elapsed < 1
+    # Both metadata calls use a 20-second watchdog. A two-second ceiling still
+    # proves the success path does not wait for it, without turning ordinary
+    # scheduler contention into a 10-millisecond CI failure.
+    assert elapsed < 2
     rows = (sandbox / "facts" / "apps.tsv").read_text(encoding="utf-8").splitlines()
     assert len(rows) == 1
     assert "org.example.fast" in rows[0]
 
 
+@pytest.mark.parametrize(
+    ("termination_scope", "termination_signal"),
+    [
+        ("group", signal.SIGTERM),
+        ("group", signal.SIGKILL),
+        ("collector", signal.SIGKILL),
+    ],
+    ids=["graceful-group-cancel", "forced-group-kill", "forced-parent-only-kill"],
+)
 def test_application_metadata_tool_is_reaped_when_collector_is_cancelled(
-    project_root, tmp_path
+    project_root, tmp_path, termination_scope, termination_signal
 ):
     sandbox = tmp_path / "sandbox"
     applications = sandbox / "Applications"
@@ -444,7 +488,10 @@ def test_application_metadata_tool_is_reaped_when_collector_is_cancelled(
             time.sleep(0.02)
         assert child_pid_file.exists(), "slow metadata tool did not start"
         child_pid = child_pid_file.read_text(encoding="utf-8")
-        os.killpg(process.pid, signal.SIGTERM)
+        if termination_scope == "group":
+            os.killpg(process.pid, termination_signal)
+        else:
+            os.kill(process.pid, termination_signal)
         process.communicate(timeout=3)
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
@@ -465,6 +512,94 @@ def test_application_metadata_tool_is_reaped_when_collector_is_cancelled(
             subprocess.run(
                 ["/bin/kill", "-KILL", child_pid], capture_output=True, text=True
             )
+
+
+def test_storage_helper_sigkill_closes_guardian_pipe_and_reaps_provider(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    provider_child_file = tmp_path / "provider-child.pid"
+    helper_pid_file = tmp_path / "helper.pid"
+    helper_finished_file = tmp_path / "helper-finished"
+    provider = _storage_tool(
+        tmp_path / "provider",
+        (
+            "/bin/sleep 30 &\n"
+            "child=$!\n"
+            f'printf "%s" "$child" > "{provider_child_file}"\n'
+            "wait\n"
+        ),
+    )
+    output = tmp_path / "provider.out"
+    harness = r'''
+. "$1"
+_pch_storage_tool_to_file "$2" 20 "$3" &
+helper=$!
+/usr/bin/printf '%s' "$helper" > "$4"
+wait "$helper" 2>/dev/null || true
+: > "$5"
+/bin/sleep 30
+'''
+    process = subprocess.Popen(
+        [
+            "/bin/bash", "-c", harness, "bash", str(script), str(output),
+            str(provider), str(helper_pid_file), str(helper_finished_file),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    provider_child = None
+    try:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if helper_pid_file.exists() and provider_child_file.exists():
+                break
+            time.sleep(0.01)
+        assert helper_pid_file.exists(), "bounded storage helper did not start"
+        assert provider_child_file.exists(), "provider descendant did not start"
+        helper_pid = int(helper_pid_file.read_text(encoding="utf-8"))
+        provider_child = int(provider_child_file.read_text(encoding="utf-8"))
+        # The provider cannot write its child PID until the guardian has opened
+        # the start gate. Capture every real helper descendant at that point so
+        # the assertion covers both private process groups without guessing a
+        # guardian PID or matching a process command line.
+        process_rows = _process_parent_and_state()
+        helper_descendants = _descendant_pids(helper_pid, process_rows)
+        assert provider_child in helper_descendants
+        watched_pids = helper_descendants | {helper_pid}
+
+        os.kill(helper_pid, signal.SIGKILL)
+        live_pids = watched_pids
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            current_rows = _process_parent_and_state()
+            live_pids = {
+                pid
+                for pid in watched_pids
+                if pid in current_rows and "Z" not in current_rows[pid][1]
+            }
+            if not live_pids and helper_finished_file.exists():
+                break
+            time.sleep(0.02)
+
+        assert helper_finished_file.exists(), "caller remained blocked on killed helper"
+        assert not live_pids, (
+            "killed helper left captured provider/guardian processes alive: "
+            f"{sorted(live_pids)}"
+        )
+        assert process.poll() is None, "top-level collector exited unexpectedly"
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=3)
+        if provider_child is not None:
+            try:
+                os.kill(provider_child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def test_storage_du_budget_is_shared_by_simulators_and_later_paths(
@@ -560,6 +695,153 @@ def test_storage_du_budget_is_shared_by_simulators_and_later_paths(
     assert sum(int(row[2]) for row in trace_rows) == 10
     npm_trace = next(row for row in trace_rows if row[0] == str(home / ".npm"))
     assert npm_trace[1:] == ["4", "0", "timed_out"]
+
+
+def test_storage_provider_timeouts_keep_partial_ps_and_simctl_evidence(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    sandbox = tmp_path / "sandbox"
+    home = sandbox / "home"
+    facts = sandbox / "facts"
+    applications = sandbox / "Applications"
+    facts.mkdir(parents=True)
+    applications.mkdir()
+    sim_child_file = sandbox / "sim-child.pid"
+    ps_child_file = sandbox / "ps-child.pid"
+    uuid = "11111111-1111-4111-8111-111111111111"
+    simctl = _storage_tool(
+        sandbox / "simctl-tool",
+        (
+            "printf '%s\\n' '-- iOS 27.0 --'\n"
+            f"printf '%s\\n' '    Partial Phone ({uuid}) (Shutdown)'\n"
+            "trap '' TERM\n/bin/sleep 30 &\nchild=$!\n"
+            f'printf "%s" "$child" > "{sim_child_file}"\nwait\n'
+        ),
+    )
+    ps_tool = _storage_tool(
+        sandbox / "ps-tool",
+        (
+            "printf '%s\\n' '42 1 00:10 1024 /Applications/Codex.app/Contents/MacOS/Codex'\n"
+            "trap '' TERM\n/bin/sleep 30 &\nchild=$!\n"
+            f'printf "%s" "$child" > "{ps_child_file}"\nwait\n'
+        ),
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_STORAGE_TOOL_ROOT": str(sandbox),
+        "PCH_TEST_STORAGE_APPLICATIONS_ROOT": str(applications),
+        "PCH_TEST_STORAGE_SIMCTL_BIN": str(simctl),
+        "PCH_TEST_STORAGE_PS_BIN": str(ps_tool),
+        "PCH_STORAGE_SIMCTL_TIMEOUT": "1",
+        "PCH_STORAGE_PS_TIMEOUT": "1",
+        "PCH_TEST_STORAGE_DU_DURATION_TICKS": "0",
+        "PCH_TEST_STORAGE_DU_TRACE_FILE": str(sandbox / "du-trace.tsv"),
+        "PCH_STORAGE_DU_TIMEOUT": "1",
+        "PCH_STORAGE_TOTAL_DU_BUDGET": "1",
+    }
+    harness = (
+        'record_collection_status() { printf "%s\\t%s\\t%s\\t%s\\t%s\\n" "$@" >> "$TMP_DIR/status.tsv"; }\n'
+        '. "$1"\n'
+        'collect_storage\n'
+    )
+
+    started = time.monotonic()
+    result = subprocess.run(
+        ["/bin/bash", "-c", harness, "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=8,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < 5
+    statuses = {
+        row.split("\t")[0]: row.split("\t")
+        for row in (facts / "status.tsv").read_text(encoding="utf-8").splitlines()
+    }
+    assert statuses["storage_simulators"][2] == "timed_out"
+    assert statuses["runtime_processes"][2] == "timed_out"
+    assert "일부" in statuses["storage_simulators"][4]
+    assert "일부" in statuses["runtime_processes"][4]
+    simulator_rows = (facts / "storage_simulators.tsv").read_text(encoding="utf-8")
+    assert uuid in simulator_rows
+    runtime_rows = (facts / "storage_runtime.tsv").read_text(encoding="utf-8")
+    assert "Codex processes\t1\t" in runtime_rows
+
+    for pid_file in (sim_child_file, ps_child_file):
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+        for _ in range(50):
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError(f"provider deadline left descendant {child_pid} running")
+
+
+def test_storage_provider_success_does_not_leave_background_descendant(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    child_pid_file = tmp_path / "child.pid"
+    provider = _storage_tool(
+        tmp_path / "provider",
+        (
+            "printf 'collected\\n'\n"
+            "/bin/sleep 30 &\n"
+            "child=$!\n"
+            f'printf "%s" "$child" > "{child_pid_file}"\n'
+            "exit 0\n"
+        ),
+    )
+    output = tmp_path / "provider.out"
+    harness = (
+        '. "$1"\n'
+        '_pch_storage_tool_to_file "$2" 2 "$3"\n'
+        'printf "status=%s\\n" "$?"\n'
+    )
+    child_pid = None
+
+    try:
+        started = time.monotonic()
+        result = subprocess.run(
+            ["/bin/bash", "-c", harness, "bash", str(script), str(output), str(provider)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+        )
+        elapsed = time.monotonic() - started
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "status=0\n"
+        assert elapsed < 3
+        assert output.read_text(encoding="utf-8") == "collected\n"
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        for _ in range(50):
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError(
+                f"successful provider left descendant {child_pid} running"
+            )
+    finally:
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, 9)
+            except ProcessLookupError:
+                pass
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="JXA scanner helper is macOS-only")

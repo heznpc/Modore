@@ -69,7 +69,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import errno
+import fcntl
 import hashlib
 import io
 import json
@@ -83,6 +85,7 @@ import stat
 import subprocess
 import sys
 import time
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -145,6 +148,7 @@ CLAUDE_DESKTOP_PRIMARY_SCAN_MAX_ENTRIES = 50000
 CLAUDE_DESKTOP_BIND_MAX_FILES = 50000
 CLAUDE_DESKTOP_WORKSPACE_PROBE_SECONDS = 0.50
 CLAUDE_DESKTOP_WORKSPACE_PROBE_MAX_BYTES = 4 * 1024 * 1024
+WORKSPACE_PATHS_STORE = "Workspace paths"
 
 # Retention judgment thresholds (observation-based estimates, never vendor claims).
 RETENTION_MIN_SESSIONS = 5      # below this a window cannot be inferred honestly
@@ -2673,6 +2677,7 @@ def collect_worktrees(home: Path, records: Optional[list[dict]] = None) -> dict:
         "observed_workspaces": observed_workspaces,
         "unreadable": item_unreadable + discovery_unreadable + registry_unreadable,
         "truncated": probe_truncated or budget.exhausted,
+        "worker_leaked": False,
     }
 
 
@@ -2704,6 +2709,7 @@ def _metadata_worktree_fallback(records: list[dict]) -> dict:
         # not be read. No filesystem call is made while constructing this.
         "unreadable": len(items) + 1,
         "truncated": True,
+        "worker_leaked": False,
     }
 
 
@@ -2741,26 +2747,186 @@ def _worktree_group_exists(pid: int) -> bool:
         return True
 
 
-def _terminate_worktree_worker(pid: int, *, process_group: bool = False) -> None:
-    """Terminate the isolated worker and every git process it started."""
-    _signal_worktree_worker(
-        pid, signal.SIGTERM, process_group=process_group)
-    deadline = time.monotonic() + 0.20
-    stopped = False
-    while time.monotonic() < deadline:
-        if not stopped:
-            stopped, _ = _waitpid_until(pid, time.monotonic())
-        group_gone = not process_group or not _worktree_group_exists(pid)
-        if stopped and group_gone:
-            return
-        time.sleep(0.01)
-    _signal_worktree_worker(
-        pid, signal.SIGKILL, process_group=process_group)
-    _waitpid_until(pid, time.monotonic() + 0.20)
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _process_descendants(pid: int) -> Optional[list[int]]:
+    """Bounded process-tree snapshot used only for an internal timeout.
+
+    Isolated workers intentionally remain in the app's root process group so
+    a root SIGKILL reaches every generation.  For the narrower internal
+    timeout, enumerate children by PID instead of moving them into a private
+    group that the app could no longer cancel.
+    """
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid="], capture_output=True,
+            text=True, timeout=0.20, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    lines = result.stdout.splitlines()
+    if len(lines) > 100_000:
+        return None
+    children: dict[int, list[int]] = {}
+    try:
+        for line in lines:
+            child_text, parent_text = line.split()
+            child = int(child_text)
+            parent = int(parent_text)
+            children.setdefault(parent, []).append(child)
+    except (ValueError, IndexError):
+        return None
+    found: list[int] = []
+    pending = [pid]
+    seen = {pid}
+    while pending:
+        parent = pending.pop()
+        for child in children.get(parent, ()):
+            if child in seen:
+                continue
+            if len(found) >= 4096:
+                # A truncated tree cannot support a truthful "all reaped"
+                # result. The caller still kills every PID already observed.
+                return None
+            seen.add(child)
+            found.append(child)
+            pending.append(child)
+    return found
+
+
+def _terminate_worktree_worker(pid: int, *, process_group: bool = False) -> bool:
+    """Kill an isolated worker tree; return true only with bounded proof."""
     if process_group:
+        # Retained for callers that already own a private group. App-level
+        # cancellation instead keeps workers in the report's root group so a
+        # root SIGKILL reaches every generation.
+        _signal_worktree_worker(
+            pid, signal.SIGTERM, process_group=True)
+        deadline = time.monotonic() + 0.20
+        stopped = False
+        while time.monotonic() < deadline:
+            if not stopped:
+                stopped, _ = _waitpid_until(pid, time.monotonic())
+            if stopped and not _worktree_group_exists(pid):
+                return True
+            time.sleep(0.01)
+        _signal_worktree_worker(
+            pid, signal.SIGKILL, process_group=True)
+        stopped, _ = _waitpid_until(pid, time.monotonic() + 0.20)
         deadline = time.monotonic() + 0.20
         while _worktree_group_exists(pid) and time.monotonic() < deadline:
             time.sleep(0.01)
+        return stopped and not _worktree_group_exists(pid)
+
+    # Freeze the direct worker before taking a process-tree snapshot. Without
+    # this stop, it can fork between `ps` and SIGTERM and the new child is
+    # immediately reparented when the worker exits, making it undiscoverable.
+    _signal_worktree_worker(pid, signal.SIGSTOP)
+    worker_stopped = False
+    worker_reaped = False
+    stop_deadline = time.monotonic() + 0.20
+    while time.monotonic() < stop_deadline:
+        try:
+            waited, wait_status = os.waitpid(
+                pid, os.WNOHANG | os.WUNTRACED)
+        except ChildProcessError:
+            worker_reaped = True
+            break
+        if waited == pid:
+            if os.WIFSTOPPED(wait_status):
+                worker_stopped = True
+            else:
+                worker_reaped = True
+            break
+        time.sleep(0.005)
+
+    known: list[int] = []
+    known_set: set[int] = set()
+    previous: Optional[set[int]] = None
+    stable = False
+    snapshot_ok = worker_stopped
+    if worker_stopped:
+        # Descendants do not receive their parent's SIGSTOP. Freeze each
+        # observed generation and rescan until two consecutive snapshots agree.
+        # A child that forks just after one snapshot is found by the next pass.
+        for _ in range(8):
+            descendants = _process_descendants(pid)
+            if descendants is None:
+                snapshot_ok = False
+                break
+            current = set(descendants)
+            for child in descendants:
+                if child not in known_set:
+                    known.append(child)
+                    known_set.add(child)
+                _signal_worktree_worker(child, signal.SIGSTOP)
+            if previous is not None and current == previous:
+                stable = True
+                break
+            previous = current
+            time.sleep(0.01)
+
+    # This is already a hard-timeout/error path. Kill the frozen tree without
+    # resuming it; SIGTERM+SIGCONT would reopen the very fork window we closed.
+    for child in reversed(known):
+        _signal_worktree_worker(child, signal.SIGKILL)
+    if not worker_reaped:
+        _signal_worktree_worker(pid, signal.SIGKILL)
+        worker_reaped, _ = _waitpid_until(
+            pid, time.monotonic() + 0.20)
+
+    deadline = time.monotonic() + 0.20
+    while (any(_pid_exists(child) for child in known)
+           and time.monotonic() < deadline):
+        time.sleep(0.01)
+    descendants_gone = all(not _pid_exists(child) for child in known)
+    # Failure to stop, snapshot, or stabilize is deliberately incomplete even
+    # if every PID we happened to observe is gone: unobserved children cannot
+    # be claimed reaped.
+    return (worker_reaped and descendants_gone and snapshot_ok and stable)
+
+
+def _prepare_isolated_reader(
+        read_descriptor: int, write_descriptor: int, pid: int,
+        ) -> bool:
+    """Finish parent-side pipe setup or tear down every acquired resource.
+
+    Fork succeeds before the parent makes the reader nonblocking. A failure in
+    that small setup window closes both pipe ends and runs bounded tree cleanup.
+    Callers treat ``False`` as incomplete; cleanup itself reports success only
+    when its stopped snapshots prove that every observed generation is gone.
+    """
+    try:
+        os.close(write_descriptor)
+        write_descriptor = -1
+        os.set_blocking(read_descriptor, False)
+        return True
+    except BaseException as setup_error:
+        for descriptor in (read_descriptor, write_descriptor):
+            if descriptor < 0:
+                continue
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        try:
+            _terminate_worktree_worker(pid)
+        except BaseException:
+            # Cleanup failure is represented by the caller's incomplete
+            # result; never mask the original setup failure with another one.
+            pass
+        if isinstance(setup_error, Exception):
+            return False
+        raise
 
 
 def collect_worktrees_isolated(
@@ -2770,12 +2936,10 @@ def collect_worktrees_isolated(
 
     macOS GUI/TCC context can leave even one exact ``openat`` blocked despite
     the same path returning instantly in a shell. A process boundary is the
-    only hard timeout around such a syscall. The child deliberately remains in
-    the report's existing process group: Modore's root group cancellation and
-    force-kill therefore always reaches the parent. The worker is its own
-    process group so this function's timeout can terminate every live git
-    descendant; while it is supervised, SIGTERM to the parent is forwarded to
-    that group before the parent exits.
+    only hard timeout around such a syscall. The child and every git process
+    it starts deliberately remain in the report's existing process group, so
+    Modore's root-group SIGTERM/SIGKILL always reaches every generation.
+    Internal timeout cleanup uses a bounded PID-tree snapshot instead.
     """
     fallback = _metadata_worktree_fallback(records)
     setup_signal_mask = None
@@ -2787,11 +2951,11 @@ def collect_worktrees_isolated(
         # Close the only cancellation gap before creating the worker.  A
         # SIGTERM delivered after fork but before ``forward_sigterm`` was
         # installed used to kill only this parent, leaving the worker and its
-        # git descendant behind.  The child inherits the blocked mask, enters
-        # its private process group, then restores the caller's mask before it
-        # performs any discovery.  The parent restores its mask only after the
+        # git descendant behind. The child inherits the blocked mask and stays
+        # in the caller's root process group, then restores the mask before it
+        # performs any discovery. The parent restores its mask only after the
         # forwarding handler is live, so a pending termination is delivered
-        # through that handler.
+        # through that handler as well as the shared root process group.
         if hasattr(signal, "pthread_sigmask"):
             try:
                 setup_signal_mask = signal.pthread_sigmask(
@@ -2816,7 +2980,6 @@ def collect_worktrees_isolated(
 
     if pid == 0:
         try:
-            os.setpgid(0, 0)
             if setup_sigterm_blocked:
                 signal.pthread_sigmask(
                     signal.SIG_SETMASK, setup_signal_mask)
@@ -2851,21 +3014,10 @@ def collect_worktrees_isolated(
             raise SystemExit(128 + signal_number)
 
     try:
-        try:
-            # Doing this in both processes closes the fork race: whichever
-            # runs first establishes the private group before
-            # collect_worktrees can spawn git.
-            os.setpgid(pid, pid)
-            process_group = True
-        except OSError:
-            try:
-                process_group = os.getpgid(pid) == pid
-            except OSError:
-                process_group = False
-
-        os.close(write_fd)
+        if not _prepare_isolated_reader(read_fd, write_fd, pid):
+            read_fd = write_fd = -1
+            return fallback
         write_fd = -1
-        os.set_blocking(read_fd, False)
         chunks: list[bytes] = []
         total_bytes = 0
         eof = False
@@ -2896,7 +3048,8 @@ def collect_worktrees_isolated(
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _terminate_worktree_worker(pid, process_group=process_group)
+                fallback["worker_leaked"] = not _terminate_worktree_worker(
+                    pid, process_group=process_group)
                 return fallback
             ready, _, _ = select.select([read_fd], [], [], min(0.05, remaining))
             if ready:
@@ -2909,7 +3062,9 @@ def collect_worktrees_isolated(
                 elif chunk:
                     total_bytes += len(chunk)
                     if total_bytes > WORKTREE_DISCOVERY_MAX_OUTPUT_BYTES:
-                        _terminate_worktree_worker(pid, process_group=process_group)
+                        fallback["worker_leaked"] = not (
+                            _terminate_worktree_worker(
+                                pid, process_group=process_group))
                         return fallback
                     chunks.append(chunk)
                 else:
@@ -2946,6 +3101,7 @@ def collect_worktrees_isolated(
         "observed_workspaces": int,
         "unreadable": int,
         "truncated": bool,
+        "worker_leaked": bool,
     }
     if (not isinstance(result, dict)
             or any(not isinstance(result.get(key), expected)
@@ -2954,7 +3110,19 @@ def collect_worktrees_isolated(
     return result
 
 
-def build_lineage(records: list[dict]) -> dict:
+def _lineage_probe_locations(records: list[dict]) -> list[str]:
+    workspaces = sorted({
+        item["workspace"] for item in records
+        if isinstance(item.get("workspace"), str) and item["workspace"]
+    })
+    return workspaces + [os.path.join(workspace, ".git")
+                         for workspace in workspaces]
+
+
+def build_lineage(
+        records: list[dict],
+        location_status: Optional[dict[str, Optional[bool]]] = None,
+        ) -> dict:
     """Universal facts about every work path seen in session records: does it
     still exist, and is it a git repo. Session records are often the only
     surviving trace of vanished work, so this is the map of what the sessions
@@ -2970,18 +3138,38 @@ def build_lineage(records: list[dict]) -> dict:
         workspace = item.get("workspace")
         if workspace:
             by_key.setdefault(workspace.casefold(), set()).add(workspace)
+    if location_status is None:
+        location_status, _ = _workspace_location_statuses_isolated(
+            _lineage_probe_locations(records))
     paths: list[dict] = []
-    alive_git = alive_plain = vanished = ghosts = 0
+    alive_git = alive_plain = vanished = unknown = ghosts = 0
     for key in sorted(by_key):
         variants = sorted(by_key[key])
-        exists = any(Path(v).exists() for v in variants)
-        has_git = exists and any((Path(v) / ".git").exists() for v in variants)
+        workspace_states = [location_status.get(value) for value in variants]
+        exists: Optional[bool] = (
+            True if any(value is True for value in workspace_states)
+            else None if any(value is None for value in workspace_states)
+            else False
+        )
+        git_states = [
+            location_status.get(os.path.join(value, ".git"))
+            for value in variants
+        ]
+        has_git: Optional[bool] = (
+            False if exists is False
+            else None if exists is None
+            else True if any(value is True for value in git_states)
+            else None if any(value is None for value in git_states)
+            else False
+        )
         entry: dict = {"path": variants[0], "exists": exists, "has_git": has_git}
         if len(variants) > 1:
             entry["case_variants"] = variants
             ghosts += 1
         paths.append(entry)
-        if not exists:
+        if exists is None:
+            unknown += 1
+        elif not exists:
             vanished += 1
         elif has_git:
             alive_git += 1
@@ -2990,7 +3178,7 @@ def build_lineage(records: list[dict]) -> dict:
     return {"paths": paths,
             "summary": {"total": len(paths), "alive_git": alive_git,
                         "alive_plain": alive_plain, "vanished": vanished,
-                        "case_ghosts": ghosts}}
+                        "unknown": unknown, "case_ghosts": ghosts}}
 
 
 # Enterprise MDM policy path (macOS). Modore's own collectors are already
@@ -3104,7 +3292,10 @@ def collect_claude_desktop_deletions(home: Path) -> set[str]:
     return deleted
 
 
-def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = None) -> dict:
+def build_retention(
+        records: list[dict], now_ts: float, home: Optional[Path] = None,
+        location_status: Optional[dict[str, Optional[bool]]] = None,
+        ) -> dict:
     """Per-store retention judgment.
 
     Prefers a real, read configuration value over a guess wherever scree knows
@@ -3144,7 +3335,13 @@ def build_retention(records: list[dict], now_ts: float, home: Optional[Path] = N
                     "source": source,
                     "days_left": days_left,
                     "size_bytes": session["size_bytes"],
-                    "story_alive": bool(workspace) and Path(workspace).exists(),
+                    "story_alive": (
+                        location_status.get(workspace)
+                        if workspace and location_status is not None
+                        else None if not workspace
+                        else _workspace_location_statuses_isolated(
+                            [workspace])[0].get(workspace)
+                    ),
                     "owner_deleted": bool(source) and Path(source).stem in owner_deleted,
                 })
 
@@ -3391,6 +3588,7 @@ def collect_gemini_chats(home: Path) -> list[dict]:
 
 
 SESSIONS_DEFAULT_LIMIT = 0
+SESSION_INDEX_ISOLATION_MAX_BYTES = 64 * 1024 * 1024
 
 
 def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
@@ -3417,6 +3615,20 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
     gemini_chats, gemini_chat_coverage = (
         _collect_gemini_chats_with_coverage(home))
     records += gemini_chats
+    # Provider-controlled workspace strings may name a sleeping network mount
+    # or an automount endpoint. Never let an index/search call perform an
+    # unbounded stat in the main process. Desktop records already carry the
+    # result of the same isolated probe from their metadata collector; probe
+    # the remaining unique locations once here.
+    workspace_locations = [
+        workspace
+        for item in records
+        for workspace in [item.get("workspace")]
+        if (isinstance(workspace, str) and workspace
+            and "workspace_exists" not in item)
+    ]
+    workspace_status, workspace_probe_complete = (
+        _workspace_location_statuses_isolated(workspace_locations))
     sessions = []
     for item in records:
         # Editor workspace state is listed alongside agent transcripts.
@@ -3430,9 +3642,11 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
         if not item.get("source"):
             continue
         workspace = item.get("workspace") or ""
-        workspace_exists = (item["workspace_exists"]
-                            if "workspace_exists" in item
-                            else bool(workspace) and Path(workspace).exists())
+        workspace_exists = (
+            item["workspace_exists"]
+            if "workspace_exists" in item
+            else workspace_status.get(workspace) if workspace else None
+        )
         session = {
             "tool": item["tool"],
             "source": item["source"],
@@ -3473,6 +3687,14 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
         for entry in store_coverage if entry["store"] != "Gemini"
     ]
     coverage_stores.append(gemini_chat_coverage)
+    unresolved_workspaces = sum(
+        value is None for value in workspace_status.values())
+    coverage_stores.append({
+        "store": WORKSPACE_PATHS_STORE,
+        "status": "ok" if workspace_probe_complete else "truncated",
+        "count": len(workspace_status) - unresolved_workspaces,
+        "unrecognized": unresolved_workspaces,
+    })
     complete = all(
         entry["status"] in ("ok", "missing")
         and entry["unrecognized"] == 0
@@ -3481,12 +3703,129 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
     return {
         "total": len(sessions),
         "sessions": sessions[:limit] if limit > 0 else sessions,
-        "coverage": {"complete": complete, "stores": coverage_stores},
+        "coverage": {"complete": complete, "stores": coverage_stores,
+                     "workerLeaked": False},
     }
+
+
+def _build_sessions_isolated(home: Path, deadline: float) -> dict:
+    """Run all provider discovery under the caller's remaining wall clock."""
+    fallback = {
+        "total": 0,
+        "sessions": [],
+        "coverage": {
+            "complete": False,
+            "workerLeaked": False,
+            "stores": [{
+                "store": "Session discovery", "status": "truncated",
+                "count": 0, "unrecognized": 1,
+            }],
+        },
+    }
+    if time.monotonic() >= deadline:
+        return fallback
+    try:
+        read_descriptor, write_descriptor = os.pipe()
+        pid = os.fork()
+    except OSError:
+        for descriptor in (locals().get("read_descriptor", -1),
+                           locals().get("write_descriptor", -1)):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+        return fallback
+    if pid == 0:
+        try:
+            os.close(read_descriptor)
+            payload = json.dumps(
+                build_sessions(home, limit=0), ensure_ascii=False,
+                separators=(",", ":")).encode("utf-8")
+            if len(payload) <= SESSION_INDEX_ISOLATION_MAX_BYTES:
+                offset = 0
+                while offset < len(payload):
+                    offset += os.write(write_descriptor, payload[offset:])
+        except BaseException:
+            pass
+        finally:
+            try:
+                os.close(write_descriptor)
+            except OSError:
+                pass
+        os._exit(0)
+
+    if not _prepare_isolated_reader(
+            read_descriptor, write_descriptor, pid):
+        return fallback
+    chunks: list[bytes] = []
+    total = 0
+    eof = False
+    child_status: Optional[int] = None
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                fallback["coverage"]["workerLeaked"] = not (
+                    _terminate_worktree_worker(pid))
+                return fallback
+            ready = select.select(
+                [read_descriptor], [], [], min(0.05, remaining))[0]
+            if ready:
+                try:
+                    chunk = os.read(read_descriptor, 65536)
+                except BlockingIOError:
+                    chunk = None
+                if chunk:
+                    total += len(chunk)
+                    if total > SESSION_INDEX_ISOLATION_MAX_BYTES:
+                        fallback["coverage"]["workerLeaked"] = not (
+                            _terminate_worktree_worker(pid))
+                        return fallback
+                    chunks.append(chunk)
+                elif chunk == b"":
+                    eof = True
+            if child_status is None:
+                try:
+                    waited, status = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    waited, status = pid, 0
+                if waited == pid:
+                    child_status = status
+            if eof and child_status is not None:
+                break
+    except BaseException:
+        _terminate_worktree_worker(pid)
+        raise
+    finally:
+        os.close(read_descriptor)
+    if child_status is None or not os.WIFEXITED(child_status):
+        return fallback
+    try:
+        result = json.loads(b"".join(chunks).decode("utf-8"))
+    except JSON_PARSE_ERRORS:
+        return fallback
+    if (not isinstance(result, dict)
+            or type(result.get("total")) is not int
+            or not isinstance(result.get("sessions"), list)
+            or not isinstance(result.get("coverage"), dict)):
+        return fallback
+    return result
 
 
 def build_scree(home: Path) -> dict:
     records, stores = collect_all(home)
+    location_status, location_complete = (
+        _workspace_location_statuses_isolated(
+            _lineage_probe_locations(records)))
+    unresolved_locations = sum(
+        value is None for value in location_status.values())
+    stores = [*stores, {
+        "store": WORKSPACE_PATHS_STORE,
+        "status": "ok" if location_complete else "truncated",
+        "count": len(location_status) - unresolved_locations,
+        "unrecognized": unresolved_locations,
+    }]
 
     # Keyed by casefold, same as build_lineage: a case-insensitive filesystem
     # (macOS default) lets Codex/Claude/Gemini/VS Code each record the same
@@ -3527,7 +3866,13 @@ def build_scree(home: Path) -> dict:
     finished = []
     for group in groups.values():
         workspaces = sorted(group.pop("workspaces"))
-        existing = [w for w in workspaces if Path(w).exists()]
+        workspace_states = [location_status.get(workspace)
+                            for workspace in workspaces]
+        orphan: Optional[bool] = (
+            False if any(value is True for value in workspace_states)
+            else None if any(value is None for value in workspace_states)
+            else True
+        )
         if group["grouped_by"] != "repo":
             # The join key above is casefolded for matching; the key exposed
             # to consumers must stay a real, displayable casing instead of
@@ -3537,11 +3882,11 @@ def build_scree(home: Path) -> dict:
             **group,
             "workspaces": workspaces,
             "worktrees": [w for w in workspaces if "/worktrees/" in w],
-            "orphan": not existing,
+            "orphan": orphan,
             "cross_tool": len(group["tools"]) > 1,
             "last_active": time.strftime("%Y-%m-%d %H:%M", time.localtime(group["last_active"])),
         }
-        if entry["orphan"]:
+        if entry["orphan"] is True:
             # The only fact checked is path absence; a moved/renamed/unmounted
             # workspace looks identical, so consumers get the basis explicitly.
             entry["orphan_basis"] = "path_missing"
@@ -3553,8 +3898,9 @@ def build_scree(home: Path) -> dict:
         "stores": stores,
         "groups": finished,
         "unresolved_sessions": unresolved_count,
-        "lineage": build_lineage(records),
-        "retention": build_retention(records, time.time(), home),
+        "lineage": build_lineage(records, location_status),
+        "retention": build_retention(
+            records, time.time(), home, location_status),
         "worktrees": collect_worktrees_isolated(home, records),
     }
 
@@ -3668,7 +4014,7 @@ def _desktop_binding_locations(
     return (cwd, tuple(dict.fromkeys(selected)), complete)
 
 
-def _desktop_location_statuses_isolated(
+def _workspace_location_statuses_isolated(
         locations: list[str],
         ) -> tuple[dict[str, Optional[bool]], bool]:
     """Probe provider paths behind one hard process timeout.
@@ -3695,20 +4041,23 @@ def _desktop_location_statuses_isolated(
     if pid == 0:
         try:
             os.close(read_descriptor)
-            statuses: list[int] = []
-            for location in unique:
+            for index, location in enumerate(unique):
                 try:
                     info = os.stat(location)
                 except (FileNotFoundError, NotADirectoryError):
-                    statuses.append(0)
-                except OSError:
-                    statuses.append(-1)
+                    status = 0
+                except (OSError, ValueError):
+                    status = -1
                 else:
-                    statuses.append(1 if stat.S_ISDIR(info.st_mode) else 0)
-            payload = json.dumps(statuses, separators=(",", ":")).encode("ascii")
-            offset = 0
-            while offset < len(payload):
-                offset += os.write(write_descriptor, payload[offset:])
+                    status = 1 if stat.S_ISDIR(info.st_mode) else 0
+                # Emit each result immediately. If a later provider path is a
+                # dead network mount, statuses already established for local
+                # paths remain usable instead of being discarded with the
+                # timed-out child.
+                payload = f"{index}:{status}\n".encode("ascii")
+                offset = 0
+                while offset < len(payload):
+                    offset += os.write(write_descriptor, payload[offset:])
         except BaseException:
             pass
         finally:
@@ -3718,19 +4067,22 @@ def _desktop_location_statuses_isolated(
                 pass
         os._exit(0)
 
-    os.close(write_descriptor)
-    os.set_blocking(read_descriptor, False)
+    if not _prepare_isolated_reader(
+            read_descriptor, write_descriptor, pid):
+        return ({location: None for location in unique}, False)
     chunks: list[bytes] = []
     total = 0
     eof = False
     child_status: Optional[int] = None
+    timed_out = False
     deadline = time.monotonic() + CLAUDE_DESKTOP_WORKSPACE_PROBE_SECONDS
     try:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _terminate_worktree_worker(pid)
-                return ({location: None for location in unique}, False)
+                timed_out = True
+                break
             ready, _, _ = select.select(
                 [read_descriptor], [], [], min(0.05, remaining))
             if ready:
@@ -3742,7 +4094,8 @@ def _desktop_location_statuses_isolated(
                     total += len(chunk)
                     if total > CLAUDE_DESKTOP_WORKSPACE_PROBE_MAX_BYTES:
                         _terminate_worktree_worker(pid)
-                        return ({location: None for location in unique}, False)
+                        timed_out = True
+                        break
                     chunks.append(chunk)
                 elif chunk == b"":
                     eof = True
@@ -3761,27 +4114,47 @@ def _desktop_location_statuses_isolated(
     finally:
         os.close(read_descriptor)
 
+    statuses: dict[int, int] = {}
+    malformed = False
     try:
-        statuses = json.loads(b"".join(chunks))
-    except (ValueError, UnicodeDecodeError, RecursionError):
-        statuses = None
-    if (child_status is None or not os.WIFEXITED(child_status)
-            or not isinstance(statuses, list)
-            or len(statuses) != len(unique)
-            or any(type(value) is not int or value not in (-1, 0, 1)
-                   for value in statuses)):
+        text = b"".join(chunks).decode("ascii")
+        for line in text.splitlines():
+            index_text, status_text = line.split(":", 1)
+            index = int(index_text)
+            value = int(status_text)
+            if (index < 0 or index >= len(unique) or value not in (-1, 0, 1)
+                    or index in statuses):
+                malformed = True
+                break
+            statuses[index] = value
+    except (ValueError, UnicodeDecodeError):
+        malformed = True
+    exited = (child_status is not None and os.WIFEXITED(child_status))
+    if malformed:
         return ({location: None for location in unique}, False)
     result = {
-        location: (None if value == -1 else value == 1)
-        for location, value in zip(unique, statuses)
+        location: (
+            None if index not in statuses or statuses[index] == -1
+            else statuses[index] == 1
+        )
+        for index, location in enumerate(unique)
     }
-    return (result, all(value is not None for value in result.values()))
+    complete = (not timed_out and exited and len(statuses) == len(unique)
+                and all(value is not None for value in result.values()))
+    return (result, complete)
+
+
+def _desktop_location_statuses_isolated(
+        locations: list[str],
+        ) -> tuple[dict[str, Optional[bool]], bool]:
+    """Compatibility name for the Desktop collector's shared path probe."""
+    return _workspace_location_statuses_isolated(locations)
 
 
 def _desktop_index_workspace(
         payload: dict,
         location_status: dict[str, Optional[bool]],
-        ) -> tuple[str, bool]:
+        ) -> tuple[str, Optional[bool]]:
     """Choose one Work group while keeping every other folder binder-only.
 
     ``userSelectedFolders`` is ordered by the provider. Prefer its first
@@ -3796,12 +4169,12 @@ def _desktop_index_workspace(
             if location_status.get(location) is True:
                 return (location, True)
         if any(location_status.get(location) is None for location in selected):
-            return ("", False)
+            return ("", None)
         return (selected[0], False)
     if cwd is not None:
         exists = location_status.get(cwd)
-        return ((cwd, exists) if exists is not None else ("", False))
-    return ("", False)
+        return ((cwd, exists) if exists is not None else ("", None))
+    return ("", None)
 
 
 def _claude_desktop_binding_scan(
@@ -4931,6 +5304,8 @@ def render_report(scree: dict, limit: int) -> str:
                         f" alive+git {lineage_summary['alive_git']}"
                         f" · alive+plain {lineage_summary['alive_plain']}"
                         f" · vanished {lineage_summary['vanished']}")
+        if lineage_summary.get("unknown"):
+            lineage_line += f" · unknown {lineage_summary['unknown']}"
         if lineage_summary.get("case_ghosts"):
             lineage_line += f" · case ghosts {lineage_summary['case_ghosts']}"
         lines.append(lineage_line)
@@ -4941,6 +5316,8 @@ def render_report(scree: dict, limit: int) -> str:
             marks.append("cross-tool")
         if group["orphan"]:
             marks.append("orphan")
+        elif group["orphan"] is None:
+            marks.append("path unknown")
         if group["worktrees"]:
             marks.append(f"worktree {len(group['worktrees'])}")
         tools = " · ".join(f"{name} {count}" for name, count in sorted(group["tools"].items()))
@@ -4969,9 +5346,12 @@ def render_report(scree: dict, limit: int) -> str:
         expiring = retention.get("expiring", [])
         if expiring:
             wanted = [e for e in expiring if not e.get("owner_deleted")]
-            alive = [e for e in wanted if e["story_alive"]]
+            alive = [e for e in wanted if e["story_alive"] is True]
+            orphaned = [e for e in wanted if e["story_alive"] is False]
+            unknown = [e for e in wanted if e["story_alive"] is None]
             counts = [f"alive workspaces {len(alive)}",
-                      f"orphaned {len(wanted) - len(alive)}"]
+                      f"orphaned {len(orphaned)}",
+                      f"unknown {len(unknown)}"]
             discarded = len(expiring) - len(wanted)
             if discarded:
                 counts.append(f"already deleted in the app {discarded}")
@@ -5202,10 +5582,11 @@ class _BoundedBinaryLines:
 def _read_jsonl_turns(
         handle, *, deadline: Optional[float] = None,
         maximum_bytes: Optional[int] = None,
-        ) -> tuple[list[VisibleTurn], bool, bool, bool]:
+        ) -> tuple[list[VisibleTurn], bool, bool, bool, bool]:
     """Decode bounded visible records from an already-open binary stream."""
     turns: list[VisibleTurn] = []
     decoded_any = False
+    parse_failed = False
     lines = _BoundedBinaryLines(
         handle,
         maximum_bytes=(SESSION_CONTENT_MAX_BYTES
@@ -5215,13 +5596,17 @@ def _read_jsonl_turns(
         try:
             parsed = json.loads(line)
         except JSON_PARSE_ERRORS:
+            parse_failed = True
+            continue
+        if not isinstance(parsed, dict):
+            parse_failed = True
             continue
         decoded_any = True
-        if isinstance(parsed, dict):
-            turn = _extract_turn(parsed)
-            if turn:
-                turns.append(turn)
-    return (turns, decoded_any, lines.truncated, lines.timed_out)
+        turn = _extract_turn(parsed)
+        if turn:
+            turns.append(turn)
+    return (turns, decoded_any, lines.truncated, lines.timed_out,
+            parse_failed)
 
 
 def _read_session_turns(
@@ -5249,7 +5634,8 @@ def _read_session_turns(
         try:
             before = os.fstat(desktop_descriptor)
             with os.fdopen(os.dup(desktop_descriptor), "rb") as handle:
-                turns, decoded_any, truncated, timed_out = _read_jsonl_turns(
+                (turns, decoded_any, truncated, timed_out,
+                 parse_failed) = _read_jsonl_turns(
                     handle, deadline=deadline)
             after = os.fstat(desktop_descriptor)
         except OSError:
@@ -5264,6 +5650,8 @@ def _read_session_turns(
             return (turns, "truncated")
         if not decoded_any and before.st_size > 0:
             return ([], "unrecognized")
+        if parse_failed:
+            return (turns, "parse")
         return (turns, "ok")
     turns: list[VisibleTurn] = []
     if source.suffix == ".json":
@@ -5312,7 +5700,8 @@ def _read_session_turns(
         return ([], open_status)
     try:
         with os.fdopen(os.dup(descriptor), "rb") as handle:
-            turns, decoded_any, truncated, timed_out = _read_jsonl_turns(
+            (turns, decoded_any, truncated, timed_out,
+             parse_failed) = _read_jsonl_turns(
                 handle, deadline=deadline)
         after = os.fstat(descriptor)
     except OSError:
@@ -5329,6 +5718,8 @@ def _read_session_turns(
     # conversation; it is a file this build cannot read.
     if not decoded_any and before.st_size > 0:
         return ([], "unrecognized")
+    if parse_failed:
+        return (turns, "parse")
     return (turns, "ok")
 
 
@@ -5377,7 +5768,7 @@ def visible_turns(
     and treating them as content pushes the actual exchange off screen.
     """
     turns, status = _read_session_turns(source, home, deadline=deadline)
-    if status not in ("ok", "truncated", "time"):
+    if status not in ("ok", "truncated", "time", "parse"):
         return ([], status)
     return (_canonical_visible_turns(turns), status)
 
@@ -5689,6 +6080,17 @@ BACKUP_MAX_BYTES = 2 * 1024 * 1024 * 1024
 BACKUP_MAX_FILES = 10000
 BACKUP_MAX_DEPTH = 128
 RESTORE_MAX_DIRECTORIES = 192
+RESTORE_JOURNAL_NAME = "journal.jsonl"
+RESTORE_RECOVERY_MAX_PARENT_ENTRIES = 4096
+RESTORE_RECOVERY_MAX_LEDGERS = 32
+RESTORE_RECOVERY_MAX_JOURNAL_BYTES = 16 * 1024 * 1024
+RESTORE_LEGACY_LEDGER_PATTERN = re.compile(
+    r"^\.modore-restore-ledger-(?P<pid>[0-9]+)-[0-9a-f]{16}$")
+RESTORE_TARGET_LEDGER_PATTERN = re.compile(
+    r"^\.modore-restore-ledger-v3-[0-9a-f]{64}$")
+RESTORE_LEDGER_PATTERN = re.compile(
+    r"^(?:\.modore-restore-ledger-[0-9]+-[0-9a-f]{16}"
+    r"|\.modore-restore-ledger-v3-[0-9a-f]{64})$")
 BACKUP_MANIFEST_MAX_BYTES = 4 * 1024 * 1024
 BACKUP_CHUNK_BYTES = 1024 * 1024
 # APFS/HFS+ expose NAME_MAX=255 UTF-16 code units (not UTF-8 bytes). Every
@@ -5785,6 +6187,27 @@ def _validated_leaf_name(value: str) -> str:
             or "/" in value or "\x00" in value):
         raise ValueError("invalid filesystem name")
     return value
+
+
+def _restore_target_ledger_name(root_name: str) -> str:
+    """Return the one recovery ledger name reserved for a destination leaf.
+
+    A random ledger can only be rediscovered by scanning its whole parent.
+    That cannot make bounded progress across independent CLI invocations.
+    Keeping the destination mapping in the name makes current-target recovery
+    one exact no-follow lookup; the journal still validates the unhashed leaf.
+    """
+    validated = _validated_leaf_name(root_name)
+    # APFS commonly compares names case-insensitively after Unicode
+    # decomposition. Hash that equivalence class so a crash under `Foo` is
+    # found by a retry spelling `foo` or by composed/decomposed Unicode. On a
+    # case-sensitive volume this intentionally serializes otherwise-distinct
+    # names; the collision is safe because the journal validates its exact
+    # unhashed root name before any recovery.
+    canonical = unicodedata.normalize(
+        "NFD", unicodedata.normalize("NFD", validated).casefold())
+    digest = hashlib.sha256(os.fsencode(canonical)).hexdigest()
+    return f".modore-restore-ledger-v3-{digest}"
 
 
 def _relative_components(value: str | PurePosixPath) -> tuple[str, ...]:
@@ -6445,6 +6868,40 @@ def _rollback_new_entry_at(
         pass
 
 
+def _rename_directory_exclusive(
+        source_descriptor: int, source_name: str,
+        destination_descriptor: int, destination_name: str) -> None:
+    """Publish a private directory without replacing an existing name."""
+    source = os.fsencode(_validated_leaf_name(source_name))
+    destination = os.fsencode(_validated_leaf_name(destination_name))
+    libc = ctypes.CDLL(None, use_errno=True)
+    function = None
+    flag = 0
+    if sys.platform == "darwin" and hasattr(libc, "renameatx_np"):
+        function = libc.renameatx_np
+        flag = 0x00000004  # RENAME_EXCL
+    elif sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        function = libc.renameat2
+        flag = 0x1  # RENAME_NOREPLACE
+    if function is None:
+        raise ValueError(
+            "restore platform lacks exclusive directory publication")
+    function.argtypes = [
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    function.restype = ctypes.c_int
+    if function(
+            source_descriptor, source,
+            destination_descriptor, destination, flag) == 0:
+        return
+    error = ctypes.get_errno()
+    if error in (errno.EEXIST, errno.ENOTEMPTY):
+        raise ValueError(
+            "restore requires a NEW directory; existing data is never overwritten")
+    raise OSError(error, os.strerror(error))
+
+
 def _remove_same_file(path: Path, identity: tuple[int, int]) -> None:
     """Compatibility wrapper for descriptor-anchored temporary cleanup."""
     try:
@@ -6734,7 +7191,7 @@ def build_session_backup(source: Path, home: Path, destination: Path, *,
                         pass
                 _restore_sigterm_handler(previous_sigterm)
 
-@dataclass(frozen=True)
+@dataclass
 class _RestoreOwnedEntry:
     parent: str
     name: str
@@ -6742,7 +7199,9 @@ class _RestoreOwnedEntry:
     identity: tuple[int, int]
     size: int
     digest: str
-    descriptor: Optional[int]
+    guard_name: Optional[str]
+    released_signature: Optional[tuple[int, int, int, int, int, int, int]] = None
+    release_descriptor: Optional[int] = None
 
 
 class _RestoreLedger:
@@ -6761,14 +7220,25 @@ class _RestoreLedger:
         self.root_name = _validated_leaf_name(root_name)
         self.root_descriptor: Optional[int] = None
         self.root_identity: Optional[tuple[int, int]] = None
+        self.root_published = False
+        self.plan_committed = False
+        self.release_committed = False
         self.device: Optional[int] = None
-        # relative -> (held descriptor, identity, parent relative, leaf name)
+        self.guard_name: Optional[str] = None
+        self.guard_descriptor: Optional[int] = None
+        self.guard_identity: Optional[tuple[int, int]] = None
+        self.journal_descriptor: Optional[int] = None
+        self.journal_identity: Optional[tuple[int, int]] = None
+        # relative -> (identity, parent relative, leaf name). Directories are
+        # reopened from the pinned root only while used; retaining one FD per
+        # directory would recreate the same exhaustion the file guard avoids.
         self.directories: dict[
-            str, tuple[int, tuple[int, int], str, str]
+            str, tuple[tuple[int, int], str, str]
         ] = {}
         self.owned: list[_RestoreOwnedEntry] = []
 
     def create_root(self) -> None:
+        staging_name = ".restore-root"
         with _blocked_sigterm():
             try:
                 os.stat(
@@ -6781,17 +7251,20 @@ class _RestoreLedger:
             else:
                 raise ValueError(
                     "restore requires a NEW directory; existing data is never overwritten")
+            self._create_guard_directory()
+            if self.guard_descriptor is None:
+                raise ValueError("restore integrity ledger is unavailable")
             try:
-                os.mkdir(self.root_name, 0o700, dir_fd=self.parent_descriptor)
+                os.mkdir(staging_name, 0o700, dir_fd=self.guard_descriptor)
             except FileExistsError as exc:
                 raise ValueError(
-                    "restore requires a NEW directory; existing data is never overwritten") from exc
+                    "restore staging directory already exists") from exc
             descriptor = -1
             try:
                 descriptor = os.open(
-                    self.root_name,
+                    staging_name,
                     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=self.parent_descriptor,
+                    dir_fd=self.guard_descriptor,
                 )
                 opened = os.fstat(descriptor)
                 identity = _stat_identity(opened)
@@ -6799,8 +7272,8 @@ class _RestoreLedger:
                 # recheck fails, cleanup can remove only this exact inode.
                 self.root_identity = identity
                 observed = os.stat(
-                    self.root_name,
-                    dir_fd=self.parent_descriptor,
+                    staging_name,
+                    dir_fd=self.guard_descriptor,
                     follow_symlinks=False,
                 )
             except BaseException:
@@ -6813,7 +7286,17 @@ class _RestoreLedger:
                         if (recovered is not None
                                 and stat.S_ISDIR(recovered.st_mode)):
                             self.root_identity = _stat_identity(recovered)
+                    if (self.root_identity is not None
+                            and self.guard_descriptor is not None):
+                        _rollback_new_entry_at(
+                            self.guard_descriptor, staging_name,
+                            self.root_identity, directory=True)
                     os.close(descriptor)
+                if (self.guard_name is not None
+                        and self.guard_identity is not None):
+                    _rollback_new_entry_at(
+                        self.parent_descriptor, self.guard_name,
+                        self.guard_identity, directory=True)
                 raise
             if (not stat.S_ISDIR(opened.st_mode)
                     or _stat_identity(observed) != self.root_identity
@@ -6825,18 +7308,247 @@ class _RestoreLedger:
             self.root_descriptor = descriptor
             self.device = opened.st_dev
             os.fchmod(descriptor, 0o700)
+            try:
+                self._start_journal()
+            except BaseException:
+                # `_start_journal` can fail before it owns a descriptor (for
+                # example EMFILE).  At that point both the staging root and
+                # ledger directory are still empty operation-created objects;
+                # reclaim them synchronously instead of stranding a hidden
+                # directory that no future journal can identify.
+                self.cleanup()
+                raise
+
+    def _create_guard_directory(self) -> None:
+        """Create one private hard-link ledger beside the visible restore.
+
+        Holding an FD for every restored regular file exhausts the default
+        macOS descriptor limit on ordinary Desktop conversations. A hard link
+        pins the same inode without consuming a descriptor, so inode reuse
+        cannot make rollback delete a replacement installed at the visible
+        name. Only this one private directory needs to stay open.
+        """
+        candidate = _restore_target_ledger_name(self.root_name)
+        try:
+            os.mkdir(candidate, 0o700, dir_fd=self.parent_descriptor)
+        except FileExistsError as exc:
+            # The exact name serializes every restore of this destination. A
+            # journaled dead operation is recovered before construction. What
+            # remains can be live, foreign, ambiguous, or a SIGKILL in the tiny
+            # pre-journal window; none may be adopted or removed by guessing.
+            raise ValueError(
+                "restore integrity ledger already exists; another restore may "
+                "be active or manual recovery is required") from exc
+        descriptor = -1
+        identity: Optional[tuple[int, int]] = None
+        try:
+            descriptor = os.open(
+                candidate,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                | os.O_CLOEXEC,
+                dir_fd=self.parent_descriptor,
+            )
+            opened = os.fstat(descriptor)
+            identity = _stat_identity(opened)
+            named = os.stat(
+                candidate, dir_fd=self.parent_descriptor,
+                follow_symlinks=False)
+            if (not stat.S_ISDIR(opened.st_mode)
+                    or opened.st_dev != self.parent_device
+                    or _stat_identity(named) != identity):
+                raise ValueError(
+                    "restore ledger directory changed during creation")
+            os.fchmod(descriptor, 0o700)
+            self.guard_name = candidate
+            self.guard_descriptor = descriptor
+            self.guard_identity = identity
+        except BaseException:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if identity is not None:
+                _rollback_new_entry_at(
+                    self.parent_descriptor, candidate, identity,
+                    directory=True)
+            raise
+
+    def _start_journal(self) -> None:
+        if (self.guard_descriptor is None or self.root_identity is None
+                or self.device is None):
+            raise ValueError("restore ledger journal has no owned root")
+        descriptor = os.open(
+            RESTORE_JOURNAL_NAME,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            | os.O_CLOEXEC | os.O_APPEND,
+            0o600,
+            dir_fd=self.guard_descriptor,
+        )
+        try:
+            info = os.fstat(descriptor)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_dev != self.device):
+                raise ValueError("restore recovery journal is not private")
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.journal_descriptor = descriptor
+            self.journal_identity = _stat_identity(info)
+            self._journal_record({
+                "type": "header",
+                "schema": 3,
+                "pid": os.getpid(),
+                "parentIdentity": list(self.parent_identity),
+                "rootName": self.root_name,
+                "rootIdentity": list(self.root_identity),
+                "device": self.device,
+            })
+        except BaseException:
+            identity = self.journal_identity
+            if identity is None:
+                try:
+                    identity = _stat_identity(os.fstat(descriptor))
+                except OSError:
+                    pass
+            if identity is not None:
+                _unlink_same_file_at(
+                    self.guard_descriptor, RESTORE_JOURNAL_NAME, identity)
+            os.close(descriptor)
+            self.journal_descriptor = None
+            self.journal_identity = None
+            raise
+
+    def _journal_record(self, payload: dict, *, sync: bool = True) -> None:
+        if self.journal_descriptor is None:
+            raise ValueError("restore recovery journal is unavailable")
+        encoded = (json.dumps(
+            payload, ensure_ascii=True, separators=(",", ":")) + "\n").encode(
+                "ascii")
+        if len(encoded) > MAX_LINE_BYTES:
+            raise ValueError("restore recovery journal record is too large")
+        offset = 0
+        while offset < len(encoded):
+            offset += os.write(self.journal_descriptor, encoded[offset:])
+        if sync:
+            os.fsync(self.journal_descriptor)
+
+    def install_recovery_plan(self, entries: list[dict]) -> None:
+        """Persist paths and created-directory identities before payloads."""
+        parents: set[str] = set()
+        for index, entry in enumerate(entries):
+            relative = _backup_relative(entry["path"])
+            parent = "" if str(relative.parent) == "." else str(relative.parent)
+            if parent:
+                parents.add(parent)
+            kind = entry.get("kind", "file")
+            guard = f"{index:08x}"
+            self._journal_record({
+                "type": "plan",
+                "parent": parent,
+                "name": _validated_leaf_name(relative.name),
+                "kind": kind,
+                "size": entry["size"],
+                "digest": entry["sha256"],
+                "guard": guard,
+            }, sync=False)
+        planned_directories: set[str] = set()
+        for parent in parents:
+            parts = PurePosixPath(parent).parts
+            planned_directories.update(
+                "/".join(parts[:index])
+                for index in range(1, len(parts) + 1))
+        # Persist the exact private directory namespace before creating any
+        # directory.  The explicit intent commit, not a newline prefix, is the
+        # recovery boundary.  A crash before it leaves an empty root; a crash
+        # after it can remove only these paths from the still-private root.
+        for relative in sorted(
+                planned_directories,
+                key=lambda value: (value.count("/"), value)):
+            parts = _relative_components(relative)
+            self._journal_record({
+                "type": "directory-intent",
+                "path": relative,
+                "parent": "/".join(parts[:-1]),
+                "name": _validated_leaf_name(parts[-1]),
+            }, sync=False)
+        self._journal_record({
+            "type": "intent-commit",
+            "plans": len(entries),
+            "directories": len(planned_directories),
+        }, sync=False)
+        assert self.journal_descriptor is not None
+        os.fsync(self.journal_descriptor)
+
+        # Directories have no hard-link guard. Create every intended ancestor,
+        # record the identity observed at creation, and fsync the complete
+        # proof set as one second batch before payload extraction.
+        for parent in sorted(
+                planned_directories,
+                key=lambda value: (value.count("/"), value)):
+            descriptor = self.open_directory(parent, create=True)
+            os.close(descriptor)
+        for relative in sorted(
+                self.directories,
+                key=lambda value: (value.count("/"), value)):
+            identity, parent, name = self.directories[relative]
+            self._journal_record({
+                "type": "directory",
+                "path": relative,
+                "parent": parent,
+                "name": name,
+                "identity": list(identity),
+            }, sync=False)
+        self._journal_record({
+            "type": "plan-commit",
+            "plans": len(entries),
+            "directories": len(self.directories),
+        }, sync=False)
+        assert self.journal_descriptor is not None
+        os.fsync(self.journal_descriptor)
+        self.plan_committed = True
+
+    def commit_release(self) -> None:
+        """Durably bind every completed payload identity before publication."""
+        if not self.plan_committed:
+            raise ValueError("restore recovery plan is not committed")
+        self.validate_all()
+        for ordinal, entry in enumerate(self.owned):
+            self._journal_record({
+                "type": "release",
+                "ordinal": ordinal,
+                "identity": list(entry.identity),
+            }, sync=False)
+        self._journal_record({
+            "type": "release-commit",
+            "entries": len(self.owned),
+        }, sync=False)
+        assert self.journal_descriptor is not None
+        os.fsync(self.journal_descriptor)
+        self.release_committed = True
+
+    def publish_root(self) -> None:
+        """Atomically publish the fully verified private root once."""
+        if not self.release_committed or self.root_published:
+            raise ValueError("restore is not ready for publication")
+        self.validate_root()
+        if self.guard_descriptor is None:
+            raise ValueError("restore integrity ledger is unavailable")
+        with _blocked_sigterm():
+            _rename_directory_exclusive(
+                self.guard_descriptor, ".restore-root",
+                self.parent_descriptor, self.root_name)
+            self.root_published = True
+            self.validate_root()
 
     def validate_root(self) -> None:
         if self.root_descriptor is None or self.root_identity is None:
             raise ValueError("restore destination was not created")
         if not _directory_path_identity(self.parent, self.parent_identity):
             raise ValueError("restore destination parent changed during restore")
+        root_parent = (self.parent_descriptor if self.root_published
+                       else self.guard_descriptor)
+        root_name = self.root_name if self.root_published else ".restore-root"
+        if root_parent is None:
+            raise ValueError("restore integrity ledger is unavailable")
         try:
             named = os.stat(
-                self.root_name,
-                dir_fd=self.parent_descriptor,
-                follow_symlinks=False,
-            )
+                root_name, dir_fd=root_parent, follow_symlinks=False)
         except OSError as exc:
             raise ValueError("restore destination changed during restore") from exc
         if (not stat.S_ISDIR(named.st_mode)
@@ -6876,9 +7588,9 @@ class _RestoreLedger:
                             opened = os.fstat(child)
                             identity = _stat_identity(opened)
                             # Record the opened inode before the fallible named
-                            # recheck, dup, or chmod.
+                            # recheck or chmod.
                             self.directories[key] = (
-                                -1, identity, parent_key, component)
+                                identity, parent_key, component)
                             observed = os.stat(
                                 component,
                                 dir_fd=descriptor,
@@ -6889,13 +7601,6 @@ class _RestoreLedger:
                                     or opened.st_dev != self.device):
                                 raise ValueError(
                                     "restore directory changed during creation")
-                            held = os.dup(child)
-                            try:
-                                self.directories[key] = (
-                                    held, identity, parent_key, component)
-                            except BaseException:
-                                os.close(held)
-                                raise
                             os.fchmod(child, 0o700)
                         except BaseException:
                             if child >= 0:
@@ -6908,12 +7613,12 @@ class _RestoreLedger:
                                             and stat.S_ISDIR(
                                                 recovered.st_mode)):
                                         self.directories[key] = (
-                                            -1, _stat_identity(recovered),
+                                            _stat_identity(recovered),
                                             parent_key, component)
                                 os.close(child)
                             raise
                 else:
-                    _, identity, recorded_parent, recorded_name = recorded
+                    identity, recorded_parent, recorded_name = recorded
                     if (recorded_parent != parent_key
                             or recorded_name != component):
                         raise ValueError("restore directory ledger mismatch")
@@ -6944,17 +7649,267 @@ class _RestoreLedger:
             os.close(descriptor)
             raise
 
+    def _open_owned_directory(self, relative: str) -> int:
+        """Reopen one recorded directory from the pinned operation root.
+
+        Unlike ``open_directory``, cleanup deliberately does not validate the
+        mutable public root name first. If that name was swapped, the held root
+        FD still lets rollback remove outputs from the exact directory it
+        created. A moved child that is no longer reachable is left untouched
+        rather than guessed at through a path.
+        """
+        if self.root_descriptor is None:
+            raise ValueError("restore destination was not created")
+        descriptor = os.dup(self.root_descriptor)
+        if not relative:
+            return descriptor
+        prefix: list[str] = []
+        try:
+            for component in _relative_components(relative):
+                prefix.append(component)
+                key = "/".join(prefix)
+                recorded = self.directories.get(key)
+                if recorded is None:
+                    raise ValueError(
+                        "restore directory is not operation-owned")
+                identity, _, recorded_name = recorded
+                if recorded_name != component:
+                    raise ValueError("restore directory ledger mismatch")
+                child = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    | os.O_CLOEXEC,
+                    dir_fd=descriptor,
+                )
+                try:
+                    opened = os.fstat(child)
+                    if (not stat.S_ISDIR(opened.st_mode)
+                            or _stat_identity(opened) != identity
+                            or opened.st_dev != self.device):
+                        raise ValueError(
+                            "restore directory changed during rollback")
+                except BaseException:
+                    os.close(child)
+                    raise
+                os.close(descriptor)
+                descriptor = child
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
     def record_owned(
             self, parent: str, name: str, kind: str,
             identity: tuple[int, int], size: int, digest: str, *,
-            descriptor: Optional[int] = None) -> None:
-        held = os.dup(descriptor) if descriptor is not None else None
+            descriptor: Optional[int] = None,
+            parent_descriptor: Optional[int] = None) -> None:
+        guard_name: Optional[str] = None
+        guard_identity: Optional[tuple[int, int]] = None
         try:
+            if descriptor is not None:
+                if (parent_descriptor is None
+                        or self.guard_descriptor is None):
+                    raise ValueError("restore file has no integrity ledger")
+                opened = os.fstat(descriptor)
+                named = os.stat(
+                    name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                if (not stat.S_ISREG(opened.st_mode)
+                        or opened.st_nlink != 1
+                        or _stat_identity(opened) != identity
+                        or _stat_identity(named) != identity):
+                    raise ValueError(
+                        "restored file changed before ledger recording")
+                guard_name = f"{len(self.owned):08x}"
+                # Record the expected inode before link(2): Python can deliver
+                # KeyboardInterrupt after the syscall created the name but
+                # before the next bytecode runs. The exception path can then
+                # still remove only a guard name pointing at this held inode.
+                guard_identity = identity
+                try:
+                    os.link(
+                        name, guard_name,
+                        src_dir_fd=parent_descriptor,
+                        dst_dir_fd=self.guard_descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError as exc:
+                    if exc.errno in (
+                            errno.EOPNOTSUPP, errno.ENOTSUP, errno.EPERM,
+                            errno.EXDEV):
+                        raise ValueError(
+                            "restore destination filesystem does not support "
+                            "required hard-link integrity guards") from exc
+                    raise
+                guarded = os.stat(
+                    guard_name, dir_fd=self.guard_descriptor,
+                    follow_symlinks=False)
+                opened_after = os.fstat(descriptor)
+                if (not stat.S_ISREG(guarded.st_mode)
+                        or _stat_identity(guarded) != identity
+                        or _stat_identity(opened_after) != identity
+                        or opened_after.st_nlink != 2
+                        or guarded.st_nlink != 2):
+                    raise ValueError(
+                        "restore file integrity link changed during creation")
             self.owned.append(_RestoreOwnedEntry(
-                parent, name, kind, identity, size, digest, held))
+                parent, name, kind, identity, size, digest, guard_name))
         except BaseException:
-            if held is not None:
-                os.close(held)
+            if (guard_name is not None and guard_identity is not None
+                    and self.guard_descriptor is not None):
+                _rollback_new_entry_at(
+                    self.guard_descriptor, guard_name, guard_identity,
+                    directory=False)
+            raise
+
+    def create_owned_regular(
+            self, parent: str, name: str, size: int, digest: str,
+            parent_descriptor: int) -> tuple[int, tuple[int, int]]:
+        """Create the guarded inode before exposing its visible restore name.
+
+        The complete guard-to-path plan is fsynced first. A SIGKILL can thus
+        leave an unlinked private guard or a visible hard link, but never an
+        untracked visible regular file.
+        """
+        if self.guard_descriptor is None:
+            raise ValueError("restore file has no integrity ledger")
+        guard_name = f"{len(self.owned):08x}"
+        descriptor = -1
+        identity: Optional[tuple[int, int]] = None
+        recorded = False
+        try:
+            with _blocked_sigterm():
+                descriptor = os.open(
+                    guard_name,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                    | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=self.guard_descriptor,
+                )
+                opened = os.fstat(descriptor)
+                identity = _stat_identity(opened)
+                if (not stat.S_ISREG(opened.st_mode)
+                        or opened.st_nlink != 1
+                        or opened.st_dev != self.device):
+                    raise ValueError(
+                        "restore output is not a private regular file")
+                os.fchmod(descriptor, 0o600)
+                self.owned.append(_RestoreOwnedEntry(
+                    parent, name, "file", identity, size, digest,
+                    guard_name))
+                recorded = True
+                try:
+                    os.link(
+                        guard_name, name,
+                        src_dir_fd=self.guard_descriptor,
+                        dst_dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError as exc:
+                    if exc.errno in (
+                            errno.EOPNOTSUPP, errno.ENOTSUP, errno.EPERM,
+                            errno.EXDEV):
+                        raise ValueError(
+                            "restore destination filesystem does not support "
+                            "required hard-link integrity guards") from exc
+                    raise
+                guarded = os.stat(
+                    guard_name, dir_fd=self.guard_descriptor,
+                    follow_symlinks=False)
+                named = os.stat(
+                    name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                after = os.fstat(descriptor)
+                if (not stat.S_ISREG(guarded.st_mode)
+                        or _stat_identity(guarded) != identity
+                        or _stat_identity(named) != identity
+                        or _stat_identity(after) != identity
+                        or guarded.st_nlink != 2
+                        or named.st_nlink != 2
+                        or after.st_nlink != 2):
+                    raise ValueError(
+                        "restore file integrity link changed during creation")
+            return (descriptor, identity)
+        except BaseException:
+            if identity is not None:
+                _rollback_new_entry_at(
+                    parent_descriptor, name, identity, directory=False)
+                _rollback_new_entry_at(
+                    self.guard_descriptor, guard_name, identity,
+                    directory=False)
+            if recorded and self.owned and self.owned[-1].identity == identity:
+                self.owned.pop()
+            if descriptor >= 0:
+                os.close(descriptor)
+            raise
+
+    def create_owned_symlink(
+            self, parent: str, name: str, value: bytes,
+            size: int, digest: str, parent_descriptor: int,
+            ) -> tuple[int, int]:
+        """Create and pin a symlink privately before exposing its name."""
+        if self.guard_descriptor is None:
+            raise ValueError("restore file has no integrity ledger")
+        guard_name = f"{len(self.owned):08x}"
+        identity: Optional[tuple[int, int]] = None
+        recorded = False
+        try:
+            with _blocked_sigterm():
+                os.symlink(
+                    value, os.fsencode(guard_name),
+                    dir_fd=self.guard_descriptor)
+                guarded = os.stat(
+                    guard_name, dir_fd=self.guard_descriptor,
+                    follow_symlinks=False)
+                identity = _stat_identity(guarded)
+                if (not stat.S_ISLNK(guarded.st_mode)
+                        or guarded.st_dev != self.device
+                        or guarded.st_nlink != 1):
+                    raise ValueError("restore output is not a private symlink")
+                self.owned.append(_RestoreOwnedEntry(
+                    parent, name, "symlink", identity, size, digest,
+                    guard_name))
+                recorded = True
+                try:
+                    os.link(
+                        guard_name, name,
+                        src_dir_fd=self.guard_descriptor,
+                        dst_dir_fd=parent_descriptor,
+                        follow_symlinks=False)
+                except OSError as exc:
+                    if exc.errno in (
+                            errno.EOPNOTSUPP, errno.ENOTSUP, errno.EPERM,
+                            errno.EXDEV):
+                        raise ValueError(
+                            "restore destination filesystem does not support "
+                            "required hard-link integrity guards") from exc
+                    raise
+                named = os.stat(
+                    name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                guarded_after = os.stat(
+                    guard_name, dir_fd=self.guard_descriptor,
+                    follow_symlinks=False)
+                if (not stat.S_ISLNK(named.st_mode)
+                        or not stat.S_ISLNK(guarded_after.st_mode)
+                        or _stat_identity(named) != identity
+                        or _stat_identity(guarded_after) != identity
+                        or named.st_nlink != 2
+                        or guarded_after.st_nlink != 2
+                        or os.fsencode(os.readlink(
+                            name, dir_fd=parent_descriptor)) != value):
+                    raise ValueError(
+                        "restore symlink integrity link changed during creation")
+            return identity
+        except BaseException:
+            if identity is not None:
+                _rollback_new_entry_at(
+                    parent_descriptor, name, identity, directory=False)
+                _rollback_new_entry_at(
+                    self.guard_descriptor, guard_name, identity,
+                    directory=False)
+            if recorded and self.owned and self.owned[-1].identity == identity:
+                self.owned.pop()
             raise
 
     def validate_all(self) -> None:
@@ -6987,20 +7942,43 @@ class _RestoreLedger:
                         or named.st_dev != self.device):
                     raise ValueError("restored file changed during restore")
                 if entry.kind == "symlink":
+                    if (entry.guard_name is None
+                            or self.guard_descriptor is None):
+                        raise ValueError(
+                            "restored symlink lost its integrity link")
+                    guarded = os.stat(
+                        entry.guard_name,
+                        dir_fd=self.guard_descriptor,
+                        follow_symlinks=False)
                     value = os.fsencode(os.readlink(
                         entry.name, dir_fd=parent_descriptor))
+                    guard_value = os.fsencode(os.readlink(
+                        entry.guard_name, dir_fd=self.guard_descriptor))
                     named_after = os.stat(
                         entry.name, dir_fd=parent_descriptor,
                         follow_symlinks=False)
                     if (not stat.S_ISLNK(named_after.st_mode)
+                            or not stat.S_ISLNK(guarded.st_mode)
                             or named_after.st_dev != self.device
                             or _stat_identity(named_after) != entry.identity
+                            or _stat_identity(guarded) != entry.identity
+                            or named_after.st_nlink != 2
+                            or guarded.st_nlink != 2
+                            or guard_value != value
                             or _stat_signature(named_after)
                             != _stat_signature(named)):
                         raise ValueError(
                             "restored file changed during restore")
                     final = (len(value), hashlib.sha256(value).hexdigest())
                 else:
+                    if (entry.guard_name is None
+                            or self.guard_descriptor is None):
+                        raise ValueError(
+                            "restored file lost its integrity link")
+                    guarded = os.stat(
+                        entry.guard_name,
+                        dir_fd=self.guard_descriptor,
+                        follow_symlinks=False)
                     descriptor = os.open(
                         entry.name,
                         os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
@@ -7011,7 +7989,10 @@ class _RestoreLedger:
                         opened = os.fstat(descriptor)
                         if (_stat_identity(opened) != entry.identity
                                 or not stat.S_ISREG(opened.st_mode)
-                                or opened.st_nlink != 1
+                                or opened.st_nlink != 2
+                                or not stat.S_ISREG(guarded.st_mode)
+                                or guarded.st_nlink != 2
+                                or _stat_identity(guarded) != entry.identity
                                 or opened.st_dev != self.device):
                             raise ValueError(
                                 "restored file changed during restore")
@@ -7021,9 +8002,15 @@ class _RestoreLedger:
                         named_after = os.stat(
                             entry.name, dir_fd=parent_descriptor,
                             follow_symlinks=False)
+                        guarded_after = os.stat(
+                            entry.guard_name,
+                            dir_fd=self.guard_descriptor,
+                            follow_symlinks=False)
                         if (_stat_signature(opened)
                                 != _stat_signature(after)
                                 or _stat_identity(named_after)
+                                != entry.identity
+                                or _stat_identity(guarded_after)
                                 != entry.identity):
                             raise ValueError(
                                 "restored file changed during restore")
@@ -7035,75 +8022,94 @@ class _RestoreLedger:
                 raise ValueError("restored file checksum mismatch")
 
     def cleanup(self) -> None:
-        # Held parent descriptors still name operation-owned files even if an
-        # attacker moved a directory out of the visible restore tree.
+        # The pinned root still names operation-owned files if the public root
+        # itself is moved. A separately moved child is left untouched rather
+        # than followed through an attacker-controlled path.
         for entry in reversed(self.owned):
-            if entry.parent:
-                recorded = self.directories.get(entry.parent)
-                parent_descriptor = (
-                    recorded[0] if recorded is not None else None)
-            else:
-                parent_descriptor = self.root_descriptor
-            if parent_descriptor is None:
-                continue
+            parent_descriptor: Optional[int] = None
             try:
-                named = os.stat(
-                    entry.name,
-                    dir_fd=parent_descriptor,
-                    follow_symlinks=False,
-                )
-                # dev+ino is not enough after unlink/recreate: Linux can reuse
-                # the just-freed inode immediately.  That made cleanup remove
-                # an attacker/user replacement even though the ledger had
-                # never created its bytes.  Reconfirm the recorded payload as
-                # well as the namespace identity before unlinking.  Symlinks
-                # are bounded to 1,023 bytes; regular-file hashing happens only
-                # on a failed restore and is capped by the manifest size.
-                payload_matches = False
-                if (entry.kind == "symlink"
-                        and stat.S_ISLNK(named.st_mode)):
-                    value = os.fsencode(os.readlink(
-                        entry.name, dir_fd=parent_descriptor))
-                    after = os.stat(
+                parent_descriptor = self._open_owned_directory(entry.parent)
+            except (OSError, ValueError):
+                pass
+            if parent_descriptor is not None:
+                try:
+                    named = os.stat(
                         entry.name,
                         dir_fd=parent_descriptor,
                         follow_symlinks=False,
                     )
-                    payload_matches = (
-                        _stat_identity(after) == entry.identity
-                        and len(value) == entry.size
-                        and hashlib.sha256(value).hexdigest() == entry.digest
-                    )
-                elif (entry.kind == "file"
-                      and entry.descriptor is not None
-                      and stat.S_ISREG(named.st_mode)):
-                    # Keeping the creation descriptor open prevents its inode
-                    # from being recycled. A matching namespace identity is
-                    # therefore still our file even when a failed write or a
-                    # final validation changed its bytes, and should be
-                    # removed. A replacement cannot acquire this live inode.
-                    held = os.fstat(entry.descriptor)
-                    payload_matches = (
-                        stat.S_ISREG(held.st_mode)
-                        and _stat_identity(held) == entry.identity
-                    )
-                if (_stat_identity(named) == entry.identity
-                        and payload_matches):
-                    os.unlink(entry.name, dir_fd=parent_descriptor)
-            except (OSError, ValueError):
-                pass
+                    # dev+ino is not enough after unlink/recreate: Linux can
+                    # reuse the just-freed inode immediately. Reconfirm the
+                    # payload as well as the namespace identity. Symlinks are
+                    # bounded; regular files are pinned by private hard links.
+                    payload_matches = False
+                    if (entry.kind == "symlink"
+                            and stat.S_ISLNK(named.st_mode)):
+                        value = os.fsencode(os.readlink(
+                            entry.name, dir_fd=parent_descriptor))
+                        after = os.stat(
+                            entry.name,
+                            dir_fd=parent_descriptor,
+                            follow_symlinks=False,
+                        )
+                        payload_matches = (
+                            _stat_identity(after) == entry.identity
+                            and len(value) == entry.size
+                            and hashlib.sha256(value).hexdigest()
+                            == entry.digest
+                        )
+                    elif (entry.kind == "file"
+                          and stat.S_ISREG(named.st_mode)):
+                        if entry.release_descriptor is not None:
+                            held = os.fstat(entry.release_descriptor)
+                            payload_matches = (
+                                stat.S_ISREG(held.st_mode)
+                                and _stat_identity(held) == entry.identity
+                            )
+                        elif (entry.guard_name is not None
+                                and self.guard_descriptor is not None):
+                            guarded = os.stat(
+                                entry.guard_name,
+                                dir_fd=self.guard_descriptor,
+                                follow_symlinks=False)
+                            payload_matches = (
+                                stat.S_ISREG(guarded.st_mode)
+                                and _stat_identity(guarded)
+                                == entry.identity
+                            )
+                        elif entry.released_signature is not None:
+                            payload_matches = (
+                                _stat_signature(named)
+                                == entry.released_signature
+                            )
+                    if (_stat_identity(named) == entry.identity
+                            and payload_matches):
+                        os.unlink(entry.name, dir_fd=parent_descriptor)
+                except (OSError, ValueError):
+                    pass
+                finally:
+                    os.close(parent_descriptor)
+            if (entry.guard_name is not None
+                    and self.guard_descriptor is not None):
+                try:
+                    guarded = os.stat(
+                        entry.guard_name,
+                        dir_fd=self.guard_descriptor,
+                        follow_symlinks=False)
+                    if (_stat_identity(guarded) == entry.identity):
+                        os.unlink(
+                            entry.guard_name,
+                            dir_fd=self.guard_descriptor)
+                except OSError:
+                    pass
         for key in sorted(
                 self.directories,
                 key=lambda value: (value.count("/"), value),
                 reverse=True):
-            _, identity, parent_key, name = self.directories[key]
-            if parent_key:
-                parent_record = self.directories.get(parent_key)
-                parent_descriptor = (
-                    parent_record[0] if parent_record is not None else None)
-            else:
-                parent_descriptor = self.root_descriptor
-            if parent_descriptor is None:
+            identity, parent_key, name = self.directories[key]
+            try:
+                parent_descriptor = self._open_owned_directory(parent_key)
+            except (OSError, ValueError):
                 continue
             try:
                 named = os.stat(
@@ -7116,33 +8122,331 @@ class _RestoreLedger:
                     os.rmdir(name, dir_fd=parent_descriptor)
             except OSError:
                 pass
+            finally:
+                os.close(parent_descriptor)
         if self.root_identity is not None:
+            root_parent = (self.parent_descriptor if self.root_published
+                           else self.guard_descriptor)
+            root_name = self.root_name if self.root_published else ".restore-root"
             try:
+                if root_parent is None:
+                    raise FileNotFoundError
                 named = os.stat(
-                    self.root_name,
-                    dir_fd=self.parent_descriptor,
+                    root_name, dir_fd=root_parent,
                     follow_symlinks=False,
                 )
                 if (stat.S_ISDIR(named.st_mode)
                         and _stat_identity(named) == self.root_identity):
-                    os.rmdir(
-                        self.root_name, dir_fd=self.parent_descriptor)
+                    os.rmdir(root_name, dir_fd=root_parent)
             except OSError:
                 pass
 
+        self._remove_guard_directory()
+
+    def _remove_guard_directory(self) -> None:
+        if self.guard_name is None or self.guard_identity is None:
+            return
+        if self.guard_descriptor is None:
+            return
+        try:
+            remaining = os.listdir(self.guard_descriptor)
+        except OSError:
+            return
+        # A completed in-process cleanup may intentionally preserve a user
+        # replacement in the visible tree, but it must have consumed every
+        # operation-owned hard link. If any guard remains, retain the journal
+        # for next-run recovery instead of discarding the ownership proof.
+        expected = ({RESTORE_JOURNAL_NAME}
+                    if self.journal_identity is not None else set())
+        if set(remaining) != expected:
+            return
+        if (self.journal_descriptor is not None
+                and self.journal_identity is not None):
+            _unlink_same_file_at(
+                self.guard_descriptor, RESTORE_JOURNAL_NAME,
+                self.journal_identity)
+        try:
+            named = os.stat(
+                self.guard_name,
+                dir_fd=self.parent_descriptor,
+                follow_symlinks=False)
+            if (not stat.S_ISDIR(named.st_mode)
+                    or _stat_identity(named) != self.guard_identity):
+                return
+            os.rmdir(
+                self.guard_name, dir_fd=self.parent_descriptor)
+        except OSError:
+            return
+        self.guard_name = None
+        self.guard_identity = None
+
+    def _validate_released_entry(
+            self, entry: _RestoreOwnedEntry,
+            ) -> tuple[int, int, int, int, int, int, int]:
+        """Validate one unguarded output with at most one transient file FD."""
+        parent_descriptor = self.open_directory(entry.parent, create=False)
+        try:
+            try:
+                named = os.stat(
+                    entry.name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+            except OSError as exc:
+                raise ValueError(
+                    "restored file changed before success") from exc
+            if (named.st_dev != self.device
+                    or _stat_identity(named) != entry.identity):
+                raise ValueError("restored file changed before success")
+            if entry.kind == "symlink":
+                if not stat.S_ISLNK(named.st_mode):
+                    raise ValueError("restored file changed before success")
+                value = os.fsencode(os.readlink(
+                    entry.name, dir_fd=parent_descriptor))
+                after = os.stat(
+                    entry.name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                if (_stat_signature(after) != _stat_signature(named)
+                        or len(value) != entry.size
+                        or hashlib.sha256(value).hexdigest() != entry.digest):
+                    raise ValueError(
+                        "restored symlink changed before success")
+                return _stat_signature(after)
+
+            if (entry.guard_name is not None
+                    or not stat.S_ISREG(named.st_mode)
+                    or named.st_nlink != 1):
+                raise ValueError("restored file guard release is incomplete")
+            descriptor = os.open(
+                entry.name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                dir_fd=parent_descriptor,
+            )
+            try:
+                opened = os.fstat(descriptor)
+                if (not stat.S_ISREG(opened.st_mode)
+                        or opened.st_nlink != 1
+                        or _stat_identity(opened) != entry.identity):
+                    raise ValueError("restored file changed before success")
+                with os.fdopen(os.dup(descriptor), "rb") as source:
+                    verified = _backup_stream(source, limit=entry.size)
+                after = os.fstat(descriptor)
+                named_after = os.stat(
+                    entry.name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                if (_stat_signature(opened) != _stat_signature(after)
+                        or _stat_signature(named_after)
+                        != _stat_signature(after)
+                        or verified != (entry.size, entry.digest)):
+                    raise ValueError(
+                        "restored file checksum mismatch before success")
+                return _stat_signature(after)
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(parent_descriptor)
+
+    def validate_success_boundary(self) -> None:
+        """Recheck every released payload, then rapidly recheck its namespace.
+
+        A filesystem offers no atomic checksum snapshot across many independent
+        files. The first pass therefore hashes every payload with one bounded
+        FD, and the reverse pass detects ctime/identity drift that happened
+        while later payloads were hashed. The unavoidable residual boundary is
+        only after an entry's final namespace check and before this process
+        returns; this does not claim to lock out a concurrent same-user writer.
+        """
+        self.validate_root()
+        snapshots = [
+            (entry, self._validate_released_entry(entry))
+            for entry in self.owned
+        ]
+        for entry, signature in reversed(snapshots):
+            parent_descriptor = self.open_directory(
+                entry.parent, create=False)
+            try:
+                named = os.stat(
+                    entry.name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                if (_stat_signature(named) != signature):
+                    raise ValueError(
+                        "restored file changed at success boundary")
+                if entry.kind == "symlink":
+                    value = os.fsencode(os.readlink(
+                        entry.name, dir_fd=parent_descriptor))
+                    after = os.stat(
+                        entry.name, dir_fd=parent_descriptor,
+                        follow_symlinks=False)
+                    if (_stat_signature(after) != signature
+                            or len(value) != entry.size
+                            or hashlib.sha256(value).hexdigest()
+                            != entry.digest):
+                        raise ValueError(
+                            "restored symlink changed at success boundary")
+            finally:
+                os.close(parent_descriptor)
+        self.validate_root()
+
+    def release_guards(self) -> None:
+        """Drop integrity links only after archive and outputs validate."""
+        if not self.release_committed or not self.root_published:
+            raise ValueError("restore publication is not durably committed")
+        self.validate_root()
+        if self.guard_descriptor is None:
+            raise ValueError("restore integrity ledger is unavailable")
+        for entry in self.owned:
+            if entry.kind == "symlink":
+                if entry.guard_name is None:
+                    raise ValueError(
+                        "restored symlink lost its integrity link")
+                parent_descriptor = self.open_directory(
+                    entry.parent, create=False)
+                try:
+                    named = os.stat(
+                        entry.name, dir_fd=parent_descriptor,
+                        follow_symlinks=False)
+                    guarded = os.stat(
+                        entry.guard_name, dir_fd=self.guard_descriptor,
+                        follow_symlinks=False)
+                    value = os.fsencode(os.readlink(
+                        entry.name, dir_fd=parent_descriptor))
+                    guard_value = os.fsencode(os.readlink(
+                        entry.guard_name, dir_fd=self.guard_descriptor))
+                    if (not stat.S_ISLNK(named.st_mode)
+                            or not stat.S_ISLNK(guarded.st_mode)
+                            or _stat_identity(named) != entry.identity
+                            or _stat_identity(guarded) != entry.identity
+                            or named.st_nlink != 2
+                            or guarded.st_nlink != 2
+                            or value != guard_value
+                            or len(value) != entry.size
+                            or hashlib.sha256(value).hexdigest()
+                            != entry.digest):
+                        raise ValueError(
+                            "restored symlink changed before publication")
+                    os.unlink(
+                        entry.guard_name, dir_fd=self.guard_descriptor)
+                    entry.guard_name = None
+                    released = os.stat(
+                        entry.name, dir_fd=parent_descriptor,
+                        follow_symlinks=False)
+                    if (_stat_identity(released) != entry.identity
+                            or released.st_nlink != 1):
+                        raise ValueError(
+                            "restored symlink changed during publication")
+                    entry.released_signature = _stat_signature(released)
+                finally:
+                    os.close(parent_descriptor)
+                continue
+            if entry.kind != "file":
+                continue
+            if entry.guard_name is None:
+                raise ValueError(
+                    "restored file lost its integrity link")
+            parent_descriptor = self.open_directory(
+                entry.parent, create=False)
+            descriptor = -1
+            try:
+                descriptor = os.open(
+                    entry.name,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                    | os.O_CLOEXEC,
+                    dir_fd=parent_descriptor,
+                )
+                # Only the ownership handoff is signal-atomic. Hashing and the
+                # unlink syscall remain interruptible; the one transient FD
+                # lets the SIGTERM cleanup identify this exact inode at every
+                # point without blocking cancellation across the whole loop.
+                with _blocked_sigterm():
+                    entry.release_descriptor = descriptor
+
+                opened = os.fstat(descriptor)
+                named = os.stat(
+                    entry.name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                guarded = os.stat(
+                    entry.guard_name,
+                    dir_fd=self.guard_descriptor,
+                    follow_symlinks=False)
+                if (not stat.S_ISREG(opened.st_mode)
+                        or not stat.S_ISREG(named.st_mode)
+                        or not stat.S_ISREG(guarded.st_mode)
+                        or _stat_identity(opened) != entry.identity
+                        or _stat_identity(named) != entry.identity
+                        or _stat_identity(guarded) != entry.identity
+                        or opened.st_nlink != 2
+                        or named.st_nlink != 2
+                        or guarded.st_nlink != 2):
+                    raise ValueError(
+                        "restored file changed before publication")
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                before_hash = os.fstat(descriptor)
+                with os.fdopen(os.dup(descriptor), "rb") as source:
+                    verified = _backup_stream(source, limit=entry.size)
+                after_hash = os.fstat(descriptor)
+                if (_stat_signature(before_hash)
+                        != _stat_signature(after_hash)
+                        or verified != (entry.size, entry.digest)):
+                    raise ValueError(
+                        "restored file checksum mismatch before publication")
+
+                os.unlink(
+                    entry.guard_name,
+                    dir_fd=self.guard_descriptor)
+                entry.guard_name = None
+                released = os.stat(
+                    entry.name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                if (_stat_identity(released) != entry.identity
+                        or released.st_nlink != 1):
+                    raise ValueError(
+                        "restored file changed during publication")
+
+                # Rehash after unlink. This closes the otherwise exploitable
+                # gap between a successful checksum and removal of the inode
+                # guard, including a write raced from an unlink hook.
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                before_rehash = os.fstat(descriptor)
+                with os.fdopen(os.dup(descriptor), "rb") as source:
+                    reverified = _backup_stream(source, limit=entry.size)
+                after_rehash = os.fstat(descriptor)
+                named_after = os.stat(
+                    entry.name, dir_fd=parent_descriptor,
+                    follow_symlinks=False)
+                if (_stat_signature(before_rehash)
+                        != _stat_signature(after_rehash)
+                        or _stat_identity(named_after) != entry.identity
+                        or _stat_signature(named_after)
+                        != _stat_signature(after_rehash)
+                        or reverified != (entry.size, entry.digest)):
+                    raise ValueError(
+                        "restored file checksum mismatch during publication")
+                with _blocked_sigterm():
+                    entry.released_signature = _stat_signature(after_rehash)
+                    entry.release_descriptor = None
+                    os.close(descriptor)
+                    descriptor = -1
+            finally:
+                # On failure the descriptor remains recorded for cleanup to
+                # pin the inode. ledger.close owns that FD after cleanup.
+                if (descriptor >= 0
+                        and entry.release_descriptor is None):
+                    os.close(descriptor)
+                os.close(parent_descriptor)
+        self.validate_success_boundary()
+        self._remove_guard_directory()
+        if self.guard_name is not None:
+            raise ValueError(
+                "restore integrity ledger could not be removed")
+
     def close(self) -> None:
         for entry in self.owned:
-            if entry.descriptor is not None:
+            if entry.release_descriptor is not None:
                 try:
-                    os.close(entry.descriptor)
+                    os.close(entry.release_descriptor)
                 except OSError:
                     pass
+                entry.release_descriptor = None
         self.owned.clear()
-        for descriptor, _, _, _ in self.directories.values():
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
         self.directories.clear()
         if self.root_descriptor is not None:
             try:
@@ -7150,6 +8454,18 @@ class _RestoreLedger:
             except OSError:
                 pass
             self.root_descriptor = None
+        if self.guard_descriptor is not None:
+            try:
+                os.close(self.guard_descriptor)
+            except OSError:
+                pass
+            self.guard_descriptor = None
+        if self.journal_descriptor is not None:
+            try:
+                os.close(self.journal_descriptor)
+            except OSError:
+                pass
+            self.journal_descriptor = None
         try:
             os.close(self.parent_descriptor)
         except OSError:
@@ -7165,35 +8481,9 @@ def _restore_regular(
     parent_descriptor = ledger.open_directory(parent, create=True)
     descriptor = -1
     try:
-        with _blocked_sigterm():
-            descriptor = os.open(
-                name,
-                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600,
-                dir_fd=parent_descriptor,
-            )
-            try:
-                before = os.fstat(descriptor)
-                identity = _stat_identity(before)
-                ledger.record_owned(
-                    parent, name, "file", identity,
-                    entry["size"], entry["sha256"], descriptor=descriptor)
-            except BaseException:
-                try:
-                    recovered = os.fstat(descriptor)
-                except OSError:
-                    recovered = None
-                if recovered is not None:
-                    _rollback_new_entry_at(
-                        parent_descriptor, name, _stat_identity(recovered),
-                        directory=False)
-                raise
-            if (not stat.S_ISREG(before.st_mode)
-                    or before.st_nlink != 1
-                    or before.st_dev != ledger.device):
-                raise ValueError(
-                    "restore output is not a private regular file")
-            os.fchmod(descriptor, 0o600)
+        descriptor, identity = ledger.create_owned_regular(
+            parent, name, entry["size"], entry["sha256"],
+            parent_descriptor)
         with os.fdopen(os.dup(descriptor), "wb") as output, bundle.open(
                 "payload/" + entry["path"]) as source:
             result = _backup_stream(
@@ -7206,7 +8496,8 @@ def _restore_regular(
         if (_stat_identity(after) != identity
                 or _stat_identity(named) != identity
                 or not stat.S_ISREG(named.st_mode)
-                or after.st_nlink != 1):
+                or after.st_nlink != 2
+                or named.st_nlink != 2):
             raise ValueError("restored file changed during restore")
         os.lseek(descriptor, 0, os.SEEK_SET)
         with os.fdopen(os.dup(descriptor), "rb") as restored:
@@ -7234,29 +8525,9 @@ def _restore_symlink(
     result = (len(value), hashlib.sha256(value).hexdigest())
     parent_descriptor = ledger.open_directory(parent, create=True)
     try:
-        with _blocked_sigterm():
-            os.symlink(
-                value, os.fsencode(name), dir_fd=parent_descriptor)
-            try:
-                named = os.stat(
-                    name, dir_fd=parent_descriptor, follow_symlinks=False)
-            except BaseException:
-                # A symlink has no safely openable descriptor. Until the first
-                # no-follow stat succeeds, adopting the current name's inode
-                # could delete a user replacement installed in the gap.
-                raise
-            if (not stat.S_ISLNK(named.st_mode)
-                    or named.st_dev != ledger.device):
-                raise ValueError("restore output is not a symlink")
-            identity = _stat_identity(named)
-            try:
-                ledger.record_owned(
-                    parent, name, "symlink", identity,
-                    entry["size"], entry["sha256"])
-            except BaseException:
-                _rollback_new_entry_at(
-                    parent_descriptor, name, identity, directory=False)
-                raise
+        identity = ledger.create_owned_symlink(
+            parent, name, value, entry["size"], entry["sha256"],
+            parent_descriptor)
         current = os.readlink(
             os.fsencode(name), dir_fd=parent_descriptor)
         named_after = os.stat(
@@ -7380,6 +8651,740 @@ def _reject_live_restore_destination(destination: Path) -> None:
             "restore destination must be outside live AI session stores")
 
 
+def _restore_json_identity(value: Any) -> Optional[tuple[int, int]]:
+    if (not isinstance(value, list) or len(value) != 2
+            or any(type(item) is not int or item < 0 for item in value)):
+        return None
+    return (value[0], value[1])
+
+
+def _restore_pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _recover_one_restore_ledger(
+        parent: Path, parent_descriptor: int, ledger_name: str) -> bool:
+    """Recover one fully journaled dead restore; ambiguity is left untouched."""
+    guard_descriptor = -1
+    journal_descriptor = -1
+    root_descriptor = -1
+    ledger: Optional[_RestoreLedger] = None
+    try:
+        guard_descriptor = os.open(
+            ledger_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_descriptor,
+        )
+        guard_info = os.fstat(guard_descriptor)
+        if (not stat.S_ISDIR(guard_info.st_mode)
+                or guard_info.st_uid != os.getuid()
+                or guard_info.st_mode & 0o077):
+            return False
+        names = os.listdir(guard_descriptor)
+        # Private state can contain one guard per payload plus the journal and
+        # `.restore-root`; after publication only the latter moves away.
+        if len(names) > BACKUP_MAX_FILES + 2:
+            return False
+        try:
+            journal_descriptor = os.open(
+                RESTORE_JOURNAL_NAME,
+                os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                dir_fd=guard_descriptor,
+            )
+        except FileNotFoundError:
+            # Before the journal is created, the only possible operation-owned
+            # object is an empty staging root inside this private ledger. It has
+            # never been published, so removing that empty object cannot touch
+            # a user-selected destination.
+            legacy_match = RESTORE_LEGACY_LEDGER_PATTERN.fullmatch(ledger_name)
+            # A legacy random ledger carries the creating PID, so an empty
+            # pre-journal crash can be distinguished from a live creator. The
+            # deterministic v3 name deliberately contains no PID. Without a
+            # durable journal lock there is no ownership proof, so v3 fails
+            # closed and leaves the private objects for manual inspection.
+            if legacy_match is None:
+                return False
+            pid = int(legacy_match.group("pid"))
+            if _restore_pid_is_alive(pid) or set(names) - {".restore-root"}:
+                return False
+            if ".restore-root" in names:
+                staging_fd = os.open(
+                    ".restore-root",
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    | os.O_CLOEXEC,
+                    dir_fd=guard_descriptor)
+                try:
+                    if os.listdir(staging_fd):
+                        return False
+                finally:
+                    os.close(staging_fd)
+                os.rmdir(".restore-root", dir_fd=guard_descriptor)
+            os.rmdir(ledger_name, dir_fd=parent_descriptor)
+            return True
+        journal_info = os.fstat(journal_descriptor)
+        if (not stat.S_ISREG(journal_info.st_mode)
+                or journal_info.st_nlink != 1
+                or journal_info.st_uid != os.getuid()
+                or journal_info.st_mode & 0o077
+                or journal_info.st_size > RESTORE_RECOVERY_MAX_JOURNAL_BYTES):
+            return False
+        try:
+            fcntl.flock(
+                journal_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        raw_chunks: list[bytes] = []
+        raw_size = 0
+        while raw_size <= RESTORE_RECOVERY_MAX_JOURNAL_BYTES:
+            chunk = os.read(journal_descriptor, min(
+                65536,
+                RESTORE_RECOVERY_MAX_JOURNAL_BYTES + 1 - raw_size))
+            if not chunk:
+                break
+            raw_chunks.append(chunk)
+            raw_size += len(chunk)
+        if raw_size > RESTORE_RECOVERY_MAX_JOURNAL_BYTES:
+            return False
+        raw = b"".join(raw_chunks)
+        first_newline = raw.find(b"\n")
+        if first_newline < 0:
+            return False
+        try:
+            header = json.loads(raw[:first_newline])
+        except JSON_PARSE_ERRORS:
+            return False
+        if not isinstance(header, dict):
+            return False
+        parent_identity = _stat_identity(os.fstat(parent_descriptor))
+        root_identity = _restore_json_identity(header.get("rootIdentity"))
+        pid = header.get("pid")
+        root_name = header.get("rootName")
+        if (header.get("type") != "header"
+                or header.get("schema") not in (2, 3)
+                or type(pid) is not int
+                or not isinstance(root_name, str)
+                or not RESTORE_LEDGER_PATTERN.fullmatch(ledger_name)
+                or _restore_json_identity(header.get("parentIdentity"))
+                != parent_identity
+                or root_identity is None
+                or header.get("device") != guard_info.st_dev):
+            return False
+        root_name = _validated_leaf_name(root_name)
+        legacy_name_valid = (
+            header.get("schema") == 2
+            and RESTORE_LEGACY_LEDGER_PATTERN.fullmatch(ledger_name) is not None
+            and ledger_name.startswith(f".modore-restore-ledger-{pid}-")
+        )
+        target_name_valid = (
+            header.get("schema") == 3
+            and ledger_name == _restore_target_ledger_name(root_name)
+        )
+        if not (legacy_name_valid or target_name_valid):
+            return False
+        root_in_guard = False
+        try:
+            root_descriptor = os.open(
+                root_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_descriptor,
+            )
+        except FileNotFoundError:
+            root_in_guard = True
+            root_descriptor = os.open(
+                ".restore-root",
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=guard_descriptor,
+            )
+        root_info = os.fstat(root_descriptor)
+        if (not stat.S_ISDIR(root_info.st_mode)
+                or _stat_identity(root_info) != root_identity
+                or root_info.st_dev != guard_info.st_dev):
+            return False
+
+        def remove_private_root_and_ledger(
+                expected_directories: Optional[set[str]] = None) -> bool:
+            """Remove a bounded, exact namespace from the private staging root."""
+            if not root_in_guard:
+                return False
+            expected_directories = expected_directories or set()
+            if len(expected_directories) > RESTORE_MAX_DIRECTORIES:
+                return False
+            for relative in expected_directories:
+                _relative_components(relative)
+            directory_identities: dict[str, tuple[int, int]] = {}
+
+            def open_relative(relative: str) -> int:
+                descriptor = os.dup(root_descriptor)
+                try:
+                    for component in (_relative_components(relative)
+                                      if relative else ()):
+                        child = os.open(
+                            component,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                            | os.O_CLOEXEC,
+                            dir_fd=descriptor)
+                        os.close(descriptor)
+                        descriptor = child
+                    return descriptor
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+
+            # Preflight every directory before deleting anything. The root is
+            # still hidden under the random 0700 ledger and payload extraction
+            # cannot start before plan-commit, so an exact all-directory tree
+            # is operation staging rather than user-visible output.
+            pending = [""]
+            while pending:
+                relative = pending.pop()
+                descriptor = open_relative(relative)
+                try:
+                    info = os.fstat(descriptor)
+                    if (not stat.S_ISDIR(info.st_mode)
+                            or info.st_uid != os.getuid()
+                            or info.st_dev != guard_info.st_dev):
+                        return False
+                    if relative:
+                        directory_identities[relative] = _stat_identity(info)
+                    iterator = os.scandir(descriptor)
+                    try:
+                        for entry in iterator:
+                            child_relative = (
+                                f"{relative}/{entry.name}"
+                                if relative else entry.name)
+                            if (child_relative not in expected_directories
+                                    or child_relative
+                                    in directory_identities
+                                    or len(directory_identities)
+                                    >= len(expected_directories)):
+                                return False
+                            named = os.stat(
+                                entry.name, dir_fd=descriptor,
+                                follow_symlinks=False)
+                            if (not stat.S_ISDIR(named.st_mode)
+                                    or named.st_uid != os.getuid()
+                                    or named.st_dev != guard_info.st_dev):
+                                return False
+                            directory_identities[child_relative] = (
+                                _stat_identity(named))
+                            pending.append(child_relative)
+                    finally:
+                        iterator.close()
+                finally:
+                    os.close(descriptor)
+            for relative in sorted(
+                    directory_identities,
+                    key=lambda value: (value.count("/"), value),
+                    reverse=True):
+                parts = _relative_components(relative)
+                parent_relative = "/".join(parts[:-1])
+                parent_fd = open_relative(parent_relative)
+                try:
+                    named = os.stat(
+                        parts[-1], dir_fd=parent_fd,
+                        follow_symlinks=False)
+                    if (not stat.S_ISDIR(named.st_mode)
+                            or _stat_identity(named)
+                            != directory_identities[relative]):
+                        return False
+                    os.rmdir(parts[-1], dir_fd=parent_fd)
+                finally:
+                    os.close(parent_fd)
+            expected_guard_names = {
+                RESTORE_JOURNAL_NAME,
+                ".restore-root",
+            }
+            iterator = os.scandir(root_descriptor)
+            try:
+                if next(iterator, None) is not None:
+                    return False
+            finally:
+                iterator.close()
+            guard_names: set[str] = set()
+            iterator = os.scandir(guard_descriptor)
+            try:
+                for index, entry in enumerate(iterator):
+                    if index > len(expected_guard_names):
+                        return False
+                    guard_names.add(entry.name)
+            finally:
+                iterator.close()
+            if guard_names != expected_guard_names:
+                return False
+            named_root = os.stat(
+                ".restore-root", dir_fd=guard_descriptor,
+                follow_symlinks=False)
+            if (not stat.S_ISDIR(named_root.st_mode)
+                    or _stat_identity(named_root) != root_identity):
+                return False
+            os.rmdir(".restore-root", dir_fd=guard_descriptor)
+            _unlink_same_file_at(
+                guard_descriptor, RESTORE_JOURNAL_NAME,
+                _stat_identity(journal_info))
+            iterator = os.scandir(guard_descriptor)
+            try:
+                if next(iterator, None) is not None:
+                    return False
+            finally:
+                iterator.close()
+            named_guard = os.stat(
+                ledger_name, dir_fd=parent_descriptor,
+                follow_symlinks=False)
+            if (not stat.S_ISDIR(named_guard.st_mode)
+                    or _stat_identity(named_guard)
+                    != _stat_identity(guard_info)):
+                return False
+            os.rmdir(ledger_name, dir_fd=parent_descriptor)
+            return True
+
+        def intended_directories_before_plan_commit(
+                body_records: list[dict],
+                ) -> Optional[set[str]]:
+            commits = [index for index, record in enumerate(body_records)
+                       if record.get("type") == "intent-commit"]
+            if len(commits) != 1:
+                return None
+            commit_index = commits[0]
+            commit = body_records[commit_index]
+            plans: list[dict] = []
+            intents: set[str] = set()
+            reading_intents = False
+            for record in body_records[:commit_index]:
+                record_type = record.get("type")
+                if record_type == "directory-intent":
+                    reading_intents = True
+                    relative = record.get("path")
+                    parent_relative = record.get("parent")
+                    name = record.get("name")
+                    if (not isinstance(relative, str) or not relative
+                            or not isinstance(parent_relative, str)
+                            or not isinstance(name, str)
+                            or relative in intents):
+                        return None
+                    parts = _relative_components(relative)
+                    if (parent_relative != "/".join(parts[:-1])
+                            or name != _validated_leaf_name(parts[-1])):
+                        return None
+                    intents.add(relative)
+                    continue
+                if record_type != "plan" or reading_intents:
+                    return None
+                parent_relative = record.get("parent")
+                name = record.get("name")
+                guard_name = record.get("guard")
+                if (not isinstance(parent_relative, str)
+                        or not isinstance(name, str)
+                        or guard_name != f"{len(plans):08x}"):
+                    return None
+                if parent_relative:
+                    _relative_components(parent_relative)
+                _validated_leaf_name(name)
+                plans.append(record)
+                if len(plans) > BACKUP_MAX_FILES:
+                    return None
+            planned: set[str] = set()
+            for plan in plans:
+                parent_relative = plan["parent"]
+                if parent_relative:
+                    parts = PurePosixPath(parent_relative).parts
+                    planned.update(
+                        "/".join(parts[:index])
+                        for index in range(1, len(parts) + 1))
+            if (commit.get("plans") != len(plans)
+                    or commit.get("directories") != len(intents)
+                    or intents != planned):
+                return None
+            return intents
+
+        # The header is fsynced separately. If SIGKILL tears the later batched
+        # plan write, payload creation has not begun, so the exact pinned empty
+        # root can be removed without interpreting an incomplete plan. This
+        # prevents an empty destination from permanently blocking the retry.
+        plan_raw = raw[first_newline + 1:]
+        raw_lines = plan_raw.split(b"\n")
+        if raw_lines and raw_lines[-1] == b"":
+            raw_lines.pop()
+        elif raw_lines:
+            # Ignore only the final torn append. Whether the durable prefix is
+            # actionable is decided by explicit intent/plan/release commits.
+            raw_lines.pop()
+        plan_records: list[dict] = []
+        malformed_after_commit = False
+        for line in raw_lines:
+            try:
+                record = json.loads(line)
+            except JSON_PARSE_ERRORS:
+                malformed_after_commit = any(
+                    item.get("type") == "plan-commit"
+                    for item in plan_records)
+                break
+            if not isinstance(record, dict):
+                malformed_after_commit = any(
+                    item.get("type") == "plan-commit"
+                    for item in plan_records)
+                break
+            plan_records.append(record)
+        records = [header, *plan_records]
+        if (len(records) > (2 * BACKUP_MAX_FILES
+                            + 2 * RESTORE_MAX_DIRECTORIES + 5)
+                or any(not isinstance(record, dict) for record in records)):
+            return False
+        body = records[1:]
+        commit_indexes = [
+            index for index, record in enumerate(body)
+            if record.get("type") == "plan-commit"
+        ]
+        if len(commit_indexes) != 1:
+            # A newline-terminated prefix is not a committed plan. The first
+            # fsynced intent commit precedes every mkdir, so recovery either
+            # proves the exact private directory namespace or requires an
+            # empty root. Payload extraction has not started in either case.
+            intended = intended_directories_before_plan_commit(body)
+            if intended is not None:
+                return remove_private_root_and_ledger(intended)
+            return remove_private_root_and_ledger() if root_in_guard else False
+        commit_index = commit_indexes[0]
+        plan_section = body[:commit_index]
+        plan_commit = body[commit_index]
+        intended_directories = intended_directories_before_plan_commit(
+            plan_section)
+        if intended_directories is None:
+            return False
+        release_section = body[commit_index + 1:]
+        release_identities: dict[int, tuple[int, int]] = {}
+        release_committed = False
+        if release_section:
+            if (release_section[-1].get("type") != "release-commit"
+                    or malformed_after_commit):
+                # Publication happens only after release-commit fsync. While
+                # the root remains private, a torn release prefix adds no new
+                # ownership fact and all hard-link guards still prove every
+                # payload; ignore the prefix and recover from the committed
+                # plan. A public root without the commit remains fail-closed.
+                if not root_in_guard:
+                    return False
+                release_section = []
+        if release_section:
+            release_commit = release_section[-1]
+            release_rows = release_section[:-1]
+            for record in release_rows:
+                ordinal = record.get("ordinal")
+                identity = _restore_json_identity(record.get("identity"))
+                if (record.get("type") != "release"
+                        or type(ordinal) is not int or ordinal < 0
+                        or identity is None
+                        or ordinal in release_identities):
+                    return False
+                release_identities[ordinal] = identity
+            if (release_commit.get("entries") != len(release_rows)
+                    or set(release_identities) != set(range(len(release_rows)))):
+                return False
+            release_committed = True
+        if not root_in_guard and not release_committed:
+            # New schema never publishes before the release identity set is
+            # durable. A public root without it is ambiguous and untouched.
+            return False
+
+        directories: dict[str, tuple[tuple[int, int], str, str]] = {}
+        owned: list[_RestoreOwnedEntry] = []
+        expected_names = {
+            RESTORE_JOURNAL_NAME,
+            *({".restore-root"} if root_in_guard else set()),
+        }
+        planned_directories: set[str] = set()
+        plans: list[dict] = []
+        directory_proofs: dict[
+            str, tuple[
+                tuple[int, int],
+                str,
+                str,
+            ],
+        ] = {}
+        reading_directories = False
+        intent_commit_seen = False
+        for record in plan_section:
+            record_type = record.get("type")
+            if record_type == "directory-intent":
+                if reading_directories:
+                    return False
+                continue
+            if record_type == "intent-commit":
+                if intent_commit_seen or reading_directories:
+                    return False
+                intent_commit_seen = True
+                continue
+            if record_type == "directory":
+                if not intent_commit_seen:
+                    return False
+                reading_directories = True
+                relative = record.get("path")
+                parent_relative = record.get("parent")
+                name = record.get("name")
+                identity = _restore_json_identity(record.get("identity"))
+                if (not isinstance(relative, str) or not relative
+                        or not isinstance(parent_relative, str)
+                        or not isinstance(name, str)
+                        or identity is None
+                        or relative in directory_proofs):
+                    return False
+                parts = _relative_components(relative)
+                expected_parent = "/".join(parts[:-1])
+                expected_name = _validated_leaf_name(parts[-1])
+                if (parent_relative != expected_parent
+                        or name != expected_name):
+                    return False
+                directory_proofs[relative] = (
+                    identity, parent_relative, expected_name)
+                continue
+            parent_relative = record.get("parent")
+            name = record.get("name")
+            if (record_type != "plan" or intent_commit_seen
+                    or reading_directories
+                    or not isinstance(parent_relative, str)
+                    or not isinstance(name, str)):
+                return False
+            if parent_relative:
+                _relative_components(parent_relative)
+                parts = PurePosixPath(parent_relative).parts
+                planned_directories.update(
+                    "/".join(parts[:index])
+                    for index in range(1, len(parts) + 1))
+            name = _validated_leaf_name(name)
+            if len(plans) >= BACKUP_MAX_FILES:
+                return False
+            kind = record.get("kind")
+            size = record.get("size")
+            digest = record.get("digest")
+            guard_name = record.get("guard")
+            if (kind not in ("file", "symlink")
+                    or type(size) is not int or size < 0
+                    or not isinstance(digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                    or not isinstance(guard_name, str)
+                    or guard_name != f"{len(plans):08x}"):
+                return False
+            plans.append({
+                "parent": parent_relative,
+                "name": name,
+                "kind": kind,
+                "size": size,
+                "digest": digest,
+                "guard": guard_name,
+            })
+
+        if (plan_commit.get("plans") != len(plans)
+                or plan_commit.get("directories") != len(directory_proofs)
+                or len(planned_directories) > RESTORE_MAX_DIRECTORIES
+                or planned_directories != intended_directories
+                or set(directory_proofs) != planned_directories):
+            return False
+        if release_committed and len(release_identities) != len(plans):
+            return False
+        for relative in sorted(
+                planned_directories,
+                key=lambda value: (value.count("/"), value)):
+            identity, parent_relative, name = (
+                directory_proofs[relative])
+            parent_fd = os.dup(root_descriptor)
+            try:
+                for component in _relative_components(relative):
+                    child_fd = os.open(
+                        component,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                        | os.O_CLOEXEC,
+                        dir_fd=parent_fd)
+                    os.close(parent_fd)
+                    parent_fd = child_fd
+                info = os.fstat(parent_fd)
+                if (not stat.S_ISDIR(info.st_mode)
+                        or _stat_identity(info) != identity):
+                    return False
+                directories[relative] = (
+                    identity, parent_relative, name)
+            finally:
+                os.close(parent_fd)
+
+        def visible_stat(
+                parent_relative: str, name: str,
+                ) -> Optional[os.stat_result]:
+            parent_fd = os.dup(root_descriptor)
+            try:
+                for component in _relative_components(parent_relative) \
+                        if parent_relative else ():
+                    child_fd = os.open(
+                        component,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                        | os.O_CLOEXEC,
+                        dir_fd=parent_fd)
+                    os.close(parent_fd)
+                    parent_fd = child_fd
+                try:
+                    visible = os.stat(
+                        name, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    return None
+                return visible
+            finally:
+                os.close(parent_fd)
+
+        seen_guards: set[str] = set()
+        for ordinal, plan in enumerate(plans):
+            parent_relative = plan["parent"]
+            name = plan["name"]
+            kind = plan["kind"]
+            size = plan["size"]
+            digest = plan["digest"]
+            guard_name = plan["guard"]
+            if guard_name is not None:
+                if (re.fullmatch(r"[0-9a-f]{8}", guard_name) is None
+                        or guard_name in seen_guards):
+                    return False
+                seen_guards.add(guard_name)
+                try:
+                    guarded = os.stat(
+                        guard_name, dir_fd=guard_descriptor,
+                        follow_symlinks=False)
+                except FileNotFoundError:
+                    guarded = None
+                if guarded is None:
+                    visible = visible_stat(parent_relative, name)
+                    if visible is None and root_in_guard:
+                        continue
+                    # Once a published payload loses its hard-link guard, the
+                    # journal no longer proves its complete metadata identity.
+                    # dev+ino and payload bytes cannot distinguish an
+                    # operation-owned entry from a same-user chmod/ACL/xattr
+                    # change (and inode reuse is possible). Leave the visible
+                    # tree and ledger untouched instead of adopting it for
+                    # deletion. A missing private payload is safe to skip
+                    # because it was never published.
+                    return False
+                expected_kind = (stat.S_ISLNK(guarded.st_mode)
+                                 if kind == "symlink"
+                                 else stat.S_ISREG(guarded.st_mode))
+                if not expected_kind:
+                    return False
+                identity = _stat_identity(guarded)
+                if (release_committed
+                        and release_identities.get(ordinal) != identity):
+                    return False
+                visible = visible_stat(parent_relative, name)
+                if (visible is not None
+                        and _stat_identity(visible) != identity):
+                    return False
+                if not root_in_guard and visible is None:
+                    return False
+                if kind == "symlink":
+                    guard_value = os.fsencode(os.readlink(
+                        guard_name, dir_fd=guard_descriptor))
+                    if (len(guard_value) != size
+                            or hashlib.sha256(guard_value).hexdigest()
+                            != digest):
+                        return False
+                expected_names.add(guard_name)
+                owned.append(_RestoreOwnedEntry(
+                    parent_relative, name, kind, identity, size, digest,
+                    guard_name))
+                continue
+        if set(names) != expected_names:
+            return False
+
+        ledger = _RestoreLedger(parent, parent_descriptor, root_name)
+        ledger.root_descriptor = os.dup(root_descriptor)
+        ledger.root_identity = root_identity
+        ledger.root_published = not root_in_guard
+        ledger.plan_committed = True
+        ledger.release_committed = release_committed
+        ledger.device = root_info.st_dev
+        ledger.guard_name = ledger_name
+        ledger.guard_descriptor = os.dup(guard_descriptor)
+        ledger.guard_identity = _stat_identity(guard_info)
+        ledger.journal_descriptor = os.dup(journal_descriptor)
+        ledger.journal_identity = _stat_identity(journal_info)
+        ledger.directories = directories
+        ledger.owned = owned
+        ledger.cleanup()
+        try:
+            visible_after = os.stat(
+                root_name, dir_fd=parent_descriptor,
+                follow_symlinks=False)
+        except FileNotFoundError:
+            recovered = True
+        else:
+            recovered = _stat_identity(visible_after) != root_identity
+        return recovered
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        return False
+    finally:
+        if ledger is not None:
+            ledger.close()
+        for descriptor in (
+                root_descriptor, journal_descriptor, guard_descriptor):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def _recover_stale_restore_ledgers_bounded(
+        parent: Path, parent_descriptor: int,
+        ) -> tuple[int, bool]:
+    """Run one bounded best-effort sweep for unrelated/legacy ledgers.
+
+    This sweep deliberately has no cross-process cursor: a numeric readdir
+    offset is not stable after close/reopen or namespace mutation. Recovery of
+    the requested destination is an exact deterministic lookup performed by
+    ``restore_session_backup`` and therefore never depends on this scan.
+    """
+    candidates: list[str] = []
+    parent_entry_cap = max(1, int(RESTORE_RECOVERY_MAX_PARENT_ENTRIES))
+    ledger_cap = max(1, int(RESTORE_RECOVERY_MAX_LEDGERS))
+    try:
+        iterator = os.scandir(parent_descriptor)
+    except OSError:
+        return (0, True)
+    examined = 0
+    incomplete = False
+    try:
+        for entry in iterator:
+            name = entry.name
+            is_ledger = RESTORE_LEDGER_PATTERN.fullmatch(name) is not None
+            if (examined >= parent_entry_cap
+                    or (is_ledger
+                        and len(candidates)
+                        >= ledger_cap)):
+                incomplete = True
+                break
+            examined += 1
+            if is_ledger:
+                candidates.append(name)
+    except OSError:
+        incomplete = True
+    finally:
+        iterator.close()
+    recovered = 0
+    for name in sorted(candidates):
+        recovered += _recover_one_restore_ledger(
+            parent, parent_descriptor, name)
+    return (recovered, incomplete)
+
+
+def _recover_stale_restore_ledgers(
+        parent: Path, parent_descriptor: int) -> int:
+    """Compatibility count for one bounded stale-restore recovery page."""
+    return _recover_stale_restore_ledgers_bounded(
+        parent, parent_descriptor)[0]
+
+
 def restore_session_backup(archive: Path, destination: Path) -> dict:
     archive = archive.expanduser().absolute()
     parent = destination.expanduser().absolute().parent.resolve(strict=True)
@@ -7388,6 +9393,17 @@ def restore_session_backup(archive: Path, destination: Path) -> dict:
     _reject_live_restore_destination(destination)
     parent_descriptor = _open_directory_nofollow(parent)
     try:
+        # Current-target recovery is one exact lookup and remains reliable
+        # across independent CLI processes even in a directory with millions
+        # of unrelated names. The parent scan below is only opportunistic
+        # cleanup and never gates this requested destination.
+        target_ledger = _restore_target_ledger_name(destination_name)
+        recovered_ledgers = int(_recover_one_restore_ledger(
+            parent, parent_descriptor, target_ledger))
+        swept_ledgers, recovery_incomplete = (
+            _recover_stale_restore_ledgers_bounded(
+                parent, parent_descriptor))
+        recovered_ledgers += swept_ledgers
         ledger = _RestoreLedger(
             parent, parent_descriptor, destination_name)
     finally:
@@ -7412,6 +9428,7 @@ def restore_session_backup(archive: Path, destination: Path) -> dict:
                 manifest["files"],
                 key=lambda entry: entry.get("kind") == "symlink",
             )
+            ledger.install_recovery_plan(ordered)
             for entry in ordered:
                 result = (
                     _restore_symlink(bundle, entry, ledger)
@@ -7422,8 +9439,18 @@ def restore_session_backup(archive: Path, destination: Path) -> dict:
                     raise ValueError("backup changed during restore")
             ledger.validate_all()
             result = _backup_result(archive, manifest, destination)
+            result["staleRecovery"] = {
+                "recovered": recovered_ledgers,
+                "incomplete": recovery_incomplete,
+            }
         # The archive context validates its held inode on exit. Publish a
-        # success state only after that final validation has completed.
+        # success state only after that final validation has completed. The
+        # release identities are fsynced while the root is still private;
+        # only then is the whole verified tree published in one exclusive
+        # rename, so no partial payload ever appears at the destination.
+        ledger.commit_release()
+        ledger.publish_root()
+        ledger.release_guards()
         state["completed"] = True
         return result
     finally:
@@ -7438,6 +9465,7 @@ SEARCH_DEFAULT_LIMIT = 200
 SEARCH_MATCHES_PER_SESSION = 3
 SEARCH_SNIPPET_CHARS = 240
 SEARCH_DEFAULT_BUDGET_SECONDS = 60.0
+SESSION_CONTENT_ISOLATION_MAX_BYTES = 4 * 1024 * 1024
 
 
 def _content_sessions_and_coverage(session_index: dict) -> tuple[list[dict], bool]:
@@ -7454,6 +9482,9 @@ def _content_sessions_and_coverage(session_index: dict) -> tuple[list[dict], boo
         if session.get("kind") == "session"
     ]
     workspace_state_stores = {tool for tool, _ in VSCODE_FORKS}
+    # Workspace reachability affects browser metadata, not whether every
+    # discovered conversation body was searched.
+    workspace_state_stores.add(WORKSPACE_PATHS_STORE)
     relevant_stores = [
         store for store in session_index["coverage"]["stores"]
         if store.get("store") not in workspace_state_stores
@@ -7464,6 +9495,145 @@ def _content_sessions_and_coverage(session_index: dict) -> tuple[list[dict], boo
         for store in relevant_stores
     )
     return (sessions, complete)
+
+
+def _isolated_content_json(deadline: float, producer: Callable[[], dict]
+                           ) -> tuple[Optional[dict], str]:
+    """Run one transcript reader behind a hard process deadline."""
+    if time.monotonic() >= deadline:
+        return (None, "time")
+    try:
+        read_descriptor, write_descriptor = os.pipe()
+        pid = os.fork()
+    except OSError:
+        for descriptor in (locals().get("read_descriptor", -1),
+                           locals().get("write_descriptor", -1)):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+        return (None, "unreadable")
+    if pid == 0:
+        try:
+            os.close(read_descriptor)
+            encoded = json.dumps(
+                producer(), ensure_ascii=True,
+                separators=(",", ":")).encode("utf-8")
+            if len(encoded) <= SESSION_CONTENT_ISOLATION_MAX_BYTES:
+                offset = 0
+                while offset < len(encoded):
+                    offset += os.write(write_descriptor, encoded[offset:])
+        except BaseException:
+            pass
+        finally:
+            try:
+                os.close(write_descriptor)
+            except OSError:
+                pass
+        os._exit(0)
+
+    if not _prepare_isolated_reader(
+            read_descriptor, write_descriptor, pid):
+        return (None, "unreadable")
+    chunks: list[bytes] = []
+    total = 0
+    eof = reaped = success = oversized = False
+    try:
+        while time.monotonic() < deadline and not (eof and reaped):
+            ready = select.select(
+                [read_descriptor] if not eof else [], [], [],
+                min(0.05, max(0.0, deadline - time.monotonic())))[0]
+            if ready:
+                try:
+                    chunk = os.read(read_descriptor, 65536)
+                except BlockingIOError:
+                    chunk = None
+                if chunk == b"":
+                    eof = True
+                elif chunk:
+                    total += len(chunk)
+                    oversized = (oversized
+                                 or total > SESSION_CONTENT_ISOLATION_MAX_BYTES)
+                    if not oversized:
+                        chunks.append(chunk)
+            if not reaped:
+                try:
+                    waited, wait_status = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    waited, wait_status = pid, None
+                if waited == pid:
+                    reaped = True
+                    success = (wait_status is not None
+                               and os.WIFEXITED(wait_status)
+                               and os.WEXITSTATUS(wait_status) == 0)
+        if not reaped:
+            if not _terminate_worktree_worker(pid):
+                return (None, "worker-leaked")
+            reaped = True
+        if not (eof and success) or oversized:
+            return (None, "time" if time.monotonic() >= deadline
+                    else "unreadable")
+        try:
+            payload = json.loads(b"".join(chunks).decode("utf-8"))
+        except JSON_PARSE_ERRORS:
+            return (None, "unreadable")
+        return ((payload, "ok") if isinstance(payload, dict)
+                else (None, "unreadable"))
+    finally:
+        try:
+            os.close(read_descriptor)
+        except OSError:
+            pass
+
+
+def _search_one_session_isolated(
+        source: Path, needle: str, *, raw: bool, home: Path,
+        deadline: float,
+        ) -> tuple[list[dict], str, int]:
+    payload, worker_status = _isolated_content_json(
+        deadline,
+        lambda: dict(zip(
+            ("hits", "status", "omitted"),
+            _search_one_session_bounded(
+                source, needle, raw=raw, home=home, deadline=deadline))),
+    )
+    if payload is None:
+        return ([], worker_status, 0)
+    hits = payload.get("hits")
+    status = payload.get("status")
+    omitted = payload.get("omitted")
+    if (not isinstance(hits, list) or not isinstance(status, str)
+            or type(omitted) is not int or omitted < 0):
+        return ([], "unreadable", 0)
+    return (hits, status, omitted)
+
+
+def _session_evidence_isolated(
+        source: Path, needle: str, *, raw: bool, home: Path,
+        deadline: float,
+        ) -> tuple[list[dict], list[dict], str, dict]:
+    def produce() -> dict:
+        mentions, invocations, status, omissions = _session_evidence(
+            source, needle, raw=raw, home=home, deadline=deadline)
+        return {"mentions": mentions, "invocations": invocations,
+                "status": status, "omissions": omissions}
+
+    payload, worker_status = _isolated_content_json(deadline, produce)
+    empty = {"mentions_at_least": 0, "invocations_at_least": 0}
+    if payload is None:
+        return ([], [], worker_status, empty)
+    mentions = payload.get("mentions")
+    invocations = payload.get("invocations")
+    status = payload.get("status")
+    omissions = payload.get("omissions")
+    if (not isinstance(mentions, list) or not isinstance(invocations, list)
+            or not isinstance(status, str) or not isinstance(omissions, dict)
+            or any(type(omissions.get(key)) is not int
+                   or omissions[key] < 0 for key in empty)):
+        return ([], [], "unreadable", empty)
+    return (mentions, invocations, status,
+            {key: omissions[key] for key in empty})
 
 
 def build_search(query: str, home: Path, *, raw: bool = False,
@@ -7487,23 +9657,30 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     quietly stops at a time budget while reporting nothing found is the
     same collapse this codebase keeps having to undo.
     """
+    started = time.monotonic()
+    deadline = started + max(0.0, budget_seconds)
     needle = " ".join(query.split()).casefold()
     if not needle:
         return {"query": query, "matches": [], "scannedSessions": 0,
                 "totalSessions": 0, "unreadableSessions": 0,
+                "leakedWorkerSessions": 0,
+                "parseErrorSessions": 0,
                 "truncatedSessions": 0,
+                "matchesOmittedAtLeast": 0,
+                "sessionsSkippedByLimit": 0,
                 "coverage": "complete", "truncatedReason": None,
                 "definitive": False, "evidenceKind": "conversation_mention",
                 "masked": not raw}
 
-    session_index = build_sessions(home, limit=0)
+    session_index = _build_sessions_isolated(home, deadline)
     sessions, discovery_complete = _content_sessions_and_coverage(
         session_index)
-    started = time.monotonic()
-    deadline = started + max(0.0, budget_seconds)
     matches: list[dict] = []
-    scanned = unreadable = truncated_sessions = 0
-    truncated_reason: Optional[str] = None
+    scanned = unreadable = parse_errors = leaked_workers = truncated_sessions = 0
+    matches_omitted_at_least = 0
+    sessions_skipped_by_limit = 0
+    truncated_reason: Optional[str] = (
+        "time" if time.monotonic() >= deadline else None)
 
     for session in sessions:
         if len(matches) >= limit > 0:
@@ -7513,7 +9690,7 @@ def build_search(query: str, home: Path, *, raw: bool = False,
             truncated_reason = "time"
             break
         source = Path(session["source"])
-        found, read_status = _search_one_session_bounded(
+        found, read_status, session_omitted = _search_one_session_isolated(
             source, needle, raw=raw, home=home, deadline=deadline)
         scanned += 1
         if read_status == "time":
@@ -7521,19 +9698,40 @@ def build_search(query: str, home: Path, *, raw: bool = False,
             truncated_reason = "time"
         elif read_status == "truncated":
             truncated_sessions += 1
+        elif read_status == "worker-leaked":
+            unreadable += 1
+            leaked_workers += 1
+        elif read_status == "parse":
+            parse_errors += 1
         elif read_status != "ok":
             unreadable += 1
+        if session_omitted:
+            matches_omitted_at_least += session_omitted
+            if read_status == "ok":
+                truncated_sessions += 1
+            if truncated_reason != "time":
+                truncated_reason = "limit"
         for hit in found:
+            if limit > 0 and len(matches) >= limit:
+                matches_omitted_at_least += 1
+                if truncated_reason != "time":
+                    truncated_reason = "limit"
+                continue
             matches.append({**hit, "tool": session["tool"],
                             "source": session["source"],
                             "workspace": session["workspace"],
                             "lastActive": session["lastActive"]})
         if read_status == "time":
             break
+        if limit > 0 and len(matches) >= limit:
+            sessions_skipped_by_limit = max(0, len(sessions) - scanned)
+            if sessions_skipped_by_limit or matches_omitted_at_least:
+                truncated_reason = "limit"
+                break
 
     swept = (truncated_reason is None and scanned == len(sessions)
              and discovery_complete and truncated_sessions == 0
-             and unreadable == 0)
+             and unreadable == 0 and parse_errors == 0)
     if truncated_reason is None:
         if truncated_sessions:
             truncated_reason = "content"
@@ -7541,15 +9739,21 @@ def build_search(query: str, home: Path, *, raw: bool = False,
             truncated_reason = "discovery"
         elif unreadable:
             truncated_reason = "unreadable"
+        elif parse_errors:
+            truncated_reason = "parse"
     return {
         "query": query,
         # Newest first: the recent time you solved this is the one worth
         # reading, and the older ones are what "see all" is for.
-        "matches": sorted(matches, key=lambda m: m["lastActive"], reverse=True)[:limit or None],
+        "matches": sorted(matches, key=lambda m: m["lastActive"], reverse=True),
         "scannedSessions": scanned,
         "totalSessions": len(sessions),
         "unreadableSessions": unreadable,
+        "leakedWorkerSessions": leaked_workers,
+        "parseErrorSessions": parse_errors,
         "truncatedSessions": truncated_sessions,
+        "matchesOmittedAtLeast": matches_omitted_at_least,
+        "sessionsSkippedByLimit": sessions_skipped_by_limit,
         # Did the sweep reach every session it knew about.
         "coverage": "complete" if swept else "truncated",
         "truncatedReason": truncated_reason,
@@ -7595,6 +9799,67 @@ def _search_probes(needle: str) -> tuple[tuple[str, ...], ...]:
     return tuple(groups)
 
 
+def _json_text_projection(text: str) -> str:
+    """Project JSON escapes to their semantic characters without parsing.
+
+    The raw search gate is allowed to over-admit a file, but it must never
+    reject one whose decoded conversation contains the query. Searching the
+    raw spelling alone breaks that rule for escaped slashes and for Unicode
+    case-fold expansions (``Stra\\u00dfe`` semantically folds to ``strasse``).
+    This small scanner interprets every valid JSON string escape while leaving
+    surrounding JSON syntax in place. Invalid escapes are copied literally;
+    the full parser remains the authority after this cheap necessary test.
+    """
+    simple = {
+        '"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f",
+        "n": "\n", "r": "\r", "t": "\t",
+    }
+    projected: list[str] = []
+    position = 0
+    length = len(text)
+    while position < length:
+        if text[position] != "\\" or position + 1 >= length:
+            projected.append(text[position])
+            position += 1
+            continue
+        marker = text[position + 1]
+        if marker in simple:
+            projected.append(simple[marker])
+            position += 2
+            continue
+        if marker == "u" and position + 6 <= length:
+            digits = text[position + 2:position + 6]
+            try:
+                first = int(digits, 16)
+            except ValueError:
+                first = -1
+            if first >= 0:
+                consumed = 6
+                codepoint = first
+                if (0xD800 <= first <= 0xDBFF
+                        and position + 12 <= length
+                        and text[position + 6:position + 8] == "\\u"):
+                    try:
+                        second = int(text[position + 8:position + 12], 16)
+                    except ValueError:
+                        second = -1
+                    if 0xDC00 <= second <= 0xDFFF:
+                        codepoint = (
+                            0x10000 + ((first - 0xD800) << 10)
+                            + (second - 0xDC00)
+                        )
+                        consumed = 12
+                if not 0xD800 <= codepoint <= 0xDFFF:
+                    projected.append(chr(codepoint))
+                    position += consumed
+                    continue
+        # Keep malformed/incomplete escapes visible. A later overlapping
+        # window will decode an escape that was merely split at a chunk edge.
+        projected.append("\\")
+        position += 1
+    return "".join(projected)
+
+
 def _file_might_contain_handle(
         handle, probes: tuple[tuple[str, ...], ...], *,
         maximum_bytes: Optional[int] = None,
@@ -7605,10 +9870,17 @@ def _file_might_contain_handle(
     if maximum_bytes is None:
         maximum_bytes = SEARCH_PROBE_MAX_BYTES
     outstanding = set(range(len(probes)))
-    overlap = max(
+    encoded_overlap = max(
         (len(probe.encode("utf-8")) for group in probes for probe in group),
         default=1,
     )
+    # A semantic character can occupy twelve raw bytes as a JSON surrogate
+    # pair. Retaining a raw window large enough for the longest probe means a
+    # word crossing a read boundary is reconsidered whole after projection.
+    semantic_overlap = max(
+        (len(probe) for group in probes for probe in group), default=1,
+    ) * 12 + 16
+    overlap = max(encoded_overlap, semantic_overlap)
     carry = b""
     consumed = 0
     while consumed < maximum_bytes:
@@ -7619,7 +9891,8 @@ def _file_might_contain_handle(
             return (False, "ok")
         consumed += len(chunk)
         window = carry + chunk
-        folded = window.decode("utf-8", errors="replace").casefold()
+        folded = _json_text_projection(
+            window.decode("utf-8", errors="replace")).casefold()
         for position in tuple(outstanding):
             if any(probe in folded for probe in probes[position]):
                 outstanding.discard(position)
@@ -7660,7 +9933,7 @@ def _file_might_contain(source: Path,
 def _search_one_session_bounded(
         source: Path, needle: str, *, raw: bool,
         home: Optional[Path] = None, deadline: Optional[float] = None,
-        ) -> tuple[list[dict], str]:
+        ) -> tuple[list[dict], str, int]:
     """Matching turns in one transcript, and whether it could be read.
 
     Reads through `visible_turns`, so a hit is something a person could
@@ -7671,7 +9944,7 @@ def _search_one_session_bounded(
         source, home)
     if desktop_status != "not-desktop":
         if desktop_status != "ok" or desktop_descriptor is None:
-            return ([], desktop_status)
+            return ([], desktop_status, 0)
         try:
             before = os.fstat(desktop_descriptor)
             probes = _search_probes(needle)
@@ -7681,55 +9954,60 @@ def _search_one_session_bounded(
             if not worth_parsing:
                 if _stat_signature(before) != _stat_signature(
                         os.fstat(desktop_descriptor)):
-                    return ([], "unreadable")
-                return ([], probe_status)
+                    return ([], "unreadable", 0)
+                return ([], probe_status, 0)
             os.lseek(desktop_descriptor, 0, os.SEEK_SET)
             with os.fdopen(os.dup(desktop_descriptor), "rb") as handle:
-                turns, decoded_any, truncated, timed_out = _read_jsonl_turns(
+                (turns, decoded_any, truncated, timed_out,
+                 parse_failed) = _read_jsonl_turns(
                     handle, deadline=deadline)
             after = os.fstat(desktop_descriptor)
             if (_stat_signature(before) != _stat_signature(after)
                     or (not decoded_any and before.st_size > 0)):
-                return ([], "unreadable")
+                return ([], "unreadable", 0)
             turns = _canonical_visible_turns(turns)
         except OSError:
-            return ([], "unreadable")
+            return ([], "unreadable", 0)
         finally:
             os.close(desktop_descriptor)
-        read_status = "time" if timed_out else "truncated" if truncated else "ok"
+        read_status = (
+            "time" if timed_out else "truncated" if truncated
+            else "parse" if parse_failed else "ok")
     else:
         probes = _search_probes(needle)
         worth_parsing, probe_status = _file_might_contain(
             source, probes, deadline=deadline)
         if probe_status not in ("ok", "truncated"):
-            return ([], probe_status)
+            return ([], probe_status, 0)
         if not worth_parsing:
-            return ([], probe_status)
+            return ([], probe_status, 0)
         turns, read_status = visible_turns(
             source, home, deadline=deadline)
-        if read_status not in ("ok", "truncated", "time"):
-            return ([], read_status)
+        if read_status not in ("ok", "truncated", "time", "parse"):
+            return ([], read_status, 0)
 
     mask_home = home or Path.home()
 
     hits: list[dict] = []
+    omitted_at_least = 0
     for position, turn in enumerate(turns):
         # Confirm against the normalised turn, not the raw bytes: the
         # query had its whitespace collapsed and the transcript did not.
         if needle not in " ".join(turn.text.split()).casefold():
             continue
+        if len(hits) >= SEARCH_MATCHES_PER_SESSION:
+            omitted_at_least = 1
+            break
         hits.append(_search_hit(
             position, turn, needle, raw=raw, home=mask_home))
-        if len(hits) >= SEARCH_MATCHES_PER_SESSION:
-            break
-    return (hits, read_status)
+    return (hits, read_status, omitted_at_least)
 
 
 def _search_one_session(source: Path, needle: str, *,
                         raw: bool, home: Optional[Path] = None
                         ) -> tuple[list[dict], bool]:
     """Compatibility wrapper for callers that only distinguish readable."""
-    hits, status = _search_one_session_bounded(
+    hits, status, _ = _search_one_session_bounded(
         source, needle, raw=raw, home=home)
     return (hits, status == "ok")
 
@@ -7784,6 +10062,10 @@ PROVIDER_TOOL_MARKERS = (
 # above that so the common case reports complete coverage instead of
 # truncating just short of the finish.
 EVIDENCE_DEFAULT_BUDGET_SECONDS = 180.0
+EVIDENCE_AUX_MAX_ENTRIES = 256
+EVIDENCE_RECEIPT_MAX_BYTES = 64 * 1024
+EVIDENCE_AUX_TOTAL_BYTES = 2 * 1024 * 1024
+EVIDENCE_AUX_OUTPUT_BYTES = 2 * 1024 * 1024
 
 EVIDENCE_KINDS = (
     "conversation_mention",
@@ -7804,7 +10086,10 @@ def _provider_invocations(record: dict, needle: str, *, raw: bool,
                 continue
             if str(part.get("name", "")).lower() not in ("bash", "shell"):
                 continue
-            command = (part.get("input") or {}).get("command")
+            tool_input = part.get("input")
+            if not isinstance(tool_input, dict):
+                raise ValueError("malformed provider tool input")
+            command = tool_input.get("command")
             if isinstance(command, str):
                 invocations.append({
                     "callId": str(part.get("id") or ""),
@@ -7958,8 +10243,8 @@ def _provider_outcomes(record: dict) -> list[tuple[str, str]]:
 def _session_evidence(source: Path, needle: str, *,
                       raw: bool, home: Optional[Path] = None,
                       deadline: Optional[float] = None,
-                      ) -> tuple[list[dict], list[dict], str]:
-    """`(mentions, invocations, status)` for one session, in one read.
+                      ) -> tuple[list[dict], list[dict], str, dict]:
+    """Mentions/invocations, read status, and observed cap omissions.
 
     One pass, not two. Invocation results can be on later lines, so the
     scan cannot stop at the call record -- but re-reading the
@@ -7970,6 +10255,7 @@ def _session_evidence(source: Path, needle: str, *,
     """
     desktop_descriptor, _, desktop_status = _open_claude_desktop_primary(
         source, home)
+    omissions = {"mentions_at_least": 0, "invocations_at_least": 0}
     if desktop_status == "not-desktop" and source.suffix == ".json":
         # Gemini stores one JSON object containing a messages array. Treating
         # that object as a JSONL record can find the raw words but cannot turn
@@ -7979,43 +10265,47 @@ def _session_evidence(source: Path, needle: str, *,
         turns, read_status = visible_turns(
             source, home, deadline=deadline)
         if read_status not in ("ok", "truncated", "time"):
-            return ([], [], read_status)
+            return ([], [], read_status, omissions)
         mask_home = home or Path.home()
         mentions: list[dict] = []
         for position, turn in enumerate(turns):
             if needle not in " ".join(turn.text.split()).casefold():
                 continue
+            if len(mentions) >= SEARCH_MATCHES_PER_SESSION:
+                omissions["mentions_at_least"] = 1
+                break
             mentions.append(_search_hit(
                 position, turn, needle, raw=raw, home=mask_home,
                 include_identity=True,
             ))
-            if len(mentions) >= SEARCH_MATCHES_PER_SESSION:
-                break
-        return (mentions, [], read_status)
+        return (mentions, [], read_status, omissions)
     if desktop_status != "not-desktop":
         if desktop_status != "ok" or desktop_descriptor is None:
-            return ([], [], desktop_status)
+            return ([], [], desktop_status, omissions)
         source_descriptor = desktop_descriptor
     else:
         source_descriptor, _, source_status = _open_regular_nofollow(source)
         if source_descriptor is None:
-            return ([], [], source_status)
+            return ([], [], source_status, omissions)
     mask_home = home or Path.home()
     probes = _search_probes(needle)
     if not probes:
         os.close(source_descriptor)
-        return ([], [], "ok")
+        return ([], [], "ok", omissions)
     outstanding = set(range(len(probes)))
     invocations: list[dict] = []
     outcomes: dict[str, str] = {}
     raw_turns: list[VisibleTurn] = []
+    parse_failed = False
 
     def scan(handle) -> tuple[bool, bool]:
+        nonlocal parse_failed
         lines = _BoundedBinaryLines(
             handle, maximum_bytes=SESSION_CONTENT_MAX_BYTES,
             deadline=deadline)
         for line in lines:
-            folded = line.decode("utf-8", errors="replace").casefold()
+            folded = _json_text_projection(
+                line.decode("utf-8", errors="replace")).casefold()
             if outstanding:
                 for position in tuple(outstanding):
                     if any(probe in folded for probe in probes[position]):
@@ -8023,8 +10313,10 @@ def _session_evidence(source: Path, needle: str, *,
             try:
                 record = json.loads(line)
             except JSON_PARSE_ERRORS:
+                parse_failed = True
                 continue
             if not isinstance(record, dict):
+                parse_failed = True
                 continue
             turn = _extract_turn(record)
             if turn is not None:
@@ -8033,11 +10325,20 @@ def _session_evidence(source: Path, needle: str, *,
                 continue
             for call_id, status in _provider_outcomes(record):
                 outcomes[call_id] = status
-            if (len(invocations) < SEARCH_MATCHES_PER_SESSION
-                    and all(any(probe in folded for probe in group)
-                            for group in probes)):
-                invocations.extend(_provider_invocations(
-                    record, needle, raw=raw, home=mask_home))
+            if all(any(probe in folded for probe in group)
+                   for group in probes):
+                try:
+                    found_invocations = _provider_invocations(
+                        record, needle, raw=raw, home=mask_home)
+                except (AttributeError, TypeError, ValueError):
+                    parse_failed = True
+                    found_invocations = []
+                remaining = max(
+                    0, SEARCH_MATCHES_PER_SESSION - len(invocations))
+                invocations.extend(found_invocations[:remaining])
+                if len(found_invocations) > remaining:
+                    omissions["invocations_at_least"] = max(
+                        1, omissions["invocations_at_least"])
         return (lines.truncated, lines.timed_out)
 
     try:
@@ -8047,12 +10348,12 @@ def _session_evidence(source: Path, needle: str, *,
         if desktop_descriptor is not None:
             if _stat_signature(before) != _stat_signature(
                     os.fstat(source_descriptor)):
-                return ([], [], "unreadable")
+                return ([], [], "unreadable", omissions)
         elif _stat_signature(before) != _stat_signature(
                 os.fstat(source_descriptor)):
-            return ([], [], "unreadable")
+            return ([], [], "unreadable", omissions)
     except OSError:
-        return ([], [], "unreadable")
+        return ([], [], "unreadable", omissions)
     finally:
         os.close(source_descriptor)
 
@@ -8066,24 +10367,32 @@ def _session_evidence(source: Path, needle: str, *,
 
     if outstanding:
         status = "time" if timed_out else "truncated" if truncated else "ok"
-        return ([], [], status)
+        if status == "ok" and parse_failed:
+            status = "parse"
+        return ([], [], status, omissions)
 
     turns = _canonical_visible_turns(raw_turns)
     mentions: list[dict] = []
     for position, turn in enumerate(turns):
         if needle not in " ".join(turn.text.split()).casefold():
             continue
+        if len(mentions) >= SEARCH_MATCHES_PER_SESSION:
+            omissions["mentions_at_least"] = 1
+            break
         mentions.append(_search_hit(
             position, turn, needle, raw=raw, home=mask_home,
             include_identity=True
         ))
-        if len(mentions) >= SEARCH_MATCHES_PER_SESSION:
-            break
     status = "time" if timed_out else "truncated" if truncated else "ok"
-    return (mentions, invocations, status)
+    if status == "ok" and parse_failed:
+        status = "parse"
+    return (mentions, invocations, status, omissions)
 
 
-def read_cleanup_receipts(home: Path, *, limit: int = 50) -> list[dict]:
+def _read_cleanup_receipts_bounded(
+        home: Path, *, limit: int = 50,
+        deadline: Optional[float] = None,
+        ) -> tuple[list[dict], str]:
     """Modore action receipts, including blocked and partial outcomes.
 
     A receipt is stronger provenance than a conversation mention, but it
@@ -8094,18 +10403,60 @@ def read_cleanup_receipts(home: Path, *, limit: int = 50) -> list[dict]:
     """
     directory = (home / "Library" / "Application Support" / "Modore"
                  / "cleanup-receipts")
-    if not directory.is_dir():
-        return []
+    if deadline is not None and time.monotonic() >= deadline:
+        return ([], "time")
+    directory_descriptor = -1
+    try:
+        directory_descriptor = _open_directory_nofollow(directory)
+        iterator = os.scandir(directory_descriptor)
+    except FileNotFoundError:
+        if directory_descriptor >= 0:
+            os.close(directory_descriptor)
+        return ([], "missing")
+    except OSError:
+        if directory_descriptor >= 0:
+            os.close(directory_descriptor)
+        return ([], "unreadable")
+    paths: list[Path] = []
+    truncated = False
+    try:
+        for index, entry in enumerate(iterator):
+            if deadline is not None and time.monotonic() >= deadline:
+                return ([], "time")
+            if index >= EVIDENCE_AUX_MAX_ENTRIES:
+                truncated = True
+                break
+            if entry.name.endswith(".tsv"):
+                paths.append(directory / entry.name)
+    except OSError:
+        return ([], "unreadable")
+    finally:
+        iterator.close()
+        os.close(directory_descriptor)
     receipts: list[dict] = []
-    for path in sorted(directory.glob("*.tsv"), reverse=True)[:limit]:
+    consumed = 0
+    for path in sorted(paths, reverse=True)[:limit]:
+        if deadline is not None and time.monotonic() >= deadline:
+            return (receipts, "time")
         fields: dict[str, str] = {}
-        try:
-            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                key, _, value = line.partition("\t")
-                if key and key not in fields:
-                    fields[key] = value
-        except OSError:
+        remaining = EVIDENCE_AUX_TOTAL_BYTES - consumed
+        if remaining <= 0:
+            truncated = True
+            break
+        raw, info, status = _read_regular_bytes_nofollow(
+            path, min(EVIDENCE_RECEIPT_MAX_BYTES, remaining))
+        if status == "truncated":
+            truncated = True
             continue
+        if raw is None or info is None:
+            if status not in ("missing",):
+                truncated = True
+            continue
+        consumed += len(raw)
+        for line in raw.decode("utf-8", errors="replace").splitlines():
+            key, _, value = line.partition("\t")
+            if key and key not in fields:
+                fields[key] = value
         if not fields.get("timestamp"):
             continue
         receipts.append({
@@ -8121,10 +10472,17 @@ def read_cleanup_receipts(home: Path, *, limit: int = 50) -> list[dict]:
             "physicalDeltaKB": int(fields["physicalDeltaKB"])
                              if fields.get("physicalDeltaKB", "").isdigit() else None,
         })
-    return receipts
+    return (receipts, "truncated" if truncated else "ok")
 
 
-def read_storage_observations(home: Path, *, limit: int = 60) -> list[dict]:
+def read_cleanup_receipts(home: Path, *, limit: int = 50) -> list[dict]:
+    return _read_cleanup_receipts_bounded(home, limit=limit)[0]
+
+
+def _read_storage_observations_bounded(
+        home: Path, *, limit: int = 60,
+        deadline: Optional[float] = None,
+        ) -> tuple[list[dict], str]:
     """Free space as it was actually measured, over time.
 
     Never matched against the query, and never joined to anything above.
@@ -8134,13 +10492,14 @@ def read_storage_observations(home: Path, *, limit: int = 60) -> list[dict]:
     """
     samples = (home / "Library" / "Application Support" / "Modore"
                / "storage-samples.tsv")
-    if not samples.is_file():
-        return []
+    if deadline is not None and time.monotonic() >= deadline:
+        return ([], "time")
     out: list[dict] = []
-    try:
-        lines = samples.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
+    raw, _, status = _read_regular_bytes_nofollow(
+        samples, EVIDENCE_AUX_TOTAL_BYTES)
+    if raw is None:
+        return ([], status)
+    lines = raw.decode("utf-8", errors="replace").splitlines()
     for line in lines[-limit:]:
         parts = line.split("\t")
         if len(parts) < 4 or not parts[1].isdigit():
@@ -8152,7 +10511,131 @@ def read_storage_observations(home: Path, *, limit: int = 60) -> list[dict]:
             "dropKB": int(parts[2]) if parts[2].isdigit() else 0,
             "status": parts[3],
         })
-    return out
+    return (out, "ok")
+
+
+def read_storage_observations(home: Path, *, limit: int = 60) -> list[dict]:
+    return _read_storage_observations_bounded(home, limit=limit)[0]
+
+
+def _read_evidence_auxiliary_isolated(
+        home: Path, deadline: float,
+        ) -> tuple[list[dict], list[dict], dict]:
+    """Read receipts/samples behind the same hard wall-clock boundary.
+
+    Deadline checks inside a reader cannot interrupt a blocked open/read/stat
+    on a dead volume.  The child stays in the caller's process group so an app
+    level force-cancel reaches it as well as the parent.
+    """
+    failure = {"complete": False, "receiptsStatus": "unreadable",
+               "observationsStatus": "unreadable", "workerLeaked": False}
+    if time.monotonic() >= deadline:
+        return ([], [], {**failure, "receiptsStatus": "time",
+                         "observationsStatus": "time"})
+    try:
+        read_descriptor, write_descriptor = os.pipe()
+        pid = os.fork()
+    except OSError:
+        for descriptor in (locals().get("read_descriptor", -1),
+                           locals().get("write_descriptor", -1)):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+        return ([], [], failure)
+    if pid == 0:
+        try:
+            os.close(read_descriptor)
+            receipts, receipt_status = _read_cleanup_receipts_bounded(
+                home, deadline=deadline)
+            observations, observation_status = (
+                _read_storage_observations_bounded(home, deadline=deadline))
+            payload = json.dumps({
+                "receipts": receipts,
+                "observations": observations,
+                "receiptsStatus": receipt_status,
+                "observationsStatus": observation_status,
+            }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(payload) <= EVIDENCE_AUX_OUTPUT_BYTES:
+                offset = 0
+                while offset < len(payload):
+                    offset += os.write(write_descriptor, payload[offset:])
+        except BaseException:
+            pass
+        finally:
+            try:
+                os.close(write_descriptor)
+            except OSError:
+                pass
+        os._exit(0)
+
+    if not _prepare_isolated_reader(
+            read_descriptor, write_descriptor, pid):
+        return ([], [], failure)
+    chunks: list[bytes] = []
+    total = 0
+    eof = reaped = success = oversized = False
+    try:
+        while time.monotonic() < deadline and not (eof and reaped):
+            ready = select.select(
+                [read_descriptor] if not eof else [], [], [],
+                min(0.05, max(0.0, deadline - time.monotonic())))[0]
+            if ready:
+                try:
+                    chunk = os.read(read_descriptor, 65536)
+                except BlockingIOError:
+                    chunk = None
+                if chunk == b"":
+                    eof = True
+                elif chunk:
+                    total += len(chunk)
+                    oversized = oversized or total > EVIDENCE_AUX_OUTPUT_BYTES
+                    if not oversized:
+                        chunks.append(chunk)
+            if not reaped:
+                try:
+                    waited, wait_status = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    waited, wait_status = pid, None
+                if waited == pid:
+                    reaped = True
+                    success = (wait_status is not None
+                               and os.WIFEXITED(wait_status)
+                               and os.WEXITSTATUS(wait_status) == 0)
+        if not reaped:
+            if not _terminate_worktree_worker(pid):
+                return ([], [], {**failure, "receiptsStatus": "time",
+                                 "observationsStatus": "time",
+                                 "workerLeaked": True})
+            reaped = True
+        if not (eof and success) or oversized:
+            status = "time" if time.monotonic() >= deadline else "unreadable"
+            return ([], [], {**failure, "receiptsStatus": status,
+                             "observationsStatus": status})
+        try:
+            payload = json.loads(b"".join(chunks).decode("utf-8"))
+        except JSON_PARSE_ERRORS:
+            return ([], [], failure)
+        if (not isinstance(payload, dict)
+                or not isinstance(payload.get("receipts"), list)
+                or not isinstance(payload.get("observations"), list)
+                or not isinstance(payload.get("receiptsStatus"), str)
+                or not isinstance(payload.get("observationsStatus"), str)):
+            return ([], [], failure)
+        statuses = (payload["receiptsStatus"], payload["observationsStatus"])
+        coverage = {
+            "complete": all(value in ("ok", "missing") for value in statuses),
+            "receiptsStatus": statuses[0],
+            "observationsStatus": statuses[1],
+            "workerLeaked": False,
+        }
+        return (payload["receipts"], payload["observations"], coverage)
+    finally:
+        try:
+            os.close(read_descriptor)
+        except OSError:
+            pass
 
 
 def build_evidence(query: str, home: Path, *, raw: bool = False,
@@ -8171,19 +10654,22 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
     observations are query-independent local context and stay in their
     own lists so a consumer cannot present them as search matches.
     """
+    started = time.monotonic()
+    deadline = started + max(0.0, budget_seconds)
     needle = " ".join(query.split()).casefold()
-    session_index = build_sessions(home, limit=0)
+    session_index = _build_sessions_isolated(home, deadline)
     content_sessions, discovery_complete = _content_sessions_and_coverage(
         session_index)
     sessions = content_sessions if needle else []
-    started = time.monotonic()
-    deadline = started + max(0.0, budget_seconds)
     mentions: list[dict] = []
     invocations: list[dict] = []
     mention_ids: set[tuple] = set()
     invocation_ids: dict[tuple, int] = {}
-    scanned = unreadable = truncated_sessions = 0
-    truncated_reason: Optional[str] = None
+    scanned = unreadable = parse_errors = leaked_workers = truncated_sessions = 0
+    evidence_omitted_at_least = 0
+    sessions_skipped_by_limit = 0
+    truncated_reason: Optional[str] = (
+        "time" if time.monotonic() >= deadline else None)
 
     for session in sessions:
         if len(mentions) + len(invocations) >= limit > 0:
@@ -8192,7 +10678,8 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
         if time.monotonic() >= deadline:
             truncated_reason = "time"
             break
-        found_mentions, found_invocations, read_status = _session_evidence(
+        (found_mentions, found_invocations, read_status,
+         session_omissions) = _session_evidence_isolated(
             Path(session["source"]), needle, raw=raw, home=home,
             deadline=deadline)
         scanned += 1
@@ -8201,8 +10688,21 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
             truncated_reason = "time"
         elif read_status == "truncated":
             truncated_sessions += 1
+        elif read_status == "parse":
+            parse_errors += 1
+        elif read_status == "worker-leaked":
+            unreadable += 1
+            leaked_workers += 1
         elif read_status != "ok":
             unreadable += 1
+        observed_session_omissions = sum(
+            int(value) for value in session_omissions.values())
+        if observed_session_omissions:
+            evidence_omitted_at_least += observed_session_omissions
+            if read_status == "ok":
+                truncated_sessions += 1
+            if truncated_reason != "time":
+                truncated_reason = "limit"
         context = {"tool": session["tool"], "source": session["source"],
                    "workspace": session["workspace"],
                    "lastActive": session["lastActive"],
@@ -8222,6 +10722,11 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
                 continue
             mention_ids.add(identity)
             hit = {key: value for key, value in hit.items() if key != "_identity"}
+            if limit > 0 and len(mentions) + len(invocations) >= limit:
+                evidence_omitted_at_least += 1
+                if truncated_reason != "time":
+                    truncated_reason = "limit"
+                continue
             mentions.append({**hit, "kind": "conversation_mention", **context})
         for hit in found_invocations:
             identity = (
@@ -8240,14 +10745,34 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
                         invocations[existing_index]["status"], 0):
                     invocations[existing_index] = candidate
                 continue
+            if limit > 0 and len(mentions) + len(invocations) >= limit:
+                evidence_omitted_at_least += 1
+                if truncated_reason != "time":
+                    truncated_reason = "limit"
+                continue
             invocation_ids[identity] = len(invocations)
             invocations.append(candidate)
         if read_status == "time":
             break
+        if limit > 0 and len(mentions) + len(invocations) >= limit:
+            sessions_skipped_by_limit = max(0, len(sessions) - scanned)
+            if sessions_skipped_by_limit or evidence_omitted_at_least:
+                truncated_reason = "limit"
+                break
+
+    (cleanup_receipts, storage_observations,
+     auxiliary_coverage) = _read_evidence_auxiliary_isolated(home, deadline)
+    if not auxiliary_coverage["complete"] and truncated_reason is None:
+        statuses = {
+            auxiliary_coverage["receiptsStatus"],
+            auxiliary_coverage["observationsStatus"],
+        }
+        truncated_reason = "time" if "time" in statuses else "auxiliary"
 
     swept = (bool(needle) and truncated_reason is None
              and scanned == len(sessions) and discovery_complete
-             and truncated_sessions == 0 and unreadable == 0)
+             and truncated_sessions == 0 and unreadable == 0
+             and parse_errors == 0 and auxiliary_coverage["complete"])
     if needle and truncated_reason is None:
         if truncated_sessions:
             truncated_reason = "content"
@@ -8255,22 +10780,30 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
             truncated_reason = "discovery"
         elif unreadable:
             truncated_reason = "unreadable"
+        elif parse_errors:
+            truncated_reason = "parse"
     return {
         "query": query,
         "conversationMentions": sorted(
             mentions, key=lambda m: (bool(m.get("at")), m.get("at") or ""), reverse=True),
         "providerToolInvocations": sorted(
             invocations, key=lambda m: (bool(m.get("at")), m.get("at") or ""), reverse=True),
-        "modoreCleanupReceipts": read_cleanup_receipts(home),
-        "filesystemObservations": read_storage_observations(home),
+        "modoreCleanupReceipts": cleanup_receipts,
+        "filesystemObservations": storage_observations,
+        "auxiliaryCoverage": auxiliary_coverage,
         "scannedSessions": scanned,
         "totalSessions": len(sessions),
         "unreadableSessions": unreadable,
+        "leakedWorkerSessions": leaked_workers,
+        "parseErrorSessions": parse_errors,
         "truncatedSessions": truncated_sessions,
+        "evidenceOmittedAtLeast": evidence_omitted_at_least,
+        "sessionsSkippedByLimit": sessions_skipped_by_limit,
         "coverage": "complete" if swept else "truncated",
         "truncatedReason": truncated_reason,
         # Whether the absence of matching mentions/invocations may be stated.
-        "definitive": swept and unreadable == 0 and truncated_sessions == 0,
+        "definitive": (swept and unreadable == 0
+                       and parse_errors == 0 and truncated_sessions == 0),
         "masked": not raw,
     }
 

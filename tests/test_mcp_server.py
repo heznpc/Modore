@@ -871,14 +871,48 @@ def test_file_access_defaults_to_rule_surfaces_and_never_forwards_a_command(monk
     payload = _payload(_call("agent_file_access", {}))
     assert payload["filters"]["rule_surfaces_only"] is True
     assert "--all" not in captured["argv"]
+    assert captured["argv"][-2:] == ["--limit", "30"]
     assert payload["paths"][0]["path"] == "~/.claude/settings.json"
     for key in ("detail", "command", "cmd"):
         assert key not in payload["paths"][0]
 
-    _call("agent_file_access", {"include_all": True, "query": "settings"})
+    _call("agent_file_access", {"include_all": True, "query": "settings", "limit": 47})
     assert "--all" in captured["argv"]
     assert "--query" in captured["argv"] and "settings" in captured["argv"]
+    limit_index = captured["argv"].index("--limit")
+    assert captured["argv"][limit_index + 1] == "47"
 
 
 def test_file_access_rejects_a_non_string_query():
     assert _call("agent_file_access", {"query": 5}).get("isError")
+
+
+def test_file_access_preserves_incomplete_content_coverage(monkeypatch):
+    """A no-match response must retain why transcript coverage was incomplete."""
+    content_scan = {
+        "complete": False,
+        "unreadable_sessions": 1,
+        "truncated_sessions": 2,
+        "timed_out_sessions": 3,
+        "sessions_skipped_by_budget": 4,
+    }
+    monkeypatch.setattr(
+        mcp_server,
+        "_run_json",
+        lambda script, arguments, timeout: {
+            "evidence": "preview",
+            "requires_revalidation": True,
+            "stores": [],
+            "sessions_scanned": 5,
+            "sessions_skipped_by_cap": 0,
+            "content_scan": content_scan,
+            "path_count": 0,
+            "rule_surface_count": 0,
+            "paths": [],
+        },
+    )
+
+    payload = _payload(_call("agent_file_access", {}))
+
+    assert payload["paths"] == []
+    assert payload["content_scan"] == content_scan

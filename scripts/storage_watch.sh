@@ -94,6 +94,7 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
     DROP_THRESHOLD_GB="${PCH_WATCH_DROP_GB:-8}"
     NOTIFY="${PCH_WATCH_NOTIFY:-1}"
     APP_BUNDLE_PATH="${PCH_STORAGE_WATCH_APP_BUNDLE:-}"
+    APP_EXECUTABLE_SHA256="${PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256:-}"
     SNAPSHOT_TEST_ROOT="${PCH_WATCH_SNAPSHOT_ROOT:-}"
     SNAPSHOT_TOTAL_SECONDS="${PCH_WATCH_SNAPSHOT_TOTAL_SECONDS:-8}"
     SNAPSHOT_ITEM_SECONDS="${PCH_WATCH_SNAPSHOT_ITEM_SECONDS:-2}"
@@ -101,6 +102,13 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
     PRIVATE_TMP_TEST_ROOT="${PCH_WATCH_PRIVATE_TMP_ROOT:-}"
     SWAP_TEST_FILE="${PCH_WATCH_SWAP_TEST_FILE:-}"
     RSS_TEST_FILE="${PCH_WATCH_RSS_TEST_FILE:-}"
+    METADATA_PS_TEST_ENABLED=0
+    METADATA_SYSCTL_TEST_ENABLED=0
+    [[ -z "${PCH_TEST_WATCH_PS_BIN:-}" ]] || METADATA_PS_TEST_ENABLED=1
+    [[ -z "${PCH_TEST_WATCH_SYSCTL_BIN:-}" ]] || METADATA_SYSCTL_TEST_ENABLED=1
+    METADATA_PS_BIN="${PCH_TEST_WATCH_PS_BIN:-/bin/ps}"
+    METADATA_SYSCTL_BIN="${PCH_TEST_WATCH_SYSCTL_BIN:-/usr/sbin/sysctl}"
+    DU_BIN="${PCH_TEST_WATCH_DU_BIN:-/usr/bin/du}"
     WATCH_LOCK_ATTEMPTS="${PCH_TEST_WATCH_LOCK_ATTEMPTS:-120}"
     WATCH_LOCK_SECONDS="${PCH_TEST_WATCH_LOCK_SECONDS:-12}"
     WATCH_LOCK_HOLDER_SECONDS="${PCH_TEST_WATCH_LOCK_HOLDER_SECONDS:-60}"
@@ -122,6 +130,14 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
             || "$test_input" == /private/var/folders/?* \
             || "$test_input" == /var/folders/?* ]] || exit 64
     done
+    for test_tool in "$METADATA_PS_BIN" "$METADATA_SYSCTL_BIN" "$DU_BIN"; do
+        [[ "$test_tool" == /bin/ps || "$test_tool" == /usr/sbin/sysctl \
+            || "$test_tool" == /usr/bin/du \
+            || "$test_tool" == /tmp/?* || "$test_tool" == /private/tmp/?* \
+            || "$test_tool" == /private/var/folders/?* \
+            || "$test_tool" == /var/folders/?* ]] || exit 64
+        [[ -x "$test_tool" && ! -L "$test_tool" ]] || exit 64
+    done
     [[ "$STATE_DIR" == /tmp/?* || "$STATE_DIR" == /private/tmp/?* \
         || "$STATE_DIR" == /private/var/folders/?* || "$STATE_DIR" == /var/folders/?* ]] || exit 64
 else
@@ -141,6 +157,7 @@ else
     DROP_THRESHOLD_GB=8
     NOTIFY=1
     APP_BUNDLE_PATH="${PCH_STORAGE_WATCH_APP_BUNDLE:-}"
+    APP_EXECUTABLE_SHA256="${PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256:-}"
     SNAPSHOT_TEST_ROOT=""
     SNAPSHOT_TOTAL_SECONDS=8
     SNAPSHOT_ITEM_SECONDS=2
@@ -148,6 +165,11 @@ else
     PRIVATE_TMP_TEST_ROOT=""
     SWAP_TEST_FILE=""
     RSS_TEST_FILE=""
+    METADATA_PS_TEST_ENABLED=1
+    METADATA_SYSCTL_TEST_ENABLED=1
+    METADATA_PS_BIN="/bin/ps"
+    METADATA_SYSCTL_BIN="/usr/sbin/sysctl"
+    DU_BIN="/usr/bin/du"
     WATCH_LOCK_ATTEMPTS=120
     WATCH_LOCK_SECONDS=12
     WATCH_LOCK_HOLDER_SECONDS=60
@@ -228,12 +250,100 @@ WATCH_LOCK_MODE=""
 WATCH_LOCK_HOLDER_PID=""
 WATCH_LOCK_READY_FILE=""
 WATCH_LOCK_RELEASE_FILE=""
+
+# Provider commands are normally instant, but the pressure watcher must not
+# become another source of pressure when ps/sysctl or a descendant stalls.
+# Partial output remains available to the caller and is labelled incomplete.
+bounded_metadata_capture() (
+    local output_file="$1"
+    shift
+    local maximum_ticks=10
+    local output_limit_kb=2048
+    local output_limit_blocks output_limit_bytes output_size
+    local capture_pid ticks=0 command_status=0
+    local status_marker="$output_file.status.$$.$RANDOM"
+    local status_staging="$status_marker.tmp"
+    # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+    cleanup_metadata_capture() {
+        local cleanup_pid="${capture_pid:-}"
+        trap - HUP INT TERM EXIT
+        capture_pid=""
+        if [[ -n "$cleanup_pid" ]]; then
+            /bin/kill -TERM -- "-$cleanup_pid" 2>/dev/null || true
+            /bin/sleep 0.2
+            /bin/kill -KILL -- "-$cleanup_pid" 2>/dev/null || true
+            wait "$cleanup_pid" 2>/dev/null || true
+        fi
+        /bin/rm -f "$status_marker" "$status_staging" 2>/dev/null || true
+    }
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap cleanup_metadata_capture EXIT
+    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+        maximum_ticks="${PCH_TEST_WATCH_METADATA_TICKS:-$maximum_ticks}"
+        output_limit_kb="${PCH_TEST_WATCH_METADATA_OUTPUT_LIMIT_KB:-$output_limit_kb}"
+    fi
+    case "$maximum_ticks" in ''|*[!0-9]*|0) return 64 ;; esac
+    case "$output_limit_kb" in ''|*[!0-9]*|0) return 64 ;; esac
+    [[ "$maximum_ticks" -le 100 && "$output_limit_kb" -le 4096 ]] || return 64
+    output_limit_blocks="$output_limit_kb"
+    output_limit_bytes=$((output_limit_kb * 1024))
+    : > "$output_file" || return 1
+    /bin/rm -f "$status_marker" "$status_staging" 2>/dev/null || return 1
+    exec 2>/dev/null
+    set -m
+    (
+        trap - HUP INT TERM EXIT
+        ulimit -f "$output_limit_blocks" || exit 1
+        "$@"
+        provider_status=$?
+        if /usr/bin/printf '%s' "$provider_status" > "$status_staging" 2>/dev/null; then
+            /bin/mv -f "$status_staging" "$status_marker" 2>/dev/null || true
+        fi
+        exit "$provider_status"
+    ) > "$output_file" 2>/dev/null &
+    capture_pid=$!
+    while [[ ! -f "$status_marker" ]]; do
+        if [[ "$ticks" -ge "$maximum_ticks" ]]; then
+            /bin/kill -TERM -- "-$capture_pid" 2>/dev/null || true
+            /bin/sleep 0.2
+            /bin/kill -KILL -- "-$capture_pid" 2>/dev/null || true
+            wait "$capture_pid" 2>/dev/null || true
+            return 124
+        fi
+        /bin/sleep 0.1
+        ticks=$((ticks + 1))
+    done
+    command_status="$(/bin/cat "$status_marker" 2>/dev/null || true)"
+    case "$command_status" in ''|*[!0-9]*) command_status=1 ;; esac
+    wait "$capture_pid" 2>/dev/null || true
+    if /bin/kill -0 -- "-$capture_pid" 2>/dev/null; then
+        /bin/kill -TERM -- "-$capture_pid" 2>/dev/null || true
+        /bin/sleep 0.2
+        /bin/kill -KILL -- "-$capture_pid" 2>/dev/null || true
+    fi
+    capture_pid=""
+    /bin/rm -f "$status_marker" "$status_staging" 2>/dev/null || true
+    output_size="$(/usr/bin/wc -c < "$output_file" 2>/dev/null | /usr/bin/tr -d ' ')"
+    case "$output_size" in ''|*[!0-9]*) output_size=0 ;; esac
+    [[ "$output_size" -lt "$output_limit_bytes" ]] || return 65
+    return "$command_status"
+)
+
 process_start_identity() {
-    local process_pid="$1"
+    local process_pid="$1" identity_file identity="" status=0
     case "$process_pid" in ''|*[!0-9]*|0) return 1 ;; esac
-    /bin/ps -p "$process_pid" -o lstart= 2>/dev/null \
-        | /usr/bin/head -n 1 \
-        | /usr/bin/awk '{$1=$1; print}'
+    identity_file="$(/usr/bin/mktemp ./.storage-watch-ps.XXXXXX)" || return 1
+    bounded_metadata_capture "$identity_file" "$METADATA_PS_BIN" -p "$process_pid" -o lstart= \
+        || status=$?
+    if [[ "$status" -eq 0 ]]; then
+        identity="$(/usr/bin/head -n 1 "$identity_file" 2>/dev/null \
+            | /usr/bin/awk '{$1=$1; print}')"
+    fi
+    /bin/rm -f "$identity_file" 2>/dev/null || true
+    [[ -n "$identity" ]] || return 1
+    /usr/bin/printf '%s' "$identity"
 }
 release_watch_lock() {
     local recorded_pid="" waited_ticks=0
@@ -301,13 +411,32 @@ acquire_watch_lock() {
             /bin/bash -p -c '
                 set -u
                 ready="$1"; release="$2"; parent="$3"; expected_start="$4"; maximum_seconds="$5"
+                ps_output="${ready}.ps"
+                bounded_parent_start() {
+                    : > "$ps_output" || return 1
+                    ( ulimit -f 4 || exit 1; exec /bin/ps -p "$parent" -o lstart= ) \
+                        > "$ps_output" 2>/dev/null &
+                    ps_pid=$!
+                    ps_ticks=0
+                    while jobs -pr | /usr/bin/grep -qx "$ps_pid"; do
+                        if [[ "$ps_ticks" -ge 10 ]]; then
+                            /bin/kill -KILL "$ps_pid" 2>/dev/null || true
+                            wait "$ps_pid" 2>/dev/null || true
+                            : > "$ps_output"
+                            return 124
+                        fi
+                        /bin/sleep 0.1
+                        ps_ticks=$((ps_ticks + 1))
+                    done
+                    wait "$ps_pid" 2>/dev/null || return 1
+                    /usr/bin/head -n 1 "$ps_output" | /usr/bin/awk '\''{$1=$1; print}'\''
+                }
                 parent_matches() {
-                    current_start="$(/bin/ps -p "$parent" -o lstart= 2>/dev/null \
-                        | /usr/bin/head -n 1 | /usr/bin/awk '\''{$1=$1; print}'\'')"
+                    current_start="$(bounded_parent_start 2>/dev/null || true)"
                     [[ -n "$current_start" && "$current_start" == "$expected_start" ]]
                 }
                 cleanup_holder() {
-                    /bin/rm -f "$ready" "$release" 2>/dev/null || true
+                    /bin/rm -f "$ready" "$release" "$ps_output" 2>/dev/null || true
                 }
                 trap cleanup_holder EXIT
                 trap "exit 0" HUP INT TERM
@@ -412,17 +541,34 @@ PREVIOUS_KB=0
 PREVIOUS_STATUS="normal"
 LAST_NOTIFY=0
 LAST_SNAPSHOT=0
+SNAPSHOT_COMPLETENESS="unknown"
 LAST_EVIDENCE_AT=""
 if [[ -f "$STATE_FILE" ]]; then
     PREVIOUS_KB="$(/usr/bin/awk -F '\t' '$1 == "freeKB" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     PREVIOUS_STATUS="$(/usr/bin/awk -F '\t' '$1 == "status" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_NOTIFY="$(/usr/bin/awk -F '\t' '$1 == "lastNotify" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_SNAPSHOT="$(/usr/bin/awk -F '\t' '$1 == "lastSnapshot" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
+    SNAPSHOT_COMPLETENESS="$(/usr/bin/awk -F '\t' '$1 == "snapshotCompleteness" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_EVIDENCE_AT="$(/usr/bin/awk -F '\t' '$1 == "lastEvidenceAt" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
 fi
 case "$PREVIOUS_KB" in ''|*[!0-9]*) PREVIOUS_KB=0 ;; esac
-case "$LAST_NOTIFY" in ''|*[!0-9]*) LAST_NOTIFY=0 ;; esac
-case "$LAST_SNAPSHOT" in ''|*[!0-9]*) LAST_SNAPSHOT=0 ;; esac
+NOW_EPOCH="$(/bin/date '+%s')"
+normalize_past_epoch() {
+    local value="$1"
+    case "$value" in ''|*[!0-9]*) /usr/bin/printf '0'; return ;; esac
+    if [[ "${#value}" -gt 10 ]]; then
+        /usr/bin/printf '0'
+        return
+    fi
+    value=$((10#$value))
+    if [[ "$value" -gt "$NOW_EPOCH" ]]; then
+        value=0
+    fi
+    /usr/bin/printf '%s' "$value"
+}
+LAST_NOTIFY="$(normalize_past_epoch "$LAST_NOTIFY")"
+LAST_SNAPSHOT="$(normalize_past_epoch "$LAST_SNAPSHOT")"
+case "$SNAPSHOT_COMPLETENESS" in complete|partial|unknown) ;; *) SNAPSHOT_COMPLETENESS="unknown" ;; esac
 case "$LAST_EVIDENCE_AT" in
     *$'\t'*|*$'\n'*|*$'\r'*) LAST_EVIDENCE_AT="" ;;
 esac
@@ -461,7 +607,6 @@ elif [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
     MESSAGE="최근 점검 이후 저장공간이 ${DROP_THRESHOLD_GB}GB 이상 줄었습니다. Modore를 열어 원인을 확인하세요."
 fi
 
-NOW_EPOCH="$(/bin/date '+%s')"
 NOW_ISO="$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
 # A manual kickstart can produce two samples inside one wall-clock second.
 # Keep the state timestamp human-sized, but give each evidence event a stable
@@ -471,41 +616,47 @@ EVENT_ISO="${NOW_ISO%Z}.$(/usr/bin/printf '%06d' "$(( $$ % 1000000 ))")Z"
 SNAPSHOT_CAPTURED=0
 SIGNALS_CAPTURED=0
 
-# macOS metadata commands are normally instant, but a pressure watcher must not
-# become another long-running pressure source if ps or sysctl stalls. One call
-# gets at most ten 100ms ticks. The caller controls the private output file and
-# retains only a much smaller parsed subset.
-bounded_metadata_capture() {
-    local output_file="$1"
-    shift
-    local capture_pid ticks=0
-    : > "$output_file" || return 1
-    "$@" > "$output_file" 2>/dev/null &
-    capture_pid=$!
-    while /bin/kill -0 "$capture_pid" 2>/dev/null; do
-        if [[ "$ticks" -ge 10 ]]; then
-            /bin/kill -9 "$capture_pid" 2>/dev/null || true
-            wait "$capture_pid" 2>/dev/null || true
-            : > "$output_file" || true
-            return 124
-        fi
-        /bin/sleep 0.1
-        ticks=$((ticks + 1))
-    done
-    wait "$capture_pid" 2>/dev/null
-}
-
 bounded_notification_command() (
     local maximum_ticks="$1"
     shift
-    local command_pid ticks=0 command_status=0
+    local command_pid="" ticks=0 command_status=0
+    local status_marker status_staging
+    status_marker="$(/usr/bin/mktemp ./.storage-watch-notify.XXXXXX)" || return 1
+    status_staging="$status_marker.tmp"
+    /bin/rm -f "$status_marker" "$status_staging" 2>/dev/null || return 1
+    # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+    cleanup_notification_command() {
+        local cleanup_pid="${command_pid:-}"
+        trap - HUP INT TERM EXIT
+        command_pid=""
+        if [[ -n "$cleanup_pid" ]]; then
+            /bin/kill -TERM -- "-$cleanup_pid" 2>/dev/null || true
+            /bin/sleep 0.2
+            /bin/kill -KILL -- "-$cleanup_pid" 2>/dev/null || true
+            wait "$cleanup_pid" 2>/dev/null || true
+        fi
+        /bin/rm -f "$status_marker" "$status_staging" 2>/dev/null || true
+    }
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap cleanup_notification_command EXIT
     # A notification helper may itself fork (AppleScript and shell wrappers do).
     # Job control gives the helper a private process group, so the deadline can
     # stop the whole tree instead of leaving a pressure-amplifying orphan.
+    exec 2>/dev/null
     set -m
-    "$@" >/dev/null 2>&1 &
+    (
+        trap - HUP INT TERM EXIT
+        "$@" >/dev/null 2>&1
+        provider_status=$?
+        if /usr/bin/printf '%s' "$provider_status" > "$status_staging" 2>/dev/null; then
+            /bin/mv -f "$status_staging" "$status_marker" 2>/dev/null || true
+        fi
+        exit "$provider_status"
+    ) &
     command_pid=$!
-    while /bin/kill -0 -- "-$command_pid" 2>/dev/null; do
+    while [[ ! -f "$status_marker" ]]; do
         if [[ "$ticks" -ge "$maximum_ticks" ]]; then
             /bin/kill -TERM -- "-$command_pid" 2>/dev/null || true
             /bin/sleep 0.2
@@ -517,16 +668,23 @@ bounded_notification_command() (
                 /bin/sleep 0.1
                 ticks=$((ticks + 1))
             done
+            command_pid=""
+            /bin/rm -f "$status_marker" "$status_staging" 2>/dev/null || true
             return 124
         fi
         /bin/sleep 0.1
         ticks=$((ticks + 1))
     done
-    if wait "$command_pid"; then
-        return 0
-    else
-        command_status=$?
+    command_status="$(/bin/cat "$status_marker" 2>/dev/null || true)"
+    case "$command_status" in ''|*[!0-9]*) command_status=1 ;; esac
+    wait "$command_pid" 2>/dev/null || true
+    if /bin/kill -0 -- "-$command_pid" 2>/dev/null; then
+        /bin/kill -TERM -- "-$command_pid" 2>/dev/null || true
+        /bin/sleep 0.2
+        /bin/kill -KILL -- "-$command_pid" 2>/dev/null || true
     fi
+    command_pid=""
+    /bin/rm -f "$status_marker" "$status_staging" 2>/dev/null || true
     return "$command_status"
 )
 
@@ -534,6 +692,7 @@ capture_drop_snapshot() {
     local event_tmp sorted_tmp history_tmp candidate label path
     local signal_tmp signal_history_tmp metadata_tmp swap_input rss_input
     local swap_used_kb swap_allocated_kb rss_kb rss_pid rss_reference rss_label
+    local swap_capture_status="ok" rss_capture_status="ok" capture_status=0
     local result_file pid waited_ticks size_kb status modified_epoch
     local priority_rows remaining_rows
     local elapsed_ticks=0
@@ -545,6 +704,7 @@ capture_drop_snapshot() {
     local maximum_signal_rows=$((maximum_rss_rows + 1))
     local maximum_signal_history_rows=$((SNAPSHOT_EVENT_LIMIT * maximum_signal_rows))
     local -a candidates=()
+    local capture_is_complete=1
 
     # These are common short-lived AI/tooling workspaces that can grow between
     # hourly samples. Measure them before broad cache roots so the shared
@@ -645,7 +805,7 @@ capture_drop_snapshot() {
                 allowed_ticks=0
             }
             if [[ "$allowed_ticks" -gt 0 ]]; then
-                /usr/bin/du -sk "$path" > "$result_file" 2>/dev/null &
+                "$DU_BIN" -sk "$path" > "$result_file" 2>/dev/null &
                 pid=$!
                 waited_ticks=0
                 while /bin/kill -0 "$pid" 2>/dev/null; do
@@ -680,6 +840,7 @@ capture_drop_snapshot() {
             /bin/rm -f "$event_tmp" "$sorted_tmp" "$signal_tmp" "$metadata_tmp"
             return 1
         }
+        [[ "$status" == "ok" ]] || capture_is_complete=0
     done
 
     # Swap is disk-backed pressure that df alone cannot explain. Capture only
@@ -687,16 +848,22 @@ capture_drop_snapshot() {
     # Test mode accepts a private fixture file so Linux tests do not depend on
     # macOS sysctl.
     swap_input=""
-    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
-        if [[ -n "$SWAP_TEST_FILE" && -f "$SWAP_TEST_FILE" \
-            && ! -L "$SWAP_TEST_FILE" ]] \
-            && ! path_has_unexpected_symlink "$SWAP_TEST_FILE"; then
-            swap_input="$(/usr/bin/head -c 4096 "$SWAP_TEST_FILE" 2>/dev/null)"
-        fi
-    elif [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
-        if bounded_metadata_capture "$metadata_tmp" /usr/sbin/sysctl vm.swapusage; then
-            swap_input="$(/usr/bin/head -c 4096 "$metadata_tmp" 2>/dev/null)"
-        fi
+    if [[ "${PCH_TEST_MODE:-0}" == "1" && -n "$SWAP_TEST_FILE" \
+        && -f "$SWAP_TEST_FILE" && ! -L "$SWAP_TEST_FILE" ]] \
+        && ! path_has_unexpected_symlink "$SWAP_TEST_FILE"; then
+        swap_input="$(/usr/bin/head -c 4096 "$SWAP_TEST_FILE" 2>/dev/null)"
+    elif [[ "$(/usr/bin/uname -s)" == "Darwin" \
+        && "$METADATA_SYSCTL_TEST_ENABLED" == "1" ]]; then
+        bounded_metadata_capture "$metadata_tmp" "$METADATA_SYSCTL_BIN" vm.swapusage \
+            || capture_status=$?
+        case "$capture_status" in
+            0) swap_capture_status="ok" ;;
+            124) swap_capture_status="timed_out" ;;
+            65) swap_capture_status="output_limited" ;;
+            *) swap_capture_status="failed" ;;
+        esac
+        [[ "$swap_capture_status" == "ok" ]] || capture_is_complete=0
+        swap_input="$(/usr/bin/head -c 4096 "$metadata_tmp" 2>/dev/null)"
     fi
     if [[ -n "$swap_input" ]]; then
         read -r swap_allocated_kb swap_used_kb < <(
@@ -725,8 +892,9 @@ capture_drop_snapshot() {
         case "${swap_allocated_kb:-}${swap_used_kb:-}" in
             ''|*[!0-9]*) ;;
             *)
-                /usr/bin/printf '%s\tswap\t%s\t%s\t0\tok\tmacOS 스왑\t/private/var/vm\n' \
-                    "$EVENT_ISO" "$swap_used_kb" "$swap_allocated_kb" >> "$signal_tmp"
+                /usr/bin/printf '%s\tswap\t%s\t%s\t0\t%s\tmacOS 스왑\t/private/var/vm\n' \
+                    "$EVENT_ISO" "$swap_used_kb" "$swap_allocated_kb" \
+                    "$swap_capture_status" >> "$signal_tmp"
                 ;;
         esac
     fi
@@ -739,19 +907,26 @@ capture_drop_snapshot() {
     # would hide the multi-process memory pressure common to browser and agent
     # apps. Record only PID/RSS/executable metadata.
     rss_input=""
-    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
-        if [[ -n "$RSS_TEST_FILE" && -f "$RSS_TEST_FILE" \
-            && ! -L "$RSS_TEST_FILE" ]] \
-            && ! path_has_unexpected_symlink "$RSS_TEST_FILE"; then
-            rss_input="$(/usr/bin/head -n 512 "$RSS_TEST_FILE" 2>/dev/null)"
-        fi
-    elif [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+    if [[ "${PCH_TEST_MODE:-0}" == "1" && -n "$RSS_TEST_FILE" \
+        && -f "$RSS_TEST_FILE" && ! -L "$RSS_TEST_FILE" ]] \
+        && ! path_has_unexpected_symlink "$RSS_TEST_FILE"; then
+        rss_input="$(/usr/bin/head -n 512 "$RSS_TEST_FILE" 2>/dev/null)"
+    elif [[ "$(/usr/bin/uname -s)" == "Darwin" \
+        && "$METADATA_PS_TEST_ENABLED" == "1" ]]; then
         # -m sorts by memory. The 512-line cap and the later three-row cap keep
         # both processing and retained evidence independent of process count.
-        if bounded_metadata_capture "$metadata_tmp" \
-            /bin/ps -U "$(/usr/bin/id -u)" -m -x -o pid=,rss=,ucomm=; then
-            rss_input="$(/usr/bin/head -n 512 "$metadata_tmp" 2>/dev/null)"
-        fi
+        capture_status=0
+        bounded_metadata_capture "$metadata_tmp" \
+            "$METADATA_PS_BIN" -U "$(/usr/bin/id -u)" -m -x -o pid=,rss=,ucomm= \
+            || capture_status=$?
+        case "$capture_status" in
+            0) rss_capture_status="ok" ;;
+            124) rss_capture_status="timed_out" ;;
+            65) rss_capture_status="output_limited" ;;
+            *) rss_capture_status="failed" ;;
+        esac
+        [[ "$rss_capture_status" == "ok" ]] || capture_is_complete=0
+        rss_input="$(/usr/bin/head -n 512 "$metadata_tmp" 2>/dev/null)"
     fi
     if [[ -n "$rss_input" ]]; then
         while IFS=$'\t' read -r rss_kb rss_pid rss_reference; do
@@ -759,8 +934,9 @@ capture_drop_snapshot() {
             [[ -n "$rss_reference" && ${#rss_reference} -le 256 ]] || continue
             case "$rss_reference" in *$'\t'*|*$'\n'*|*$'\r'*) continue ;; esac
             rss_label="$rss_reference"
-            /usr/bin/printf '%s\tprocess_rss\t%s\t0\t%s\tok\t%s\t%s\n' \
-                "$EVENT_ISO" "$rss_kb" "$rss_pid" "$rss_label" "$rss_reference" \
+            /usr/bin/printf '%s\tprocess_rss\t%s\t0\t%s\t%s\t%s\t%s\n' \
+                "$EVENT_ISO" "$rss_kb" "$rss_pid" "$rss_capture_status" \
+                "$rss_label" "$rss_reference" \
                 >> "$signal_tmp"
         done < <(
             /usr/bin/printf '%s\n' "$rss_input" | /usr/bin/awk '
@@ -884,6 +1060,14 @@ capture_drop_snapshot() {
             return 1
         }
     fi
+    if [[ "$SNAPSHOT_CAPTURED" -eq 0 && "$SIGNALS_CAPTURED" -eq 0 ]]; then
+        capture_is_complete=0
+    fi
+    if [[ "$capture_is_complete" == "1" ]]; then
+        SNAPSHOT_COMPLETENESS="complete"
+    else
+        SNAPSHOT_COMPLETENESS="partial"
+    fi
     /bin/rm -f "$event_tmp" "$sorted_tmp" "$signal_tmp" "$metadata_tmp"
     return 0
 }
@@ -908,6 +1092,9 @@ if [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
 elif [[ "$STATUS" == "warning" ]]; then
     if [[ "$PREVIOUS_STATUS" != "warning" ]]; then
         SNAPSHOT_REASON="entered-low-free"
+    elif [[ "$SNAPSHOT_COMPLETENESS" == "partial" \
+        && $((NOW_EPOCH - LAST_SNAPSHOT)) -ge 300 ]]; then
+        SNAPSHOT_REASON="incomplete-pressure-evidence"
     elif [[ ! -s "$SIGNALS_FILE" \
         && $((NOW_EPOCH - LAST_SNAPSHOT)) -ge 300 ]]; then
         # Upgrades from the path-only watcher should not wait six hours before
@@ -930,7 +1117,8 @@ fi
 # silenced by muting that unrelated tool. Launching the real app briefly lets it
 # post under its own identity via UNUserNotificationCenter instead. This only
 # works if the app was told its own bundle path at install time (APP_BUNDLE_PATH)
-# and that path still structurally looks like the same signed app — otherwise
+# and its strict code signature plus executable hash still match the installed
+# identity — otherwise
 # fall through to the always-available osascript path so a stale or missing
 # path never makes the watch quieter than it was before this existed.
 # Test-only indirection so pytest can verify which branch fires without
@@ -949,32 +1137,90 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
 fi
 
 notify_via_app_bundle() {
-    local bundle="$APP_BUNDLE_PATH" identifier
+    local bundle="$APP_BUNDLE_PATH" identifier executable_name executable digest
+    local ack_file nonce
     [[ -n "$bundle" && "$bundle" == /* && "$bundle" == *.app ]] || return 1
+    [[ "$APP_EXECUTABLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
     [[ -d "$bundle" && ! -L "$bundle" ]] || return 1
     path_has_unexpected_symlink "$bundle" && return 1
-    [[ -x /usr/bin/plutil && -x "$OPEN_BIN" ]] || return 1
+    [[ -x /usr/bin/plutil && -x /usr/bin/codesign && -x /usr/bin/shasum \
+        && -x /usr/bin/uuidgen && -x "$OPEN_BIN" ]] || return 1
+    /usr/bin/codesign --verify --strict "$bundle" >/dev/null 2>&1 || return 1
     identifier="$(/usr/bin/plutil -extract CFBundleIdentifier raw \
         "$bundle/Contents/Info.plist" 2>/dev/null)" || return 1
     [[ "$identifier" == "me.heznpc.modore" ]] || return 1
-    bounded_notification_command "$NOTIFICATION_TICKS" \
-        "$OPEN_BIN" -g -j -a "$bundle" --args --post-storage-notice "$MESSAGE"
+    executable_name="$(/usr/bin/plutil -extract CFBundleExecutable raw \
+        "$bundle/Contents/Info.plist" 2>/dev/null)" || return 1
+    [[ -n "$executable_name" && "$executable_name" != "." \
+        && "$executable_name" != ".." && "$executable_name" != */* \
+        && "$executable_name" != *$'\t'* && "$executable_name" != *$'\n'* \
+        && "$executable_name" != *$'\r'* && "${#executable_name}" -le 255 ]] || return 1
+    executable="$bundle/Contents/MacOS/$executable_name"
+    [[ -f "$executable" && ! -L "$executable" && -x "$executable" ]] || return 1
+    path_has_unexpected_symlink "$executable" && return 1
+    digest="$(/usr/bin/shasum -a 256 "$executable" 2>/dev/null \
+        | /usr/bin/awk '{print $1; exit}')"
+    [[ "$digest" == "$APP_EXECUTABLE_SHA256" ]] || return 1
+
+    ack_file="$(/usr/bin/mktemp ./.storage-watch-ack.XXXXXX)" || return 1
+    /bin/chmod 600 "$ack_file" 2>/dev/null || {
+        /bin/rm -f "$ack_file" 2>/dev/null || true
+        return 1
+    }
+    /bin/rm -f "$ack_file" 2>/dev/null || return 1
+    ack_file="$STATE_DIR/${ack_file#./}"
+    nonce="$(/usr/bin/uuidgen 2>/dev/null)" || return 1
+    [[ "$nonce" =~ ^[A-Fa-f0-9-]{36}$ ]] || return 1
+
+    # `--args` only reaches a newly launched process. Force a short-lived
+    # notifier instance even when the normal Modore UI is already open;
+    # BackgroundNotifier handles this request before the singleton lease.
+    if ! bounded_notification_command "$NOTIFICATION_TICKS" \
+        "$OPEN_BIN" -n -g -j -a "$bundle" --args \
+        --post-storage-notice "$MESSAGE" \
+        --storage-notice-ack "$ack_file" \
+        --storage-notice-nonce "$nonce"; then
+        /bin/rm -f "$ack_file" 2>/dev/null || true
+        return 1
+    fi
+    local waited_ticks=0 acknowledgement="" permissions=""
+    while [[ "$waited_ticks" -lt "$NOTIFICATION_TICKS" ]]; do
+        if [[ -f "$ack_file" && ! -L "$ack_file" \
+            && "$(path_owner_uid "$ack_file")" == "$(/usr/bin/id -u)" ]]; then
+            permissions="$(path_permissions "$ack_file")" || permissions=""
+            if [[ -n "$permissions" && $((8#$permissions & 0077)) -eq 0 ]]; then
+                acknowledgement="$(/usr/bin/head -c 128 "$ack_file" 2>/dev/null)"
+                if [[ "$acknowledgement" == "$nonce" ]]; then
+                    /bin/rm -f "$ack_file" 2>/dev/null || true
+                    return 0
+                fi
+            fi
+        fi
+        /bin/sleep 0.1
+        waited_ticks=$((waited_ticks + 1))
+    done
+    /bin/rm -f "$ack_file" 2>/dev/null || true
+    return 1
 }
 
 if [[ "$STATUS" == "warning" && "$NOTIFY" == "1" ]]; then
     if [[ "$PREVIOUS_STATUS" != "warning" || $((NOW_EPOCH - LAST_NOTIFY)) -ge 21600 ]]; then
+        notification_delivered=0
         if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
-            notify_via_app_bundle || {
-                if [[ -x "$OSASCRIPT_BIN" ]]; then
-                    bounded_notification_command "$NOTIFICATION_TICKS" "$OSASCRIPT_BIN" \
+            if notify_via_app_bundle; then
+                notification_delivered=1
+            elif [[ -x "$OSASCRIPT_BIN" ]] \
+                && bounded_notification_command "$NOTIFICATION_TICKS" "$OSASCRIPT_BIN" \
                         -e 'on run argv' \
                         -e 'display notification (item 1 of argv) with title "Modore"' \
                         -e 'end run' \
-                        "$MESSAGE" || true
-                fi
-            }
+                        "$MESSAGE"; then
+                notification_delivered=1
+            fi
         fi
-        LAST_NOTIFY="$NOW_EPOCH"
+        if [[ "$notification_delivered" == "1" ]]; then
+            LAST_NOTIFY="$NOW_EPOCH"
+        fi
     fi
 fi
 
@@ -996,6 +1242,7 @@ trap cleanup EXIT
     /usr/bin/printf 'signalsRows\t%s\n' "$SIGNALS_CAPTURED"
     /usr/bin/printf 'lastNotify\t%s\n' "$LAST_NOTIFY"
     /usr/bin/printf 'lastSnapshot\t%s\n' "$LAST_SNAPSHOT"
+    /usr/bin/printf 'snapshotCompleteness\t%s\n' "$SNAPSHOT_COMPLETENESS"
     /usr/bin/printf 'lastEvidenceAt\t%s\n' "$LAST_EVIDENCE_AT"
     /usr/bin/printf 'snapshotReason\t%s\n' "$SNAPSHOT_REASON"
     /usr/bin/printf 'message\t%s\n' "$MESSAGE"

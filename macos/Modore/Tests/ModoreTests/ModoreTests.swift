@@ -103,6 +103,15 @@ final class ModoreTests: XCTestCase {
             lastScanAttemptAt: nil,
             now: now
         ))
+        XCTAssertTrue(ScanModel.shouldRunAutomaticScan(
+            initialResultsLoaded: true,
+            isBusy: false,
+            lastDeepScanAt: thirtyMinutesAgo,
+            hasNewerStorageHistory: false,
+            cleanupMutationPending: true,
+            lastScanAttemptAt: nil,
+            now: now
+        ))
     }
 
     func testAutomaticScanThrottlesRecentFailedAttempt() {
@@ -465,6 +474,35 @@ final class ModoreTests: XCTestCase {
             ),
             "먼저 종료할 작업이 있어 아직 크기를 측정하지 않았습니다. 종료 후 '다시 확인'을 누르면 측정합니다."
         )
+    }
+
+    func testCleanupPresentationMatchesProjectResidueByRequestTarget() throws {
+        let first = storageItem(
+            kind: "project_residue",
+            label: "First build output",
+            path: "/Users/test/First/.build",
+            cleanupID: "project_residue"
+        )
+        let requested = storageItem(
+            kind: "project_residue",
+            label: "Requested build output",
+            path: "/Users/test/Requested/.build",
+            cleanupID: "project_residue"
+        )
+        let request = try XCTUnwrap(CleanupExecutionRequest(item: requested))
+
+        let selected = CleanupPresentation.storageItemForSizeChangeNotice(
+            recipeID: "project_residue",
+            cleanupRequest: request,
+            candidates: [first, requested]
+        )
+
+        XCTAssertEqual(selected?.path, requested.path)
+        XCTAssertNil(CleanupPresentation.storageItemForSizeChangeNotice(
+            recipeID: "project_residue",
+            cleanupRequest: nil,
+            candidates: [first, requested]
+        ))
     }
 
     func testSimulatorSelectionUsesUUID() throws {

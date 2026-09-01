@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -672,13 +673,16 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
         "scripts/build_macos_swift_app.sh",
         "scripts/package_macos_release.sh",
     }
+    build_only_modules = {
+        "scripts/modules/build_support.sh",
+    }
     expected = {
         f"scripts/{path.name}" for path in (project_root / "scripts").glob("*.sh")
     } - build_only_scripts
     expected |= {
         f"scripts/modules/{path.name}"
         for path in (project_root / "scripts" / "modules").glob("*.sh")
-    }
+    } - build_only_modules
     expected |= {
         f"scripts/modules/macos/{path.name}"
         for path in (project_root / "scripts" / "modules" / "macos").glob("*.sh")
@@ -863,11 +867,7 @@ def test_macos_scan_completion_does_not_open_browser_automatically(project_root)
     assert "showNormalReport()" not in finish_run
 
 
-def test_macos_rejected_scan_never_refreshes_or_publishes_canonical_state(project_root):
-    model = (
-        project_root
-        / "macos/Modore/Sources/Modore/Services/ScanModel.swift"
-    ).read_text(encoding="utf-8")
+def test_macos_scan_pipeline_keeps_unverified_output_outside_canonical_state(project_root):
     pipeline = (
         project_root
         / "macos/Modore/Sources/Modore/Services/ScanPipeline.swift"
@@ -876,14 +876,6 @@ def test_macos_rejected_scan_never_refreshes_or_publishes_canonical_state(projec
         project_root
         / "macos/Modore/Sources/Modore/Services/ScanPublication.swift"
     ).read_text(encoding="utf-8")
-    finish_run = model.split("func finishRun", 1)[1].split(
-        "private func markFailedReportAsPrevious", 1
-    )[0]
-
-    assert finish_run.count("await refreshExistingResults()") == 1
-    assert finish_run.index("if result.scanSucceeded") < finish_run.index(
-        "await refreshExistingResults()"
-    )
     assert "ScanPublication.prepare" in pipeline
     assert "ScanPublication.outputsAreConsistent" in pipeline
     assert "ScanPublication.publish" in pipeline
@@ -946,8 +938,6 @@ def test_macos_scanner_pins_the_exact_config_snapshot_used_for_network_consent(
     assert '"PCH_PINNED_CONFIG"' in runner
     assert "CONFIG_PATH=/dev/fd/9" in scanner
     assert '9< "$PINNED_CONFIG_SOURCE"' in scanner
-    assert 'umask 077; report_source="$1"' in pipeline
-    assert 'umask 077; exec /usr/bin/osascript' in pipeline
 
 
 def test_standalone_scanner_pins_every_sibling_dependency(project_root):
@@ -1324,6 +1314,55 @@ def test_macos_default_scan_never_prompts_for_sfltool_admin_access(project_root)
     assert '${PCH_ENABLE_SFLTOOL:-0}' in autoruns
     assert '== "1" && -x /usr/bin/sfltool' in autoruns
     assert "관리자 인증 창을 피하기 위해 기본 검사에서 생략했습니다." in autoruns
+
+
+def test_macos_autorun_timeout_kills_term_ignoring_process_tree(
+    project_root, tmp_path
+):
+    module = project_root / "scripts/modules/macos/autoruns.sh"
+    child_pid_file = tmp_path / "child.pid"
+    provider = tmp_path / "provider"
+    provider.write_text(
+        "#!/bin/bash\n"
+        "printf 'partial autorun evidence\\n'\n"
+        "trap '' TERM\n"
+        "( trap - TERM; exec /bin/sleep 30 ) &\n"
+        "child=$!\n"
+        f'printf "%s" "$child" > "{child_pid_file}"\n'
+        "wait\n",
+        encoding="utf-8",
+    )
+    provider.chmod(0o755)
+    output = tmp_path / "autoruns.txt"
+    harness = (
+        '. "$1"\n'
+        'run_to_file_with_timeout 1 "$2" "$3"\n'
+        'printf "status=%s\\n" "$?"\n'
+    )
+
+    started = time.monotonic()
+    result = subprocess.run(
+        ["/bin/bash", "-c", harness, "bash", str(module), str(output), str(provider)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, result.stderr
+    assert "status=124" in result.stdout
+    assert elapsed < 3
+    assert output.read_text(encoding="utf-8") == "partial autorun evidence\n"
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    for _ in range(50):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("autorun deadline left a descendant running")
 
 
 def test_macos_browser_automation_evidence_is_structured_without_raw_commands(

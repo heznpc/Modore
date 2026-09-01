@@ -126,7 +126,9 @@ struct ScreeExpiringSession: Identifiable {
     let source: String
     let daysLeft: Int
     let sizeBytes: Int
-    let storyAlive: Bool
+    /// `nil` means the bounded workspace probe timed out or could not classify
+    /// the path. It must not be rendered as a confirmed deletion.
+    let storyAlive: Bool?
     /// The owner deleted this conversation in the desktop app; only the
     /// transcript outlived that decision. Urging its rescue would argue with a
     /// choice already made, so the row says what happened instead.
@@ -138,12 +140,20 @@ struct ScreeExpiringSession: Identifiable {
         source = JsonRead.string(json, "source")
         daysLeft = JsonRead.int(json, "days_left")
         sizeBytes = JsonRead.int(json, "size_bytes")
-        storyAlive = JsonRead.bool(json, "story_alive") ?? false
+        storyAlive = JsonRead.bool(json, "story_alive")
         ownerDeleted = JsonRead.bool(json, "owner_deleted") ?? false
     }
 
     var workspaceLastComponent: String {
         (workspace as NSString).lastPathComponent
+    }
+
+    var workspaceStateText: String {
+        switch storyAlive {
+        case true: return "작업 경로 현존"
+        case false: return "작업 경로 소멸"
+        case nil: return "작업 경로 확인 못함"
+        }
     }
 }
 
@@ -253,6 +263,7 @@ struct ScreeLineageSummary {
     let aliveGit: Int
     let alivePlain: Int
     let vanished: Int
+    let unknown: Int
     let caseGhosts: Int
 
     init(json: [String: Any]) {
@@ -260,6 +271,7 @@ struct ScreeLineageSummary {
         aliveGit = JsonRead.int(json, "alive_git")
         alivePlain = JsonRead.int(json, "alive_plain")
         vanished = JsonRead.int(json, "vanished")
+        unknown = JsonRead.int(json, "unknown")
         caseGhosts = JsonRead.int(json, "case_ghosts")
     }
 }
@@ -272,14 +284,16 @@ struct ScreeLineageSummary {
 struct ScreeLineagePath: Identifiable {
     var id: String { path }
     let path: String
-    let exists: Bool
-    let hasGit: Bool
+    /// `nil` preserves a timeout or unreadable path instead of inventing a
+    /// negative existence or repository verdict.
+    let exists: Bool?
+    let hasGit: Bool?
     let caseVariants: [String]
 
     init(json: [String: Any]) {
         path = JsonRead.string(json, "path")
-        exists = JsonRead.bool(json, "exists") ?? false
-        hasGit = JsonRead.bool(json, "has_git") ?? false
+        exists = JsonRead.bool(json, "exists")
+        hasGit = JsonRead.bool(json, "has_git")
         caseVariants = (json["case_variants"] as? [String]) ?? []
     }
 }
@@ -294,7 +308,7 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
     let tool: String
     let source: String
     let workspace: String
-    let workspaceExists: Bool
+    let workspaceExists: Bool?
     /// `session` or `workspace_state`, straight from scree.
     let kind: String
     let sizeBytes: Int64
@@ -362,8 +376,12 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
     var subtitle: String {
         var parts = [tool, isReadable ? "대화" : "편집기 상태", lastActive]
         parts.append(sizeComplete == false ? "전체 크기는 백업 시 계산" : sizeText)
-        if !workspace.isEmpty && !workspaceExists {
-            parts.append("작업 경로 소멸")
+        if !workspace.isEmpty {
+            if workspaceExists == false {
+                parts.append("작업 경로 소멸")
+            } else if workspaceExists == nil {
+                parts.append("작업 경로 확인 못함")
+            }
         }
         return parts.joined(separator: " · ")
     }

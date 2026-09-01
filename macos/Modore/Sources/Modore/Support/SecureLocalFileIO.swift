@@ -203,7 +203,12 @@ enum SecureLocalFileIO {
         }
         guard renameStatus == 0 else { throw posixError(errno) }
         published = true
-        _ = Darwin.fsync(directoryDescriptor)
+        guard Darwin.fsync(directoryDescriptor) == 0 else {
+            // The file may already be visible, but callers that gate a
+            // destructive action need to know that the directory entry was
+            // not proven durable across a crash or power loss.
+            throw posixError(errno)
+        }
     }
 
     static func ensurePrivateDirectory(_ url: URL) throws {

@@ -54,8 +54,8 @@ struct ModoreApp: App {
     private let instanceLease: AppInstanceCoordinator.Lease?
 
     init() {
-        if let message = BackgroundNotifier.pendingMessage(in: CommandLine.arguments) {
-            BackgroundNotifier.postAndExit(message: message)
+        if let request = BackgroundNotifier.pendingRequest(in: CommandLine.arguments) {
+            BackgroundNotifier.postAndExit(request: request)
         }
         switch AppInstanceCoordinator.acquire() {
         case .continueRunning(let lease, let obsoletePeers):

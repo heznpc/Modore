@@ -610,7 +610,9 @@ def tool_file_access(args: dict) -> dict:
     if query is not None and not isinstance(query, str):
         raise ToolFailure("query must be a string")
 
-    arguments = ["--json", "--max-sessions", str(max_sessions)]
+    arguments = [
+        "--json", "--max-sessions", str(max_sessions), "--limit", str(limit)
+    ]
     if include_all:
         arguments.append("--all")
     if query:
@@ -625,6 +627,7 @@ def tool_file_access(args: dict) -> dict:
         "stores": report.get("stores"),
         "sessions_scanned": report.get("sessions_scanned"),
         "sessions_skipped_by_cap": report.get("sessions_skipped_by_cap"),
+        "content_scan": report.get("content_scan"),
         "path_count": report.get("path_count"),
         "rule_surface_count": report.get("rule_surface_count"),
         "filters": {"query": query, "rule_surfaces_only": not include_all},

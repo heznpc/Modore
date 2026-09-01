@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """scree 계약 테스트: 교차 도구 조인, 고아·보존·워크트리 판정, 메타데이터 전용 보장."""
+import errno
 import hashlib
 import io
 import json
@@ -8,9 +9,12 @@ import os
 import resource
 import signal
 import shutil
+import stat
 import subprocess
 import sys
+import threading
 import time
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -354,6 +358,17 @@ def test_a_conversation_deleted_in_the_app_is_not_urged_as_worth_rescuing(tmp_pa
     # 이미 버린 것은 목록 머리에서 밀려난다 — 상단은 아직 원하는 작업만.
     assert retention["expiring"][0]["owner_deleted"] is False
     assert retention["expiring"][-1]["owner_deleted"] is True
+
+
+def test_retention_without_recorded_workspace_reports_unknown(tmp_path):
+    home, records, now = _retention_home(tmp_path, "no-workspace")
+    records[0]["workspace"] = ""
+
+    retention = scree.build_retention(
+        records, now, home, location_status={})
+
+    assert retention["expiring"][0]["workspace"] == ""
+    assert retention["expiring"][0]["story_alive"] is None
 
 
 def test_the_already_deleted_count_is_named_in_the_report(tmp_path):
@@ -1189,10 +1204,12 @@ def test_isolated_worktree_discovery_returns_child_result(worktree_home):
     assert result["truncated"] is False
 
 
-def test_isolated_worker_uses_a_private_process_group(tmp_path, monkeypatch):
+def test_isolated_worktree_worker_stays_in_root_process_group(
+        tmp_path, monkeypatch):
     def report_process_group(_home, records):
         result = scree._metadata_worktree_fallback(records)
         result.update({"truncated": False, "unreadable": 0,
+                       "worker_leaked": False,
                        "worker_pgid": os.getpgrp()})
         return result
 
@@ -1201,7 +1218,7 @@ def test_isolated_worker_uses_a_private_process_group(tmp_path, monkeypatch):
         tmp_path, [], timeout_seconds=1.0,
     )
 
-    assert result["worker_pgid"] != os.getpgrp()
+    assert result["worker_pgid"] == os.getpgrp()
 
 
 def test_isolated_worktree_timeout_returns_metadata_placeholders_without_waiting(
@@ -1263,12 +1280,13 @@ def test_isolated_worktree_timeout_terminates_spawned_descendants(
     not hasattr(signal, "pthread_sigmask"),
     reason="requires POSIX per-thread signal masks",
 )
-def test_isolated_worktree_sigterm_during_parent_setup_kills_worker_group(tmp_path):
+def test_isolated_worktree_sigterm_during_parent_setup_kills_shared_root_group(
+        tmp_path):
     """Cancellation in the post-fork setup window must reach git children.
 
     The worker can already have spawned git while the parent is still making
-    its result pipe nonblocking.  Run the reproducer in a disposable process
-    group so the test can deliver the same group SIGTERM as
+    its result pipe nonblocking. Run the reproducer in a disposable process
+    group so the test can deliver the same root-group SIGTERM as
     LocalProcessRunner without risking pytest's own group.
     """
     setup_marker = tmp_path / "parent-setup"
@@ -1342,6 +1360,165 @@ scree.collect_worktrees_isolated(Path({str(tmp_path)!r}), [], timeout_seconds=30
                 pass
 
 
+@pytest.mark.parametrize("mode", ["worktree", "sessions", "workspace"])
+def test_root_group_sigkill_reaches_every_isolated_worker_generation(
+        tmp_path, mode):
+    def pid_exists(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    marker = tmp_path / f"{mode}.pid"
+    program = r'''
+import os
+import pathlib
+import subprocess
+import sys
+import time
+sys.path.insert(0, sys.argv[1])
+import scree
+
+mode = sys.argv[2]
+marker = pathlib.Path(sys.argv[3])
+
+def spawn_then_block():
+    child = subprocess.Popen(["/bin/sleep", "30"])
+    marker.write_text(str(child.pid), encoding="utf-8")
+    time.sleep(30)
+
+if mode == "worktree":
+    def blocked(_home, records):
+        spawn_then_block()
+        return scree._metadata_worktree_fallback(records)
+    scree.collect_worktrees = blocked
+    scree.collect_worktrees_isolated(pathlib.Path("/tmp"), [], timeout_seconds=30)
+elif mode == "sessions":
+    def blocked(_home, limit=0):
+        spawn_then_block()
+        return {"total": 0, "sessions": [],
+                "coverage": {"complete": False, "stores": []}}
+    scree.build_sessions = blocked
+    scree._build_sessions_isolated(pathlib.Path("/tmp"), time.monotonic() + 30)
+else:
+    original_stat = scree.os.stat
+    def blocked(path, *args, **kwargs):
+        if path == "/modore-dead-workspace":
+            spawn_then_block()
+        return original_stat(path, *args, **kwargs)
+    scree.os.stat = blocked
+    scree._workspace_location_statuses_isolated(["/modore-dead-workspace"])
+'''
+    process = subprocess.Popen(
+        [sys.executable, "-c", program, str(Path(scree.__file__).parent),
+         mode, str(marker)],
+        start_new_session=True,
+    )
+    descendant = None
+    try:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if marker.exists():
+                descendant = int(marker.read_text(encoding="utf-8"))
+                break
+            if process.poll() is not None:
+                pytest.fail(f"{mode} reproducer exited early: {process.returncode}")
+            time.sleep(0.01)
+        assert descendant is not None
+
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=3)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and pid_exists(descendant):
+            time.sleep(0.01)
+        assert not pid_exists(descendant), f"{mode} left descendant {descendant}"
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=1)
+        if descendant is not None and pid_exists(descendant):
+            os.kill(descendant, signal.SIGKILL)
+
+
+@pytest.mark.parametrize(
+    "mode", ["worktree", "sessions", "workspace", "content", "auxiliary"])
+def test_isolated_post_fork_setup_failure_closes_pipe_and_reaps_worker(
+        tmp_path, monkeypatch, mode):
+    real_pipe = os.pipe
+    real_fork = os.fork
+    real_set_blocking = os.set_blocking
+    helper_pipe: list[int] = []
+    child_pids: list[int] = []
+
+    def tracked_pipe():
+        pair = real_pipe()
+        if not helper_pipe:
+            helper_pipe.extend(pair)
+        return pair
+
+    def tracked_fork():
+        pid = real_fork()
+        if pid > 0:
+            child_pids.append(pid)
+        return pid
+
+    def fail_helper_reader(descriptor, blocking):
+        if helper_pipe and descriptor == helper_pipe[0]:
+            raise OSError("injected nonblocking setup failure")
+        return real_set_blocking(descriptor, blocking)
+
+    monkeypatch.setattr(scree.os, "pipe", tracked_pipe)
+    monkeypatch.setattr(scree.os, "fork", tracked_fork)
+    monkeypatch.setattr(scree.os, "set_blocking", fail_helper_reader)
+
+    if mode == "worktree":
+        assert scree.collect_worktrees_isolated(
+            tmp_path, [], timeout_seconds=2)["truncated"] is True
+    elif mode == "sessions":
+        assert scree._build_sessions_isolated(
+            tmp_path, time.monotonic() + 2)["coverage"]["complete"] is False
+    elif mode == "workspace":
+        statuses, complete = scree._workspace_location_statuses_isolated(
+            [str(tmp_path)])
+        assert statuses == {str(tmp_path): None}
+        assert complete is False
+    elif mode == "content":
+        payload, status = scree._isolated_content_json(
+            time.monotonic() + 2, lambda: {"ok": True})
+        assert payload is None
+        assert status == "unreadable"
+    else:
+        receipts, observations, coverage = (
+            scree._read_evidence_auxiliary_isolated(
+                tmp_path, time.monotonic() + 2))
+        assert receipts == [] and observations == []
+        assert coverage["complete"] is False
+
+    assert len(child_pids) == 1
+    with pytest.raises(ChildProcessError):
+        os.waitpid(child_pids[0], os.WNOHANG)
+    assert len(helper_pipe) == 2
+    for descriptor in helper_pipe:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+def test_worker_cleanup_snapshot_failure_is_incomplete_even_after_direct_reap(
+        monkeypatch):
+    pid = os.fork()
+    if pid == 0:
+        time.sleep(30)
+        os._exit(0)
+    monkeypatch.setattr(scree, "_process_descendants", lambda _pid: None)
+
+    result = scree._terminate_worktree_worker(pid)
+
+    assert result is False
+    with pytest.raises(ChildProcessError):
+        os.waitpid(pid, os.WNOHANG)
+
+
 @pytest.mark.parametrize("raw,expected", [
     ("git@github.com:heznpc/proj-a.git", "github.com/heznpc/proj-a"),
     ("https://github.com/heznpc/proj-a.git", "github.com/heznpc/proj-a"),
@@ -1368,7 +1545,8 @@ def test_lineage_classifies_paths_and_case_ghosts(tmp_path):
 
     lineage = scree.build_scree(home)["lineage"]
     assert lineage["summary"] == {"total": 3, "alive_git": 1, "alive_plain": 1,
-                                  "vanished": 1, "case_ghosts": 1}
+                                  "vanished": 1, "unknown": 0,
+                                  "case_ghosts": 1}
     ghost = next(p for p in lineage["paths"] if p.get("case_variants"))
     assert sorted(ghost["case_variants"]) == sorted([str(ws_plain), variant])
     assert ghost["exists"] is True and ghost["has_git"] is False
@@ -2897,12 +3075,15 @@ def test_damaged_large_integer_line_does_not_abort_content_readers(tmp_path):
     )
 
     inspect = scree.build_inspect(source, tmp_path)
-    assert inspect["status"] == "ok"
+    assert inspect["status"] == "parse"
     assert inspect["turns"][0]["text"] == healthy
     assert scree.build_title(source, tmp_path)["title"] == healthy
     assert healthy in scree.render_preserve(source, tmp_path, raw=False)
-    assert scree.build_search(healthy, tmp_path)["matches"]
-    assert scree.build_evidence(healthy, tmp_path)["conversationMentions"]
+    search = scree.build_search(healthy, tmp_path)
+    evidence = scree.build_evidence(healthy, tmp_path)
+    assert search["matches"] and search["coverage"] == "truncated"
+    assert evidence["conversationMentions"]
+    assert evidence["coverage"] == "truncated"
 
     gemini = tmp_path / "damaged-gemini.json"
     gemini.write_text('{"n":' + ('9' * 5000) + '}', encoding="utf-8")
@@ -3039,7 +3220,7 @@ def test_claude_desktop_workspace_probe_timeout_keeps_index_responsive(
     session = next(s for s in out["sessions"]
                    if s.get("provider") == scree.CLAUDE_DESKTOP_PROVIDER)
     assert session["workspace"] == ""
-    assert session["workspaceExists"] is False
+    assert session["workspaceExists"] is None
     assert out["coverage"]["complete"] is False
     assert _desktop_coverage(out)["status"] == "truncated"
 
@@ -3467,6 +3648,7 @@ def test_claude_desktop_search_fails_closed_after_store_root_swap(
         *scree.CLAUDE_DESKTOP_LOCAL_SESSIONS)
     original = scree._collect_claude_desktop_sessions_with_coverage
     swapped = False
+    swapped_marker = tmp_path / "desktop-root-swapped"
 
     def swap_after_snapshot(home):
         nonlocal swapped
@@ -3475,6 +3657,7 @@ def test_claude_desktop_search_fails_closed_after_store_root_swap(
             swapped = True
             root.rename(held)
             root.symlink_to(outside_root, target_is_directory=True)
+            swapped_marker.write_text("swapped", encoding="utf-8")
         return records, coverage
 
     monkeypatch.setattr(
@@ -3488,7 +3671,7 @@ def test_claude_desktop_search_fails_closed_after_store_root_swap(
         if held.exists():
             held.rename(root)
 
-    assert swapped is True
+    assert swapped_marker.exists()
     assert result["matches"] == []
     assert result["unreadableSessions"] == 1
     assert result["definitive"] is False
@@ -3504,6 +3687,7 @@ def test_claude_desktop_search_withholds_absence_when_root_changes_during_scan(
     root_identity = (root_info.st_dev, root_info.st_ino)
     original = os.scandir
     swapped = False
+    swapped_marker = tmp_path / "desktop-scan-swapped"
 
     def replace_empty_root_before_scan(path):
         nonlocal swapped
@@ -3514,13 +3698,14 @@ def test_claude_desktop_search_withholds_absence_when_root_changes_during_scan(
                 root.rename(held)
                 _desktop_session(
                     tmp_path, primary_text="NEW_SECRET_PHRASE")
+                swapped_marker.write_text("swapped", encoding="utf-8")
         return original(path)
 
     monkeypatch.setattr(os, "scandir", replace_empty_root_before_scan)
 
     result = scree.build_search("NEW_SECRET_PHRASE", tmp_path)
 
-    assert swapped is True
+    assert swapped_marker.exists()
     assert result["totalSessions"] == 0
     assert result["coverage"] == "truncated"
     assert result["truncatedReason"] == "discovery"
@@ -3589,7 +3774,8 @@ def test_claude_desktop_search_rejects_metadata_changed_while_opening_primary(
 
     result = scree.build_search("SAFE_PRIMARY_CONTENT", tmp_path)
 
-    assert mutated is True
+    assert json.loads(fixture["metadata"].read_text())["cliSessionId"] == (
+        "cli-desktop-two")
     assert result["matches"] == []
     assert result["unreadableSessions"] == 1
     assert result["definitive"] is False
@@ -3649,7 +3835,8 @@ def test_sessions_lists_sessions_newest_first(bind_home):
     assert epochs == sorted(epochs, reverse=True)
     for session in out["sessions"]:
         assert session["source"] and session["tool"]
-        assert isinstance(session["workspaceExists"], bool)
+        assert session["workspaceExists"] is None or isinstance(
+            session["workspaceExists"], bool)
 
 
 def test_sessions_limit_caps_the_list_but_not_the_total(bind_home):
@@ -3945,7 +4132,7 @@ def test_gemini_chats_without_a_registry_entry_admit_they_have_no_workspace(tmp_
     gemini = [s for s in scree.build_sessions(home)["sessions"] if s["tool"] == "Gemini"]
     assert len(gemini) == 1
     assert gemini[0]["workspace"] == ""
-    assert gemini[0]["workspaceExists"] is False
+    assert gemini[0]["workspaceExists"] is None
 
 
 def test_titles_answers_many_named_sessions_in_one_pass(tmp_path):
@@ -4098,6 +4285,34 @@ def test_search_masks_by_default(tmp_path):
     assert "someone@example.com" in json.dumps(raw, ensure_ascii=False)
 
 
+@pytest.mark.parametrize(
+    ("query", "stored"),
+    [
+        ("/tmp/ws", r"path is \/tmp\/ws"),
+        ("STRASSE", r"name is Stra\u00dfe"),
+    ],
+)
+def test_search_prefilter_preserves_json_escape_and_unicode_casefold_matches(
+        tmp_path, monkeypatch, query, stored):
+    """The byte gate may over-admit, but it cannot reject a decoded match."""
+    monkeypatch.setattr(scree, "SEARCH_IO_CHUNK_BYTES", 9)
+    source = tmp_path / ".claude" / "projects" / "-tmp-work" / "escaped.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        '{"cwd":"/tmp/work"}\n'
+        + '{"message":{"role":"user","content":"'
+        + stored
+        + '"}}\n',
+        encoding="utf-8",
+    )
+
+    result = scree.build_search(query, tmp_path, raw=True)
+
+    assert len(result["matches"]) == 1
+    assert result["coverage"] == "complete"
+    assert result["definitive"] is True
+
+
 def test_search_returns_a_window_not_the_whole_turn(tmp_path):
     """턴 하나가 수천 자일 수 있다. 읽는 사람에게 필요한 건 그 구절이
     들어앉은 문장이다."""
@@ -4146,6 +4361,50 @@ def test_search_reports_a_per_file_byte_cap_instead_of_claiming_no_match(
     assert out["definitive"] is False
 
 
+@pytest.mark.parametrize("command", ["search", "evidence"])
+def test_content_open_is_process_isolated_under_command_total_deadline(
+        tmp_path, monkeypatch, command):
+    _stored_session(tmp_path, "slow", ("user", "needle"))
+    session_index = scree.build_sessions(tmp_path)
+    monkeypatch.setattr(
+        scree, "_build_sessions_isolated",
+        lambda _home, _deadline: session_index)
+
+    def blocked_open(*_args, **_kwargs):
+        time.sleep(5)
+        return (None, None, "unreadable")
+
+    monkeypatch.setattr(scree, "_open_regular_nofollow", blocked_open)
+    started = time.monotonic()
+    if command == "search":
+        out = scree.build_search("needle", tmp_path, budget_seconds=0.08)
+    else:
+        out = scree.build_evidence("needle", tmp_path, budget_seconds=0.08)
+
+    assert time.monotonic() - started < 1.0
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "time"
+    assert out["definitive"] is False
+
+
+@pytest.mark.parametrize("command", ["search", "evidence"])
+def test_malformed_matching_jsonl_line_is_incomplete_not_definitive_absence(
+        tmp_path, command):
+    source = (tmp_path / ".claude" / "projects" / "-tmp-work"
+              / "malformed.jsonl")
+    source.parent.mkdir(parents=True)
+    source.write_text('{"cwd":"/tmp/work"}\n{"broken":"needle"\n',
+                      encoding="utf-8")
+
+    out = (scree.build_search("needle", tmp_path) if command == "search"
+           else scree.build_evidence("needle", tmp_path))
+
+    assert out["parseErrorSessions"] == 1
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "parse"
+    assert out["definitive"] is False
+
+
 def test_oversized_gemini_chat_is_listed_but_content_read_is_truncated(
         tmp_path, monkeypatch):
     monkeypatch.setattr(scree, "SESSION_CONTENT_MAX_BYTES", 1024)
@@ -4177,6 +4436,26 @@ def test_search_caps_matches_per_session_so_one_file_cannot_fill_the_answer(tmp_
     _stored_session(tmp_path, "a", *turns)
     out = scree.build_search("찾는말", tmp_path)
     assert len(out["matches"]) == scree.SEARCH_MATCHES_PER_SESSION
+    assert out["matchesOmittedAtLeast"] >= 1
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "limit"
+    assert out["definitive"] is False
+
+
+def test_search_single_last_session_global_limit_is_not_silently_sliced(
+        tmp_path):
+    _stored_session(tmp_path, "only",
+                    ("user", "needle one"),
+                    ("user", "needle two"),
+                    ("user", "needle three"))
+
+    out = scree.build_search("needle", tmp_path, limit=2)
+
+    assert len(out["matches"]) == 2
+    assert out["matchesOmittedAtLeast"] == 1
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "limit"
+    assert out["definitive"] is False
 
 
 def test_search_returns_newest_first(tmp_path):
@@ -4213,6 +4492,104 @@ def test_content_scans_exclude_editor_workspace_state_from_denominator(
         assert result["unreadableSessions"] == 0
         assert result["coverage"] == "complete"
         assert result["definitive"] is True
+
+
+def test_provider_workspace_probe_is_hard_bounded_outside_desktop(
+        tmp_path, monkeypatch):
+    blocked_workspace = "/Volumes/provider-never-returns/project"
+    _stored_session(tmp_path, "blocked", ("user", "ordinary content"))
+    source = next((tmp_path / ".claude" / "projects").rglob("*.jsonl"))
+    payload = source.read_text(encoding="utf-8")
+    source.write_text(
+        payload.replace('"cwd": "/w"',
+                        f'"cwd": "{blocked_workspace}"'),
+        encoding="utf-8",
+    )
+    original_stat = os.stat
+
+    def block_provider_location(path, *args, **kwargs):
+        if os.fspath(path) == blocked_workspace and not args and not kwargs:
+            time.sleep(5)
+            raise AssertionError("the isolated workspace worker should be killed")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", block_provider_location)
+    monkeypatch.setattr(
+        scree, "CLAUDE_DESKTOP_WORKSPACE_PROBE_SECONDS", 0.05)
+    started = time.monotonic()
+
+    result = scree.build_sessions(tmp_path)
+
+    assert time.monotonic() - started < 1.0
+    session = next(item for item in result["sessions"]
+                   if item["source"] == str(source))
+    assert session["workspace"] == blocked_workspace
+    assert session["workspaceExists"] is None
+    workspace_coverage = next(
+        item for item in result["coverage"]["stores"]
+        if item["store"] == scree.WORKSPACE_PATHS_STORE)
+    assert workspace_coverage["status"] == "truncated"
+    assert workspace_coverage["unrecognized"] == 1
+    assert result["coverage"]["complete"] is False
+
+
+def test_main_report_preserves_unknown_workspace_without_orphaning_it(
+        tmp_path, monkeypatch):
+    blocked_workspace = "/Volumes/provider-never-returns/project"
+    _stored_session(tmp_path, "blocked", ("user", "ordinary content"))
+    source = next((tmp_path / ".claude" / "projects").rglob("*.jsonl"))
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            '"cwd": "/w"', f'"cwd": "{blocked_workspace}"'),
+        encoding="utf-8")
+    original_stat = os.stat
+
+    def block_provider_location(path, *args, **kwargs):
+        if os.fspath(path).startswith(blocked_workspace) and not args and not kwargs:
+            time.sleep(5)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", block_provider_location)
+    monkeypatch.setattr(
+        scree, "CLAUDE_DESKTOP_WORKSPACE_PROBE_SECONDS", 0.05)
+    monkeypatch.setattr(
+        scree, "collect_worktrees_isolated",
+        lambda *_args, **_kwargs: {
+            "items": [], "registered_missing": [], "scope": "bounded-test",
+            "global_complete": False, "observed_workspaces": 1,
+            "unreadable": 1, "truncated": True,
+        })
+    started = time.monotonic()
+
+    result = scree.build_scree(tmp_path)
+
+    assert time.monotonic() - started < 1.0
+    group = next(item for item in result["groups"]
+                 if blocked_workspace in item["workspaces"])
+    assert group["orphan"] is None
+    assert "orphan_basis" not in group
+    lineage = next(item for item in result["lineage"]["paths"]
+                   if item["path"] == blocked_workspace)
+    assert lineage["exists"] is None
+    assert lineage["has_git"] is None
+    assert result["lineage"]["summary"]["unknown"] == 1
+
+
+@pytest.mark.parametrize("builder", [scree.build_search, scree.build_evidence])
+def test_content_command_budget_includes_session_discovery(
+        tmp_path, monkeypatch, builder):
+    def blocked(*_args, **_kwargs):
+        time.sleep(5)
+        raise AssertionError("isolated discovery should be terminated")
+
+    monkeypatch.setattr(scree, "build_sessions", blocked)
+    started = time.monotonic()
+
+    result = builder("needle", tmp_path, budget_seconds=0.05)
+
+    assert time.monotonic() - started < 1.0
+    assert result["definitive"] is False
+    assert result["truncatedReason"] in ("time", "discovery")
 
 
 def test_search_is_not_reachable_from_the_judgment_path(bind_home):
@@ -4473,8 +4850,65 @@ def test_evidence_correlates_provider_results_without_promoting_a_call(tmp_path)
     rows = scree.build_evidence("cleanup cache", tmp_path)["providerToolInvocations"]
     assert {row["callId"]: row["status"] for row in rows} == {
         "ok": "completed", "failed": "failed", "denied": "denied",
-        "pending": "requested",
     }
+    out = scree.build_evidence("cleanup cache", tmp_path)
+    assert out["evidenceOmittedAtLeast"] >= 1
+    assert out["coverage"] == "truncated"
+    assert out["definitive"] is False
+
+
+def test_evidence_single_session_global_limit_is_not_silently_exceeded(
+        tmp_path):
+    _stored_session(tmp_path, "only",
+                    ("user", "needle one"),
+                    ("user", "needle two"),
+                    ("user", "needle three"))
+
+    out = scree.build_evidence("needle", tmp_path, limit=1)
+
+    assert len(out["conversationMentions"]) == 1
+    assert out["providerToolInvocations"] == []
+    assert out["evidenceOmittedAtLeast"] == 2
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "limit"
+    assert out["definitive"] is False
+
+
+def test_evidence_gate_preserves_escaped_unicode_casefold_match(tmp_path):
+    source = tmp_path / ".claude" / "projects" / "-tmp-work" / "escaped.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        '{"cwd":"/tmp/work"}\n'
+        '{"message":{"role":"user","content":"Stra\\u00dfe cleanup"}}\n',
+        encoding="utf-8",
+    )
+
+    out = scree.build_evidence("STRASSE", tmp_path, raw=True)
+
+    assert len(out["conversationMentions"]) == 1
+    assert out["coverage"] == "complete"
+    assert out["definitive"] is True
+
+
+def test_evidence_malformed_claude_tool_input_is_incomplete_not_a_crash(
+        tmp_path):
+    source = tmp_path / ".claude" / "projects" / "-tmp-work" / "bad.jsonl"
+    source.parent.mkdir(parents=True)
+    _write(source, _jsonl(
+        {"cwd": "/tmp/work"},
+        {"message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": "bad", "name": "Bash",
+            "input": "needle in malformed input",
+        }]}},
+    ))
+
+    out = scree.build_evidence("needle", tmp_path)
+
+    assert out["providerToolInvocations"] == []
+    assert out["parseErrorSessions"] == 1
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "parse"
+    assert out["definitive"] is False
 
 
 def test_evidence_reads_codex_exit_and_denial_outcomes(tmp_path):
@@ -4589,6 +5023,48 @@ def test_evidence_reads_free_space_observations_without_joining_them(tmp_path):
     assert not any("cause" in o or "because" in o for o in observations)
 
 
+def test_evidence_auxiliary_files_are_nofollow_and_size_bounded(
+        tmp_path, monkeypatch):
+    support = (tmp_path / "Library" / "Application Support" / "Modore")
+    receipts = support / "cleanup-receipts"
+    receipts.mkdir(parents=True)
+    outside = tmp_path / "outside.tsv"
+    outside.write_text(
+        "timestamp\t2026-08-14T00:00:00Z\nrecipeId\tsecret\n",
+        encoding="utf-8")
+    (receipts / "linked.tsv").symlink_to(outside)
+    monkeypatch.setattr(scree, "EVIDENCE_RECEIPT_MAX_BYTES", 32)
+    (receipts / "oversized.tsv").write_text(
+        "timestamp\t2026-08-14T00:00:00Z\n" + "x" * 100,
+        encoding="utf-8")
+
+    out = scree.build_evidence("", tmp_path)
+
+    assert out["modoreCleanupReceipts"] == []
+    assert out["auxiliaryCoverage"]["complete"] is False
+    assert out["auxiliaryCoverage"]["receiptsStatus"] == "truncated"
+    assert out["coverage"] == "truncated"
+
+
+def test_evidence_auxiliary_blocking_read_obeys_total_wall_clock(
+        tmp_path, monkeypatch):
+    original = scree._read_cleanup_receipts_bounded
+
+    def blocked(*args, **kwargs):
+        time.sleep(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(scree, "_read_cleanup_receipts_bounded", blocked)
+    started = time.monotonic()
+
+    out = scree.build_evidence("", tmp_path, budget_seconds=0.08)
+
+    assert time.monotonic() - started < 1.0
+    assert out["auxiliaryCoverage"]["complete"] is False
+    assert out["auxiliaryCoverage"]["receiptsStatus"] == "time"
+    assert out["truncatedReason"] == "time"
+
+
 def test_evidence_withholds_conclusions_when_it_could_not_read_everything(tmp_path):
     home = _evidence_home(tmp_path)
     blocked = home / ".claude" / "projects" / "-Users-example-repo" / "b.jsonl"
@@ -4687,6 +5163,48 @@ def test_backup_and_restore_preserve_full_session_bytes_and_private_permissions(
         assert (restored / name).stat().st_mode & 0o777 == 0o600
         assert (home / name).read_bytes() == expected
         assert (home / name).stat().st_mtime_ns == before[name]
+
+
+def test_large_deep_backup_verify_restore_stays_below_a_low_fd_limit(tmp_path):
+    """Hundreds of files and directories must not consume one FD each."""
+    home, source, contents = _backup_fixture(tmp_path)
+    output_root = source.parent / source.stem / "tool-results"
+    for number in range(320):
+        leaf = (Path(f"result-{number:03d}.txt") if number < 200
+                else Path(f"bucket-{number:03d}") / "result.txt")
+        relative = (
+            source.relative_to(home).with_suffix("")
+            / "tool-results" / leaf
+        ).as_posix()
+        body = f"result {number}\n".encode()
+        output = output_root / leaf
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(body)
+        contents[relative] = body
+
+    archive = tmp_path / "large-backup.zip"
+    restored = tmp_path / "large-restored"
+    original_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    low_limit = 96
+    if (original_limit[1] != resource.RLIM_INFINITY
+            and original_limit[1] < low_limit):
+        pytest.skip("hard RLIMIT_NOFILE is below the regression limit")
+    try:
+        resource.setrlimit(
+            resource.RLIMIT_NOFILE, (low_limit, original_limit[1]))
+        receipt = scree.build_session_backup(
+            source, home, archive, include_sensitive=True)
+        verified = scree.verify_session_backup(archive)
+        restored_receipt = scree.restore_session_backup(archive, restored)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, original_limit)
+
+    assert receipt["fileCount"] == len(contents)
+    assert verified["fileCount"] == len(contents)
+    assert restored_receipt["status"] == "restored"
+    for name, expected in contents.items():
+        assert (restored / name).read_bytes() == expected
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
 
 
 def test_backup_category_ignores_colliding_claude_project_bucket_name(tmp_path):
@@ -5389,30 +5907,719 @@ def test_restore_sigterm_removes_its_partial_tree(tmp_path, monkeypatch):
     assert scree.signal.getsignal(scree.signal.SIGTERM) == previous_handler
 
 
-def test_restore_fails_closed_when_visible_root_is_swapped_for_symlink(
+def test_restore_sigterm_cleans_a_small_interruptible_guard_release(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    destination = tmp_path / "interrupted-release"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    original_unlink = os.unlink
+    entered = threading.Event()
+    delayed = False
+
+    def delay_one_guard_unlink(path, *args, **kwargs):
+        nonlocal delayed
+        if (not delayed and isinstance(path, str)
+                and len(path) == 8
+                and all(character in "0123456789abcdef" for character in path)
+                and kwargs.get("dir_fd") is not None):
+            delayed = True
+            entered.set()
+            time.sleep(5)
+        return original_unlink(path, *args, **kwargs)
+
+    def terminate_when_release_starts():
+        assert entered.wait(2)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(scree.os, "unlink", delay_one_guard_unlink)
+    sender = threading.Thread(target=terminate_when_release_starts)
+    sender.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(SystemExit):
+            scree.restore_session_backup(archive, destination)
+    finally:
+        sender.join(timeout=2)
+
+    assert time.monotonic() - started < 1.0
+    assert delayed is True
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def _kill_restore_at_phase(
+        archive: Path, destination: Path, marker: Path, phase: str) -> None:
+    child_code = r'''
+import pathlib
+import sys
+import time
+sys.path.insert(0, sys.argv[1])
+import scree
+
+marker = pathlib.Path(sys.argv[4])
+phase = sys.argv[5]
+
+def stop():
+    marker.write_text("ready", encoding="utf-8")
+    time.sleep(60)
+
+if phase == "before-journal":
+    def wrapped(self):
+        stop()
+    scree._RestoreLedger._start_journal = wrapped
+elif phase == "first-payload":
+    original = scree._backup_stream
+    def wrapped(source, target=None, *, limit=scree.BACKUP_MAX_BYTES):
+        result = original(source, target, limit=limit)
+        if target is not None and not marker.exists():
+            stop()
+        return result
+    scree._backup_stream = wrapped
+elif phase == "after-release":
+    def wrapped(self):
+        stop()
+    scree._RestoreLedger._remove_guard_directory = wrapped
+elif phase == "after-publish":
+    def wrapped(self):
+        stop()
+    scree._RestoreLedger.release_guards = wrapped
+elif phase == "after-symlink":
+    original = scree._restore_symlink
+    def wrapped(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if not marker.exists():
+            stop()
+        return result
+    scree._restore_symlink = wrapped
+elif phase == "after-symlink-syscall":
+    original = scree.os.symlink
+    def wrapped(*args, **kwargs):
+        result = original(*args, **kwargs)
+        marker.write_text("ready", encoding="utf-8")
+        os._exit(91)
+    import os
+    scree.os.symlink = wrapped
+elif phase == "after-first-guard-unlink":
+    original = scree.os.unlink
+    def wrapped(path, *args, **kwargs):
+        result = original(path, *args, **kwargs)
+        if (isinstance(path, str) and len(path) == 8
+                and all(character in "0123456789abcdef" for character in path)):
+            marker.write_text("ready", encoding="utf-8")
+            os._exit(92)
+        return result
+    import os
+    scree.os.unlink = wrapped
+elif phase == "after-first-release-record":
+    original = scree._RestoreLedger._journal_record
+    def wrapped(self, payload, **kwargs):
+        result = original(self, payload, **kwargs)
+        if payload.get("type") == "release" and not marker.exists():
+            marker.write_text("ready", encoding="utf-8")
+            os._exit(93)
+        return result
+    import os
+    scree._RestoreLedger._journal_record = wrapped
+elif phase == "after-first-private-mkdir":
+    original = scree._RestoreLedger.open_directory
+    def wrapped(self, relative, *, create):
+        result = original(self, relative, create=create)
+        if create and relative and not marker.exists():
+            marker.write_text("ready", encoding="utf-8")
+            os._exit(94)
+        return result
+    import os
+    scree._RestoreLedger.open_directory = wrapped
+else:
+    raise AssertionError(phase)
+
+scree.restore_session_backup(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]))
+'''
+    process = subprocess.Popen([
+        sys.executable, "-c", child_code, str(Path(scree.__file__).parent),
+        str(archive), str(destination), str(marker), phase,
+    ])
+    try:
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            time.sleep(0.01)
+        assert marker.exists(), f"restore exited before phase {phase}"
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def test_next_restore_recovers_journaled_partial_tree_after_term_then_kill(
+        tmp_path):
+    home, source, contents = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / "cleanup-entered"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    child_code = r'''
+import pathlib
+import sys
+import time
+sys.path.insert(0, sys.argv[1])
+import scree
+
+marker = pathlib.Path(sys.argv[4])
+original_stream = scree._backup_stream
+
+def mark_after_first_copy(source, target=None, *, limit=scree.BACKUP_MAX_BYTES):
+    result = original_stream(source, target, limit=limit)
+    if target is not None and not marker.exists():
+        marker.write_text("ready", encoding="utf-8")
+        time.sleep(60)
+    return result
+
+def stuck_cleanup(self):
+    marker.write_text("cleanup", encoding="utf-8")
+    time.sleep(60)
+
+scree._backup_stream = mark_after_first_copy
+scree._RestoreLedger.cleanup = stuck_cleanup
+scree.restore_session_backup(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]))
+'''
+    process = subprocess.Popen([
+        sys.executable, "-c", child_code, str(Path(scree.__file__).parent),
+        str(archive), str(destination), str(marker),
+    ])
+    deadline = time.monotonic() + 5
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert marker.exists()
+    process.terminate()
+    deadline = time.monotonic() + 2
+    while (marker.read_text(encoding="utf-8") != "cleanup"
+           and time.monotonic() < deadline):
+        time.sleep(0.01)
+    assert marker.read_text(encoding="utf-8") == "cleanup"
+    process.kill()
+    process.wait(timeout=5)
+
+    assert not destination.exists()
+    assert list(tmp_path.glob(".modore-restore-ledger-*"))
+
+    receipt = scree.restore_session_backup(archive, destination)
+
+    assert receipt["status"] == "restored"
+    for name, expected in contents.items():
+        assert (destination / name).read_bytes() == expected
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_next_restore_recovers_empty_root_after_torn_plan_write(tmp_path):
+    home, source, contents = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    child_code = r'''
+import os
+import pathlib
+import sys
+sys.path.insert(0, sys.argv[1])
+import scree
+
+destination = pathlib.Path(sys.argv[2])
+parent = destination.parent.resolve(strict=True)
+parent_fd = scree._open_directory_nofollow(parent)
+ledger = scree._RestoreLedger(parent, parent_fd, destination.name)
+os.close(parent_fd)
+ledger.create_root()
+os.write(ledger.journal_descriptor, b'{"type":"plan"')
+os._exit(0)
+'''
+    process = subprocess.run([
+        sys.executable, "-c", child_code, str(Path(scree.__file__).parent),
+        str(destination),
+    ], check=False)
+
+    assert process.returncode == 0
+    assert not destination.exists()
+    assert list(tmp_path.glob(".modore-restore-ledger-*"))
+
+    receipt = scree.restore_session_backup(archive, destination)
+
+    assert receipt["status"] == "restored"
+    for name, expected in contents.items():
+        assert (destination / name).read_bytes() == expected
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+@pytest.mark.parametrize(
+    "phase", ["after-first-private-mkdir", "after-first-release-record"])
+def test_next_restore_recovers_committed_private_prefix_crashes(
+        tmp_path, phase):
+    home, source, contents = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / f"{phase}-marker"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+
+    _kill_restore_at_phase(archive, destination, marker, phase)
+
+    assert not destination.exists()
+    assert list(tmp_path.glob(".modore-restore-ledger-*"))
+    receipt = scree.restore_session_backup(archive, destination)
+    assert receipt["status"] == "restored"
+    for name, expected in contents.items():
+        assert (destination / name).read_bytes() == expected
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_restore_journal_open_emfile_reclaims_empty_private_ledger(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(source, home, archive, include_sensitive=True)
+    original_open = scree.os.open
+
+    def fail_journal(path, *args, **kwargs):
+        if path == scree.RESTORE_JOURNAL_NAME:
+            raise OSError(errno.EMFILE, "too many open files")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(scree.os, "open", fail_journal)
+
+    with pytest.raises(OSError, match="too many open files"):
+        scree.restore_session_backup(archive, destination)
+
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_restore_recovery_uses_journal_lock_not_pid_liveness(
+        tmp_path, monkeypatch):
+    parent_fd = scree._open_directory_nofollow(tmp_path)
+    ledger = scree._RestoreLedger(tmp_path, parent_fd, "restore")
+    os.close(parent_fd)
+    ledger.create_root()
+    ledger_name = ledger.guard_name
+    assert ledger_name is not None
+
+    # An open exclusive flock means the operation is active even if its PID
+    # spelling looks stale.
+    probe_fd = scree._open_directory_nofollow(tmp_path)
+    try:
+        assert scree._recover_stale_restore_ledgers(tmp_path, probe_fd) == 0
+    finally:
+        os.close(probe_fd)
+    assert (tmp_path / ledger_name).exists()
+
+    # Once the owner closes the journal, PID reuse must not suppress recovery.
+    ledger.close()
+    monkeypatch.setattr(scree, "_restore_pid_is_alive", lambda _pid: True)
+    probe_fd = scree._open_directory_nofollow(tmp_path)
+    try:
+        assert scree._recover_stale_restore_ledgers(tmp_path, probe_fd) == 1
+    finally:
+        os.close(probe_fd)
+    assert not (tmp_path / ledger_name).exists()
+
+
+def test_stale_recovery_rejects_matching_guardless_different_inode_replacement(
+        tmp_path):
+    home, source, contents = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / "release-finished"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    _kill_restore_at_phase(archive, destination, marker, "after-release")
+    relative, expected = next(iter(contents.items()))
+    victim = destination / relative
+    original = tmp_path / "moved-operation-file"
+    victim.rename(original)
+    victim.write_bytes(expected)
+
+    with pytest.raises(ValueError, match="NEW directory"):
+        scree.restore_session_backup(archive, destination)
+
+    assert victim.read_bytes() == expected
+    assert victim.stat().st_ino != original.stat().st_ino
+    assert original.read_bytes() == expected
+    assert list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_stale_published_guardless_restore_preserves_same_inode_chmod(
+        tmp_path):
+    home, source, contents = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / "release-finished"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    _kill_restore_at_phase(archive, destination, marker, "after-release")
+    relative = next(iter(contents))
+    victim = destination / relative
+    inode = victim.stat().st_ino
+    victim.chmod(0o640)
+
+    with pytest.raises(ValueError, match="NEW directory"):
+        scree.restore_session_backup(archive, destination)
+
+    assert victim.stat().st_ino == inode
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o640
+    assert victim.read_bytes() == contents[relative]
+    assert list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_stale_recovery_preserves_symlink_replacement_and_blocks_same_target(
+        tmp_path):
+    home = tmp_path / "home"
+    fixture = _desktop_session(home)
+    source = fixture["metadata"]
+    link = fixture["debug_link"]
+    target = os.readlink(link)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / "symlink-created"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    _kill_restore_at_phase(archive, destination, marker, "after-symlink")
+    stale = next(tmp_path.glob(".modore-restore-ledger-*"))
+    victim = stale / ".restore-root" / link.relative_to(home)
+    original = tmp_path / "moved-operation-link"
+    victim.rename(original)
+    victim.symlink_to(target)
+
+    with pytest.raises(ValueError, match="manual recovery is required"):
+        scree.restore_session_backup(archive, destination)
+
+    assert not destination.exists()
+    assert os.readlink(victim) == target
+    assert victim.lstat().st_ino != original.lstat().st_ino
+    assert os.readlink(original) == target
+    assert list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_stale_recovery_preserves_directory_replacement_and_blocks_same_target(
+        tmp_path):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / "first-payload-finished"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    _kill_restore_at_phase(archive, destination, marker, "first-payload")
+    stale = next(tmp_path.glob(".modore-restore-ledger-*"))
+    private_root = stale / ".restore-root"
+    empty_directories = sorted(
+        path for path in private_root.rglob("*")
+        if path.is_dir() and not any(path.iterdir()))
+    assert empty_directories
+    victim = empty_directories[-1]
+    original = tmp_path / "moved-operation-directory"
+    victim.rename(original)
+    victim.mkdir(mode=0o700)
+
+    with pytest.raises(ValueError, match="manual recovery is required"):
+        scree.restore_session_backup(archive, destination)
+
+    assert not destination.exists()
+    assert victim.is_dir() and not list(victim.iterdir())
+    assert victim.stat().st_ino != original.stat().st_ino
+    assert original.is_dir()
+    assert list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+@pytest.mark.parametrize(
+    "phase,published",
+    [
+        ("first-payload", False),
+    ],
+)
+def test_untouched_crashed_restore_is_recovered_and_retried(
+        tmp_path, phase, published):
+    home, source, contents = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / f"{phase}-marker"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    _kill_restore_at_phase(archive, destination, marker, phase)
+
+    assert destination.exists() is published
+    assert list(tmp_path.glob(".modore-restore-ledger-*"))
+
+    receipt = scree.restore_session_backup(archive, destination)
+
+    assert receipt["status"] == "restored"
+    for name, expected in contents.items():
+        assert (destination / name).read_bytes() == expected
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+@pytest.mark.parametrize("phase", [
+    "after-release", "after-first-guard-unlink",
+])
+def test_published_guardless_crash_is_left_for_manual_recovery(
+        tmp_path, phase):
+    home, source, contents = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / f"{phase}-marker"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    _kill_restore_at_phase(archive, destination, marker, phase)
+
+    with pytest.raises(ValueError, match="NEW directory"):
+        scree.restore_session_backup(archive, destination)
+
+    for name, expected in contents.items():
+        assert (destination / name).read_bytes() == expected
+    assert list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_full_payload_guard_count_allows_journal_and_private_root(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    source = (home / ".codex" / "sessions" / "2026" / "08"
+              / "one.jsonl")
+    _write(source, _jsonl({
+        "type": "session_meta", "payload": {"id": "one", "cwd": "/w"},
+    }))
+    archive = tmp_path / "one.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / "first-payload"
+    scree.build_session_backup(source, home, archive, include_sensitive=True)
+    _kill_restore_at_phase(
+        archive, destination, marker, "first-payload")
+    monkeypatch.setattr(scree, "BACKUP_MAX_FILES", 1)
+
+    receipt = scree.restore_session_backup(archive, destination)
+
+    assert receipt["status"] == "restored"
+    assert (destination / source.relative_to(home)).read_bytes() == source.read_bytes()
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+@pytest.mark.parametrize("phase", ["after-symlink", "after-symlink-syscall"])
+def test_untouched_private_symlink_crash_is_recovered_and_retried(
+        tmp_path, phase):
+    home = tmp_path / "home"
+    fixture = _desktop_session(home)
+    source = fixture["metadata"]
+    link = fixture["debug_link"]
+    target = os.readlink(link)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / f"{phase}-marker"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    _kill_restore_at_phase(archive, destination, marker, phase)
+
+    assert not destination.exists()
+    assert list(tmp_path.glob(".modore-restore-ledger-*"))
+
+    receipt = scree.restore_session_backup(archive, destination)
+
+    assert receipt["status"] == "restored"
+    assert os.readlink(destination / link.relative_to(home)) == target
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_stale_restore_recovery_processes_a_bounded_subset_without_all_or_none(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    monkeypatch.setattr(scree, "RESTORE_RECOVERY_MAX_LEDGERS", 2)
+    stale = []
+    for number in range(3):
+        ledger = tmp_path / (
+            f".modore-restore-ledger-999999{number}-{number:016x}")
+        ledger.mkdir(mode=0o700)
+        stale.append(ledger)
+
+    receipt = scree.restore_session_backup(archive, destination)
+
+    assert receipt["status"] == "restored"
+    assert sum(path.exists() for path in stale) == 1
+
+
+def test_unrelated_legacy_restore_sweep_is_bounded_and_reports_incomplete(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(scree, "RESTORE_RECOVERY_MAX_PARENT_ENTRIES", 2)
+    monkeypatch.setattr(scree, "RESTORE_RECOVERY_MAX_LEDGERS", 1)
+    for number in range(7):
+        _write(tmp_path / f"filler-{number}", "x")
+    stale = tmp_path / ".modore-restore-ledger-99999999-0123456789abcdef"
+    stale.mkdir(mode=0o700)
+    parent_fd = scree._open_directory_nofollow(tmp_path)
+    try:
+        sweep = scree._recover_stale_restore_ledgers_bounded(
+            tmp_path, parent_fd)
+    finally:
+        os.close(parent_fd)
+
+    assert sweep == (0, True)
+    assert stale.exists()
+
+
+def test_fresh_process_recovers_exact_target_beyond_cap_and_counts_it_once(
+        tmp_path):
+    home, source, contents = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / "published"
+    for number in range(7):
+        _write(tmp_path / f"filler-{number}", "x")
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    _kill_restore_at_phase(
+        archive, destination, marker, "after-publish")
+    child_code = r'''
+import json
+import pathlib
+import sys
+sys.path.insert(0, sys.argv[1])
+import scree
+scree.RESTORE_RECOVERY_MAX_PARENT_ENTRIES = 2
+scree.RESTORE_RECOVERY_MAX_LEDGERS = 1
+receipt = scree.restore_session_backup(
+    pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]))
+print(json.dumps(receipt, sort_keys=True))
+'''
+    process = subprocess.run([
+        sys.executable, "-I", "-B", "-c", child_code,
+        str(Path(scree.__file__).parent), str(archive), str(destination),
+    ], check=True, capture_output=True, text=True)
+    receipt = json.loads(process.stdout)
+
+    assert receipt["status"] == "restored"
+    assert receipt["staleRecovery"] == {"recovered": 1, "incomplete": True}
+    for name, expected in contents.items():
+        assert (destination / name).read_bytes() == expected
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_deterministic_prejournal_sigkill_fails_closed_without_touching_ledger(
+        tmp_path):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    marker = tmp_path / "before-journal"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+
+    _kill_restore_at_phase(
+        archive, destination, marker, "before-journal")
+
+    ledger = tmp_path / scree._restore_target_ledger_name(destination.name)
+    assert sorted(path.name for path in ledger.iterdir()) == [".restore-root"]
+    with pytest.raises(ValueError, match="manual recovery is required"):
+        scree.restore_session_backup(archive, destination)
+
+    assert not destination.exists()
+    assert sorted(path.name for path in ledger.iterdir()) == [".restore-root"]
+
+
+def test_target_ledger_key_matches_apfs_case_and_unicode_equivalence():
+    composed = "R\u00e9sum\u00e9"
+    decomposed = unicodedata.normalize("NFD", composed)
+
+    names = {
+        scree._restore_target_ledger_name(value)
+        for value in (composed, composed.upper(), decomposed)
+    }
+
+    assert len(names) == 1
+    assert scree.RESTORE_TARGET_LEDGER_PATTERN.fullmatch(names.pop())
+
+
+@pytest.mark.parametrize(
+    "first_name,retry_name",
+    [
+        ("Restore", "restore"),
+        ("R\u00e9sum\u00e9", unicodedata.normalize("NFD", "R\u00c9SUM\u00c9")),
+    ],
+)
+def test_retry_spelling_equivalent_target_recovers_same_crash_slot(
+        tmp_path, first_name, retry_name):
+    home, source, contents = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    first_destination = tmp_path / first_name
+    retry_destination = tmp_path / retry_name
+    marker = tmp_path / "published"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+
+    _kill_restore_at_phase(
+        archive, first_destination, marker, "after-publish")
+    receipt = scree.restore_session_backup(archive, retry_destination)
+
+    assert receipt["status"] == "restored"
+    assert receipt["staleRecovery"]["recovered"] == 1
+    for name, expected in contents.items():
+        assert (retry_destination / name).read_bytes() == expected
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_restore_rolls_back_guard_when_link_is_interrupted_after_creation(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    destination = tmp_path / "interrupted-link"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    original_link = os.link
+    interrupted = False
+
+    def interrupt_after_link(*args, **kwargs):
+        nonlocal interrupted
+        original_link(*args, **kwargs)
+        if not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(scree.os, "link", interrupt_after_link)
+
+    with pytest.raises(KeyboardInterrupt):
+        scree.restore_session_backup(archive, destination)
+
+    assert interrupted is True
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_restore_fails_closed_when_destination_appears_at_atomic_publish(
         tmp_path, monkeypatch):
     home, source, _ = _backup_fixture(tmp_path)
     archive = tmp_path / "complete.zip"
     scree.build_session_backup(source, home, archive, include_sensitive=True)
     destination = tmp_path / "restore"
-    held = tmp_path / "restore-held"
     outside = tmp_path / "outside-restore"
     outside.mkdir()
     _write(outside / "KEEP.txt", "outside stays untouched")
-    original = scree._RestoreLedger.open_directory
+    original = scree._rename_directory_exclusive
     swapped = False
 
-    def swap_root(ledger, relative, *, create):
+    def race_publish(*args, **kwargs):
         nonlocal swapped
         if not swapped:
             swapped = True
-            destination.rename(held)
             destination.symlink_to(outside, target_is_directory=True)
-        return original(ledger, relative, create=create)
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(scree._RestoreLedger, "open_directory", swap_root)
+    monkeypatch.setattr(scree, "_rename_directory_exclusive", race_publish)
     try:
-        with pytest.raises(ValueError, match="destination changed"):
+        with pytest.raises((FileExistsError, ValueError)):
             scree.restore_session_backup(archive, destination)
     finally:
         if destination.is_symlink():
@@ -5421,8 +6628,7 @@ def test_restore_fails_closed_when_visible_root_is_swapped_for_symlink(
     assert swapped is True
     assert [path.name for path in outside.iterdir()] == ["KEEP.txt"]
     assert (outside / "KEEP.txt").read_text() == "outside stays untouched"
-    assert held.is_dir()
-    assert not any(held.iterdir())
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
 
 
 def test_restore_rehashes_every_output_immediately_before_success(
@@ -5432,12 +6638,18 @@ def test_restore_rehashes_every_output_immediately_before_success(
     destination = tmp_path / "restore"
     scree.build_session_backup(
         source, home, archive, include_sensitive=True)
-    restored_source = destination / source.relative_to(home)
+    with zipfile.ZipFile(archive) as bundle:
+        manifest = json.loads(bundle.read("manifest.json"))
+    first_regular = next(
+        entry["path"] for entry in manifest["files"]
+        if entry.get("kind") != "symlink")
     original = scree._RestoreLedger.validate_all
     tampered = False
 
     def tamper_before_final_validation(ledger):
         nonlocal tampered
+        restored_source = (ledger.parent / ledger.guard_name
+                           / ".restore-root" / first_regular)
         size = restored_source.stat().st_size
         restored_source.write_bytes(b"X" * size)
         tampered = True
@@ -5450,6 +6662,189 @@ def test_restore_rehashes_every_output_immediately_before_success(
         scree.restore_session_backup(archive, destination)
 
     assert tampered is True
+    assert not destination.exists()
+
+
+def test_restore_release_rehash_rejects_same_size_tampering(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    restored_source = destination / source.relative_to(home)
+    original = scree._RestoreLedger.release_guards
+    tampered = False
+
+    def tamper_after_validate(ledger):
+        nonlocal tampered
+        size = restored_source.stat().st_size
+        restored_source.write_bytes(b"X" * size)
+        tampered = True
+        return original(ledger)
+
+    monkeypatch.setattr(
+        scree._RestoreLedger, "release_guards", tamper_after_validate)
+
+    with pytest.raises(ValueError, match="checksum"):
+        scree.restore_session_backup(archive, destination)
+
+    assert tampered is True
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_restore_release_detects_write_raced_from_guard_unlink(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    with zipfile.ZipFile(archive) as bundle:
+        manifest = json.loads(bundle.read("manifest.json"))
+    regular = [entry for entry in manifest["files"]
+               if entry.get("kind") != "symlink"]
+    source_relative = source.relative_to(home).as_posix()
+    source_guard = f"{next(index for index, entry in enumerate(regular) if entry['path'] == source_relative):08x}"
+    restored_source = destination / source.relative_to(home)
+    original_unlink = os.unlink
+    raced = False
+
+    def mutate_inside_guard_unlink(path, *args, **kwargs):
+        nonlocal raced
+        if not raced and path == source_guard and kwargs.get("dir_fd") is not None:
+            raced = True
+            size = restored_source.stat().st_size
+            restored_source.write_bytes(b"Y" * size)
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(scree.os, "unlink", mutate_inside_guard_unlink)
+
+    with pytest.raises(ValueError, match="checksum"):
+        scree.restore_session_backup(archive, destination)
+
+    assert raced is True
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_restore_success_boundary_detects_first_file_changed_while_later_guard_releases(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    with zipfile.ZipFile(archive) as bundle:
+        manifest = json.loads(bundle.read("manifest.json"))
+    first_regular = next(
+        entry["path"] for entry in manifest["files"]
+        if entry.get("kind") != "symlink")
+    restored_source = destination / first_regular
+    original_unlink = os.unlink
+    changed = False
+
+    def change_first_during_second_guard(path, *args, **kwargs):
+        nonlocal changed
+        result = original_unlink(path, *args, **kwargs)
+        if path == "00000001" and not changed:
+            size = restored_source.stat().st_size
+            restored_source.write_bytes(b"Z" * size)
+            changed = True
+        return result
+
+    monkeypatch.setattr(os, "unlink", change_first_during_second_guard)
+
+    with pytest.raises(ValueError, match="checksum mismatch before success"):
+        scree.restore_session_backup(archive, destination)
+
+    assert changed is True
+    assert restored_source.read_bytes().startswith(b"Z")
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_restore_success_boundary_revalidates_symlink_after_regular_release(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    fixture = _desktop_session(home)
+    archive = tmp_path / "desktop.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        fixture["metadata"], home, archive, include_sensitive=True)
+    restored_link = destination / fixture["debug_link"].relative_to(home)
+    original = scree._RestoreLedger.validate_success_boundary
+    replaced = False
+
+    def replace_link_before_final_pass(ledger):
+        nonlocal replaced
+        restored_link.unlink()
+        restored_link.symlink_to("../../MALICIOUS")
+        replaced = True
+        return original(ledger)
+
+    monkeypatch.setattr(
+        scree._RestoreLedger, "validate_success_boundary",
+        replace_link_before_final_pass)
+
+    with pytest.raises(ValueError, match="changed before success"):
+        scree.restore_session_backup(archive, destination)
+
+    assert replaced is True
+    assert restored_link.is_symlink()
+    assert os.readlink(restored_link) == "../../MALICIOUS"
+
+
+def test_restore_reports_unsupported_hardlink_filesystem_without_weak_fallback(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "backup.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+
+    def unsupported(*_args, **_kwargs):
+        raise OSError(errno.EOPNOTSUPP, "hard links unavailable")
+
+    monkeypatch.setattr(os, "link", unsupported)
+
+    with pytest.raises(ValueError, match="does not support required hard-link"):
+        scree.restore_session_backup(archive, destination)
+
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".modore-restore-ledger-*"))
+
+
+def test_restore_fd_guard_never_rolls_back_a_regular_name_replacement(
+        tmp_path, monkeypatch):
+    home, source, _ = _backup_fixture(tmp_path)
+    archive = tmp_path / "complete.zip"
+    destination = tmp_path / "restore"
+    scree.build_session_backup(
+        source, home, archive, include_sensitive=True)
+    restored_source = destination / source.relative_to(home)
+    original = scree._RestoreLedger.validate_all
+    replaced = False
+
+    def replace_before_validation(ledger):
+        nonlocal replaced
+        restored_source = (ledger.parent / ledger.guard_name
+                           / ".restore-root" / source.relative_to(home))
+        restored_source.unlink()
+        restored_source.write_bytes(b"KEEP_USER_REPLACEMENT")
+        replaced = True
+        return original(ledger)
+
+    monkeypatch.setattr(
+        scree._RestoreLedger, "validate_all", replace_before_validation)
+
+    with pytest.raises(ValueError, match="changed during restore"):
+        scree.restore_session_backup(archive, destination)
+
+    assert replaced is True
+    stale = next(tmp_path.glob(".modore-restore-ledger-*"))
+    restored_source = stale / ".restore-root" / source.relative_to(home)
+    assert restored_source.read_bytes() == b"KEEP_USER_REPLACEMENT"
     assert not destination.exists()
 
 
@@ -5482,14 +6877,14 @@ def test_restore_removes_tree_if_archive_changes_at_context_exit(
     assert not destination.exists()
 
 
-def test_restore_cleans_a_regular_file_when_ledger_recording_fails(
+def test_restore_cleans_a_regular_file_when_guard_allocation_fails(
         tmp_path, monkeypatch):
     home, source, _ = _backup_fixture(tmp_path)
     archive = tmp_path / "complete.zip"
     destination = tmp_path / "restore"
     scree.build_session_backup(
         source, home, archive, include_sensitive=True)
-    original = scree._RestoreLedger.record_owned
+    original = scree._RestoreLedger.create_owned_regular
     failed = False
 
     def fail_first_record(ledger, *args, **kwargs):
@@ -5500,7 +6895,7 @@ def test_restore_cleans_a_regular_file_when_ledger_recording_fails(
         return original(ledger, *args, **kwargs)
 
     monkeypatch.setattr(
-        scree._RestoreLedger, "record_owned", fail_first_record)
+        scree._RestoreLedger, "create_owned_regular", fail_first_record)
     with pytest.raises(OSError, match="ledger allocation"):
         scree.restore_session_backup(archive, destination)
 
@@ -5519,12 +6914,23 @@ def test_restore_recovers_created_directory_identity_after_one_fstat_error(
     target = destination if created_part == "root" else destination / ".claude"
     original_fstat = os.fstat
     original_stat = os.stat
+    original_open = os.open
+    root_descriptors = set()
     failed = False
+
+    def track_staging_root(path, *args, **kwargs):
+        descriptor = original_open(path, *args, **kwargs)
+        if created_part == "root" and path == ".restore-root":
+            root_descriptors.add(descriptor)
+        return descriptor
 
     def fail_once_for_created_directory(descriptor):
         nonlocal failed
         info = original_fstat(descriptor)
         if not failed:
+            if created_part == "root" and descriptor in root_descriptors:
+                failed = True
+                raise OSError("injected fstat failure")
             try:
                 target_info = original_stat(target, follow_symlinks=False)
             except OSError:
@@ -5536,6 +6942,7 @@ def test_restore_recovers_created_directory_identity_after_one_fstat_error(
                 raise OSError("injected fstat failure")
         return info
 
+    monkeypatch.setattr(os, "open", track_staging_root)
     monkeypatch.setattr(os, "fstat", fail_once_for_created_directory)
     with pytest.raises(OSError, match="fstat failure"):
         scree.restore_session_backup(archive, destination)
@@ -5574,7 +6981,9 @@ def test_restore_cleanup_never_deletes_a_symlink_name_replacement(
     with pytest.raises(OSError, match="first stat"):
         scree.restore_session_backup(archive, destination)
 
-    restored_replacement = destination / fixture["debug_link"].relative_to(home)
+    stale = next(tmp_path.glob(".modore-restore-ledger-*"))
+    restored_replacement = (stale / ".restore-root"
+                            / fixture["debug_link"].relative_to(home))
     assert replaced is True
     assert restored_replacement.read_bytes() == b"KEEP_USER_REPLACEMENT"
 
@@ -5608,7 +7017,9 @@ def test_restore_final_symlink_validation_rejects_post_read_replacement(
     with pytest.raises(ValueError, match="changed during restore"):
         scree.restore_session_backup(archive, destination)
 
-    replacement = destination / fixture["debug_link"].relative_to(home)
+    stale = next(tmp_path.glob(".modore-restore-ledger-*"))
+    replacement = (stale / ".restore-root"
+                   / fixture["debug_link"].relative_to(home))
     assert replaced is True
     assert replacement.is_symlink()
     assert os.readlink(replacement) == "../../MALICIOUS"
