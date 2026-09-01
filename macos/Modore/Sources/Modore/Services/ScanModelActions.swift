@@ -634,8 +634,9 @@ extension ScanModel {
             // never from the scheduled launch itself, which runs invisibly and
             // would turn a routine hourly tick into a surprise permission dialog.
             // The scheduled launch only posts if this already resolved to
-            // .authorized by the time it runs; a denial here just means it keeps
-            // falling back to the existing osascript notification, same as today.
+            // .authorized by the time it runs. A denial here means scheduled
+            // checks stay silent; they never post a misleading Script Editor
+            // notification as a fallback.
             if enabled {
                 _ = try? await UNUserNotificationCenter.current()
                     .requestAuthorization(options: [.alert])
