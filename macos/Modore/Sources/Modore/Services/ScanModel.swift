@@ -190,6 +190,13 @@ final class ScanModel: ObservableObject {
             committedAt: storageWatchCommittedEvidenceAt
         )
     }
+    var latestStorageWatchPathChange: StorageWatchPathChangeSummary? {
+        guard let storageWatchCommittedEvidenceAt else { return nil }
+        return StorageWatchPathChangeSummary.latest(
+            pathEvents: storageWatchPathEvents,
+            committedAt: storageWatchCommittedEvidenceAt
+        )
+    }
     @Published private(set) var resultLoading = true
     @Published private(set) var reportState = ReportState.unknown
     @Published private(set) var liveState = LiveState.unobserved

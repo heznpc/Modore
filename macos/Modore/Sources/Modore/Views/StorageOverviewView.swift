@@ -328,6 +328,7 @@ private struct StatusIncidentSummary: View {
 }
 
 private struct StatusIncidentEvidenceSection: View {
+    @EnvironmentObject private var model: ScanModel
     let coverage: CollectionCoverage?
     let storage: StorageSnapshot
     let change: StorageChangeSummary?
@@ -345,6 +346,27 @@ private struct StatusIncidentEvidenceSection: View {
                 value: coverage?.coverageText ?? "기록 없음",
                 action: onOpenSecurity
             )
+
+            if let recentGrowth {
+                StatusNavigationRow(
+                    symbol: "chart.line.uptrend.xyaxis",
+                    title: "최근 함께 증가한 \(pathDisplayName(recentGrowth.path))",
+                    detail: "두 감시 시점에서 모두 측정된 동일 경로입니다. 함께 증가한 사실만 확인되며 생성 원인과 주체는 확정하지 않습니다. \(recentGrowth.path)",
+                    value: growthText(recentGrowth.deltaGB),
+                    action: onOpenActivity
+                )
+            }
+
+            if shouldShowSimulatorEvidence {
+                StatusNavigationRow(
+                    symbol: "iphone",
+                    title: "Simulator 관련 \(simulatorFootprintText) 보기",
+                    detail: simulatorEvidenceDetail,
+                    value: storage.simulatorFootprintMeasurementIncomplete ? "최소값" : "합계"
+                ) {
+                    onOpenStorage(.simulators)
+                }
+            }
 
             if storage.browserAutomation.verdict != "unknown",
                storage.browserAutomation.verdict != "clear" {
@@ -405,6 +427,58 @@ private struct StatusIncidentEvidenceSection: View {
             return "여유 공간은 변했지만 현재 추적 범위에서 함께 변한 경로를 찾지 못했습니다."
         }
         return "여유 공간과 추적 경로의 변화를 비교했습니다."
+    }
+
+    private var recentGrowth: StorageWatchPathChange? {
+        model.latestStorageWatchPathChange?.growing.first
+    }
+
+    private var shouldShowSimulatorEvidence: Bool {
+        let isLowSpace = storage.risk == "warning" || storage.risk == "danger"
+        let hasEvidence = storage.simulatorFootprintGB > 0
+            || storage.simulatorFootprintMeasurementIncomplete
+            || !storage.simulatorBreakdown.isEmpty
+            || !storage.simulatorDevices.isEmpty
+        return isLowSpace && hasEvidence
+    }
+
+    private var simulatorFootprintText: String {
+        guard storage.simulatorFootprintMeasurementIncomplete else {
+            return storage.simulatorFootprintText
+        }
+        guard storage.simulatorFootprintGB > 0 else { return "측정 보류" }
+        return String(format: "최소 %.1fGB", storage.simulatorFootprintGB)
+    }
+
+    private var simulatorEvidenceDetail: String {
+        if let growth = model.latestStorageWatchPathChange?.growing.first(where: {
+            isSimulatorPath($0.path)
+        }) {
+            return "감시 사이 Simulator 경로가 \(growthText(growth.deltaGB)) 함께 증가했습니다. 생성 원인과 주체는 확정하지 않습니다."
+        }
+        if storage.simulatorFootprintMeasurementIncomplete {
+            return "기기 데이터·runtime 지원 자산·dyld/cache 중 일부 측정이 끝나지 않아 확인된 최소량만 표시합니다."
+        }
+        return "기기 데이터·runtime 지원 자산·dyld/cache를 경로 중복 없이 합산한 정밀 검사 결과입니다."
+    }
+
+    private func isSimulatorPath(_ path: String) -> Bool {
+        let normalized = path.lowercased()
+        return normalized.contains("/library/developer/coresimulator")
+            || (normalized.contains("/system/library/assetsv2/")
+                && normalized.contains("simulatorruntime"))
+    }
+
+    private func pathDisplayName(_ path: String) -> String {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.isEmpty ? "경로" : name
+    }
+
+    private func growthText(_ deltaGB: Double) -> String {
+        if deltaGB >= 0.1 {
+            return String(format: "+%.1fGB", deltaGB)
+        }
+        return String(format: "+%.0fMB", deltaGB * 1_024)
     }
 }
 
