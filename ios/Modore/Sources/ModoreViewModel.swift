@@ -7,22 +7,30 @@ final class ModoreViewModel: ObservableObject {
     @Published private(set) var media = MediaSummary.empty
     @Published private(set) var isScanning = false
 
-    private let scanner: PhotoLibraryScanner
+    private let scanner: any PhotoLibraryScanning
+    private let storageSnapshot: () -> DeviceStorageSnapshot?
+    private var operationTask: Task<Void, Never>?
 
-    init(scanner: PhotoLibraryScanner = PhotoLibraryScanner()) {
+    init(
+        scanner: any PhotoLibraryScanning = PhotoLibraryScanner(),
+        storageSnapshot: @escaping () -> DeviceStorageSnapshot? = {
+            DeviceStorageSnapshot.current()
+        }
+    ) {
         self.scanner = scanner
+        self.storageSnapshot = storageSnapshot
     }
 
     var authorization: PhotoAuthorization { media.authorization }
 
     func refresh() {
-        storage = DeviceStorageSnapshot.current()
+        storage = storageSnapshot()
         guard !isScanning else { return }
         isScanning = true
         let scanner = self.scanner
-        Task { @MainActor in
-            media = await scanner.scan()
-            isScanning = false
+        operationTask = Task { @MainActor [weak self, scanner] in
+            let summary = await scanner.scan()
+            self?.finish(with: summary)
         }
     }
 
@@ -30,10 +38,21 @@ final class ModoreViewModel: ObservableObject {
         guard !isScanning else { return }
         isScanning = true
         let scanner = self.scanner
-        Task { @MainActor in
+        operationTask = Task { @MainActor [weak self, scanner] in
             _ = await scanner.requestAuthorization()
-            media = await scanner.scan()
-            isScanning = false
+            let summary = await scanner.scan()
+            self?.finish(with: summary)
         }
+    }
+
+    func waitForCurrentOperation() async {
+        let task = operationTask
+        await task?.value
+    }
+
+    private func finish(with summary: MediaSummary) {
+        media = summary
+        isScanning = false
+        operationTask = nil
     }
 }
