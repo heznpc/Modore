@@ -843,9 +843,10 @@ capture_drop_snapshot() {
     # These are common short-lived AI/tooling workspaces that can grow between
     # hourly samples. Measure them before broad cache roots so the shared
     # snapshot deadline cannot consistently starve the most transient evidence.
-    # Keep the namespace and ownership checks narrow: /private/tmp is shared by
-    # every local account, so another user's similarly named entry must never
-    # become this user's evidence.
+    # /private/tmp is shared by every local account, so admit only this user's
+    # direct children. The bounded recent set catches tool-specific names such
+    # as airmcp-* and skillbridge-* without recursively inventorying unrelated
+    # temporary content or turning the watcher into a second storage workload.
     local private_tmp_root="/private/tmp"
     [[ "${PCH_TEST_MODE:-0}" != "1" ]] || private_tmp_root="$PRIVATE_TMP_TEST_ROOT"
     if [[ -n "$private_tmp_root" && -d "$private_tmp_root" \
@@ -866,6 +867,26 @@ capture_drop_snapshot() {
             for path in "$private_tmp_root"/modore-*; do
                 if [[ -e "$path" && ! -L "$path" \
                     && "$(path_owner_uid "$path")" == "$(/usr/bin/id -u)" \
+                    && "$path" != *$'\t'* && "$path" != *$'\n'* \
+                    && "$path" != *$'\r'* ]]; then
+                    modified_epoch="$(path_modified_epoch "$path")"
+                    if [[ "$modified_epoch" =~ ^[0-9]+$ ]]; then
+                        /usr/bin/printf '%s\t%s\n' "$modified_epoch" "$path"
+                    fi
+                fi
+            done | /usr/bin/sort -s -t $'\t' -k1,1nr | /usr/bin/head -n 12
+        )
+        while IFS=$'\t' read -r _ path; do
+            [[ -n "$path" ]] || continue
+            candidates+=("사용자 임시 작업"$'\t'"$path")
+        done < <(
+            for path in "$private_tmp_root"/*; do
+                [[ -e "$path" && ! -L "$path" ]] || continue
+                if [[ "${path##*/}" == "claude-$(/usr/bin/id -u)" \
+                    || "${path##*/}" == modore-* ]]; then
+                    continue
+                fi
+                if [[ "$(path_owner_uid "$path")" == "$(/usr/bin/id -u)" \
                     && "$path" != *$'\t'* && "$path" != *$'\n'* \
                     && "$path" != *$'\r'* ]]; then
                     modified_epoch="$(path_modified_epoch "$path")"
@@ -1167,7 +1188,8 @@ capture_drop_snapshot() {
     {
         /usr/bin/awk -F '\t' '$4 == "Claude 임시 작업"' "$event_tmp" \
             | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 1
-        /usr/bin/awk -F '\t' '$4 == "Modore 임시 작업"' "$event_tmp" \
+        /usr/bin/awk -F '\t' \
+            '$4 == "Modore 임시 작업" || $4 == "사용자 임시 작업"' "$event_tmp" \
             | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 3
         /usr/bin/awk -F '\t' '$4 ~ /^Simulator 런타임 · /' "$event_tmp" \
             | /usr/bin/sort -t $'\t' -k2,2nr
