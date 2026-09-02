@@ -2083,6 +2083,7 @@ def test_storage_watch_recaptures_a_512mb_pressure_drop_after_five_minute_floor(
     assert int(captured["snapshotRows"]) == 1
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
 @pytest.mark.parametrize("invalid_epoch", ["9999999999", "99999999999"])
 def test_storage_watch_normalizes_future_or_out_of_range_timestamps_and_retries(
     project_root, tmp_path, invalid_epoch
