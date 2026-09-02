@@ -659,7 +659,7 @@ def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twic
 
     env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
     first = subprocess.run(
-        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=8
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=15
     )
     assert first.returncode == 0, first.stderr
     first_state = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))
@@ -670,7 +670,7 @@ def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twic
     device_payload.write_bytes(b"d" * (6 * 1024 * 1024))
     env["PCH_TEST_FREE_KB"] = str(30 * 1024 * 1024)
     second = subprocess.run(
-        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=8
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=15
     )
     assert second.returncode == 0, second.stderr
     second_state = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))

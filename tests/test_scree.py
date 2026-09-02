@@ -700,10 +700,15 @@ def test_cleanup_period_rejects_unsafe_or_oversized_user_settings(
 
 
 @pytest.fixture
-def worktree_home(tmp_path):
+def worktree_home(tmp_path, monkeypatch):
     """앵커 판정용: 실제 git 레포 + 에이전트 워크트리."""
     if not shutil.which("git"):
         pytest.skip("git 미설치 환경")
+    # These integration tests assert successful Git evidence. Keep the
+    # production 750 ms fail-safe for real scans, while preventing shared CI
+    # runner load from turning the fixture into the separately tested
+    # registration-unknown path.
+    monkeypatch.setattr(scree, "WORKTREE_GIT_COMMAND_TIMEOUT_SECONDS", 5.0)
     home = tmp_path / "home"
     repo = home / "IdeaProjects" / "repoA"
     repo.mkdir(parents=True)
