@@ -2146,7 +2146,12 @@ def test_storage_watch_retries_partial_evidence_after_five_minutes(
     snapshot_root = tmp_path / "snapshot-roots"
     (snapshot_root / "cache").mkdir(parents=True)
     du_stub = tmp_path / "du-stub"
-    du_stub.write_text("#!/bin/bash\nexec /bin/sleep 5\n", encoding="utf-8")
+    # Keep the provider delay well beyond the subprocess deadline. This still
+    # proves that the watcher's one-second item budget kills the provider,
+    # while leaving enough runner headroom for two shell startups and file I/O.
+    # A five-second provider with a four-second outer deadline was only a
+    # 1-second failure margin and flaked on loaded macOS GitHub runners.
+    du_stub.write_text("#!/bin/bash\nexec /bin/sleep 15\n", encoding="utf-8")
     du_stub.chmod(0o755)
     env = {
         **os.environ,
@@ -2162,7 +2167,7 @@ def test_storage_watch_retries_partial_evidence_after_five_minutes(
     script = project_root / "scripts" / "storage_watch.sh"
 
     first = subprocess.run(
-        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=4
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=10
     )
     assert first.returncode == 0, first.stderr
     first_values = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))
@@ -2185,7 +2190,7 @@ def test_storage_watch_retries_partial_evidence_after_five_minutes(
     )
 
     second = subprocess.run(
-        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=4
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=10
     )
 
     assert second.returncode == 0, second.stderr
