@@ -346,7 +346,10 @@ def test_storage_watch_captures_private_tmp_swap_and_bounded_rss_metadata(
     state_dir = tmp_path / "state"
     snapshot_root = tmp_path / "snapshot-roots"
     private_tmp = tmp_path / "private-tmp"
+    user_tmp = tmp_path / "user-tmp"
     snapshot_root.mkdir()
+    user_tmp.mkdir()
+    (user_tmp / "test-home-residue.bin").write_bytes(b"u" * (2 * 1024 * 1024))
     modore_temps = [private_tmp / f"modore-build-{suffix}" for suffix in "abcde"]
     claude_tmp = private_tmp / f"claude-{os.getuid()}"
     generic_tmp = private_tmp / "unrelated-tool"
@@ -381,6 +384,7 @@ def test_storage_watch_captures_private_tmp_swap_and_bounded_rss_metadata(
             "PCH_WATCH_NOTIFY": "0",
             "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
             "PCH_WATCH_PRIVATE_TMP_ROOT": str(private_tmp),
+            "PCH_WATCH_USER_TMP_ROOT": str(user_tmp),
             "PCH_WATCH_SWAP_TEST_FILE": str(swap_fixture),
             "PCH_WATCH_RSS_TEST_FILE": str(rss_fixture),
             "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "2",
@@ -414,10 +418,12 @@ def test_storage_watch_captures_private_tmp_swap_and_bounded_rss_metadata(
         "Modore 임시 작업",
         "Claude 임시 작업",
         "사용자 임시 작업",
+        "사용자 임시 데이터",
     }
     assert {row[4] for row in path_rows} == {
         str(claude_tmp),
         str(generic_tmp),
+        str(user_tmp),
         *(str(path) for path in modore_temps),
     }
     assert sum(row[3] == "Modore 임시 작업" for row in path_rows) == 5

@@ -102,6 +102,7 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
     SNAPSHOT_DEVICE_SECONDS="${PCH_WATCH_SNAPSHOT_DEVICE_SECONDS:-15}"
     SNAPSHOT_EVENT_LIMIT="${PCH_WATCH_SNAPSHOT_EVENT_LIMIT:-24}"
     PRIVATE_TMP_TEST_ROOT="${PCH_WATCH_PRIVATE_TMP_ROOT:-}"
+    USER_TMP_TEST_ROOT="${PCH_WATCH_USER_TMP_ROOT:-}"
     SWAP_TEST_FILE="${PCH_WATCH_SWAP_TEST_FILE:-}"
     RSS_TEST_FILE="${PCH_WATCH_RSS_TEST_FILE:-}"
     METADATA_PS_TEST_ENABLED=0
@@ -130,6 +131,12 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
             || "$PRIVATE_TMP_TEST_ROOT" == /private/tmp/?* \
             || "$PRIVATE_TMP_TEST_ROOT" == /private/var/folders/?* \
             || "$PRIVATE_TMP_TEST_ROOT" == /var/folders/?* ]] || exit 64
+    fi
+    if [[ -n "$USER_TMP_TEST_ROOT" ]]; then
+        [[ "$USER_TMP_TEST_ROOT" == /tmp/?* \
+            || "$USER_TMP_TEST_ROOT" == /private/tmp/?* \
+            || "$USER_TMP_TEST_ROOT" == /private/var/folders/?* \
+            || "$USER_TMP_TEST_ROOT" == /var/folders/?* ]] || exit 64
     fi
     for test_input in "$SWAP_TEST_FILE" "$RSS_TEST_FILE"; do
         [[ -z "$test_input" || "$test_input" == /tmp/?* \
@@ -179,6 +186,7 @@ else
     SNAPSHOT_DEVICE_SECONDS=15
     SNAPSHOT_EVENT_LIMIT=24
     PRIVATE_TMP_TEST_ROOT=""
+    USER_TMP_TEST_ROOT=""
     SWAP_TEST_FILE=""
     RSS_TEST_FILE=""
     METADATA_PS_TEST_ENABLED=1
@@ -848,7 +856,17 @@ capture_drop_snapshot() {
     # as airmcp-* and skillbridge-* without recursively inventorying unrelated
     # temporary content or turning the watcher into a second storage workload.
     local private_tmp_root="/private/tmp"
-    [[ "${PCH_TEST_MODE:-0}" != "1" ]] || private_tmp_root="$PRIVATE_TMP_TEST_ROOT"
+    local user_tmp_root=""
+    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+        private_tmp_root="$PRIVATE_TMP_TEST_ROOT"
+        user_tmp_root="$USER_TMP_TEST_ROOT"
+    else
+        user_tmp_root="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+        user_tmp_root="${user_tmp_root%/}"
+        if [[ -n "$user_tmp_root" && -d "$user_tmp_root" ]]; then
+            user_tmp_root="$(cd -P "$user_tmp_root" 2>/dev/null && /bin/pwd -P)" || user_tmp_root=""
+        fi
+    fi
     if [[ -n "$private_tmp_root" && -d "$private_tmp_root" \
         && ! -L "$private_tmp_root" ]] \
         && ! path_has_unexpected_symlink "$private_tmp_root"; then
@@ -896,6 +914,12 @@ capture_drop_snapshot() {
                 fi
             done | /usr/bin/sort -s -t $'\t' -k1,1nr | /usr/bin/head -n 12
         )
+    fi
+    if [[ -n "$user_tmp_root" && -d "$user_tmp_root" \
+        && ! -L "$user_tmp_root" \
+        && "$(path_owner_uid "$user_tmp_root")" == "$(/usr/bin/id -u)" ]] \
+        && ! path_has_unexpected_symlink "$user_tmp_root"; then
+        candidates+=("사용자 임시 데이터"$'\t'"$user_tmp_root")
     fi
 
     if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
