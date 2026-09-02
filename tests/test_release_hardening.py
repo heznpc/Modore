@@ -1876,6 +1876,10 @@ def test_mac_builder_preserves_unrecognized_existing_app(project_root, tmp_path)
     sentinel.write_text("preserve me\n", encoding="utf-8")
     environment = os.environ.copy()
     environment["PCH_BUILD_DIR"] = str(build_directory)
+    # This test exercises preservation of an unrecognized destination, not
+    # distribution trust. Hosted macOS runners own their preinstalled Xcode,
+    # so opt into the build script's explicit non-distribution exception.
+    environment["PCH_ALLOW_USER_TOOLCHAIN"] = "1"
 
     result = subprocess.run(
         [str(builder)],
@@ -2017,6 +2021,26 @@ def test_mac_packager_sanitizes_dmg_before_distribution_trust_checks(project_roo
 def test_mac_packager_requires_a_verified_annotated_tag(project_root, tmp_path):
     if not Path("/usr/bin/ssh-keygen").is_file():
         pytest.skip("system ssh-keygen is unavailable")
+    developer_dir = Path(
+        subprocess.run(
+            ["/usr/bin/xcode-select", "-p"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+    )
+    swift_tool = Path(
+        subprocess.run(
+            ["/usr/bin/xcrun", "--find", "swift"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+    ).resolve()
+    if developer_dir.stat().st_uid != 0 or swift_tool.stat().st_uid != 0:
+        pytest.skip("distribution packaging requires a root-owned toolchain")
 
     repository = tmp_path / "project"
     script_directory = repository / "scripts"
