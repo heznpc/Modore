@@ -349,13 +349,13 @@ def test_storage_watch_captures_private_tmp_swap_and_bounded_rss_metadata(
     snapshot_root.mkdir()
     modore_temps = [private_tmp / f"modore-build-{suffix}" for suffix in "abcde"]
     claude_tmp = private_tmp / f"claude-{os.getuid()}"
-    ignored_tmp = private_tmp / "unrelated-tool"
-    for directory in (*modore_temps, claude_tmp, ignored_tmp):
+    generic_tmp = private_tmp / "unrelated-tool"
+    for directory in (*modore_temps, claude_tmp, generic_tmp):
         directory.mkdir(parents=True)
     for index, directory in enumerate(modore_temps, start=1):
         (directory / "payload.bin").write_bytes(b"m" * (index * 64 * 1024))
     (claude_tmp / "payload.bin").write_bytes(b"c" * (512 * 1024))
-    (ignored_tmp / "payload.bin").write_bytes(b"x" * (1024 * 1024))
+    (generic_tmp / "payload.bin").write_bytes(b"x" * (1024 * 1024))
 
     swap_fixture = tmp_path / "swap.txt"
     swap_fixture.write_text(
@@ -410,13 +410,18 @@ def test_storage_watch_captures_private_tmp_swap_and_bounded_rss_metadata(
         .read_text(encoding="utf-8")
         .splitlines()
     ]
-    assert {row[3] for row in path_rows} == {"Modore 임시 작업", "Claude 임시 작업"}
+    assert {row[3] for row in path_rows} == {
+        "Modore 임시 작업",
+        "Claude 임시 작업",
+        "사용자 임시 작업",
+    }
     assert {row[4] for row in path_rows} == {
         str(claude_tmp),
+        str(generic_tmp),
         *(str(path) for path in modore_temps),
     }
     assert sum(row[3] == "Modore 임시 작업" for row in path_rows) == 5
-    assert str(ignored_tmp) not in {row[4] for row in path_rows}
+    assert sum(row[3] == "사용자 임시 작업" for row in path_rows) == 1
 
     # A second rapid drop replaces the previous signal event because the
     # configured event history is one. This fixes the retention bound as well
@@ -552,6 +557,12 @@ def test_storage_watch_reserves_rows_for_transient_workspaces(project_root, tmp_
         directory.mkdir(parents=True)
         (directory / "payload.bin").write_bytes(b"m" * ((index + 1) * 64 * 1024))
         modore_temps.append(directory)
+    generic_temps = []
+    for index in range(2):
+        directory = private_tmp / f"external-tool-{index}"
+        directory.mkdir(parents=True)
+        (directory / "payload.bin").write_bytes(b"e" * ((index + 2) * 256 * 1024))
+        generic_temps.append(directory)
     for index in range(10):
         directory = snapshot_root / f"persistent-{index}"
         directory.mkdir(parents=True)
@@ -589,8 +600,15 @@ def test_storage_watch_reserves_rows_for_transient_workspaces(project_root, tmp_
     ]
     assert len(rows) == 12
     assert sum(row[3] == "Claude 임시 작업" for row in rows) == 1
-    retained_modore = {row[4] for row in rows if row[3] == "Modore 임시 작업"}
-    assert retained_modore == {str(path) for path in modore_temps[-3:]}
+    retained_transient = {
+        row[4]
+        for row in rows
+        if row[3] in {"Modore 임시 작업", "사용자 임시 작업"}
+    }
+    assert retained_transient == {
+        str(modore_temps[-1]),
+        *(str(path) for path in generic_temps),
+    }
 
 
 def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twice(
