@@ -1390,7 +1390,9 @@ marker = pathlib.Path(sys.argv[3])
 
 def spawn_then_block():
     child = subprocess.Popen(["/bin/sleep", "30"])
-    marker.write_text(str(child.pid), encoding="utf-8")
+    staging = marker.with_name(marker.name + ".tmp")
+    staging.write_text(str(child.pid), encoding="utf-8")
+    staging.replace(marker)
     time.sleep(30)
 
 if mode == "worktree":
@@ -6466,6 +6468,29 @@ def test_unrelated_legacy_restore_sweep_is_bounded_and_reports_incomplete(
         _write(tmp_path / f"filler-{number}", "x")
     stale = tmp_path / ".modore-restore-ledger-99999999-0123456789abcdef"
     stale.mkdir(mode=0o700)
+    real_scandir = os.scandir
+    with real_scandir(tmp_path) as actual_entries:
+        entries = sorted(
+            list(actual_entries),
+            key=lambda entry: (
+                entry.name.startswith(".modore-restore-ledger-"), entry.name),
+        )
+
+    class DeterministicEntries:
+        def __init__(self, values):
+            self._values = iter(values)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._values)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        scree.os, "scandir", lambda _descriptor: DeterministicEntries(entries))
     parent_fd = scree._open_directory_nofollow(tmp_path)
     try:
         sweep = scree._recover_stale_restore_ledgers_bounded(

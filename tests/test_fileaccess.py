@@ -666,7 +666,9 @@ late = pathlib.Path(sys.argv[2])
 while not go.exists():
     time.sleep(0.001)
 child = subprocess.Popen(["/bin/sleep", "30"])
-late.write_text(str(child.pid), encoding="utf-8")
+late_staging = late.with_name(late.name + ".tmp")
+late_staging.write_text(str(child.pid), encoding="utf-8")
+late_staging.replace(late)
 time.sleep(30)
 '''
 
@@ -675,7 +677,9 @@ time.sleep(30)
             sys.executable, "-I", "-B", "-c", forker_code,
             str(go), str(late_pid_file),
         ])
-        forker_pid_file.write_text(str(forker.pid), encoding="utf-8")
+        forker_staging = forker_pid_file.with_name(forker_pid_file.name + ".tmp")
+        forker_staging.write_text(str(forker.pid), encoding="utf-8")
+        forker_staging.replace(forker_pid_file)
         time.sleep(30)
         raise AssertionError("setup cleanup must kill the worker")
 

@@ -1438,7 +1438,7 @@ _pch_collect_transient_workspaces() {
             # harness honest about the same mtime/path inventory contract.
             /usr/bin/find "$canonical_root" -mindepth 1 -maxdepth 1 -type d \
                 -uid "$(/usr/bin/id -u)" \
-                -exec /usr/bin/stat -c $'%Y\t%n' {} + \
+                -printf '%T@\t%p\n' \
                 >> "$inventory_file" 2>/dev/null || true
         fi
     done
@@ -1450,8 +1450,13 @@ _pch_collect_transient_workspaces() {
         # of unusable cleanup choices. Preserve the directory that actually
         # timed out, then stop before manufacturing more unknown rows.
         _pch_storage_du_budget_expired && break
-        [[ "$_modified" =~ ^[0-9]+$ && -d "$target" && ! -L "$target" ]] || continue
-        owner="$(/usr/bin/stat -f '%u' "$target" 2>/dev/null || true)"
+        [[ "$_modified" =~ ^[0-9]+([.][0-9]+)?$ \
+            && -d "$target" && ! -L "$target" ]] || continue
+        if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+            owner="$(/usr/bin/stat -f '%u' "$target" 2>/dev/null || true)"
+        else
+            owner="$(/usr/bin/stat -c '%u' "$target" 2>/dev/null || true)"
+        fi
         [[ "$owner" == "$(/usr/bin/id -u)" ]] || continue
         basename="$(/usr/bin/basename "$target")"
         [[ -n "$basename" && "$basename" != .* ]] || continue
