@@ -83,6 +83,18 @@ final class SpaceGoalSelectionTests: XCTestCase {
         XCTAssertEqual(SpaceGoalSelection.planningSizeGB(items[0]), 0)
     }
 
+    func testMeasuredZeroSizeItemDoesNotEnterRecoveryPlan() {
+        let items = [
+            item(label: "empty", sizeGB: 0),
+            item(label: "measured", sizeGB: 1),
+            item(label: "pending", sizeGB: 0, measureStatus: "timed_out"),
+        ]
+
+        let selected = SpaceGoalSelection.select(from: items, targetGB: 10)
+
+        XCTAssertEqual(selected.map(\.label), ["measured", "pending"])
+    }
+
     // Same-size items must resolve to the same order regardless of scan
     // ordering, or the same candidate set could produce a different
     // "combination" from one scan to the next.

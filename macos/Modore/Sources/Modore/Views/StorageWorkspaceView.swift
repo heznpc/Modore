@@ -29,7 +29,6 @@ struct StorageWorkspacePage: View {
             if let storage = model.storage {
                 VStack(spacing: 0) {
                     StorageWorkspaceToolbar(section: $section, storage: storage)
-                    Divider()
                     workspaceList(storage)
                 }
             } else {
