@@ -20,10 +20,15 @@ enum SpaceGoalSelection {
         return item.sizeGB.isFinite ? max(0, item.sizeGB) : 0
     }
 
+    static func isPlanningCandidate(_ item: StorageItem) -> Bool {
+        item.cleanupTier != nil
+            && (item.measureStatus == "timed_out" || planningSizeGB(item) > 0)
+    }
+
     static func select(from candidates: [StorageItem], targetGB: Double) -> [StorageItem] {
         guard targetGB > 0 else { return [] }
         let eligible = candidates
-            .filter { $0.cleanupTier != nil }
+            .filter(isPlanningCandidate)
             .sorted { lhs, rhs in
                 if lhs.cleanupTier != rhs.cleanupTier {
                     return lhs.cleanupTier! < rhs.cleanupTier!
@@ -54,6 +59,7 @@ struct SpaceGoalWorkspaceList: View {
     @EnvironmentObject private var model: ScanModel
     let storage: StorageSnapshot
     @State private var targetGB: Double
+    @State private var showsPendingMeasurements = false
 
     init(storage: StorageSnapshot, currentFreeGB: Double? = nil) {
         self.storage = storage
@@ -65,7 +71,7 @@ struct SpaceGoalWorkspaceList: View {
     }
 
     private var eligibleCandidates: [StorageItem] {
-        storage.recoveryCandidates.filter { $0.cleanupTier != nil }
+        storage.recoveryCandidates.filter(SpaceGoalSelection.isPlanningCandidate)
     }
 
     private var achievableGB: Double { Self.achievableGB(storage) }
@@ -93,109 +99,187 @@ struct SpaceGoalWorkspaceList: View {
         selection.reduce(0) { $0 + SpaceGoalSelection.planningSizeGB($1) }
     }
 
+    private var measuredSelection: [StorageItem] {
+        selection.filter { $0.measureStatus != "timed_out" && $0.sizeGB > 0 }
+    }
+
+    private var pendingSelection: [StorageItem] {
+        selection.filter { $0.measureStatus == "timed_out" }
+    }
+
     private var metGoal: Bool { selectedTotalGB >= targetGB - 0.000_001 }
 
     var body: some View {
-        List {
-            if eligibleCandidates.isEmpty {
-                Section {
-                    Text("정리 가능한 항목이 없어 목표 모드를 계산할 수 없습니다.")
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                if eligibleCandidates.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("정리 가능한 항목이 없습니다", systemImage: "checkmark.circle")
+                            .font(.title3.weight(.semibold))
+                        Text("정리 가능한 항목이 없어 목표 모드를 계산할 수 없습니다.")
+                            .foregroundStyle(.secondary)
+                    }
+                    .spaceGoalSurface()
+                } else {
+                    goalSummary
+                    selectedPlan
+                    recoveryAction
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+        }
+        .scrollContentBackground(.hidden)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("공간 확보 목표 모드")
+    }
+
+    private var goalSummary: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: metGoal ? "checkmark.circle.fill" : "target")
+                    .font(.title2)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(metGoal ? Color.green : Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(metGoal ? "확보 목표를 충족합니다" : "확보 목표까지 용량이 부족합니다")
+                        .font(.title3.weight(.semibold))
+                    Text("캐시를 먼저 쓰고, 부족할 때만 다시 만들 수 있는 항목을 더합니다.")
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+                Spacer()
+                Text(metGoal ? "충족" : goalShortfallText)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(metGoal ? Color.green : Color.secondary)
+                    .monospacedDigit()
+            }
+
+            HStack(spacing: 10) {
+                SpaceGoalMetric(title: "목표", value: String(format: "%.0fGB", targetGB))
+                SpaceGoalMetric(title: "확인됨", value: String(format: "%.1fGB", selectedTotalGB))
+                SpaceGoalMetric(title: "재측정", value: "\(pendingSelection.count)개")
+            }
+
+            ProgressView(value: goalProgress)
+                .progressViewStyle(.linear)
+
+            goalPicker
+        }
+        .spaceGoalSurface()
+    }
+
+    private var selectedPlan: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(metGoal ? "선택된 조합" : "현재 확인된 후보")
+                    .font(.headline)
+                Text(planSubtitle)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.bottom, 10)
+
+            if measuredSelection.isEmpty {
+                Label("크기가 확인된 후보가 아직 없습니다", systemImage: "ruler")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 12)
             } else {
-                Section {
-                    goalPicker
-                } header: {
-                    NativeSectionHeader(
-                        title: "확보 목표",
-                        subtitle: "캐시를 먼저 쓰고 부족할 때만 재생성 항목을 더합니다. 아래 계획 전체를 한 번에 검토·승인할 수 있습니다.",
-                        value: String(format: "%.0fGB", targetGB)
-                    )
-                }
+                candidateRows(measuredSelection)
+            }
 
-                Section {
-                    ForEach(selection) { item in
-                        SpaceGoalCandidateRow(item: item, tier: item.cleanupTier!)
-                    }
-                } header: {
-                    NativeSectionHeader(
-                        title: metGoal ? "선택된 조합" : "선택된 조합 (목표 미달)",
-                        subtitle: metGoal
-                            ? "이 \(selection.count)개 항목이면 목표를 충족합니다. 큰 항목부터 채운 결과입니다."
-                            : "정리 가능한 항목을 모두 더해도 목표에 못 미칩니다. 실제로 확보 가능한 전체를 보여줍니다.",
-                        value: String(format: "%.1fGB", selectedTotalGB)
-                    )
-                }
-
-                Section {
-                    if let progress = model.cleanupRecoveryProgress,
-                       model.cleanupRecoveryPlan == nil {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ProgressView(value: progress.fraction)
-                            HStack {
-                                Text(progress.currentLabel)
-                                Spacer()
-                                Text("\(progress.completedCount)/\(progress.totalCount)")
-                                    .monospacedDigit()
-                            }
-                            .font(.callout)
+            if !pendingSelection.isEmpty {
+                Divider().padding(.vertical, 8)
+                DisclosureGroup(isExpanded: $showsPendingMeasurements) {
+                    candidateRows(pendingSelection)
+                        .padding(.top, 8)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .symbolRenderingMode(.hierarchical)
                             .foregroundStyle(.secondary)
-                            Text("상단의 ‘미리보기 취소’로 삭제 없이 중단할 수 있습니다.")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("재측정이 필요한 항목 \(pendingSelection.count)개")
+                                .font(.callout.weight(.semibold))
+                            Text("미리보기에서 크기와 사용 여부를 다시 확인합니다.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    Button {
-                        model.prepareRecoveryPlan(
-                            selection,
-                            desiredFreeGB: desiredFreeGB
-                        )
-                    } label: {
-                        HStack {
-                            Label("\(selection.count)개 계획 검토…", systemImage: "checklist")
-                            Spacer()
-                            Text(String(format: "재측정 전 약 %.1fGB", selectedTotalGB))
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.isBusy || selection.isEmpty)
-
-                    Text("버튼을 누르면 모든 경로와 크기를 다시 측정합니다. 삭제는 다음 승인 화면에서 한 번 더 확인한 뒤에만 시작합니다.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    NativeSectionHeader(
-                        title: "한 번에 실행",
-                        subtitle: "앱 제거·모델·Simulator·서비스 항목은 이 계획에 포함하지 않습니다.",
-                        value: "승인 1회"
-                    )
                 }
+                .disclosureGroupStyle(.automatic)
             }
         }
-        .listStyle(.inset)
-        .accessibilityLabel("공간 확보 목표 모드")
+        .spaceGoalSurface()
+    }
+
+    private var recoveryAction: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let progress = model.cleanupRecoveryProgress,
+               model.cleanupRecoveryPlan == nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    ProgressView(value: progress.fraction)
+                    HStack {
+                        Text(progress.currentLabel)
+                        Spacer()
+                        Text("\(progress.completedCount)/\(progress.totalCount)")
+                            .monospacedDigit()
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    Text("상단의 ‘미리보기 취소’로 삭제 없이 중단할 수 있습니다.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Button {
+                model.prepareRecoveryPlan(selection, desiredFreeGB: desiredFreeGB)
+            } label: {
+                HStack {
+                    Label("확보 계획 검토", systemImage: "checklist")
+                    Spacer()
+                    Text("\(selection.count)개 · 확인됨 \(String(format: "%.1fGB", selectedTotalGB))")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(model.isBusy || selection.isEmpty)
+
+            Text("경로와 크기를 다시 측정한 뒤 별도 승인 화면을 엽니다. 앱·모델·Simulator·서비스는 이 계획에서 제외합니다.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .spaceGoalSurface()
     }
 
     @ViewBuilder
+    private func candidateRows(_ items: [StorageItem]) -> some View {
+        let indexedItems = Array(items.enumerated())
+        ForEach(indexedItems, id: \.element.id) { index, item in
+            SpaceGoalCandidateRow(item: item, tier: item.cleanupTier!)
+            if index < indexedItems.count - 1 {
+                Divider().padding(.leading, 44)
+            }
+        }
+    }
+
     private var goalPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        Group {
             if supportsGoalSlider {
                 Slider(value: $targetGB, in: 1...goalUpperBoundGB, step: 1)
-            }
-            HStack {
-                Text(supportsGoalSlider
-                    ? "목표: \(String(format: "%.0f", targetGB))GB"
-                    : "정리 가능한 용량이 1GB 미만이라 목표를 나눌 수 없습니다.")
-                    .font(.callout.weight(.medium))
-                Spacer()
-                Text("정리 가능 총합 \(String(format: "%.1f", achievableGB))GB")
+                    .accessibilityLabel("확보 목표")
+                    .accessibilityValue("\(Int(targetGB))GB")
+            } else {
+                Text("확인된 용량이 1GB 미만이라 목표 조절은 재측정 후 사용할 수 있습니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 4)
         // A rescan can shrink what is cleanable while this tab stays on
         // screen; @State survives that, so an old goal could sit outside the
         // new range (slider pinned at its end, header quoting a goal the
@@ -203,6 +287,25 @@ struct SpaceGoalWorkspaceList: View {
         .onChange(of: goalUpperBoundGB) { newUpperBound in
             targetGB = min(max(targetGB, 1), newUpperBound)
         }
+    }
+
+    private var goalProgress: Double {
+        guard targetGB > 0 else { return 0 }
+        return min(max(selectedTotalGB / targetGB, 0), 1)
+    }
+
+    private var goalShortfallText: String {
+        String(format: "%.1fGB 부족", max(targetGB - selectedTotalGB, 0))
+    }
+
+    private var planSubtitle: String {
+        if metGoal {
+            return "큰 항목부터 고른 \(measuredSelection.count)개로 목표를 충족합니다."
+        }
+        if pendingSelection.isEmpty {
+            return "현재 확인된 항목을 모두 더해도 목표에 미치지 못합니다."
+        }
+        return "확인된 용량을 먼저 보여주고, 크기를 모르는 후보는 아래에 접어 두었습니다."
     }
 
     private static func achievableGB(_ storage: StorageSnapshot) -> Double {
@@ -219,6 +322,41 @@ struct SpaceGoalWorkspaceList: View {
     }
 }
 
+private struct SpaceGoalMetric: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private extension View {
+    func spaceGoalSurface() -> some View {
+        self
+            .padding(16)
+            .frame(maxWidth: 1040, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.primary.opacity(0.075), lineWidth: 1)
+            }
+            .frame(maxWidth: .infinity)
+    }
+}
+
 private struct SpaceGoalCandidateRow: View {
     let item: StorageItem
     let tier: CleanupTier
@@ -227,9 +365,19 @@ private struct SpaceGoalCandidateRow: View {
         WorkspaceStorageItemRow(
             item: item,
             fallbackSymbol: tier == .safe ? "folder.badge.gearshape" : "arrow.triangle.2.circlepath",
-            detail: item.note.isEmpty ? item.action : item.note,
+            detail: detail,
             status: tier.shortTitle
         )
         .contextMenu { StorageItemContextMenu(item: item) }
+    }
+
+    private var detail: String {
+        if item.measureStatus == "timed_out" {
+            return "크기와 사용 여부를 다시 측정합니다."
+        }
+        if item.cleanupID == "transient_workspace" {
+            return "정리 전에 경로·소유권·사용 여부를 다시 확인합니다."
+        }
+        return item.note.isEmpty ? item.action : item.note
     }
 }
