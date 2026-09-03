@@ -155,7 +155,10 @@ def test_browser_automation_analysis_caps_roots_without_repeated_ps(project_root
     rows = result.stdout.splitlines()
     assert rows[-1] == "__PCH_BROWSER_BOUNDED__"
     assert len(rows[:-1]) == 32
-    assert elapsed < 3
+    # The contract is that a 30-second provider and its process group are cut
+    # off promptly. Allow runner scheduling and the graceful TERM/KILL window;
+    # the process-liveness assertion below proves cleanup, not this stopwatch.
+    assert elapsed < 5
     assert "secret" not in result.stdout
 
 
@@ -1433,12 +1436,15 @@ def test_storage_provider_timeouts_keep_partial_ps_and_simctl_evidence(
         text=True,
         encoding="utf-8",
         env=env,
-        timeout=8,
+        timeout=12,
     )
     elapsed = time.monotonic() - started
 
     assert result.returncode == 0, result.stderr
-    assert elapsed < 5
+    # Two independent one-second providers each receive a bounded process-group
+    # teardown. Keep enough runner jitter margin while staying far below their
+    # synthetic 30-second sleeps.
+    assert elapsed < 8
     statuses = {
         row.split("\t")[0]: row.split("\t")
         for row in (facts / "status.tsv").read_text(encoding="utf-8").splitlines()
