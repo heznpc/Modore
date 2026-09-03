@@ -134,7 +134,7 @@ enum CleanupExecutionService {
     ) -> CleanupInvocation? {
         guard pinnedFiles["cleanup_request"] == nil else { return nil }
         guard let request else {
-            return recipeID == "project_residue"
+            return CleanupExecutionRequest.isRequired(for: recipeID)
                 ? nil
                 : CleanupInvocation(pinnedFiles: pinnedFiles, arguments: [])
         }

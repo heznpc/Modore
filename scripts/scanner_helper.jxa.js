@@ -989,15 +989,17 @@ const cleanupCandidates = storageItems.filter(item =>
     (item.risk === "warning" || item.measureStatus === "timed_out")
 );
 // Keep the established cleanupCandidates contract limited to global/fixed recipes.
-// Dynamic project paths are a separate recovery surface: cleanup.sh accepts them
-// only through a bounded pinned-FD request and revalidates project evidence.
-const projectRecoveryCandidates = storageItems.filter(item =>
-  item.kind === "project_residue" && item.cleanupId === "project_residue"
+// Exact dynamic paths are a separate recovery surface: cleanup.sh accepts them
+// only through a bounded pinned-FD request and independently revalidates each
+// kind's path, ownership, and liveness evidence.
+const dynamicRecoveryKinds = ["project_residue", "transient_workspace"];
+const dynamicRecoveryCandidates = storageItems.filter(item =>
+  dynamicRecoveryKinds.includes(item.kind) && item.cleanupId === item.kind
 );
 const recoveryCleanupCandidates = storageItems.filter(item =>
   cleanupKinds.includes(item.kind) && !!item.cleanupId
 );
-const recoveryCandidates = recoveryCleanupCandidates.concat(projectRecoveryCandidates)
+const recoveryCandidates = recoveryCleanupCandidates.concat(dynamicRecoveryCandidates)
   .filter((item, index, rows) => rows.findIndex(candidate => candidate.path === item.path) === index);
 const reviewKinds = ["ai_review", "protected_history"];
 // ai_cache items never carry a cleanupId (no delete recipe exists for them yet), so

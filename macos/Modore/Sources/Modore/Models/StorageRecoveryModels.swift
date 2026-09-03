@@ -27,9 +27,13 @@ struct CleanupExecutionRequest: Equatable, Sendable {
     let recipeID: String
     let target: String
 
+    static func isRequired(for recipeID: String) -> Bool {
+        recipeID == "project_residue" || recipeID == "transient_workspace"
+    }
+
     init?(item: StorageItem) {
-        guard item.kind == "project_residue",
-              item.cleanupID == "project_residue",
+        guard Self.isRequired(for: item.cleanupID),
+              item.kind == item.cleanupID,
               item.path.hasPrefix("/"),
               !item.path.isEmpty,
               !item.path.contains(where: { $0 == "\t" || $0 == "\n" || $0 == "\r" }) else {
@@ -40,7 +44,7 @@ struct CleanupExecutionRequest: Equatable, Sendable {
     }
 
     var protocolData: Data {
-        Data("version\t1\nkind\tproject_residue\ntarget\t\(target)\n".utf8)
+        Data("version\t1\nkind\t\(recipeID)\ntarget\t\(target)\n".utf8)
     }
 }
 

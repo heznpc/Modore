@@ -79,7 +79,7 @@ extension ScanModel {
     func prepareCleanup(_ item: StorageItem) {
         guard item.canCleanup else { return }
         let request = CleanupExecutionRequest(item: item)
-        guard item.cleanupID != "project_residue" || request != nil else { return }
+        guard !CleanupExecutionRequest.isRequired(for: item.cleanupID) || request != nil else { return }
         prepareCleanup(
             recipeID: item.cleanupID,
             label: item.label,
@@ -288,7 +288,7 @@ extension ScanModel {
             item -> (item: StorageItem, tier: CleanupTier, request: CleanupExecutionRequest?)? in
             guard let tier = item.cleanupTier, !item.cleanupID.isEmpty else { return nil }
             let request = CleanupExecutionRequest(item: item)
-            if item.cleanupID == "project_residue", request == nil { return nil }
+            if CleanupExecutionRequest.isRequired(for: item.cleanupID), request == nil { return nil }
             let key = item.cleanupID + "\u{0}" + (request?.target ?? "")
             guard seenExecutions.insert(key).inserted else { return nil }
             return (item, tier, request)

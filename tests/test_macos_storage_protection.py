@@ -894,6 +894,124 @@ def test_storage_measures_simulator_assets_before_general_caches_without_volumes
     assert trace_paths.index(str(dyld)) < trace_paths.index(str(home / ".npm"))
 
 
+def test_storage_prioritizes_recoverable_project_artifacts_before_general_caches(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    home = tmp_path / "home"
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    project = home / "IdeaProjects" / "LargeSwiftProject"
+    build = project / ".build"
+    build.mkdir(parents=True)
+    (project / "Package.swift").write_text(
+        "// swift-tools-version: 6.0\n", encoding="utf-8"
+    )
+    npm = home / ".npm"
+    npm.mkdir()
+    trace = tmp_path / "du-trace.tsv"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "PCH_TEST_MODE": "1",
+        "PCH_PROJECT_SCAN_ROOTS": str(home / "IdeaProjects"),
+        "PCH_TEST_STORAGE_DU_DURATION_TICKS": "60",
+        "PCH_TEST_STORAGE_DU_SIZE_KB": "8192",
+        "PCH_TEST_STORAGE_DU_TRACE_FILE": str(trace),
+        "PCH_STORAGE_DU_TIMEOUT": "8",
+        "PCH_STORAGE_TOTAL_DU_BUDGET": "8",
+    }
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; collect_storage', "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    rows = [
+        line.split("\t")
+        for line in (facts / "storage_paths.tsv").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    by_path = {row[2]: row for row in rows}
+    assert by_path[str(build)][0] == "project_residue"
+    assert by_path[str(build)][3:5] == ["8192", "ok"]
+    assert by_path[str(build)][6] == "project_residue"
+    assert by_path[str(npm)][3:5] == ["0", "timed_out"]
+
+    traced_paths = [
+        line.split("\t", 1)[0]
+        for line in trace.read_text(encoding="utf-8").splitlines()
+    ]
+    assert traced_paths.index(str(build)) < traced_paths.index(str(npm))
+
+
+def test_storage_surfaces_exact_owned_transient_workspace_for_recovery(
+    project_root, tmp_path
+):
+    script = project_root / "scripts/modules/macos/storage.sh"
+    home = tmp_path / "home"
+    facts = tmp_path / "facts"
+    transient_root = tmp_path / "user-temp"
+    facts.mkdir()
+    transient_root.mkdir()
+    large = transient_root / "airmcp-test-home-123"
+    older_large = transient_root / "older-large"
+    tiny = transient_root / "tiny"
+    large.mkdir()
+    older_large.mkdir()
+    tiny.mkdir()
+    (large / "payload.bin").write_bytes(b"x" * (17 * 1024 * 1024))
+    (older_large / "payload.bin").write_bytes(b"x" * (17 * 1024 * 1024))
+    (tiny / "payload.bin").write_bytes(b"x" * 1024)
+    os.utime(older_large, (1, 1))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (transient_root / "linked").symlink_to(outside, target_is_directory=True)
+    simctl_list = tmp_path / "simctl.txt"
+    simctl_list.write_text("", encoding="utf-8")
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMP_DIR": str(facts),
+        "PCH_TEST_MODE": "1",
+        "PCH_TEST_STORAGE_SIMCTL_LIST_FILE": str(simctl_list),
+        "PCH_TEST_STORAGE_TRANSIENT_ROOTS": str(transient_root),
+        "PCH_PROJECT_SCAN_ROOTS": "",
+        "PCH_STORAGE_DU_TIMEOUT": "5",
+        "PCH_STORAGE_TOTAL_DU_BUDGET": "20",
+        "PCH_TRANSIENT_WORKSPACE_LIMIT": "1",
+    }
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; collect_storage', "bash", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    rows = [
+        line.split("\t")
+        for line in (facts / "storage_paths.tsv").read_text(encoding="utf-8").splitlines()
+    ]
+    transient = [row for row in rows if row[0] == "transient_workspace"]
+    assert len(transient) == 1
+    assert transient[0][1] == "임시 작업공간 · airmcp-test-home-123"
+    assert transient[0][2] == str(large)
+    assert int(transient[0][3]) >= 17 * 1024
+    assert transient[0][4] == "ok"
+    assert transient[0][6] == "transient_workspace"
+
+
 @pytest.mark.parametrize("target_exists", [True, False])
 def test_storage_does_not_report_a_symlinked_devices_root_as_zero_ok(
     project_root, tmp_path, target_exists
@@ -1498,6 +1616,9 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
         "cache\tSmall allowlisted cache\t/Users/test/small-cache\t1024\tok\t\tcleanup_small\n"
         "project_residue\tnode_modules · web\t/Users/test/web/node_modules"
         "\t5120\tok\t재생성 가능\tproject_residue\n"
+        "transient_workspace\t임시 작업공간 · codex-build"
+        "\t/private/tmp/codex-build\t17408\tok\t점유 재확인"
+        "\ttransient_workspace\n"
         + developer_rows
         + simulator_storage_rows,
         encoding="utf-8",
@@ -1571,6 +1692,7 @@ def test_jxa_uses_uuid_keep_key_and_excludes_manual_paths_from_cleanup_total(
         "cache_recipe",
         "cleanup_small",
         "project_residue",
+        "transient_workspace",
     }
     developer_items = scan["sections"]["storage"]["developerToolchains"]
     assert len(developer_items) == 26
