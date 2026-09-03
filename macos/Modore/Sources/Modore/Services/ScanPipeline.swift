@@ -24,20 +24,65 @@ struct ScanRunResult: Sendable, Equatable {
     }
 }
 
+struct ScanPipelineProcessRequest: Sendable {
+    let executable: String
+    let arguments: [String]
+    let currentDirectory: URL
+    let expectedCurrentDirectoryIdentity: FilesystemIdentity
+    let expectedSignedBundleURL: URL?
+    let pinnedFiles: [String: Data]
+    let environment: [String: String]
+}
+
+struct ScanPipelineDependencies: Sendable {
+    let prepareExecution: @Sendable (URL) -> RuntimeExecutionContext?
+    let runProcess: @Sendable (
+        ScanPipelineProcessRequest,
+        @escaping @Sendable (String) -> Void
+    ) async -> Int32
+
+    static let live = ScanPipelineDependencies(
+        prepareExecution: { RuntimeWorkspace.prepareExecution(projectRoot: $0) },
+        runProcess: { request, onOutput in
+            await LocalProcessRunner.stream(
+                executable: request.executable,
+                arguments: request.arguments,
+                currentDirectory: request.currentDirectory,
+                expectedCurrentDirectoryIdentity: request.expectedCurrentDirectoryIdentity,
+                expectedSignedBundleURL: request.expectedSignedBundleURL,
+                pinnedFiles: request.pinnedFiles,
+                environment: request.environment,
+                onOutput: onOutput
+            )
+        }
+    )
+}
+
+private struct PublishedScanSnapshot: Sendable {
+    let data: Data
+    let outputRoot: URL
+    let outputRootIdentity: FilesystemIdentity
+    let canonicalIdentity: FilesystemIdentity
+}
+
 enum ScanPipeline {
     static func run(
         projectRoot: URL,
+        dependencies: ScanPipelineDependencies = .live,
         onOutput: @escaping @Sendable (String) -> Void
     ) async -> ScanRunResult {
-        guard let execution = RuntimeWorkspace.prepareExecution(projectRoot: projectRoot) else {
+        guard !Task.isCancelled else { return .scanFailed }
+        guard let execution = dependencies.prepareExecution(projectRoot) else {
             onOutput("검사 런타임 무결성을 확인하지 못해 실행을 중단했습니다.")
             return .scanFailed
         }
+        guard !Task.isCancelled else { return .scanFailed }
 
         guard let configurationData = configurationSnapshot(at: execution.configurationURL) else {
             onOutput("사용자 설정을 안전하게 읽지 못해 검사를 중단했습니다.")
             return .scanFailed
         }
+        guard !Task.isCancelled else { return .scanFailed }
         guard let stagedOutput = try? ScanPublication.prepare(
             in: execution.outputRoot,
             expectedParentIdentity: execution.outputRootIdentity
@@ -98,20 +143,24 @@ enum ScanPipeline {
             scannerScript = pinnedPlaceholder("scanner")
         }
 
-        let scanner = await LocalProcessRunner.stream(
-            executable: "/bin/bash",
-            arguments: [
+        guard !Task.isCancelled else { return .scanFailed }
+        let scanner = await dependencies.runProcess(
+            ScanPipelineProcessRequest(
+                executable: "/bin/bash",
+                arguments: [
                 scannerScript,
                 "--output", scanOutputArgument,
                 "--raw", rawOutputArgument,
-            ],
-            currentDirectory: scanWorkingDirectory,
-            expectedCurrentDirectoryIdentity: scanWorkingIdentity,
-            expectedSignedBundleURL: execution.signedBundleURL,
-            pinnedFiles: pinnedScannerFiles,
-            environment: scannerEnvironment,
-            onOutput: onOutput
+                ],
+                currentDirectory: scanWorkingDirectory,
+                expectedCurrentDirectoryIdentity: scanWorkingIdentity,
+                expectedSignedBundleURL: execution.signedBundleURL,
+                pinnedFiles: pinnedScannerFiles,
+                environment: scannerEnvironment
+            ),
+            onOutput
         )
+        guard !Task.isCancelled else { return .scanFailed }
         guard scanner == 0 else {
             onOutput("scanner.sh 실패: \(scanner)")
             return .scanFailed
@@ -125,6 +174,7 @@ enum ScanPipeline {
             onOutput("이번 실행의 새 검사 결과를 확인하지 못해 이전 결과 사용을 차단했습니다.")
             return .scanFailed
         }
+        guard !Task.isCancelled else { return .scanFailed }
         guard ScanPublication.publish(
             stagedOutput,
             in: execution.outputRoot,
@@ -134,20 +184,57 @@ enum ScanPipeline {
             return .scanFailed
         }
 
+        guard let scanSnapshot = publishedScanSnapshot(
+            execution: execution,
+            expectedCanonicalIdentity: stagedOutput.directoryIdentity
+        ) else {
+            onOutput("게시한 검사 결과의 정확한 입력 스냅샷을 고정하지 못했습니다.")
+            return ScanRunResult(
+                scan: .succeeded,
+                normalReport: .failed,
+                shareReport: .failed
+            )
+        }
+
+        guard !Task.isCancelled else {
+            return ScanRunResult(
+                scan: .succeeded,
+                normalReport: .notAttempted,
+                shareReport: .notAttempted
+            )
+        }
         let normalReport = await generateReport(
             projectRoot: projectRoot,
             fileName: "검사결과.html",
             redacted: false,
             label: "일반 리포트",
+            scanSnapshot: scanSnapshot,
+            dependencies: dependencies,
             onOutput: onOutput
         )
+        guard !Task.isCancelled else {
+            return ScanRunResult(
+                scan: .succeeded,
+                normalReport: normalReport,
+                shareReport: .notAttempted
+            )
+        }
         let shareReport = await generateReport(
             projectRoot: projectRoot,
             fileName: "검사결과_공유용.html",
             redacted: true,
             label: "공유용 리포트",
+            scanSnapshot: scanSnapshot,
+            dependencies: dependencies,
             onOutput: onOutput
         )
+        guard !Task.isCancelled else {
+            return ScanRunResult(
+                scan: .succeeded,
+                normalReport: normalReport,
+                shareReport: shareReport
+            )
+        }
         return ScanRunResult(
             scan: .succeeded,
             normalReport: normalReport,
@@ -160,18 +247,25 @@ enum ScanPipeline {
         fileName: String,
         redacted: Bool,
         label: String,
+        scanSnapshot: PublishedScanSnapshot,
+        dependencies: ScanPipelineDependencies,
         onOutput: @escaping @Sendable (String) -> Void
     ) async -> PipelineStageState {
-        guard let execution = RuntimeWorkspace.prepareExecution(projectRoot: projectRoot) else {
+        guard !Task.isCancelled else { return .notAttempted }
+        guard let execution = dependencies.prepareExecution(projectRoot) else {
             onOutput("\(label) 런타임 서명을 다시 확인하지 못해 생성을 중단했습니다.")
             return .failed
         }
+        guard !Task.isCancelled else { return .notAttempted }
         let status = await runReport(
             execution: execution,
             output: execution.outputRoot.appendingPathComponent(fileName),
             redacted: redacted,
+            scanSnapshot: scanSnapshot,
+            dependencies: dependencies,
             onOutput: onOutput
         )
+        guard !Task.isCancelled else { return .notAttempted }
         guard status == 0 else {
             onOutput("\(label) 생성 실패: \(status)")
             return .failed
@@ -183,8 +277,11 @@ enum ScanPipeline {
         execution: RuntimeExecutionContext,
         output: URL,
         redacted: Bool,
+        scanSnapshot: PublishedScanSnapshot,
+        dependencies: ScanPipelineDependencies,
         onOutput: @escaping @Sendable (String) -> Void
     ) async -> Int32 {
+        guard !Task.isCancelled else { return LocalProcessRunner.cancellationStatus }
         let usesSealedRuntime = execution.sealedRuntimeFiles != nil
         let reportWorkingDirectory = usesSealedRuntime
             ? execution.outputRoot : execution.runtimeRoot
@@ -192,107 +289,149 @@ enum ScanPipeline {
             ? execution.outputRootIdentity : execution.runtimeRootIdentity
         var environment = [
             "PCH_PROJECT_DIR": execution.outputRoot.path,
-            "PCH_REPORT_OUTPUT": usesSealedRuntime ? output.lastPathComponent : output.path
         ]
         if redacted {
             environment["PCH_REDACT"] = "true"
         }
         var reportScript = "scripts/report.jxa.js"
-        var pinnedFiles: [String: Data] = [:]
+        guard let stagedOutput = try? ScanPublication.prepare(
+            in: execution.outputRoot,
+            expectedParentIdentity: execution.outputRootIdentity
+        ) else {
+            onOutput("\(redacted ? "공유용" : "일반") 리포트의 임시 작업 공간을 만들지 못했습니다.")
+            return -1
+        }
+        defer { ScanPublication.discard(stagedOutput) }
+        let stagedReport = stagedOutput.directoryURL.appendingPathComponent(
+            output.lastPathComponent
+        )
+        environment["PCH_REPORT_OUTPUT"] = usesSealedRuntime
+            ? stagedOutput.directoryURL.lastPathComponent + "/" + output.lastPathComponent
+            : stagedReport.path
+        guard execution.outputRoot.standardizedFileURL
+                == scanSnapshot.outputRoot.standardizedFileURL,
+              execution.outputRootIdentity == scanSnapshot.outputRootIdentity,
+              FilesystemIdentity.directory(at: execution.outputRoot)
+                == scanSnapshot.outputRootIdentity,
+              ScanPublication.canonicalDirectory(in: execution.outputRoot)?.identity
+                == scanSnapshot.canonicalIdentity else {
+            onOutput("게시한 검사 결과와 리포트 출력 위치의 연결을 다시 확인하지 못했습니다.")
+            return -1
+        }
+        guard !Task.isCancelled else { return LocalProcessRunner.cancellationStatus }
+        var pinnedFiles: [String: Data] = ["scan_result": scanSnapshot.data]
         if let payload = execution.sealedRuntimeFiles {
-            guard let reportData = payload["scripts/report.jxa.js"],
-                  let scanData = try? ScanResultLoader.boundedData(
-                    contentsOf: execution.scanResultURL,
-                    maximumBytes: ScanResultLoader.maximumScanResultBytes,
-                    expectedParentIdentity: execution.outputRootIdentity
-                  ) else {
-                onOutput("봉인한 리포트 코드 또는 이번 검사 결과를 읽지 못했습니다.")
+            guard let reportData = payload["scripts/report.jxa.js"] else {
+                onOutput("봉인한 리포트 코드를 읽지 못했습니다.")
                 return -1
             }
             pinnedFiles["report"] = reportData
-            pinnedFiles["scan_result"] = scanData
             reportScript = pinnedPlaceholder("report")
-            environment["PCH_SCAN"] = pinnedPlaceholder("scan_result")
         }
-        let previousGeneration = RegularFileGeneration.capture(output)
+        let previousGeneration = RegularFileGeneration.capture(stagedReport)
         let status: Int32
         if usesSealedRuntime {
             environment.removeValue(forKey: "PCH_SCAN")
-            status = await LocalProcessRunner.stream(
-                executable: "/bin/bash",
-                arguments: [
-                    "-p", "-c",
-                    #"umask 077; report_source="$1"; scan_source="$2"; export PCH_SCAN=/dev/fd/3; /usr/bin/osascript -l JavaScript - < "$report_source" 3< "$scan_source""#,
-                    "--", reportScript, pinnedPlaceholder("scan_result"),
-                ],
-                currentDirectory: reportWorkingDirectory,
-                expectedCurrentDirectoryIdentity: reportWorkingIdentity,
-                expectedSignedBundleURL: execution.signedBundleURL,
-                pinnedFiles: pinnedFiles,
-                environment: environment,
-                onOutput: onOutput
+            status = await dependencies.runProcess(
+                ScanPipelineProcessRequest(
+                    executable: "/bin/bash",
+                    arguments: [
+                        "-p", "-c",
+                        #"umask 077; report_source="$1"; scan_source="$2"; export PCH_SCAN=/dev/fd/3; /usr/bin/osascript -l JavaScript - < "$report_source" 3< "$scan_source""#,
+                        "--", reportScript, pinnedPlaceholder("scan_result"),
+                    ],
+                    currentDirectory: reportWorkingDirectory,
+                    expectedCurrentDirectoryIdentity: reportWorkingIdentity,
+                    expectedSignedBundleURL: execution.signedBundleURL,
+                    pinnedFiles: pinnedFiles,
+                    environment: environment
+                ),
+                onOutput
             )
         } else {
-            status = await LocalProcessRunner.stream(
-                executable: "/bin/bash",
-                arguments: [
-                    "-p", "-c",
-                    #"umask 077; exec /usr/bin/osascript -l JavaScript "$1""#,
-                    "--", reportScript,
-                ],
-                currentDirectory: reportWorkingDirectory,
-                expectedCurrentDirectoryIdentity: reportWorkingIdentity,
-                expectedSignedBundleURL: execution.signedBundleURL,
-                pinnedFiles: pinnedFiles,
-                environment: environment,
-                onOutput: onOutput
+            status = await dependencies.runProcess(
+                ScanPipelineProcessRequest(
+                    executable: "/bin/bash",
+                    arguments: [
+                        "-p", "-c",
+                        #"umask 077; scan_source="$2"; export PCH_SCAN=/dev/fd/3; exec /usr/bin/osascript -l JavaScript "$1" 3< "$scan_source""#,
+                        "--", reportScript, pinnedPlaceholder("scan_result"),
+                    ],
+                    currentDirectory: reportWorkingDirectory,
+                    expectedCurrentDirectoryIdentity: reportWorkingIdentity,
+                    expectedSignedBundleURL: execution.signedBundleURL,
+                    pinnedFiles: pinnedFiles,
+                    environment: environment
+                ),
+                onOutput
             )
         }
+        guard !Task.isCancelled else { return LocalProcessRunner.cancellationStatus }
         guard status == 0,
               FilesystemIdentity.directory(at: execution.outputRoot) == execution.outputRootIdentity,
-              RegularFileGeneration.capture(output) != previousGeneration else {
+              FilesystemIdentity.directory(at: stagedOutput.directoryURL)
+                == stagedOutput.directoryIdentity,
+              ScanPublication.canonicalDirectory(in: execution.outputRoot)?.identity
+                == scanSnapshot.canonicalIdentity,
+              RegularFileGeneration.capture(stagedReport) != previousGeneration else {
             if status == 0 {
-                onOutput("이번 실행의 새 리포트 파일을 확인하지 못했습니다.")
+                onOutput("이번 실행의 검사 세대가 바뀌었거나 새 리포트 파일을 확인하지 못했습니다.")
                 return -1
             }
             return status
         }
-        guard finalizeGeneratedReport(
-            at: output,
-            expectedParentIdentity: execution.outputRootIdentity
-        ) else {
+        guard let report = try? SecureLocalFileIO.boundedRead(
+            from: stagedReport,
+            maximumBytes: 128 * 1_024 * 1_024,
+            requireCurrentOwner: true,
+            expectedParentIdentity: stagedOutput.directoryIdentity
+        ), !report.isEmpty else {
+            onOutput("새 리포트를 안전하게 읽지 못했습니다.")
+            return -1
+        }
+        guard !Task.isCancelled else { return LocalProcessRunner.cancellationStatus }
+        do {
+            try SecureLocalFileIO.atomicWrite(
+                report,
+                to: output,
+                permissions: 0o600,
+                expectedParentIdentity: execution.outputRootIdentity
+            )
+        } catch {
             onOutput("새 리포트를 소유자 전용 파일로 확정하지 못했습니다.")
             return -1
         }
         return 0
     }
 
-    /// Re-publishes generated HTML through the same dirfd-bound atomic writer
-    /// used for other private local state. The report generator is signed, but
-    /// its default process umask can still create a 0644 file.
-    static func finalizeGeneratedReport(
-        at output: URL,
-        expectedParentIdentity: FilesystemIdentity
-    ) -> Bool {
-        guard let report = try? SecureLocalFileIO.boundedRead(
-            from: output,
-            maximumBytes: 128 * 1_024 * 1_024,
-            requireCurrentOwner: true,
-            expectedParentIdentity: expectedParentIdentity
-        ), !report.isEmpty else {
-            return false
+    private static func publishedScanSnapshot(
+        execution: RuntimeExecutionContext,
+        expectedCanonicalIdentity: FilesystemIdentity
+    ) -> PublishedScanSnapshot? {
+        guard FilesystemIdentity.directory(at: execution.outputRoot)
+                == execution.outputRootIdentity,
+              let canonical = ScanPublication.canonicalDirectory(in: execution.outputRoot),
+              canonical.identity == expectedCanonicalIdentity else {
+            return nil
         }
-        do {
-            try SecureLocalFileIO.atomicWrite(
-                report,
-                to: output,
-                permissions: 0o600,
-                expectedParentIdentity: expectedParentIdentity
-            )
-            return true
-        } catch {
-            return false
+        let scanURL = canonical.url.appendingPathComponent("scan_result.json")
+        guard let generation = RegularFileGeneration.capture(scanURL),
+              let data = try? ScanResultLoader.boundedData(
+                contentsOf: scanURL,
+                maximumBytes: ScanResultLoader.maximumScanResultBytes,
+                expectedParentIdentity: canonical.identity
+              ),
+              RegularFileGeneration.capture(scanURL) == generation,
+              ScanPublication.canonicalDirectory(in: execution.outputRoot)?.identity
+                == canonical.identity else {
+            return nil
         }
+        return PublishedScanSnapshot(
+            data: data,
+            outputRoot: execution.outputRoot,
+            outputRootIdentity: execution.outputRootIdentity,
+            canonicalIdentity: canonical.identity
+        )
     }
 
     static func scanEnvironment(
@@ -381,7 +520,7 @@ enum ScanPipeline {
     }
 }
 
-private struct RegularFileGeneration: Equatable {
+private struct RegularFileGeneration: Equatable, Sendable {
     let device: UInt64
     let inode: UInt64
     let size: Int64

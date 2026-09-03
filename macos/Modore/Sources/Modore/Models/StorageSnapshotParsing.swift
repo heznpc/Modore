@@ -61,6 +61,9 @@ struct StorageSnapshotTotals {
     let reviewGB: Double
     let applicationsGB: Double
     let simulatorGB: Double
+    let simulatorFootprintGB: Double
+    let simulatorBreakdown: [SimulatorFootprintBreakdown]
+    let simulatorFootprintMeasurementIncomplete: Bool
     let inventoryGB: Double
 
     init(components: StorageSnapshotComponents) {
@@ -72,21 +75,139 @@ struct StorageSnapshotTotals {
         )
         reviewGB = StorageSnapshotParser.uniqueSize(components.reviewCandidates)
         developerGB = StorageSnapshotParser.uniqueSize(
-            components.developerToolchains.filter { $0.kind != "simulator_devices" }
+            components.developerToolchains.filter { !$0.kind.hasPrefix("simulator_") }
         )
         applicationsGB = StorageSnapshotParser.uniqueSize(components.applications)
-        simulatorGB = Self.simulatorSize(components: components)
+        simulatorBreakdown = Self.simulatorBreakdown(components: components)
+        simulatorFootprintGB = simulatorBreakdown.reduce(0) { $0 + $1.sizeGB }
+        simulatorFootprintMeasurementIncomplete = simulatorBreakdown.contains {
+            $0.measureStatus != "ok"
+        }
+        // `simulatorGB` remains the device-data total for compatibility. The
+        // wider devices + runtimes + shared-cache number is explicitly named
+        // `simulatorFootprintGB` so the two meanings cannot be confused.
+        simulatorGB = simulatorBreakdown.first(where: {
+            $0.kind == "simulator_devices"
+        })?.sizeGB ?? 0
         inventoryGB = applicationsGB + simulatorGB
     }
 
-    private static func simulatorSize(components: StorageSnapshotComponents) -> Double {
-        let measured = components.simulatorDevices.filter { $0.measureStatus != "timed_out" }
-        if measured.count == components.simulatorDevices.count, !measured.isEmpty {
-            return measured.reduce(0.0) { $0 + $1.sizeGB }
-        }
-        return components.developerToolchains.first(where: {
+    private struct SimulatorSource {
+        let kind: String
+        let sizeGB: Double
+        let path: String
+        let measureStatus: String
+    }
+
+    private static func simulatorBreakdown(
+        components: StorageSnapshotComponents
+    ) -> [SimulatorFootprintBreakdown] {
+        let aggregateDevices = components.developerToolchains.filter {
             $0.kind == "simulator_devices"
-        })?.sizeGB ?? measured.reduce(0.0) { $0 + $1.sizeGB }
+        }
+        var sources = components.developerToolchains
+            .filter { $0.kind == "simulator_runtime" || $0.kind == "simulator_cache" }
+            .map {
+                SimulatorSource(
+                    kind: $0.kind,
+                    sizeGB: $0.sizeGB,
+                    path: $0.path,
+                    measureStatus: $0.measureStatus
+                )
+            }
+
+        let usableAggregateDevices = aggregateDevices.filter {
+            $0.measureStatus == "ok" || ($0.sizeGB.isFinite && $0.sizeGB > 0)
+        }
+        if !usableAggregateDevices.isEmpty {
+            sources += usableAggregateDevices.map {
+                SimulatorSource(
+                    kind: $0.kind,
+                    sizeGB: $0.sizeGB,
+                    path: $0.path,
+                    measureStatus: $0.measureStatus
+                )
+            }
+        } else if !components.simulatorDevices.isEmpty {
+            // Legacy snapshots could have a timed-out 0-byte aggregate while
+            // every UUID row was measured successfully. Collapse those detail
+            // rows into one compatibility aggregate instead of discarding the
+            // known bytes or counting both representations.
+            let measured = components.simulatorDevices.filter {
+                $0.measureStatus == "ok"
+            }
+            let rootPath = components.simulatorDevices.lazy
+                .map(\.path)
+                .first(where: { !$0.isEmpty })
+                .map { URL(fileURLWithPath: $0).deletingLastPathComponent().path }
+                ?? "/<simulator-devices>"
+            sources.append(SimulatorSource(
+                kind: "simulator_devices",
+                sizeGB: measured
+                    .filter { $0.sizeGB.isFinite && $0.sizeGB > 0 }
+                    .reduce(0) { $0 + $1.sizeGB },
+                path: rootPath,
+                measureStatus: measured.count == components.simulatorDevices.count
+                    ? "ok"
+                    : "timed_out"
+            ))
+        } else {
+            // No UUID compatibility rows exist, so retain an incomplete zero
+            // aggregate as evidence that measurement was attempted and failed.
+            sources += aggregateDevices.map {
+                SimulatorSource(
+                    kind: $0.kind,
+                    sizeGB: $0.sizeGB,
+                    path: $0.path,
+                    measureStatus: $0.measureStatus
+                )
+            }
+        }
+
+        // A producer should emit disjoint roots, but model-side de-duplication
+        // prevents a parent and one of its descendants from inflating the total.
+        var roots: [String] = []
+        let unique = sources
+            .filter { !$0.path.isEmpty }
+            .sorted {
+                if $0.path.count != $1.path.count { return $0.path.count < $1.path.count }
+                if $0.path != $1.path { return $0.path < $1.path }
+                return $0.kind < $1.kind
+            }
+            .filter { source in
+                let path = StorageHistoryEntry.normalizedPath(source.path)
+                let covered = roots.contains { path == $0 || path.hasPrefix($0 + "/") }
+                if !covered { roots.append(path) }
+                return !covered
+            }
+
+        let labels = [
+            "simulator_devices": "기기 데이터",
+            "simulator_runtime": "런타임",
+            "simulator_cache": "공유 캐시",
+        ]
+        return ["simulator_devices", "simulator_runtime", "simulator_cache"].compactMap { kind in
+            let matching = unique.filter { $0.kind == kind }
+            guard !matching.isEmpty else { return nil }
+            let incompleteStatus = matching.first { $0.measureStatus != "ok" }?.measureStatus
+            let size = matching
+                .filter {
+                    // Every positive non-ok value emitted by the scanner is a
+                    // traversal result captured before the bounded command
+                    // stopped. Keep it as a lower bound for devices, runtimes,
+                    // and shared caches; the status still prevents history
+                    // from treating it as an exact delta endpoint.
+                    $0.sizeGB.isFinite && $0.sizeGB > 0
+                }
+                .reduce(0) { $0 + $1.sizeGB }
+            return SimulatorFootprintBreakdown(
+                id: kind,
+                kind: kind,
+                label: labels[kind] ?? kind,
+                sizeGB: size,
+                measureStatus: incompleteStatus ?? "ok"
+            )
+        }
     }
 }
 

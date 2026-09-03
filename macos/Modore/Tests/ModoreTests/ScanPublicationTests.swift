@@ -103,6 +103,67 @@ final class ScanPublicationTests: XCTestCase {
         XCTAssertNil(loaded.content.storage)
     }
 
+    func testCleanupMutationMarkerSurvivesRestartUntilANewScanGenerationPublishes() throws {
+        let root = try privateTemporaryDirectory("cleanup-marker")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identity = try XCTUnwrap(FilesystemIdentity.directory(at: root))
+        let first = try ScanPublication.prepare(in: root, expectedParentIdentity: identity)
+        try writeRun(first, scannedAt: "2026-08-26 10:00:00", freeGB: 100)
+        XCTAssertTrue(ScanPublication.publish(
+            first,
+            in: root,
+            expectedParentIdentity: identity
+        ))
+
+        XCTAssertFalse(ScanPublication.cleanupMutationIsPending(in: root))
+        XCTAssertTrue(ScanPublication.markCleanupMutationPending(in: root))
+        XCTAssertTrue(ScanPublication.cleanupMutationIsPending(in: root))
+
+        let second = try ScanPublication.prepare(in: root, expectedParentIdentity: identity)
+        try writeRun(second, scannedAt: "2026-08-26 11:00:00", freeGB: 110)
+        XCTAssertTrue(ScanPublication.publish(
+            second,
+            in: root,
+            expectedParentIdentity: identity
+        ))
+        XCTAssertFalse(ScanPublication.cleanupMutationIsPending(in: root))
+    }
+
+    func testFailedDirectorySyncRetainsSupersededMarkerGeneration() throws {
+        let root = try privateTemporaryDirectory("cleanup-marker-sync-failure")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identity = try XCTUnwrap(FilesystemIdentity.directory(at: root))
+        let first = try ScanPublication.prepare(in: root, expectedParentIdentity: identity)
+        try writeRun(first, scannedAt: "2026-08-26 10:00:00", freeGB: 100)
+        XCTAssertTrue(ScanPublication.publish(
+            first,
+            in: root,
+            expectedParentIdentity: identity
+        ))
+        XCTAssertTrue(ScanPublication.markCleanupMutationPending(in: root))
+
+        let second = try ScanPublication.prepare(in: root, expectedParentIdentity: identity)
+        try writeRun(second, scannedAt: "2026-08-26 11:00:00", freeGB: 110)
+        XCTAssertFalse(ScanPublication.publish(
+            second,
+            in: root,
+            expectedParentIdentity: identity,
+            synchronizeParent: { _ in false }
+        ))
+
+        let visible = try XCTUnwrap(ScanPublication.canonicalDirectory(in: root))
+        XCTAssertEqual(visible.identity, second.directoryIdentity)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: second.directoryURL
+                .appendingPathComponent(".cleanup-mutation-pending").path
+        ))
+
+        // The pipeline's normal deferred discard is keyed to the new staged
+        // inode and therefore must not erase the swapped-out old generation.
+        ScanPublication.discard(second)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.directoryURL.path))
+    }
+
     private func privateTemporaryDirectory(_ suffix: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("modore-scan-publication-\(suffix)-\(UUID().uuidString)")

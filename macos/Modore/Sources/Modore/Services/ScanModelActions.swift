@@ -78,7 +78,13 @@ extension ScanModel {
 
     func prepareCleanup(_ item: StorageItem) {
         guard item.canCleanup else { return }
-        prepareCleanup(recipeID: item.cleanupID, label: item.label)
+        let request = CleanupExecutionRequest(item: item)
+        guard !CleanupExecutionRequest.isRequired(for: item.cleanupID) || request != nil else { return }
+        prepareCleanup(
+            recipeID: item.cleanupID,
+            label: item.label,
+            request: request
+        )
     }
 
     func prepareCleanup(_ device: SimulatorDevice) {
@@ -116,21 +122,34 @@ extension ScanModel {
         }
     }
 
-    private func prepareCleanup(recipeID: String, label: String) {
+    private func prepareCleanup(
+        recipeID: String,
+        label: String,
+        request: CleanupExecutionRequest? = nil
+    ) {
         guard !applicationTerminationStarted, !recipeID.isEmpty, !isBusy else { return }
         cleanupInFlight = true
         cleanupIsExecuting = false
+        cleanupPreview = nil
+        cleanupRequest = request
         errorMessage = nil
         appendLog("정리 미리보기: \(label)")
         let root = projectRoot
         cleanupTask = Task {
             defer {
                 cleanupInFlight = false
+                if cleanupPreview == nil {
+                    cleanupRequest = nil
+                }
                 cleanupTask = nil
             }
-            let context = await CleanupExecutionService.prepare(projectRoot: root)
-            guard !Task.isCancelled else {
-                appendLog("정리 미리보기를 취소했습니다.")
+            let context = await cleanupExecution.prepare(root)
+            guard !Task.isCancelled,
+                  !applicationTerminationStarted,
+                  cleanupRequest == request else {
+                if !applicationTerminationStarted {
+                    appendLog("정리 미리보기를 취소했습니다.")
+                }
                 return
             }
             guard let context else {
@@ -138,7 +157,15 @@ extension ScanModel {
                 appendLog("정리 미리보기 중단: 런타임 신뢰 검증 실패")
                 return
             }
-            let result = await CleanupExecutionService.preview(recipeID: recipeID, using: context)
+            let result = await cleanupExecution.preview(recipeID, request, context)
+            guard !Task.isCancelled,
+                  !applicationTerminationStarted,
+                  cleanupRequest == request else {
+                if !applicationTerminationStarted {
+                    appendLog("정리 미리보기를 취소했습니다.")
+                }
+                return
+            }
             guard result.endState == .exited else {
                 if result.endState == .cancelled {
                     appendLog("정리 미리보기를 취소했습니다.")
@@ -154,6 +181,7 @@ extension ScanModel {
                 return
             }
             cleanupPreview = preview
+            cleanupRequest = request
             appendLog(
                 preview.estimateMeasured
                     ? "미리보기: \(preview.statusText), 대상 점유 추정 \(preview.estimatedText)"
@@ -168,26 +196,41 @@ extension ScanModel {
               !isBusy,
               cleanupPreview?.recipeID == preview.recipeID,
               cleanupPreview?.approvalToken == preview.approvalToken else { return }
+        let request = cleanupRequest
         cleanupInFlight = true
-        beginDestructiveCleanupTransaction()
         errorMessage = nil
         appendLog("승인형 정리 실행: \(preview.label)")
         let root = projectRoot
         cleanupTask = Task {
+            var shouldRescan = false
             defer {
                 cleanupInFlight = false
-                finishDestructiveCleanupTransaction()
                 cleanupTask = nil
+                if shouldRescan {
+                    runScan(preservingUserDiagnostics: true)
+                }
             }
-            guard let context = await CleanupExecutionService.prepare(projectRoot: root) else {
+            let context = await cleanupExecution.prepare(root)
+            guard !Task.isCancelled, !applicationTerminationStarted else { return }
+            guard let context else {
                 errorMessage = "서명된 정리 런타임을 다시 검증하지 못해 실행을 중단했습니다. 아무것도 정리하지 않았습니다."
                 appendLog("정리 실행 중단: 런타임 신뢰 검증 실패")
                 return
             }
-            guard let result = await CleanupExecutionService.execute(preview, using: context) else {
+            guard persistCleanupMutationIntent() else { return }
+            shouldRescan = true
+            beginDestructiveCleanupTransaction()
+            let result = await cleanupExecution.execute(
+                preview,
+                request,
+                context
+            )
+            finishDestructiveCleanupTransaction()
+            guard let result else {
                 errorMessage = "내부 오류: 고정 파일 키가 충돌해 정리를 실행하지 않았습니다."
                 return
             }
+            guard !Task.isCancelled, !applicationTerminationStarted else { return }
             guard result.endState == .exited else {
                 errorMessage = "정리 실행이 제한 시간 안에 끝나지 않아 중단했습니다. 격리된 항목이 있다면 \(CleanupExecutionService.stagingRecoveryDisplayPath)에서 확인할 수 있습니다."
                 appendLog("정리 실행 중단: \(result.endState) · 격리 복구 경로 \(CleanupExecutionService.stagingRecoveryDisplayPath)")
@@ -211,11 +254,7 @@ extension ScanModel {
                     executed.actionMode == "trash" ? "휴지통 이동 완료" : "정리 완료"
                 )
                 cleanupPreview = nil
-                state = .running
-                let result = await ScanPipeline.run(projectRoot: root) { line in
-                    Task { @MainActor in self.appendLog(line) }
-                }
-                await finishRun(result: result)
+                cleanupRequest = nil
             } else {
                 cleanupPreview = executed
                 errorMessage = executed.failureMessage
@@ -229,12 +268,17 @@ extension ScanModel {
 
     func retryCleanupPreview(_ preview: CleanupPreview) {
         guard !isBusy, cleanupPreview?.recipeID == preview.recipeID else { return }
-        prepareCleanup(recipeID: preview.recipeID, label: preview.label)
+        prepareCleanup(
+            recipeID: preview.recipeID,
+            label: preview.label,
+            request: cleanupRequest
+        )
     }
 
     func dismissCleanupPreview() {
         guard !cleanupInFlight else { return }
         cleanupPreview = nil
+        cleanupRequest = nil
     }
 
     func prepareRecoveryPlan(_ items: [StorageItem], desiredFreeGB: Double) {
@@ -244,7 +288,7 @@ extension ScanModel {
             item -> (item: StorageItem, tier: CleanupTier, request: CleanupExecutionRequest?)? in
             guard let tier = item.cleanupTier, !item.cleanupID.isEmpty else { return nil }
             let request = CleanupExecutionRequest(item: item)
-            if item.cleanupID == "project_residue", request == nil { return nil }
+            if CleanupExecutionRequest.isRequired(for: item.cleanupID), request == nil { return nil }
             let key = item.cleanupID + "\u{0}" + (request?.target ?? "")
             guard seenExecutions.insert(key).inserted else { return nil }
             return (item, tier, request)
@@ -273,7 +317,9 @@ extension ScanModel {
                 cleanupRecoveryProgress = nil
                 cleanupTask = nil
             }
-            guard let context = await CleanupExecutionService.prepare(projectRoot: root) else {
+            let context = await cleanupExecution.prepare(root)
+            guard !Task.isCancelled, !applicationTerminationStarted else { return }
+            guard let context else {
                 errorMessage = "서명된 정리 런타임을 다시 검증하지 못해 계획을 만들지 않았습니다."
                 appendLog("공간 확보 계획 중단: 런타임 신뢰 검증 실패")
                 return
@@ -281,7 +327,7 @@ extension ScanModel {
 
             var entries: [CleanupPlanEntry] = []
             for (index, candidate) in candidates.enumerated() {
-                guard !Task.isCancelled else {
+                guard !Task.isCancelled, !applicationTerminationStarted else {
                     appendLog("공간 확보 계획 준비를 취소했습니다.")
                     return
                 }
@@ -290,11 +336,12 @@ extension ScanModel {
                     totalCount: candidates.count,
                     currentLabel: candidate.item.label
                 )
-                let result = await CleanupExecutionService.preview(
-                    recipeID: candidate.item.cleanupID,
-                    request: candidate.request,
-                    using: context
+                let result = await cleanupExecution.preview(
+                    candidate.item.cleanupID,
+                    candidate.request,
+                    context
                 )
+                guard !Task.isCancelled, !applicationTerminationStarted else { return }
                 guard result.endState == .exited,
                       let preview = CleanupPreview(protocolText: result.output) else {
                     errorMessage = "\(candidate.item.label)의 정리 대상을 안전하게 확인하지 못해 계획을 만들지 않았습니다."
@@ -312,6 +359,7 @@ extension ScanModel {
             let currentObservation = await Task.detached(priority: .utility) {
                 LiveStateService.observeFreeSpace()
             }.value
+            guard !Task.isCancelled, !applicationTerminationStarted else { return }
             let baselineFreeGB = currentObservation?.value.freeGB ?? fallbackFreeGB
             if let currentObservation {
                 recordLiveFreeSpaceObservation(currentObservation)
@@ -327,6 +375,17 @@ extension ScanModel {
     }
 
     func executeRecoveryPlan(_ plan: CleanupRecoveryPlan) {
+        executeRecoveryPlan(plan, observeFreeSpace: {
+            await Task.detached(priority: .utility) {
+                LiveStateService.observeFreeSpace()
+            }.value
+        })
+    }
+
+    func executeRecoveryPlan(
+        _ plan: CleanupRecoveryPlan,
+        observeFreeSpace: @escaping @Sendable () async -> Observation<LiveFreeSpace>?
+    ) {
         guard !applicationTerminationStarted,
               !isBusy,
               !plan.readyEntries.isEmpty,
@@ -340,7 +399,6 @@ extension ScanModel {
         }
 
         cleanupInFlight = true
-        beginDestructiveCleanupTransaction()
         cleanupRecoveryResult = nil
         cleanupRecoveryProgress = CleanupRecoveryProgress(
             completedCount: 0,
@@ -356,16 +414,14 @@ extension ScanModel {
             defer {
                 cleanupInFlight = false
                 cleanupRecoveryProgress = nil
-                finishDestructiveCleanupTransaction()
                 cleanupTask = nil
                 if shouldRescan {
-                    Task { @MainActor [weak self] in
-                        try? await Task.sleep(nanoseconds: 100_000_000)
-                        self?.runScan()
-                    }
+                    runScan(preservingUserDiagnostics: true)
                 }
             }
-            guard let context = await CleanupExecutionService.prepare(projectRoot: root) else {
+            let context = await cleanupExecution.prepare(root)
+            guard !Task.isCancelled, !applicationTerminationStarted else { return }
+            guard let context else {
                 errorMessage = "서명된 정리 런타임을 다시 검증하지 못해 아무것도 정리하지 않았습니다."
                 appendLog("공간 확보 실행 중단: 런타임 신뢰 검증 실패")
                 return
@@ -377,6 +433,7 @@ extension ScanModel {
             var freeSpaceMeasured = false
 
             for (index, entry) in plan.readyEntries.enumerated() {
+                guard !Task.isCancelled, !applicationTerminationStarted else { return }
                 guard entry.preview.approvalIsFresh(
                     at: Date(),
                     minimumRemaining: CleanupRecoveryPlan.minimumApprovalValidity
@@ -386,9 +443,8 @@ extension ScanModel {
                     appendLog("공간 확보 중단: \(entry.preview.label) 승인 만료")
                     break
                 }
-                let before = await Task.detached(priority: .utility) {
-                    LiveStateService.observeFreeSpace()
-                }.value
+                let before = await observeFreeSpace()
+                guard !Task.isCancelled, !applicationTerminationStarted else { return }
                 guard let before else {
                     stoppedAfterFailure = true
                     errorMessage = "현재 여유 공간을 확인하지 못해 남은 계획을 실행하지 않았습니다."
@@ -410,11 +466,20 @@ extension ScanModel {
                 )
                 appendLog("계획 정리 실행: \(entry.preview.label)")
                 freeSpaceMeasured = false
-                guard let result = await CleanupExecutionService.execute(
+                guard !Task.isCancelled, !applicationTerminationStarted else { return }
+                guard persistCleanupMutationIntent() else {
+                    stoppedAfterFailure = true
+                    break
+                }
+                shouldRescan = true
+                beginDestructiveCleanupTransaction()
+                let result = await cleanupExecution.execute(
                     entry.preview,
-                    request: entry.request,
-                    using: context
-                ) else {
+                    entry.request,
+                    context
+                )
+                finishDestructiveCleanupTransaction()
+                guard let result else {
                     itemResults.append(CleanupRecoveryItemResult(
                         recipeID: entry.preview.recipeID,
                         requestTarget: entry.request?.target ?? "",
@@ -430,6 +495,7 @@ extension ScanModel {
                     appendLog("공간 확보 중단: \(entry.preview.label) 실행 입력 검증 실패")
                     break
                 }
+                guard !Task.isCancelled, !applicationTerminationStarted else { return }
                 guard result.endState == .exited else {
                     itemResults.append(CleanupRecoveryItemResult(
                         recipeID: entry.preview.recipeID,
@@ -476,7 +542,6 @@ extension ScanModel {
                     detail: succeeded ? "" : executed.failureMessage
                 ))
                 if succeeded {
-                    shouldRescan = true
                     appendLog("계획 정리 완료: \(executed.label) · 실제 여유 변화 \(executed.physicalDeltaText)")
                 } else {
                     stoppedAfterFailure = true
@@ -485,9 +550,8 @@ extension ScanModel {
                     break
                 }
 
-                let after = await Task.detached(priority: .utility) {
-                    LiveStateService.observeFreeSpace()
-                }.value
+                let after = await observeFreeSpace()
+                guard !Task.isCancelled, !applicationTerminationStarted else { return }
                 guard let after else {
                     stoppedAfterFailure = true
                     errorMessage = "정리 후 실제 여유 공간을 확인하지 못해 남은 계획을 실행하지 않았습니다."
@@ -504,9 +568,9 @@ extension ScanModel {
                 )
             }
 
-            let finalObservation = await Task.detached(priority: .utility) {
-                LiveStateService.observeFreeSpace()
-            }.value
+            guard !Task.isCancelled, !applicationTerminationStarted else { return }
+            let finalObservation = await observeFreeSpace()
+            guard !Task.isCancelled, !applicationTerminationStarted else { return }
             if let finalObservation {
                 latestFreeGB = finalObservation.value.freeGB
                 freeSpaceMeasured = true
@@ -570,8 +634,9 @@ extension ScanModel {
             // never from the scheduled launch itself, which runs invisibly and
             // would turn a routine hourly tick into a surprise permission dialog.
             // The scheduled launch only posts if this already resolved to
-            // .authorized by the time it runs; a denial here just means it keeps
-            // falling back to the existing osascript notification, same as today.
+            // .authorized by the time it runs. A denial here means scheduled
+            // checks stay silent; they never post a misleading Script Editor
+            // notification as a fallback.
             if enabled {
                 _ = try? await UNUserNotificationCenter.current()
                     .requestAuthorization(options: [.alert])

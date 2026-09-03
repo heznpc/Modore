@@ -5,6 +5,19 @@ struct CleanupProcessDisplay: Equatable {
 }
 
 enum CleanupPresentation {
+    static func storageItemForSizeChangeNotice(
+        recipeID: String,
+        cleanupRequest: CleanupExecutionRequest?,
+        candidates: [StorageItem]
+    ) -> StorageItem? {
+        candidates.first { item in
+            guard item.cleanupID == recipeID else { return false }
+            guard CleanupExecutionRequest.isRequired(for: recipeID) else { return true }
+            return cleanupRequest?.recipeID == recipeID
+                && item.path == cleanupRequest?.target
+        }
+    }
+
     static func sizeChangeNotice(
         snapshotAge: String,
         scannedSize: String?,

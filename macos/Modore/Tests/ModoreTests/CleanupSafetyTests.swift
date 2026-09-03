@@ -278,6 +278,7 @@ final class CleanupSafetyTests: XCTestCase {
         )
         try "#!/bin/bash\nexit 0\n".write(to: expectedWatcher, atomically: true, encoding: .utf8)
         let appBundlePath = "/Applications/Modore.app"
+        let appExecutableHash = String(repeating: "a", count: 64)
 
         func writePlist(watcher: URL, extraEnvironment: Bool = false) throws {
             let watcherData = (try? Data(contentsOf: watcher)) ?? Data(watcher.path.utf8)
@@ -294,6 +295,7 @@ final class CleanupSafetyTests: XCTestCase {
                 // schedule.sh writes this entry unconditionally; a fixture
                 // without it is not a plist this product can actually produce.
                 "PCH_STORAGE_WATCH_APP_BUNDLE=\(appBundlePath)",
+                "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256=\(appExecutableHash)",
                 "/bin/bash",
                 "-p",
                 "-c",
@@ -329,7 +331,8 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
 
         // Installing replaces the stale definition with the current signed
@@ -339,7 +342,8 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .current)
 
         try "#!/bin/bash\nexit 99\n".write(
@@ -351,7 +355,8 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
         try "#!/bin/bash\nexit 0\n".write(
             to: expectedWatcher,
@@ -366,7 +371,8 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: mismatchedLoadedValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
 
         try FileManager.default.setAttributes(
@@ -377,7 +383,8 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
@@ -389,7 +396,8 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
 
         let mutableWatcher = root.appendingPathComponent("Application Support/Modore/runtime/scripts/storage_watch.sh")
@@ -398,7 +406,8 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
 
         let outsidePlist = root.appendingPathComponent("outside.plist")
@@ -408,7 +417,8 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
 
         // Uninstall must remove the entry rather than merely unload it.
@@ -417,12 +427,14 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .absent)
     }
 
     func testStorageWatchRejectsOversizedPlistAndSymlinkedParent() throws {
         let appBundlePath = "/Applications/Modore.app"
+        let appExecutableHash = String(repeating: "a", count: 64)
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-watch-bounds-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -443,7 +455,8 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: values,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
 
         try FileManager.default.removeItem(at: launchAgents)
@@ -459,7 +472,8 @@ final class CleanupSafetyTests: XCTestCase {
             protocolValues: values,
             expectedWatcherURL: expectedWatcher,
             expectedHomeURL: root,
-            expectedAppBundlePath: appBundlePath
+            expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
     }
 

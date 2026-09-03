@@ -17,6 +17,7 @@ struct CleanupApprovalSheet: View {
                     )
                     CleanupTargets(preview: preview)
                     CleanupRetainedResidue(preview: preview)
+                    CleanupRecoveryPaths(preview: preview)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 8)
@@ -33,9 +34,11 @@ struct CleanupApprovalSheet: View {
     }
 
     private var sizeChangeNotice: String? {
-        let item = model.storage?.cleanupCandidates.first(where: {
-            $0.cleanupID == preview.recipeID
-        })
+        let item = CleanupPresentation.storageItemForSizeChangeNotice(
+            recipeID: preview.recipeID,
+            cleanupRequest: model.cleanupRequest,
+            candidates: model.storage?.cleanupCandidates ?? []
+        )
         return CleanupPresentation.sizeChangeNotice(
             snapshotAge: model.deepScanSnapshotAgeText,
             scannedSize: item?.sizeText,
@@ -67,7 +70,30 @@ struct CleanupApprovalSheet: View {
         if !preview.reviewResidue.isEmpty {
             parts.append("이름으로만 추정해 제거하지 않는 항목: " + preview.reviewResidue.joined(separator: ", "))
         }
+        parts.append(contentsOf: preview.recoveryPathMessages)
         return parts.joined(separator: ". ")
+    }
+}
+
+private struct CleanupRecoveryPaths: View {
+    let preview: CleanupPreview
+
+    var body: some View {
+        if !preview.recoveryPathMessages.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("복구 및 확인 경로")
+                    .font(.headline)
+                ForEach(preview.recoveryPathMessages, id: \.self) { message in
+                    Text(message)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("복구 및 확인 경로")
+            .accessibilityValue(preview.recoveryPathMessages.joined(separator: ". "))
+        }
     }
 }
 

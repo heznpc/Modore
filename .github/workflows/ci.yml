@@ -60,6 +60,58 @@ jobs:
       - name: Pytest
         run: python3 -I -B -m pytest tests/ -q
 
+  source-cli-python39:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.9'
+
+      - name: Smoke-test the supported source-checkout runtime
+        run: |
+          python3 -I -B -m compileall -q scripts/
+          bin/modore --help >/dev/null
+          empty_home="$RUNNER_TEMP/modore-python39-home"
+          mkdir -p "$empty_home"
+          python3 -I -B scripts/scree.py sessions \
+            --home "$empty_home" --limit 1 > "$RUNNER_TEMP/sessions.json"
+          python3 -I -B scripts/mcp_server.py --tools > "$RUNNER_TEMP/tools.json"
+          python3 -I -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          temp = Path(os.environ["RUNNER_TEMP"])
+          sessions = json.loads((temp / "sessions.json").read_text(encoding="utf-8"))
+          tools = json.loads((temp / "tools.json").read_text(encoding="utf-8"))
+          assert sessions["total"] == 0
+          assert sessions["sessions"] == []
+          assert isinstance(tools["exposed"], list) and tools["exposed"]
+          PY
+
+  macos-python:
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install pytest (pinned via requirements-dev.txt)
+        run: python3 -m pip install -r requirements-dev.txt
+
+      - name: Run the full suite with Darwin-only contracts enabled
+        run: python3 -I -B -m pytest tests/ -q
+
   powershell:
     runs-on: windows-latest
 

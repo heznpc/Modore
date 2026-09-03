@@ -114,6 +114,59 @@ def project_residue_request(target: Path | str) -> bytes:
     ).encode("utf-8")
 
 
+def transient_workspace_request(target: Path | str) -> bytes:
+    return (
+        "version\t1\n"
+        "kind\ttransient_workspace\n"
+        f"target\t{target}\n"
+    ).encode("utf-8")
+
+
+def run_transient_workspace(
+    project_root: Path,
+    home: Path,
+    transient_root: Path,
+    target: Path | str,
+    operation: str,
+    *,
+    token: str = "",
+    open_paths_file: Path | None = None,
+):
+    extra_env = {"PCH_TEST_TRANSIENT_ROOTS": str(transient_root)}
+    if open_paths_file is not None:
+        extra_env["PCH_TEST_TRANSIENT_OPEN_PATHS_FILE"] = str(open_paths_file)
+    with tempfile.TemporaryFile() as request_file, tempfile.TemporaryFile() as token_file:
+        request_file.write(transient_workspace_request(target))
+        request_file.flush()
+        request_file.seek(0)
+        request_fd = request_file.fileno()
+        args = [
+            f"--{operation}",
+            "transient_workspace",
+            "--request-file",
+            f"/dev/fd/{request_fd}",
+        ]
+        pass_fds = [request_fd]
+        if operation == "execute":
+            token_file.write(token.encode("ascii"))
+            token_file.flush()
+            token_file.seek(0)
+            token_fd = token_file.fileno()
+            args += [
+                "--owner-approved",
+                "--approval-token-file",
+                f"/dev/fd/{token_fd}",
+            ]
+            pass_fds.append(token_fd)
+        return run_cleanup(
+            project_root,
+            home,
+            *args,
+            extra_env=extra_env,
+            pass_fds=tuple(pass_fds),
+        )
+
+
 def run_project_residue_preview(
     project_root: Path,
     home: Path,
@@ -191,18 +244,16 @@ def test_macos_app_keeps_raw_approval_token_out_of_argv(project_root):
         project_root
         / "macos/Modore/Sources/Modore/Services/CleanupExecutionService.swift"
     ).read_text(encoding="utf-8")
-    execute_source = source.split("static func execute(", 1)[1].split(
-        "private static func invocation", 1
-    )[0]
-    arguments = execute_source.split("arguments: [", 1)[1].split("],", 1)[0]
 
-    assert 'pinnedFiles["approval_token"] = Data(preview.approvalToken.utf8)' in execute_source
-    assert '"--approval-token-file", "@pch-pinned:approval_token"' in arguments
-    assert "preview.approvalToken" not in arguments
-    assert '"--approval-token",' not in execute_source
+    # The Swift unit test exercises the constructed invocation. This source
+    # boundary only guards the release against reintroducing the legacy raw
+    # argv option, which would expose the token to process inspection.
+    assert '"approval_token": Data(preview.approvalToken.utf8)' in source
+    assert '"--approval-token-file", "@pch-pinned:approval_token"' in source
+    assert '"--approval-token",' not in source
 
 
-def test_macos_app_pins_project_residue_request_out_of_argv(project_root):
+def test_macos_app_source_boundary_keeps_dynamic_cleanup_request_out_of_argv(project_root):
     service = (
         project_root
         / "macos/Modore/Sources/Modore/Services/CleanupExecutionService.swift"
@@ -211,12 +262,13 @@ def test_macos_app_pins_project_residue_request_out_of_argv(project_root):
         project_root
         / "macos/Modore/Sources/Modore/Models/StorageRecoveryModels.swift"
     ).read_text(encoding="utf-8")
-    invocation = service.split("private static func invocation", 1)[1]
-
-    assert 'pinnedFiles["cleanup_request"] = request.protocolData' in invocation
-    assert '["--request-file", "@pch-pinned:cleanup_request"]' in invocation
-    assert "request.target" not in invocation
-    assert 'Data("version\\t1\\nkind\\tproject_residue\\ntarget\\t\\(target)\\n".utf8)' in models
+    # Exact argument construction is covered by CleanupExecutionServiceTests;
+    # retain only the shipped-source boundary that the path travels through a
+    # pinned descriptor and never becomes a command-line argument.
+    assert 'requestFiles["cleanup_request"] = request.protocolData' in service
+    assert '["--request-file", "@pch-pinned:cleanup_request"]' in service
+    assert "request.target" not in service
+    assert 'Data("version\\t1\\nkind\\t\\(recipeID)\\ntarget\\t\\(target)\\n".utf8)' in models
 
 
 def test_cleanup_preview_is_read_only_and_execute_requires_approval(project_root, tmp_path):
@@ -811,6 +863,149 @@ def test_project_residue_preview_and_execute_preserve_project_evidence(
     replayed = run_project_residue_execute(project_root, home, target, token)
     assert replayed.returncode == 3
     assert parse_protocol(replayed.stdout)["status"] == "blocked"
+
+
+def test_transient_workspace_preview_and_execute_remove_only_approved_child(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    transient_root = home / "temporary-root"
+    target = transient_root / "airmcp-test-home-123"
+    sibling = transient_root / "keep-this-workspace"
+    target.mkdir(parents=True)
+    sibling.mkdir()
+    (target / "generated.bin").write_bytes(b"generated" * 4096)
+    (sibling / "keep.txt").write_text("keep", encoding="utf-8")
+
+    preview = run_transient_workspace(
+        project_root, home, transient_root, target, "preview"
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "ready"
+    assert payload["recipeId"] == "transient_workspace"
+    assert payload["targets"] == [str(target)]
+
+    executed = run_transient_workspace(
+        project_root,
+        home,
+        transient_root,
+        target,
+        "execute",
+        token=approval_token(payload),
+    )
+    result = parse_protocol(executed.stdout)
+
+    assert executed.returncode == 0, executed.stderr
+    assert result["status"] == "complete"
+    assert not target.exists()
+    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.parametrize("condition", ["nested", "outside", "symlink", "hidden"])
+def test_transient_workspace_rejects_targets_outside_exact_owned_child_contract(
+    project_root, tmp_path, condition
+):
+    home = tmp_path / "home"
+    transient_root = home / "temporary-root"
+    transient_root.mkdir(parents=True)
+    protected = home / "protected"
+    protected.mkdir()
+    (protected / "keep.txt").write_text("keep", encoding="utf-8")
+
+    if condition == "nested":
+        target = transient_root / "parent" / "nested"
+        target.mkdir(parents=True)
+    elif condition == "outside":
+        target = home / "outside-workspace"
+        target.mkdir()
+    elif condition == "symlink":
+        target = transient_root / "linked-workspace"
+        target.symlink_to(protected, target_is_directory=True)
+    else:
+        target = transient_root / ".hidden-workspace"
+        target.mkdir()
+
+    preview = run_transient_workspace(
+        project_root, home, transient_root, target, "preview"
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert target.exists()
+    assert (protected / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_transient_workspace_blocks_when_any_file_is_open(project_root, tmp_path):
+    home = tmp_path / "home"
+    transient_root = home / "temporary-root"
+    target = transient_root / "active-test-home"
+    target.mkdir(parents=True)
+    (target / "active.bin").write_bytes(b"active")
+    open_paths = home / "open-transient-paths.txt"
+    open_paths.write_text(f"{target}\n", encoding="utf-8")
+
+    preview = run_transient_workspace(
+        project_root,
+        home,
+        transient_root,
+        target,
+        "preview",
+        open_paths_file=open_paths,
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert "사용하는 프로세스" in str(payload["blockedReason"])
+    assert target.exists()
+
+
+def test_transient_workspace_consumes_approval_when_it_becomes_active(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    transient_root = home / "temporary-root"
+    target = transient_root / "idle-then-active"
+    target.mkdir(parents=True)
+    (target / "generated.bin").write_bytes(b"generated" * 4096)
+
+    preview = run_transient_workspace(
+        project_root, home, transient_root, target, "preview"
+    )
+    payload = parse_protocol(preview.stdout)
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "ready"
+
+    open_paths = home / "open-transient-paths.txt"
+    open_paths.write_text(f"{target}\n", encoding="utf-8")
+    token = approval_token(payload)
+    executed = run_transient_workspace(
+        project_root,
+        home,
+        transient_root,
+        target,
+        "execute",
+        token=token,
+        open_paths_file=open_paths,
+    )
+    assert executed.returncode == 3
+    assert parse_protocol(executed.stdout)["status"] == "blocked"
+    assert target.exists()
+
+    replayed = run_transient_workspace(
+        project_root,
+        home,
+        transient_root,
+        target,
+        "execute",
+        token=token,
+    )
+    assert replayed.returncode == 3
+    assert parse_protocol(replayed.stdout)["status"] == "blocked"
+    assert target.exists()
 
 
 @pytest.mark.parametrize(
@@ -1792,6 +1987,10 @@ def test_simulator_recipe_honors_keep_list_and_deletes_only_verified_uuid(projec
     device = home / "Library" / "Developer" / "CoreSimulator" / "Devices" / uuid
     device.mkdir(parents=True)
     (device / "data.bin").write_bytes(b"fixture")
+    sibling_uuid = "66666666-7777-4888-9999-AAAAAAAAAAAA"
+    sibling = device.parent / sibling_uuid
+    sibling.mkdir()
+    (sibling / "must-stay.bin").write_bytes(b"sibling fixture")
     support = home / "Library" / "Application Support" / "Modore"
     support.mkdir(parents=True)
     keep_file = support / "simulator-keep.txt"
@@ -1799,7 +1998,8 @@ def test_simulator_recipe_honors_keep_list_and_deletes_only_verified_uuid(projec
     simctl_list = home / "simctl.txt"
     simctl_list.write_text(
         "== Devices ==\n-- iOS 26.3 --\n"
-        f"    iPhone 17 Pro Max ({uuid}) (Shutdown)\n",
+        f"    iPhone 17 Pro Max ({uuid}) (Shutdown)\n"
+        f"    Sibling Phone ({sibling_uuid}) (Shutdown)\n",
         encoding="utf-8",
     )
     delete_log = home / "simctl-delete.log"
@@ -1858,7 +2058,82 @@ def test_simulator_recipe_honors_keep_list_and_deletes_only_verified_uuid(projec
     assert result["status"] == "complete"
     assert result["actionMode"] == "simulator"
     assert not device.exists()
+    assert (sibling / "must-stay.bin").read_bytes() == b"sibling fixture"
     assert delete_log.read_text(encoding="utf-8").strip() == uuid
+
+
+@pytest.mark.parametrize("state", ["Booted", "Creating", "Shutting Down"])
+def test_simulator_preview_allows_only_shutdown_devices(project_root, tmp_path, state):
+    home = tmp_path / "home"
+    uuid = "12345678-1234-4234-8234-123456789ABC"
+    device = home / "Library/Developer/CoreSimulator/Devices" / uuid
+    device.mkdir(parents=True)
+    simctl_list = home / "simctl.txt"
+    simctl_list.write_text(
+        f"-- iOS 27.0 --\n    State Phone ({uuid}) ({state})\n",
+        encoding="utf-8",
+    )
+
+    preview = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        f"simulator_delete:{uuid}",
+        extra_env={"PCH_SIMCTL_LIST_FILE": str(simctl_list)},
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert state in str(payload["blockedReason"])
+    assert device.is_dir()
+
+
+@pytest.mark.parametrize(
+    "keep_shape", ["symlink", "hardlink", "oversized", "unreadable", "many-lines"]
+)
+def test_simulator_preview_fails_closed_for_untrusted_keep_files(
+    project_root, tmp_path, keep_shape
+):
+    home = tmp_path / "home"
+    uuid = "12345678-1234-4234-8234-123456789ABC"
+    device = home / "Library/Developer/CoreSimulator/Devices" / uuid
+    device.mkdir(parents=True)
+    support = home / "Library/Application Support/Modore"
+    support.mkdir(parents=True)
+    keep = support / "simulator-keep.txt"
+    source = support / "keep-source.txt"
+    source.write_text("", encoding="utf-8")
+    if keep_shape == "symlink":
+        keep.symlink_to(source)
+    elif keep_shape == "hardlink":
+        os.link(source, keep)
+    elif keep_shape == "oversized":
+        keep.write_bytes(b"x" * 65537)
+    elif keep_shape == "many-lines":
+        keep.write_text("\n" * 5000, encoding="utf-8")
+    else:
+        keep.write_text("", encoding="utf-8")
+        keep.chmod(0)
+    simctl_list = home / "simctl.txt"
+    simctl_list.write_text(
+        f"-- iOS 27.0 --\n    Protected Phone ({uuid}) (Shutdown)\n",
+        encoding="utf-8",
+    )
+
+    preview = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        f"simulator_delete:{uuid}",
+        extra_env={"PCH_SIMCTL_LIST_FILE": str(simctl_list)},
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert "안전하게 읽을 수 없어" in str(payload["blockedReason"])
+    assert device.is_dir()
 
 
 @pytest.mark.parametrize(
@@ -1867,6 +2142,7 @@ def test_simulator_recipe_honors_keep_list_and_deletes_only_verified_uuid(projec
         ("booted", "Booted"),
         ("preserved", "보존 목록"),
         ("legacy", "이름 기반"),
+        ("invalid", "안전하게 읽을 수 없어"),
     ],
 )
 def test_simulator_delete_rechecks_state_and_keep_file_at_final_boundary(
@@ -1901,10 +2177,15 @@ def test_simulator_delete_rechecks_state_and_keep_file_at_final_boundary(
         extra_env["PCH_TEST_LATE_SIMCTL_LIST_FILE"] = str(late_simctl)
     else:
         late_keep = home / "late-keep.txt"
-        late_keep.write_text(
-            f"{uuid.lower()}\n" if late_condition == "preserved" else "Boundary Phone\n",
-            encoding="utf-8",
-        )
+        if late_condition == "invalid":
+            late_keep.write_bytes(b"x" * 65537)
+        else:
+            late_keep.write_text(
+                f"{uuid.lower()}\n"
+                if late_condition == "preserved"
+                else "Boundary Phone\n",
+                encoding="utf-8",
+            )
         extra_env["PCH_TEST_LATE_SIMULATOR_KEEP_FILE"] = str(late_keep)
 
     preview = run_cleanup(
@@ -1940,55 +2221,56 @@ def test_simulator_delete_rechecks_state_and_keep_file_at_final_boundary(
 
 
 def test_simulator_delete_postcondition_check_detects_leftover_data(project_root, tmp_path):
-    """`xcrun simctl delete` exiting 0 only means CoreSimulator's daemon
-    accepted the request -- unlike the staged-move path used for every other
-    recipe (whose remove_tree_same_device is a direct `find -delete`, so its
-    own exit code IS the postcondition), simctl is an opaque, daemon-mediated
-    tool. Confirmed directly against a real device: deletion is synchronous
-    on a healthy system (the device directory is gone the instant `simctl
-    delete` returns) and a hard failure (e.g. an immutable directory) makes
-    simctl itself exit non-zero -- both already handled before this check.
-    This check exists for the gap between those two: simctl reporting
-    success while the directory nonetheless survives. That specific failure
-    mode could not be reproduced through real simctl even with an immutable
-    file nested inside the device directory (simctl's removal proved more
-    robust than a plain `rm -rf`), so this proves the actual shipped
-    condition -- extracted from cleanup.sh, not a hand-duplicated copy that
-    could silently drift from it -- under direct bash execution against both
-    a present and an absent path, rather than through a full non-sandboxed
-    end-to-end run (which would require abandoning this suite's own
-    production-home isolation guard, see test_production_home_must_match_current_account)."""
-    source = (project_root / "scripts" / "cleanup.sh").read_text(encoding="utf-8")
-    marker = 'elif [[ -e "${TARGETS[0]}" || -L "${TARGETS[0]}" ]]; then'
-    assert marker in source, "the postcondition check's exact shape moved; update this test's extraction"
-    condition = marker.removeprefix("elif ").removesuffix(" then")
-
-    harness = tmp_path / "check.sh"
-    harness.write_text(
-        f'#!/bin/bash\nTARGETS=("$1")\nif {condition}\nthen echo LEFTOVER; else echo GONE; fi\n',
+    home = tmp_path / "home"
+    uuid = "ABCDEF12-3456-4789-8ABC-DEF123456789"
+    device = home / "Library/Developer/CoreSimulator/Devices" / uuid
+    device.mkdir(parents=True)
+    (device / "leftover.bin").write_bytes(b"leftover device data")
+    simctl_list = home / "simctl.txt"
+    simctl_list.write_text(
+        f"-- iOS 27.0 --\n    Leftover Phone ({uuid}) (Shutdown)\n",
         encoding="utf-8",
     )
-    harness.chmod(0o700)
-
-    present = tmp_path / "still-here.bin"
-    present.write_bytes(b"leftover device data")
-    result_present = subprocess.run(
-        ["/bin/bash", str(harness), str(present)], capture_output=True, text=True, encoding="utf-8"
+    calls = home / "fake-simctl.calls"
+    fake_simctl = home / "fake-simctl"
+    fake_simctl.write_text(
+        "#!/bin/bash\n"
+        f'printf "%s\\n" "$*" >> "{calls}"\n'
+        "exit 0\n",
+        encoding="utf-8",
     )
-    assert result_present.stdout.strip() == "LEFTOVER"
-
-    absent = tmp_path / "already-deleted.bin"
-    result_absent = subprocess.run(
-        ["/bin/bash", str(harness), str(absent)], capture_output=True, text=True, encoding="utf-8"
+    fake_simctl.chmod(0o700)
+    preview = run_cleanup(
+        project_root,
+        home,
+        "--preview",
+        f"simulator_delete:{uuid}",
+        extra_env={"PCH_SIMCTL_LIST_FILE": str(simctl_list)},
     )
-    assert result_absent.stdout.strip() == "GONE"
+    payload = parse_protocol(preview.stdout)
+    assert payload["status"] == "ready"
 
-    symlink = tmp_path / "dangling-symlink"
-    symlink.symlink_to(tmp_path / "nonexistent-target")
-    result_symlink = subprocess.run(
-        ["/bin/bash", str(harness), str(symlink)], capture_output=True, text=True, encoding="utf-8"
+    executed = run_cleanup(
+        project_root,
+        home,
+        "--execute",
+        f"simulator_delete:{uuid}",
+        "--owner-approved",
+        "--approval-token",
+        approval_token(payload),
+        extra_env={
+            "PCH_SIMCTL_LIST_FILE": str(simctl_list),
+            "PCH_TEST_SIMCTL_DELETE_BIN": str(fake_simctl),
+        },
     )
-    assert result_symlink.stdout.strip() == "LEFTOVER", "a dangling symlink left at the target path is still leftover state, not success"
+    result = parse_protocol(executed.stdout)
+
+    assert executed.returncode == 4
+    assert result["status"] == "partial"
+    assert result["reclaimedKB"] == "0"
+    assert "실제로 지워지지 않았습니다" in str(result["blockedReason"])
+    assert (device / "leftover.bin").read_bytes() == b"leftover device data"
+    assert calls.read_text(encoding="utf-8").strip() == f"delete {uuid}"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS bundle tools are required")

@@ -33,7 +33,9 @@ enum MothballService {
     static func scanScope(
         from lineagePaths: [ScreeLineagePath], limit: Int = 300
     ) -> (roots: [URL], notScanned: [String]) {
-        let repos = lineagePaths.filter { $0.exists && $0.hasGit }.map(\.path)
+        let repos = lineagePaths
+            .filter { $0.exists == true && $0.hasGit == true }
+            .map(\.path)
         return (repos.prefix(limit).map { URL(fileURLWithPath: $0) },
                 Array(repos.dropFirst(limit)))
     }
@@ -366,7 +368,7 @@ extension ScanModel {
             // depend on which repos survived the archive classifier or the
             // scanner's own root limit.
             gitRoots: (screeReport?.lineagePaths ?? [])
-                .filter(\.hasGit).map(\.path),
+                .filter { $0.hasGit == true }.map(\.path),
             scanFailures: repoScanFailures,
             notScanned: reposNotScanned
         )

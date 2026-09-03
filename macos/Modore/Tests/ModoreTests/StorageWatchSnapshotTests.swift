@@ -66,6 +66,60 @@ final class StorageWatchSnapshotTests: XCTestCase {
         XCTAssertEqual(events[0].rows.map(\.kind), [.swap, .processRSS])
     }
 
+    func testKeepsTimedOutPartialRSSAndCarriesItsCaptureStatus() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("storage-watch-signals.tsv")
+        try writePrivate(
+            "2026-08-31T12:00:00Z\tprocess_rss\t800000\t0\t42\ttimed_out\tCodex Renderer\tCodex Renderer\n",
+            to: url
+        )
+
+        let signal = try XCTUnwrap(StorageWatchSignalStore.load(from: url).first)
+
+        XCTAssertEqual(signal.kind, .processRSS)
+        XCTAssertEqual(signal.valueKB, 800_000)
+        XCTAssertEqual(signal.status, .timedOut)
+        XCTAssertFalse(signal.isComplete)
+        XCTAssertTrue(signal.isPartial)
+        XCTAssertEqual(
+            StorageWatchSignalStore.events(from: [signal]).first?.rows,
+            [signal]
+        )
+    }
+
+    func testRejectsUnknownSignalCaptureStatus() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("storage-watch-signals.tsv")
+        try writePrivate(
+            "2026-08-31T12:00:00Z\tprocess_rss\t800000\t0\t42\tunknown\tCodex Renderer\tCodex Renderer\n",
+            to: url
+        )
+
+        XCTAssertTrue(StorageWatchSignalStore.load(from: url).isEmpty)
+    }
+
+    func testSignalSummaryDoesNotDescribeTimedOutRSSAsComplete() {
+        let capturedAt = Date(timeIntervalSince1970: 100)
+        let partial = signalSnapshot(
+            at: capturedAt,
+            pid: 42,
+            label: "Codex Renderer",
+            status: .timedOut
+        )
+        let event = StorageWatchSignalEvent(capturedAt: capturedAt, rows: [partial])
+
+        XCTAssertEqual(
+            event.collectionSummary(for: .processRSS, label: "상위 RAM"),
+            "상위 RAM 시간 제한으로 일부만 수집"
+        )
+        XCTAssertEqual(
+            event.collectionSummary(for: .swap, label: "스왑"),
+            "스왑 신호 없음"
+        )
+    }
+
     func testBoundsLoadedSignalRows() throws {
         let directory = try makePrivateDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -149,6 +203,97 @@ final class StorageWatchSnapshotTests: XCTestCase {
         )
     }
 
+    func testLoadsPreviousAndCurrentCommittedEvidencePointers() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("storage-watch.tsv")
+        try writePrivate(
+            """
+            version\t1
+            previousEvidenceAt\t2026-08-31T12:00:00.000100Z
+            lastEvidenceAt\t2026-08-31T18:00:00.000200Z
+            previousPathEvidenceAt\t2026-08-31T06:00:00.000300Z
+            lastPathEvidenceAt\t2026-08-31T09:00:00.000400Z
+            """,
+            to: url
+        )
+
+        let commit = try XCTUnwrap(StorageWatchEvidenceCommitStore.loadCommit(from: url))
+
+        XCTAssertEqual(
+            commit.previousAt?.timeIntervalSince1970 ?? 0,
+            1_788_177_600.0001,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            commit.committedAt.timeIntervalSince1970,
+            1_788_199_200.0002,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            commit.previousPathAt?.timeIntervalSince1970 ?? 0,
+            1_788_156_000.0003,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            commit.pathCommittedAt?.timeIntervalSince1970 ?? 0,
+            1_788_166_800.0004,
+            accuracy: 0.001
+        )
+    }
+
+    func testLegacyCommitKeysRemainThePathDeltaFallback() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("storage-watch.tsv")
+        try writePrivate(
+            """
+            previousEvidenceAt\t2026-08-31T12:00:00Z
+            lastEvidenceAt\t2026-08-31T18:00:00Z
+            """,
+            to: url
+        )
+
+        let commit = try XCTUnwrap(StorageWatchEvidenceCommitStore.loadCommit(from: url))
+
+        XCTAssertEqual(commit.previousPathAt, commit.previousAt)
+        XCTAssertEqual(commit.pathCommittedAt, commit.committedAt)
+    }
+
+    func testLoadsV2SignalOnlyStateWithEmptyPathPointers() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stateURL = directory.appendingPathComponent("storage-watch.tsv")
+        let absentPathURL = directory.appendingPathComponent("storage-watch-paths.tsv")
+        let signalURL = directory.appendingPathComponent("storage-watch-signals.tsv")
+        try writePrivate(
+            """
+            version\t1
+            evidencePointerVersion\t2
+            previousEvidenceAt\t
+            lastEvidenceAt\t2026-08-31T18:00:00Z
+            previousPathEvidenceAt\t
+            lastPathEvidenceAt\t
+            """,
+            to: stateURL
+        )
+        try writePrivate(
+            "2026-08-31T18:00:00Z\tprocess_rss\t800000\t0\t42\ttimed_out\tCodex Renderer\tCodex Renderer\n",
+            to: signalURL
+        )
+
+        let evidence = try XCTUnwrap(StorageWatchEvidenceStore.load(
+            stateURL: stateURL,
+            pathURL: absentPathURL,
+            signalURL: signalURL
+        ))
+
+        XCTAssertEqual(evidence.committedAt, commitDate("2026-08-31T18:00:00Z"))
+        XCTAssertNil(evidence.pathCommittedAt)
+        XCTAssertTrue(evidence.pathEvents.isEmpty)
+        XCTAssertEqual(evidence.signalEvents.flatMap(\.rows).first?.status, .timedOut)
+    }
+
     func testStableEvidenceReadDropsUncommittedTail() {
         let committedAt = Date(timeIntervalSince1970: 100)
         let inFlightAt = Date(timeIntervalSince1970: 200)
@@ -171,6 +316,210 @@ final class StorageWatchSnapshotTests: XCTestCase {
         XCTAssertEqual(evidence?.committedAt, committedAt)
         XCTAssertEqual(evidence?.pathEvents.flatMap(\.rows).map(\.label), ["committed"])
         XCTAssertEqual(evidence?.signalEvents.flatMap(\.rows).map(\.label), ["committed"])
+    }
+
+    func testStableEvidenceKeepsExactlyPreviousAndCurrentCommittedEvents() {
+        let staleAt = Date(timeIntervalSince1970: 50)
+        let previousAt = Date(timeIntervalSince1970: 100)
+        let currentAt = Date(timeIntervalSince1970: 200)
+        let inFlightAt = Date(timeIntervalSince1970: 300)
+        let commit = StorageWatchEvidenceCommit(
+            previousAt: previousAt,
+            committedAt: currentAt
+        )
+
+        let evidence = StorageWatchEvidenceStore.loadStable(
+            readCommit: { commit },
+            readPaths: {
+                [staleAt, previousAt, currentAt, inFlightAt].map {
+                    pathSnapshot(at: $0, label: "path-\(Int($0.timeIntervalSince1970))")
+                }
+            },
+            readSignals: {
+                [staleAt, previousAt, currentAt, inFlightAt].enumerated().map {
+                    signalSnapshot(
+                        at: $0.element,
+                        pid: $0.offset + 1,
+                        label: "signal-\(Int($0.element.timeIntervalSince1970))"
+                    )
+                }
+            }
+        )
+
+        XCTAssertEqual(evidence?.pathEvents.map(\.capturedAt), [previousAt, currentAt])
+        XCTAssertEqual(evidence?.signalEvents.map(\.capturedAt), [previousAt, currentAt])
+        XCTAssertEqual(evidence?.committedAt, currentAt)
+        XCTAssertEqual(evidence?.pathCommittedAt, currentAt)
+    }
+
+    func testSignalOnlyCommitKeepsTheIndependentPathDeltaPair() throws {
+        let oldPathAt = Date(timeIntervalSince1970: 100)
+        let newPathAt = Date(timeIntervalSince1970: 150)
+        let previousSignalAt = Date(timeIntervalSince1970: 200)
+        let currentSignalAt = Date(timeIntervalSince1970: 300)
+        let commit = StorageWatchEvidenceCommit(
+            previousAt: previousSignalAt,
+            committedAt: currentSignalAt,
+            previousPathAt: oldPathAt,
+            pathCommittedAt: newPathAt
+        )
+
+        let evidence = try XCTUnwrap(StorageWatchEvidenceStore.loadStable(
+            readCommit: { commit },
+            readPaths: {
+                [50, 100, 150, 200, 300].map { timestamp in
+                    pathSnapshot(
+                        at: Date(timeIntervalSince1970: TimeInterval(timestamp)),
+                        label: "path-\(timestamp)",
+                        sizeGB: timestamp == 100 ? 1 : 2,
+                        path: "/tmp/shared"
+                    )
+                }
+            },
+            readSignals: {
+                [previousSignalAt, currentSignalAt].enumerated().map {
+                    signalSnapshot(at: $0.element, pid: $0.offset + 1, label: "signal")
+                }
+            }
+        ))
+
+        XCTAssertEqual(evidence.pathEvents.map(\.capturedAt), [oldPathAt, newPathAt])
+        XCTAssertEqual(
+            evidence.signalEvents.map(\.capturedAt),
+            [previousSignalAt, currentSignalAt]
+        )
+        XCTAssertEqual(evidence.committedAt, currentSignalAt)
+        XCTAssertEqual(evidence.pathCommittedAt, newPathAt)
+
+        let change = try XCTUnwrap(StorageWatchPathChangeSummary.latest(
+            pathEvents: evidence.pathEvents,
+            committedAt: evidence.committedAt
+        ))
+        XCTAssertEqual(change.previousAt, oldPathAt)
+        XCTAssertEqual(change.currentAt, newPathAt)
+        XCTAssertEqual(change.growing.first?.deltaGB ?? 0, 1, accuracy: 0.000_001)
+    }
+
+    func testStableEvidenceAcceptsCommittedPathOnlyHistory() {
+        let committedAt = Date(timeIntervalSince1970: 100)
+
+        let evidence = StorageWatchEvidenceStore.loadStable(
+            readCommittedAt: { committedAt },
+            readPaths: { [pathSnapshot(at: committedAt, label: "path-only")] },
+            readSignals: { [] }
+        )
+
+        XCTAssertEqual(evidence?.pathEvents.flatMap(\.rows).map(\.label), ["path-only"])
+        XCTAssertTrue(evidence?.signalEvents.isEmpty == true)
+    }
+
+    func testEvidenceLoadTreatsAGenuinelyMissingSignalFileAsLegacyPathOnly() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stateURL = directory.appendingPathComponent("storage-watch.tsv")
+        let pathURL = directory.appendingPathComponent("storage-watch-paths.tsv")
+        let absentSignalURL = directory.appendingPathComponent("storage-watch-signals.tsv")
+        try writePrivate(
+            "lastEvidenceAt\t2026-08-31T12:00:00Z\n",
+            to: stateURL
+        )
+        try writePrivate(
+            "2026-08-31T12:00:00Z\t1048576\tok\tLegacy path\t/tmp/legacy\n",
+            to: pathURL
+        )
+
+        let evidence = StorageWatchEvidenceStore.load(
+            stateURL: stateURL,
+            pathURL: pathURL,
+            signalURL: absentSignalURL
+        )
+
+        XCTAssertEqual(evidence?.pathEvents.flatMap(\.rows).map(\.label), ["Legacy path"])
+        XCTAssertTrue(evidence?.signalEvents.isEmpty == true)
+    }
+
+    func testStableEvidenceAcceptsCommittedSignalOnlyHistory() {
+        let committedAt = Date(timeIntervalSince1970: 100)
+
+        let evidence = StorageWatchEvidenceStore.loadStable(
+            readCommittedAt: { committedAt },
+            readPaths: { [] },
+            readSignals: {
+                [signalSnapshot(at: committedAt, pid: 42, label: "signal-only")]
+            }
+        )
+
+        XCTAssertTrue(evidence?.pathEvents.isEmpty == true)
+        XCTAssertEqual(evidence?.signalEvents.flatMap(\.rows).map(\.label), ["signal-only"])
+    }
+
+    func testPathChangeUsesOnlySharedSuccessfullyMeasuredPaths() throws {
+        let previousAt = Date(timeIntervalSince1970: 100)
+        let currentAt = Date(timeIntervalSince1970: 200)
+        let previous = StorageWatchPathEvent(capturedAt: previousAt, rows: [
+            pathSnapshot(at: previousAt, label: "Codex", sizeGB: 1, path: "/tmp/codex/"),
+            pathSnapshot(at: previousAt, label: "Timed out", status: "timed_out", path: "/tmp/slow"),
+            pathSnapshot(at: previousAt, label: "Disappeared", path: "/tmp/gone"),
+        ])
+        let current = StorageWatchPathEvent(capturedAt: currentAt, rows: [
+            pathSnapshot(at: currentAt, label: "Codex", sizeGB: 2.25, path: "/tmp/codex"),
+            pathSnapshot(at: currentAt, label: "Timed out", sizeGB: 3, path: "/tmp/slow"),
+            pathSnapshot(at: currentAt, label: "New", sizeGB: 4, path: "/tmp/new"),
+        ])
+
+        let summary = try XCTUnwrap(StorageWatchPathChangeSummary.latest(
+            pathEvents: [previous, current],
+            committedAt: currentAt
+        ))
+
+        XCTAssertEqual(summary.changes.count, 1)
+        XCTAssertEqual(summary.growing.first?.label, "Codex")
+        XCTAssertEqual(summary.growing.first?.deltaGB ?? 0, 1.25, accuracy: 0.000_001)
+    }
+
+    func testPathChangeIgnoresFilesystemNoiseBelowIncidentThreshold() throws {
+        let previousAt = Date(timeIntervalSince1970: 100)
+        let currentAt = Date(timeIntervalSince1970: 200)
+        let summary = try XCTUnwrap(StorageWatchPathChangeSummary.latest(
+            pathEvents: [
+                StorageWatchPathEvent(capturedAt: previousAt, rows: [
+                    pathSnapshot(at: previousAt, label: "Cache", sizeGB: 1),
+                ]),
+                StorageWatchPathEvent(capturedAt: currentAt, rows: [
+                    pathSnapshot(at: currentAt, label: "Cache", sizeGB: 1.01),
+                ]),
+            ],
+            committedAt: currentAt
+        ))
+
+        XCTAssertTrue(summary.changes.isEmpty)
+        XCTAssertTrue(summary.growing.isEmpty)
+    }
+
+    func testPathMeasurementTextKeepsPositivePartialBytesAsAConfirmedMinimum() {
+        let capturedAt = Date(timeIntervalSince1970: 100)
+        let largePartial = pathSnapshot(
+            at: capturedAt,
+            label: "Large partial",
+            sizeGB: 1.25,
+            status: "timed_out"
+        )
+        let smallPartial = pathSnapshot(
+            at: capturedAt,
+            label: "Small partial",
+            sizeGB: 0.05,
+            status: "timed_out"
+        )
+        let unknown = pathSnapshot(
+            at: capturedAt,
+            label: "Unknown",
+            sizeGB: 0,
+            status: "timed_out"
+        )
+
+        XCTAssertEqual(largePartial.measurementText, "최소 1.2GB")
+        XCTAssertEqual(smallPartial.measurementText, "최소 51.2MB")
+        XCTAssertEqual(unknown.measurementText, "시간 제한")
     }
 
     func testStableEvidenceReadRetriesPointerChange() {
@@ -287,8 +636,6 @@ final class StorageWatchSnapshotTests: XCTestCase {
         try writePrivate(
             """
             lastAttemptAt\t2026-08-12T02:00:00Z
-            lastExitCode\t1
-            lastFinishedAt\t2026-08-12T02:00:05Z
             """,
             to: heartbeatURL
         )
@@ -365,6 +712,104 @@ final class StorageWatchSnapshotTests: XCTestCase {
         XCTAssertEqual(state, .staleSuccess)
     }
 
+    func testFutureSuccessCannotMaskTheCurrentFailedAttempt() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        try writePrivate(
+            """
+            lastAttemptAt\t2026-08-12T02:00:00Z
+            """,
+            to: heartbeatURL
+        )
+
+        let state = StorageWatchService.healthState(
+            heartbeatURL: heartbeatURL,
+            freshestSuccessAt: ISO8601DateFormatter().date(
+                from: "2026-08-13T02:00:00Z"
+            )!,
+            now: ISO8601DateFormatter().date(from: "2026-08-12T02:01:00Z")!
+        )
+
+        XCTAssertEqual(state, .attemptedThenFailed)
+    }
+
+    func testMalformedCompletedHeartbeatFailsClosed() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        let success = ISO8601DateFormatter().date(from: "2026-08-12T02:00:05Z")!
+
+        for heartbeat in [
+            "lastAttemptAt\t2026-08-12T02:00:00Z\nlastExitCode\tbogus\nlastFinishedAt\t2026-08-12T02:00:05Z\n",
+            "lastAttemptAt\t2026-08-12T02:00:00Z\nlastExitCode\t0\n",
+            "lastAttemptAt\t2026-08-12T02:00:00Z\nlastFinishedAt\t2026-08-12T02:00:05Z\n",
+        ] {
+            try writePrivate(heartbeat, to: heartbeatURL)
+            XCTAssertEqual(
+                StorageWatchService.healthState(
+                    heartbeatURL: heartbeatURL,
+                    freshestSuccessAt: success,
+                    now: success.addingTimeInterval(60)
+                ),
+                .attemptedThenFailed,
+                heartbeat
+            )
+        }
+    }
+
+    func testExplicitFailedHeartbeatOutranksNearFutureAndEqualSuccessRows() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let heartbeatURL = directory.appendingPathComponent("storage-watch-heartbeat.tsv")
+        try writePrivate(
+            """
+            lastAttemptAt\t2026-08-12T02:00:00Z
+            lastExitCode\t1
+            lastFinishedAt\t2026-08-12T02:00:05Z
+            """,
+            to: heartbeatURL
+        )
+        let now = ISO8601DateFormatter().date(from: "2026-08-12T02:00:30Z")!
+
+        for successTimestamp in [
+            "2026-08-12T02:00:00Z",
+            "2026-08-12T02:01:00Z",
+        ] {
+            let state = StorageWatchService.healthState(
+                heartbeatURL: heartbeatURL,
+                freshestSuccessAt: ISO8601DateFormatter().date(from: successTimestamp)!,
+                now: now
+            )
+            XCTAssertEqual(state, .attemptedThenFailed, successTimestamp)
+        }
+    }
+
+    func testFreeSpaceSampleLoaderDropsFarFutureRowsBeforeSorting() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sampleURL = directory.appendingPathComponent("storage-samples.tsv")
+        try writePrivate(
+            """
+            2026-08-12T02:00:00Z\t10485760\t0\tok
+            2026-08-13T02:00:00Z\t9437184\t1048576\twarning
+            """,
+            to: sampleURL
+        )
+
+        let samples = StorageHistoryStore.loadFreeSpaceSamples(
+            from: sampleURL,
+            now: ISO8601DateFormatter().date(from: "2026-08-12T02:01:00Z")!
+        )
+
+        XCTAssertEqual(samples.count, 1)
+        XCTAssertEqual(samples.first?.status, "ok")
+        XCTAssertEqual(
+            samples.first?.checkedAt,
+            ISO8601DateFormatter().date(from: "2026-08-12T02:00:00Z")!
+        )
+    }
+
     private func makePrivateDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("pch-watch-tests-\(UUID().uuidString)", isDirectory: true)
@@ -386,21 +831,25 @@ final class StorageWatchSnapshotTests: XCTestCase {
 
     private func pathSnapshot(
         at capturedAt: Date,
-        label: String
+        label: String,
+        sizeGB: Double = 1,
+        status: String = "ok",
+        path: String? = nil
     ) -> StorageWatchPathSnapshot {
         StorageWatchPathSnapshot(
             capturedAt: capturedAt,
-            sizeGB: 1,
-            status: "ok",
+            sizeGB: sizeGB,
+            status: status,
             label: label,
-            path: "/tmp/\(label)"
+            path: path ?? "/tmp/\(label)"
         )
     }
 
     private func signalSnapshot(
         at capturedAt: Date,
         pid: Int,
-        label: String
+        label: String,
+        status: StorageWatchSignalStatus = .ok
     ) -> StorageWatchSignalSnapshot {
         StorageWatchSignalSnapshot(
             capturedAt: capturedAt,
@@ -408,9 +857,14 @@ final class StorageWatchSnapshotTests: XCTestCase {
             valueKB: 1,
             allocatedKB: 0,
             pid: pid,
+            status: status,
             label: label,
             reference: label
         )
+    }
+
+    private func commitDate(_ value: String) -> Date {
+        ISO8601DateFormatter().date(from: value)!
     }
 }
 

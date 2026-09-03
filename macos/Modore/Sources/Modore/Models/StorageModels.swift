@@ -24,6 +24,7 @@ enum CleanupRecipeCatalog {
     static func supportsStorageItem(recipeID: String, kind: String) -> Bool {
         if fixedRecipes.contains(recipeID) { return true }
         if kind == "project_residue", recipeID == "project_residue" { return true }
+        if kind == "transient_workspace", recipeID == "transient_workspace" { return true }
         guard kind == "application", recipeID.hasPrefix("app_uninstall:") else { return false }
         let bundleID = String(recipeID.dropFirst("app_uninstall:".count))
         return bundleID.range(
@@ -49,7 +50,8 @@ enum CleanupRecipeCatalog {
              "codex_temp_cache", "chrome_code_sign_clones":
             return .safe
         case "playwright_browsers", "swiftpm_cache", "codex_runtime_cache",
-             "claude_vm_bundles", "xcode_derived_data", "project_residue":
+             "claude_vm_bundles", "xcode_derived_data", "project_residue",
+             "transient_workspace":
             return .rebuild
         default:
             return nil
@@ -80,6 +82,10 @@ struct StorageSnapshot {
     let reviewGB: Double
     let applicationsGB: Double
     let simulatorGB: Double
+    let simulatorFootprintGB: Double
+    let simulatorBreakdown: [SimulatorFootprintBreakdown]
+    let simulatorFootprintMeasurementIncomplete: Bool
+    let simulatorCreationBursts: [SimulatorCreationBurst]
     let inventoryGB: Double
     let attentionRuntimeSignals: [RuntimeSignal]
 
@@ -108,6 +114,10 @@ struct StorageSnapshot {
         reviewGB = totals.reviewGB
         applicationsGB = totals.applicationsGB
         simulatorGB = totals.simulatorGB
+        simulatorFootprintGB = totals.simulatorFootprintGB
+        simulatorBreakdown = totals.simulatorBreakdown
+        simulatorFootprintMeasurementIncomplete = totals.simulatorFootprintMeasurementIncomplete
+        simulatorCreationBursts = SimulatorCreationBurst.detect(in: components.simulatorDevices)
         inventoryGB = totals.inventoryGB
         attentionRuntimeSignals = Self.attentionSignals(components.runtimeSignals)
     }
@@ -135,7 +145,7 @@ struct StorageSnapshot {
     }
 
     var developerText: String {
-        let counted = developerToolchains.filter { $0.kind != "simulator_devices" }
+        let counted = developerToolchains.filter { !$0.kind.hasPrefix("simulator_") }
         if counted.contains(where: { $0.measureStatus == "timed_out" }) {
             return developerGB > 0 ? Self.gbText(developerGB) + "+" : "측정 보류"
         }
@@ -147,14 +157,27 @@ struct StorageSnapshot {
     }
 
     var simulatorText: String {
-        if simulatorDevices.contains(where: { $0.measureStatus == "timed_out" }) {
-            return simulatorGB > 0 ? Self.gbText(simulatorGB) + "+" : "측정 보류"
+        guard let devices = simulatorBreakdown.first(where: {
+            $0.kind == "simulator_devices"
+        }) else {
+            return "0GB"
         }
-        return Self.gbText(simulatorGB)
+        return devices.sizeText
+    }
+
+    var simulatorFootprintText: String {
+        if simulatorFootprintMeasurementIncomplete {
+            return simulatorFootprintGB > 0
+                ? Self.gbText(simulatorFootprintGB) + "+"
+                : "측정 보류"
+        }
+        return Self.gbText(simulatorFootprintGB)
     }
 
     var inventoryText: String {
-        if simulatorDevices.contains(where: { $0.measureStatus == "timed_out" }) {
+        if let deviceStatus = simulatorBreakdown.first(where: {
+            $0.kind == "simulator_devices"
+        })?.measureStatus, deviceStatus != "ok" {
             return inventoryGB > 0 ? Self.gbText(inventoryGB) + "+" : "측정 보류"
         }
         return Self.gbText(inventoryGB)
@@ -189,6 +212,8 @@ struct SimulatorDevice: Identifiable {
     let cleanupID: String
     let sizeGB: Double
     let measureStatus: String
+    let createdAt: Date?
+    let path: String
 
     init?(json: [String: Any]) {
         uuid = JsonRead.string(json, "uuid")
@@ -196,31 +221,137 @@ struct SimulatorDevice: Identifiable {
         id = uuid
         name = JsonRead.string(json, "name", "Simulator")
         runtime = JsonRead.string(json, "runtime")
-        state = JsonRead.string(json, "state", "Shutdown")
+        // Missing or malformed state must never unlock a destructive action.
+        // Only an explicit CoreSimulator `Shutdown` value is actionable.
+        state = JsonRead.string(json, "state", "Unknown")
         protectedByScan = json["protected"] as? Bool ?? false
         protectionReason = JsonRead.string(json, "protectionReason")
         cleanupID = JsonRead.string(json, "cleanupId")
-        sizeGB = JsonRead.double(json, "sizeGB")
+        let rawSizeGB = JsonRead.double(json, "sizeGB")
+        sizeGB = rawSizeGB.isFinite ? max(0, rawSizeGB) : 0
         measureStatus = JsonRead.string(json, "measureStatus", "ok")
+        let createdAtEpoch = JsonRead.double(json, "createdAtEpoch")
+        createdAt = createdAtEpoch.isFinite && createdAtEpoch > 0
+            ? Date(timeIntervalSince1970: createdAtEpoch)
+            : nil
+        path = JsonRead.string(json, "path")
     }
 
     var isBooted: Bool { state == "Booted" }
+    var isShutdown: Bool { state == "Shutdown" }
     var hasSupportedCleanupRecipe: Bool {
         CleanupRecipeCatalog.supportsSimulator(recipeID: cleanupID, uuid: uuid)
     }
 
     func isProtected(by keptUUIDs: Set<String>) -> Bool {
-        isBooted || keptUUIDs.contains(uuid)
+        !isShutdown || keptUUIDs.contains(uuid)
     }
 
     var sizeText: String {
         if measureStatus == "timed_out" {
-            return "측정 보류"
+            guard sizeGB > 0 else { return "측정 보류" }
+            if sizeGB >= 0.1 {
+                return String(format: "최소 %.1fGB", sizeGB)
+            }
+            return String(format: "최소 %.1fMB", sizeGB * 1024)
         }
         if sizeGB >= 0.1 {
             return String(format: "%.1fGB", sizeGB)
         }
         return String(format: "%.1fMB", max(sizeGB, 0) * 1024)
+    }
+}
+
+struct SimulatorFootprintBreakdown: Identifiable, Equatable {
+    let id: String
+    let kind: String
+    let label: String
+    let sizeGB: Double
+    let measureStatus: String
+
+    var sizeText: String {
+        let measured = sizeGB <= 0 ? "0GB" : String(format: "%.1fGB", sizeGB)
+        guard measureStatus != "ok" else { return measured }
+        return sizeGB > 0 ? measured + "+" : "측정 보류"
+    }
+}
+
+/// A timestamp-only signal that several devices for one runtime were created
+/// together. It deliberately leaves `creator` unset: a creation timestamp is
+/// evidence of a burst, not evidence that Claude, Codex, Xcode or another tool
+/// created it.
+struct SimulatorCreationBurst: Identifiable, Equatable {
+    static let defaultWindowSeconds: TimeInterval = 5
+    static let defaultMinimumCount = 3
+
+    let id: String
+    let runtime: String
+    let deviceUUIDs: [String]
+    let createdAt: Date
+    let endedAt: Date
+    let creator: String?
+    let measureStatus: String
+
+    var count: Int { deviceUUIDs.count }
+    var creatorText: String { creator ?? "생성 주체 미확정" }
+
+    /// Groups devices only when all timestamps fit in one bounded window.
+    /// Unknown/zero timestamps and runtimes are excluded instead of being
+    /// treated as 1970-era evidence.
+    static func detect(
+        in devices: [SimulatorDevice],
+        windowSeconds: TimeInterval = defaultWindowSeconds,
+        minimumCount: Int = defaultMinimumCount
+    ) -> [SimulatorCreationBurst] {
+        guard windowSeconds >= 0, minimumCount > 1 else { return [] }
+        let timestamped = devices.compactMap { device -> (SimulatorDevice, Date)? in
+            guard !device.runtime.isEmpty, let createdAt = device.createdAt else { return nil }
+            return (device, createdAt)
+        }
+        let grouped = Dictionary(grouping: timestamped, by: { $0.0.runtime })
+        var bursts: [SimulatorCreationBurst] = []
+
+        for runtime in grouped.keys.sorted() {
+            guard let values = grouped[runtime] else { continue }
+            let sorted = values.sorted {
+                if $0.1 != $1.1 { return $0.1 < $1.1 }
+                return $0.0.uuid < $1.0.uuid
+            }
+            var remaining = sorted
+            while remaining.count >= minimumCount {
+                var left = 0
+                var bestRange: ClosedRange<Int>?
+                for right in remaining.indices {
+                    while remaining[right].1.timeIntervalSince(remaining[left].1) > windowSeconds {
+                        left += 1
+                    }
+                    let candidate = left...right
+                    if candidate.count > (bestRange?.count ?? 0) {
+                        bestRange = candidate
+                    }
+                }
+                guard let bestRange, bestRange.count >= minimumCount else { break }
+
+                let members = Array(remaining[bestRange])
+                let uuids = members.map { $0.0.uuid }
+                let first = members[0].1
+                let last = members[members.count - 1].1
+                bursts.append(SimulatorCreationBurst(
+                    id: runtime + "|" + uuids.joined(separator: ","),
+                    runtime: runtime,
+                    deviceUUIDs: uuids,
+                    createdAt: first,
+                    endedAt: last,
+                    creator: nil,
+                    measureStatus: "ok"
+                ))
+                remaining.removeSubrange(bestRange)
+            }
+        }
+        return bursts.sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+            return $0.runtime < $1.runtime
+        }
     }
 }
 
