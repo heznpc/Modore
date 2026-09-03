@@ -114,6 +114,59 @@ def project_residue_request(target: Path | str) -> bytes:
     ).encode("utf-8")
 
 
+def transient_workspace_request(target: Path | str) -> bytes:
+    return (
+        "version\t1\n"
+        "kind\ttransient_workspace\n"
+        f"target\t{target}\n"
+    ).encode("utf-8")
+
+
+def run_transient_workspace(
+    project_root: Path,
+    home: Path,
+    transient_root: Path,
+    target: Path | str,
+    operation: str,
+    *,
+    token: str = "",
+    open_paths_file: Path | None = None,
+):
+    extra_env = {"PCH_TEST_TRANSIENT_ROOTS": str(transient_root)}
+    if open_paths_file is not None:
+        extra_env["PCH_TEST_TRANSIENT_OPEN_PATHS_FILE"] = str(open_paths_file)
+    with tempfile.TemporaryFile() as request_file, tempfile.TemporaryFile() as token_file:
+        request_file.write(transient_workspace_request(target))
+        request_file.flush()
+        request_file.seek(0)
+        request_fd = request_file.fileno()
+        args = [
+            f"--{operation}",
+            "transient_workspace",
+            "--request-file",
+            f"/dev/fd/{request_fd}",
+        ]
+        pass_fds = [request_fd]
+        if operation == "execute":
+            token_file.write(token.encode("ascii"))
+            token_file.flush()
+            token_file.seek(0)
+            token_fd = token_file.fileno()
+            args += [
+                "--owner-approved",
+                "--approval-token-file",
+                f"/dev/fd/{token_fd}",
+            ]
+            pass_fds.append(token_fd)
+        return run_cleanup(
+            project_root,
+            home,
+            *args,
+            extra_env=extra_env,
+            pass_fds=tuple(pass_fds),
+        )
+
+
 def run_project_residue_preview(
     project_root: Path,
     home: Path,
@@ -200,7 +253,7 @@ def test_macos_app_keeps_raw_approval_token_out_of_argv(project_root):
     assert '"--approval-token",' not in source
 
 
-def test_macos_app_source_boundary_keeps_project_residue_request_out_of_argv(project_root):
+def test_macos_app_source_boundary_keeps_dynamic_cleanup_request_out_of_argv(project_root):
     service = (
         project_root
         / "macos/Modore/Sources/Modore/Services/CleanupExecutionService.swift"
@@ -215,7 +268,7 @@ def test_macos_app_source_boundary_keeps_project_residue_request_out_of_argv(pro
     assert 'requestFiles["cleanup_request"] = request.protocolData' in service
     assert '["--request-file", "@pch-pinned:cleanup_request"]' in service
     assert "request.target" not in service
-    assert 'Data("version\\t1\\nkind\\tproject_residue\\ntarget\\t\\(target)\\n".utf8)' in models
+    assert 'Data("version\\t1\\nkind\\t\\(recipeID)\\ntarget\\t\\(target)\\n".utf8)' in models
 
 
 def test_cleanup_preview_is_read_only_and_execute_requires_approval(project_root, tmp_path):
@@ -810,6 +863,149 @@ def test_project_residue_preview_and_execute_preserve_project_evidence(
     replayed = run_project_residue_execute(project_root, home, target, token)
     assert replayed.returncode == 3
     assert parse_protocol(replayed.stdout)["status"] == "blocked"
+
+
+def test_transient_workspace_preview_and_execute_remove_only_approved_child(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    transient_root = home / "temporary-root"
+    target = transient_root / "airmcp-test-home-123"
+    sibling = transient_root / "keep-this-workspace"
+    target.mkdir(parents=True)
+    sibling.mkdir()
+    (target / "generated.bin").write_bytes(b"generated" * 4096)
+    (sibling / "keep.txt").write_text("keep", encoding="utf-8")
+
+    preview = run_transient_workspace(
+        project_root, home, transient_root, target, "preview"
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "ready"
+    assert payload["recipeId"] == "transient_workspace"
+    assert payload["targets"] == [str(target)]
+
+    executed = run_transient_workspace(
+        project_root,
+        home,
+        transient_root,
+        target,
+        "execute",
+        token=approval_token(payload),
+    )
+    result = parse_protocol(executed.stdout)
+
+    assert executed.returncode == 0, executed.stderr
+    assert result["status"] == "complete"
+    assert not target.exists()
+    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.parametrize("condition", ["nested", "outside", "symlink", "hidden"])
+def test_transient_workspace_rejects_targets_outside_exact_owned_child_contract(
+    project_root, tmp_path, condition
+):
+    home = tmp_path / "home"
+    transient_root = home / "temporary-root"
+    transient_root.mkdir(parents=True)
+    protected = home / "protected"
+    protected.mkdir()
+    (protected / "keep.txt").write_text("keep", encoding="utf-8")
+
+    if condition == "nested":
+        target = transient_root / "parent" / "nested"
+        target.mkdir(parents=True)
+    elif condition == "outside":
+        target = home / "outside-workspace"
+        target.mkdir()
+    elif condition == "symlink":
+        target = transient_root / "linked-workspace"
+        target.symlink_to(protected, target_is_directory=True)
+    else:
+        target = transient_root / ".hidden-workspace"
+        target.mkdir()
+
+    preview = run_transient_workspace(
+        project_root, home, transient_root, target, "preview"
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert target.exists()
+    assert (protected / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_transient_workspace_blocks_when_any_file_is_open(project_root, tmp_path):
+    home = tmp_path / "home"
+    transient_root = home / "temporary-root"
+    target = transient_root / "active-test-home"
+    target.mkdir(parents=True)
+    (target / "active.bin").write_bytes(b"active")
+    open_paths = home / "open-transient-paths.txt"
+    open_paths.write_text(f"{target}\n", encoding="utf-8")
+
+    preview = run_transient_workspace(
+        project_root,
+        home,
+        transient_root,
+        target,
+        "preview",
+        open_paths_file=open_paths,
+    )
+    payload = parse_protocol(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert "사용하는 프로세스" in str(payload["blockedReason"])
+    assert target.exists()
+
+
+def test_transient_workspace_consumes_approval_when_it_becomes_active(
+    project_root, tmp_path
+):
+    home = tmp_path / "home"
+    transient_root = home / "temporary-root"
+    target = transient_root / "idle-then-active"
+    target.mkdir(parents=True)
+    (target / "generated.bin").write_bytes(b"generated" * 4096)
+
+    preview = run_transient_workspace(
+        project_root, home, transient_root, target, "preview"
+    )
+    payload = parse_protocol(preview.stdout)
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "ready"
+
+    open_paths = home / "open-transient-paths.txt"
+    open_paths.write_text(f"{target}\n", encoding="utf-8")
+    token = approval_token(payload)
+    executed = run_transient_workspace(
+        project_root,
+        home,
+        transient_root,
+        target,
+        "execute",
+        token=token,
+        open_paths_file=open_paths,
+    )
+    assert executed.returncode == 3
+    assert parse_protocol(executed.stdout)["status"] == "blocked"
+    assert target.exists()
+
+    replayed = run_transient_workspace(
+        project_root,
+        home,
+        transient_root,
+        target,
+        "execute",
+        token=token,
+    )
+    assert replayed.returncode == 3
+    assert parse_protocol(replayed.stdout)["status"] == "blocked"
+    assert target.exists()
 
 
 @pytest.mark.parametrize(

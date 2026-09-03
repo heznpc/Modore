@@ -1389,6 +1389,103 @@ _pch_collect_project_residue() {
     fi
 }
 
+# Surface exact, current-user-owned children of the two macOS temporary roots.
+# Reporting only /private/tmp as one aggregate made the largest emergency
+# recovery source unactionable: the owner could see gigabytes but not which
+# tool-created workspace was responsible. Keep discovery shallow and bounded;
+# cleanup.sh independently revalidates the exact child before approval and
+# execution.
+_pch_collect_transient_workspaces() {
+    local root_list=""
+    local user_temp=""
+    local max_candidates="${PCH_TRANSIENT_WORKSPACE_LIMIT:-24}"
+    local root canonical_root target basename owner _modified found=0
+    local inventory_file="$TMP_DIR/storage_transient_candidates.tsv"
+    local -a roots=()
+
+    case "$max_candidates" in ''|*[!0-9]*|0) max_candidates=24 ;; esac
+    [[ "$max_candidates" -le 64 ]] || max_candidates=64
+
+    if [[ "${PCH_TEST_MODE:-}" == "1" ]]; then
+        root_list="${PCH_TEST_STORAGE_TRANSIENT_ROOTS:-}"
+        if [[ -z "$root_list" ]] && ! _pch_storage_host_inventory_allowed; then
+            return 0
+        fi
+    else
+        user_temp="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+        root_list="/private/tmp"
+        [[ -z "$user_temp" ]] || root_list="$root_list:$user_temp"
+    fi
+
+    : > "$inventory_file"
+    IFS=':' read -r -a roots <<< "$root_list"
+    for root in "${roots[@]}"; do
+        [[ -n "$root" && -d "$root" && ! -L "$root" ]] || continue
+        canonical_root="$(cd -P "$root" 2>/dev/null && /bin/pwd -P)" || continue
+        [[ "$canonical_root" != "/" ]] || continue
+        # One batched stat pass over the directory entries is dramatically
+        # cheaper than starting du for thousands of stale test folders. Sort
+        # by directory mtime so a workspace created by the current incident is
+        # measured before historical residue can consume the shared deadline.
+        /usr/bin/find "$canonical_root" -mindepth 1 -maxdepth 1 -type d \
+            -uid "$(/usr/bin/id -u)" \
+            -exec /usr/bin/stat -f $'%m\t%N' {} + \
+            >> "$inventory_file" 2>/dev/null || true
+    done
+
+    while IFS=$'\t' read -r _modified target; do
+        [[ "$found" -lt "$max_candidates" ]] || break
+        # Once the shared measurement deadline is gone, adding every remaining
+        # directory as a zero-sized unknown turns a busy temp root into dozens
+        # of unusable cleanup choices. Preserve the directory that actually
+        # timed out, then stop before manufacturing more unknown rows.
+        _pch_storage_du_budget_expired && break
+        [[ "$_modified" =~ ^[0-9]+$ && -d "$target" && ! -L "$target" ]] || continue
+        owner="$(/usr/bin/stat -f '%u' "$target" 2>/dev/null || true)"
+        [[ "$owner" == "$(/usr/bin/id -u)" ]] || continue
+        basename="$(/usr/bin/basename "$target")"
+        [[ -n "$basename" && "$basename" != .* ]] || continue
+        case "$target" in
+            *$'\t'*|*$'\n'*|*$'\r'*) continue ;;
+            */com.apple.*|*/com.google.Chrome.code_sign_clone) continue ;;
+        esac
+        if _pch_add_transient_workspace_row "$target" "$basename"; then
+            found=$((found + 1))
+        fi
+    done < <(LC_ALL=C /usr/bin/sort -t $'\t' -k1,1nr "$inventory_file")
+}
+
+_pch_add_transient_workspace_row() {
+    local target_path="$1"
+    local workspace_name="$2"
+    local size_kb measure_status="ok"
+    local note="현재 사용자의 macOS 임시 루트 바로 아래에 있는 작업공간입니다. 정리 미리보기에서 소유권·경로·사용 중 여부를 다시 확인합니다."
+
+    case "$seen" in
+        *"|$target_path|"*) return 1 ;;
+    esac
+    seen="${seen}${target_path}|"
+    du_size_kb "$target_path"
+    size_kb="$DU_SIZE_RESULT"
+    if [[ "$size_kb" == "__PCH_TIMEOUT__" ]]; then
+        size_kb=0
+        measure_status="timed_out"
+        note="빠른 검사에서 크기 측정이 끝나지 않았습니다. 정리 미리보기에서 정확한 경로와 크기를 다시 확인합니다."
+    elif [[ "${DU_SIZE_MEASURE_STATUS:-ok}" != "ok" ]]; then
+        measure_status="timed_out"
+        note="크기 측정이 불완전해 정리 판단에 사용하지 않습니다. 미리보기에서 다시 확인합니다."
+    fi
+    case "$size_kb" in ''|*[!0-9]*) size_kb=0 ;; esac
+    # Tiny temporary directories churn constantly and would drown the recovery
+    # list. Timed-out rows remain visible because their size is unknown.
+    [[ "$size_kb" -ge 16384 || "$measure_status" == "timed_out" ]] || return 1
+    /usr/bin/printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "transient_workspace" "임시 작업공간 · $workspace_name" "$target_path" \
+        "$size_kb" "$measure_status" "$note" "transient_workspace" \
+        >> "$TMP_DIR/storage_paths.tsv"
+    return 0
+}
+
 _pch_collect_known_storage_paths() {
     # Simulator storage is both large and actionable, so reserve the shared du
     # budget before general caches. Device detail was measured in one traversal;
@@ -2137,8 +2234,13 @@ collect_storage() {
 
     _pch_collect_storage_applications
     _pch_collect_storage_simulators
-    _pch_collect_known_storage_paths
+    # Exact temporary workspaces and recovery-capable project artifacts get the
+    # shared measurement budget before broad cache inventory. Recent temporary
+    # workspaces come first because they are the common high-velocity source of
+    # "I just freed space and it filled again" incidents.
+    _pch_collect_transient_workspaces
     _pch_collect_project_residue
+    _pch_collect_known_storage_paths
     _pch_collect_storage_access_checks
     _pch_collect_storage_runtime_signals
 

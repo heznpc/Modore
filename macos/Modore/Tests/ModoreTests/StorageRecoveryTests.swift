@@ -13,6 +13,7 @@ final class StorageRecoveryTests: XCTestCase {
         XCTAssertEqual(CleanupRecipeCatalog.batchTier(recipeID: "npm_cache"), .safe)
         XCTAssertEqual(CleanupRecipeCatalog.batchTier(recipeID: "xcode_derived_data"), .rebuild)
         XCTAssertEqual(CleanupRecipeCatalog.batchTier(recipeID: "project_residue"), .rebuild)
+        XCTAssertEqual(CleanupRecipeCatalog.batchTier(recipeID: "transient_workspace"), .rebuild)
         XCTAssertNil(CleanupRecipeCatalog.batchTier(recipeID: "ollama_models"))
         XCTAssertNil(CleanupRecipeCatalog.batchTier(recipeID: "innorix_ex"))
         XCTAssertNil(CleanupRecipeCatalog.batchTier(recipeID: "app_uninstall:example.app"))
@@ -101,6 +102,33 @@ final class StorageRecoveryTests: XCTestCase {
             path: "/Users/test/App/.build\nkind\tcache"
         )
         XCTAssertNil(CleanupExecutionRequest(item: injected))
+    }
+
+    func testTransientWorkspaceRequestUsesTheSamePathBoundTransport() throws {
+        let workspace = item(
+            label: "temporary test home",
+            sizeGB: 4,
+            cleanupID: "transient_workspace",
+            kind: "transient_workspace",
+            path: "/private/tmp/airmcp-test-home-123"
+        )
+        let request = try XCTUnwrap(CleanupExecutionRequest(item: workspace))
+
+        XCTAssertEqual(request.recipeID, "transient_workspace")
+        XCTAssertEqual(request.target, "/private/tmp/airmcp-test-home-123")
+        XCTAssertEqual(
+            String(decoding: request.protocolData, as: UTF8.self),
+            "version\t1\nkind\ttransient_workspace\ntarget\t/private/tmp/airmcp-test-home-123\n"
+        )
+
+        let mismatched = item(
+            label: "bad",
+            sizeGB: 4,
+            cleanupID: "transient_workspace",
+            kind: "cache",
+            path: "/private/tmp/airmcp-test-home-123"
+        )
+        XCTAssertNil(CleanupExecutionRequest(item: mismatched))
     }
 
     func testPlanExecutesFreshReadyEntriesAndLeavesBlockedEntriesOut() throws {

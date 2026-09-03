@@ -24,6 +24,7 @@ enum CleanupRecipeCatalog {
     static func supportsStorageItem(recipeID: String, kind: String) -> Bool {
         if fixedRecipes.contains(recipeID) { return true }
         if kind == "project_residue", recipeID == "project_residue" { return true }
+        if kind == "transient_workspace", recipeID == "transient_workspace" { return true }
         guard kind == "application", recipeID.hasPrefix("app_uninstall:") else { return false }
         let bundleID = String(recipeID.dropFirst("app_uninstall:".count))
         return bundleID.range(
@@ -49,7 +50,8 @@ enum CleanupRecipeCatalog {
              "codex_temp_cache", "chrome_code_sign_clones":
             return .safe
         case "playwright_browsers", "swiftpm_cache", "codex_runtime_cache",
-             "claude_vm_bundles", "xcode_derived_data", "project_residue":
+             "claude_vm_bundles", "xcode_derived_data", "project_residue",
+             "transient_workspace":
             return .rebuild
         default:
             return nil

@@ -19,6 +19,20 @@ final class CleanupExecutionServiceTests: XCTestCase {
         return try XCTUnwrap(CleanupExecutionRequest(item: item))
     }
 
+    private func transientRequest() throws -> CleanupExecutionRequest {
+        let item = try XCTUnwrap(StorageItem(json: [
+            "risk": "warning",
+            "kind": "transient_workspace",
+            "label": "temporary workspace",
+            "sizeGB": 1,
+            "path": "/private/tmp/temporary-workspace",
+            "action": "정리",
+            "measureStatus": "ok",
+            "cleanupId": "transient_workspace",
+        ]))
+        return try XCTUnwrap(CleanupExecutionRequest(item: item))
+    }
+
     private func readyPreview(
         recipeID: String = "npm_cache",
         token: String = String(repeating: "a", count: 64)
@@ -69,6 +83,27 @@ final class CleanupExecutionServiceTests: XCTestCase {
         )
         XCTAssertEqual(invocation.pinnedFiles["cleanup_request"], request.protocolData)
         XCTAssertEqual(invocation.pinnedFiles["cleanup"], baseFiles["cleanup"])
+    }
+
+    func testTransientWorkspaceAlsoRequiresPathBoundRequest() throws {
+        let request = try transientRequest()
+
+        XCTAssertNil(CleanupExecutionService.previewInvocation(
+            recipeID: "transient_workspace",
+            request: nil,
+            pinnedFiles: baseFiles
+        ))
+        let invocation = try XCTUnwrap(CleanupExecutionService.previewInvocation(
+            recipeID: "transient_workspace",
+            request: request,
+            pinnedFiles: baseFiles
+        ))
+
+        XCTAssertEqual(
+            invocation.arguments,
+            ["--request-file", "@pch-pinned:cleanup_request"]
+        )
+        XCTAssertEqual(invocation.pinnedFiles["cleanup_request"], request.protocolData)
     }
 
     func testCallerCannotReplaceReservedRequestFile() throws {

@@ -12,7 +12,7 @@ enum CleanupPresentation {
     ) -> StorageItem? {
         candidates.first { item in
             guard item.cleanupID == recipeID else { return false }
-            guard recipeID == "project_residue" else { return true }
+            guard CleanupExecutionRequest.isRequired(for: recipeID) else { return true }
             return cleanupRequest?.recipeID == recipeID
                 && item.path == cleanupRequest?.target
         }

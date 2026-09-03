@@ -35,6 +35,7 @@ PROJECT_RESIDUE_PARENT=""
 PROJECT_RESIDUE_BASENAME=""
 PROJECT_RESIDUE_PRIMARY_MARKER=""
 PROJECT_PROCESS_PATH_PATTERN=""
+TRANSIENT_WORKSPACE_TARGET=""
 HOME_ROOT="${HOME:-}"
 VAR_FOLDERS_ROOT="/private/var/folders"
 APPLICATIONS_ROOT="/Applications"
@@ -254,9 +255,8 @@ add_target_if_present() {
     fi
 }
 
-# Project-local build output is the one dynamic cleanup recipe. Its path never
-# travels in argv: the app pins this three-row request to a short-lived file
-# descriptor. Keep the grammar deliberately smaller than a general TSV parser so
+# Dynamic cleanup paths never travel in argv: the app pins a three-row request to
+# a short-lived file descriptor. Each recipe keeps a deliberately tiny grammar so
 # another field can never acquire deletion semantics by accident.
 read_project_residue_request() {
     local source="$1"
@@ -279,6 +279,113 @@ read_project_residue_request() {
     done < "$source"
     [[ "$line_number" -eq 3 && "$target" == /* ]] || return 1
     PROJECT_RESIDUE_TARGET="$target"
+    return 0
+}
+
+read_transient_workspace_request() {
+    local source="$1"
+    local size line line_number=0 target=""
+    [[ "$source" =~ ^/dev/fd/[0-9]+$ && -f "$source" ]] || return 1
+    size="$(approval_token_file_size "$source")" || return 1
+    [[ "$size" =~ ^[0-9]+$ && "$size" -ge 1 && "$size" -le 4096 ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_number=$((line_number + 1))
+        case "$line_number:$line" in
+            $'1:version\t1') ;;
+            $'2:kind\ttransient_workspace') ;;
+            3:$'target\t'*)
+                target="${line#*$'\t'}"
+                [[ -n "$target" ]] || return 1
+                case "$target" in *$'\t'*|*$'\n'*|*$'\r'*) return 1 ;; esac
+                ;;
+            *) return 1 ;;
+        esac
+    done < "$source"
+    [[ "$line_number" -eq 3 && "$target" == /* ]] || return 1
+    TRANSIENT_WORKSPACE_TARGET="$target"
+    return 0
+}
+
+transient_workspace_roots() {
+    local user_temp canonical root_list=""
+    local -a roots=()
+    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+        root_list="${PCH_TEST_TRANSIENT_ROOTS:-}"
+    else
+        root_list="/private/tmp"
+        user_temp="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+        [[ -z "$user_temp" ]] || root_list="$root_list:$user_temp"
+    fi
+    IFS=':' read -r -a roots <<< "$root_list"
+    for root in "${roots[@]}"; do
+        [[ -n "$root" && -d "$root" && ! -L "$root" ]] || continue
+        canonical="$(cd -P "$root" 2>/dev/null && /bin/pwd -P)" || continue
+        [[ -n "$canonical" && "$canonical" != "/" ]] || continue
+        /usr/bin/printf '%s\n' "$canonical"
+    done | /usr/bin/awk '!seen[$0]++'
+}
+
+validate_transient_workspace_contract() {
+    local target="$1" parent canonical_parent basename owner root matched="false"
+    [[ "$target" == "$TRANSIENT_WORKSPACE_TARGET" && -d "$target" && ! -L "$target" ]] \
+        || return 1
+    parent="$(/usr/bin/dirname "$target")"
+    canonical_parent="$(cd -P "$parent" 2>/dev/null && /bin/pwd -P)" || return 1
+    [[ "$canonical_parent" == "$parent" ]] || return 1
+    basename="$(/usr/bin/basename "$target")"
+    [[ -n "$basename" && "$basename" != .* \
+        && "$target" == "$canonical_parent/$basename" ]] || return 1
+    while IFS= read -r root; do
+        if [[ "$canonical_parent" == "$root" ]]; then
+            matched="true"
+            break
+        fi
+    done < <(transient_workspace_roots)
+    [[ "$matched" == "true" ]] || return 1
+    owner="$(path_owner_uid "$target")" || return 1
+    [[ "$owner" == "$(/usr/bin/id -u)" ]] || return 1
+    return 0
+}
+
+# A temporary workspace can be structurally disposable while still being used
+# by a running build or browser. Recursively inspect open descriptors under the
+# exact approved child. Failure or timeout is unknown and therefore blocks.
+transient_workspace_is_idle() {
+    local target="$1" output pid attempts=0 status=0
+    if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
+        [[ "${PCH_TEST_TRANSIENT_LSOF_UNKNOWN:-0}" != "1" ]] || return 2
+        if [[ -n "${PCH_TEST_TRANSIENT_OPEN_PATHS_FILE:-}" ]]; then
+            [[ -f "$PCH_TEST_TRANSIENT_OPEN_PATHS_FILE" \
+                && ! -L "$PCH_TEST_TRANSIENT_OPEN_PATHS_FILE" ]] || return 2
+            /usr/bin/grep -F -x -q "$target" "$PCH_TEST_TRANSIENT_OPEN_PATHS_FILE" \
+                && return 1
+        fi
+        return 0
+    fi
+    [[ -x /usr/sbin/lsof ]] || return 2
+    output="$(/usr/bin/mktemp "${TMPDIR:-/private/tmp}/modore-transient-lsof.XXXXXX")" \
+        || return 2
+    /usr/sbin/lsof -Fn +D "$target" > "$output" 2>/dev/null &
+    pid=$!
+    while /bin/kill -0 "$pid" 2>/dev/null; do
+        attempts=$((attempts + 1))
+        if [[ "$attempts" -ge 100 ]]; then
+            /bin/kill -TERM "$pid" 2>/dev/null || true
+            /bin/sleep 1
+            /bin/kill -KILL "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            /bin/rm -f "$output"
+            return 2
+        fi
+        /bin/sleep 0.1
+    done
+    wait "$pid" 2>/dev/null || status=$?
+    if /usr/bin/grep -E -q '^p[0-9]+$' "$output"; then
+        /bin/rm -f "$output"
+        return 1
+    fi
+    /bin/rm -f "$output"
+    [[ "$status" -eq 0 || "$status" -eq 1 ]] || return 2
     return 0
 }
 
@@ -1003,6 +1110,10 @@ apply_recipe_guidance() {
             DESCRIPTION="선택한 개발 프로젝트 안의 재생성 가능한 빌드 산출물입니다. 프로젝트 소스와 lockfile은 대상이 아닙니다."
             AVOID_WHEN="이 프로젝트의 빌드·패키지 설치가 진행 중이거나 곧 오프라인에서 다시 빌드해야 한다면 두세요."
             ;;
+        transient_workspace)
+            DESCRIPTION="macOS 임시 루트 바로 아래에서 현재 사용자가 만든 작업공간 한 개입니다. 다른 임시 폴더와 사용자 문서는 대상이 아닙니다."
+            AVOID_WHEN="관련 빌드·테스트·브라우저 작업을 계속 사용 중이라면 두세요."
+            ;;
     esac
     return 0
 }
@@ -1068,6 +1179,21 @@ define_recipe() {
         WARNING="빌드 산출물은 다음 빌드 또는 패키지 설치 때 다시 생성됩니다. 프로젝트 표식과 lockfile은 보존합니다."
         PROCESS_NOTE="해당 프로젝트의 빌드와 패키지 설치를 먼저 종료하세요."
         TARGETS+=("$PROJECT_RESIDUE_TARGET")
+        apply_recipe_guidance "$recipe"
+        return 0
+    fi
+
+    if [[ "$recipe" == "transient_workspace" ]]; then
+        local requested_pattern
+        [[ -n "$REQUEST_FILE" ]] || return 1
+        read_transient_workspace_request "$REQUEST_FILE" || return 1
+        requested_pattern="$(regex_escape_ere "$TRANSIENT_WORKSPACE_TARGET")" || return 1
+        [[ -n "$requested_pattern" ]] || return 1
+        LABEL="임시 작업공간 · $(/usr/bin/basename "$TRANSIENT_WORKSPACE_TARGET")"
+        PROCESS_PATTERN="$requested_pattern"
+        WARNING="이 임시 작업공간은 삭제 후 복구되지 않습니다. 정확한 경로와 현재 점유 상태를 확인한 뒤 실행합니다."
+        PROCESS_NOTE="이 임시 작업공간을 사용하는 빌드·테스트·브라우저를 먼저 종료하세요."
+        TARGETS+=("$TRANSIENT_WORKSPACE_TARGET")
         apply_recipe_guidance "$recipe"
         return 0
     fi
@@ -1275,6 +1401,9 @@ allowed_target() {
         project_residue)
             [[ "$target" == "$PROJECT_RESIDUE_TARGET" ]]
             ;;
+        transient_workspace)
+            [[ "$target" == "$TRANSIENT_WORKSPACE_TARGET" ]]
+            ;;
         npm_cache) [[ "$target" == "$HOME_ROOT/.npm" ]] ;;
         pnpm_store) [[ "$target" == "$HOME_ROOT/Library/pnpm" ]] ;;
         playwright_browsers) [[ "$target" == "$HOME_ROOT/Library/Caches/ms-playwright" ]] ;;
@@ -1313,6 +1442,11 @@ validate_target() {
     esac
     allowed_target "$recipe" "$target" || return 1
     [[ ! -L "$target" ]] || return 1
+
+    if [[ "$recipe" == "transient_workspace" ]]; then
+        validate_transient_workspace_contract "$target"
+        return $?
+    fi
 
     parent="$(/usr/bin/dirname "$target")"
     canonical_parent="$(cd -P "$parent" 2>/dev/null && /bin/pwd -P)" || return 1
@@ -1717,6 +1851,9 @@ write_current_manifest() {
     fi
     [[ "$created_epoch" =~ ^[0-9]+$ ]] || return 1
     fingerprint="$(process_fingerprint)" || return 1
+    if [[ "$RECIPE_ID" == "transient_workspace" ]]; then
+        transient_workspace_is_idle "$TRANSIENT_WORKSPACE_TARGET" || return 1
+    fi
     : > "$output" || return 1
     /bin/chmod 600 "$output" 2>/dev/null || return 1
     {
@@ -1883,6 +2020,23 @@ preview_status() {
             return 0
         fi
     done
+
+    if [[ "$RECIPE_ID" == "transient_workspace" ]]; then
+        transient_workspace_is_idle "$TRANSIENT_WORKSPACE_TARGET"
+        case "$?" in
+            0) ;;
+            1)
+                PREVIEW_STATUS="blocked"
+                BLOCKED_REASON="이 임시 작업공간을 사용하는 프로세스가 있습니다. 관련 작업을 종료한 뒤 다시 확인하세요."
+                return 0
+                ;;
+            *)
+                PREVIEW_STATUS="blocked"
+                BLOCKED_REASON="이 임시 작업공간의 사용 여부를 제한 시간 안에 확인하지 못해 정리를 차단했습니다."
+                return 0
+                ;;
+        esac
+    fi
 
     if [[ -n "$RECIPE_BLOCK_REASON" ]]; then
         PREVIEW_STATUS="blocked"
@@ -2419,11 +2573,12 @@ parse_arguments() {
                 esac
                 shift
             done
-            if [[ "$RECIPE_ID" == "project_residue" ]]; then
+            if [[ "$RECIPE_ID" == "project_residue" \
+                || "$RECIPE_ID" == "transient_workspace" ]]; then
                 [[ -n "$REQUEST_FILE" ]] \
-                    || fail_usage "project_residue에는 --request-file /dev/fd/N이 필요합니다."
+                    || fail_usage "$RECIPE_ID에는 --request-file /dev/fd/N이 필요합니다."
             elif [[ -n "$REQUEST_FILE" ]]; then
-                fail_usage "--request-file은 project_residue에만 사용할 수 있습니다."
+                fail_usage "--request-file은 동적 경로 정리 작업에만 사용할 수 있습니다."
             fi
             ;;
         *) fail_usage "작업을 지정하세요." ;;
