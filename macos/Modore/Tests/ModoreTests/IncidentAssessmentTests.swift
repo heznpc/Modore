@@ -268,6 +268,64 @@ final class IncidentAssessmentTests: XCTestCase {
         XCTAssertEqual(assessment.kind, .storageCritical)
     }
 
+    func testSustainedCPUOutranksStorageAndNamesOwningApp() throws {
+        var value = root(collection: completeCollection())
+        var sections = try XCTUnwrap(value["sections"] as? [String: Any])
+        var storage = try XCTUnwrap(sections["storage"] as? [String: Any])
+        var volume = try XCTUnwrap(storage["volume"] as? [String: Any])
+        volume["risk"] = "danger"
+        storage["volume"] = volume
+        storage["browserAutomation"] = [
+            "verdict": "orphaned", "rootCount": 1,
+            "note": "소유 작업을 찾지 못했습니다.",
+        ]
+        sections["storage"] = storage
+        sections["backgroundCpu"] = [[
+            "windowSeconds": 3, "name": "node", "pid_": 3559,
+            "cpuPercent": 102.7, "responsiblePid": 3559,
+            "responsibleName": "node", "selfResponsible": true,
+            "startedFromShell": false, "risk": "warning",
+        ]]
+        sections["cpu"] = [[
+            "name": "node", "pid_": 3559, "cpu": 92.5, "memoryMB": 174,
+            "path": "/Users/test/Taxi.app/Contents/Resources/runtime/bin/node",
+            "risk": "safe", "note": "Node.js 런타임",
+        ]]
+        value["sections"] = sections
+
+        let assessment = IncidentAssessment.make(
+            content: ScanContent(root: value), storageChange: nil
+        )
+
+        XCTAssertEqual(assessment.kind, .sustainedCPU)
+        XCTAssertTrue(assessment.title.contains("Taxi"))
+        XCTAssertTrue(assessment.detail.contains("102.7%"))
+        XCTAssertTrue(assessment.detail.contains("Taxi.app"))
+    }
+
+    func testModoreOwnScanCPUDoesNotBecomeIncident() {
+        var value = root(collection: completeCollection())
+        var sections = value["sections"] as! [String: Any]
+        sections["backgroundCpu"] = [[
+            "windowSeconds": 3, "name": "Modore", "pid_": 100,
+            "cpuPercent": 120.0, "responsiblePid": 100,
+            "responsibleName": "Modore", "selfResponsible": true,
+            "startedFromShell": false, "risk": "warning",
+        ]]
+        sections["cpu"] = [[
+            "name": "Modore", "pid_": 100, "cpu": 99.0, "memoryMB": 150,
+            "path": "/Applications/Modore.app/Contents/MacOS/Modore",
+            "risk": "safe", "note": "Modore",
+        ]]
+        value["sections"] = sections
+
+        let assessment = IncidentAssessment.make(
+            content: ScanContent(root: value), storageChange: nil
+        )
+
+        XCTAssertEqual(assessment.kind, .clear)
+    }
+
     func testSecurityAttentionWhenWarningOnly() {
         var value = root(collection: completeCollection())
         value["findings"] = [
