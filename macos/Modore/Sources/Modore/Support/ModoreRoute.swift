@@ -22,10 +22,13 @@ enum ModoreRoute: Equatable, Sendable {
         self = .storageRecovery
     }
 
-    func shouldStartStorageScan(hasStorageData: Bool, isBusy: Bool) -> Bool {
+    func shouldStartStorageScan(hasStorageData _: Bool, isBusy: Bool) -> Bool {
         switch self {
         case .storageRecovery:
-            return !hasStorageData && !isBusy
+            // Recovery is an explicit request for the disk's current state.
+            // A previously loaded report may predate the growth incident by
+            // days, so its mere presence must not suppress remeasurement.
+            return !isBusy
         }
     }
 }

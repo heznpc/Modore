@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import hashlib
 import json
 import os
+import re
+import signal
+import socket
+import ssl
 import stat
 import subprocess
 import sys
+import threading
+import time
 import zipfile
 from contextlib import nullcontext
 from pathlib import Path
@@ -896,7 +903,9 @@ def test_mac_builder_embeds_release_identity_without_local_path(project_root):
     assert '/bin/rm -rf "$backup_app"' not in source
     assert 'KEEP_PREVIOUS_APP="${PCH_KEEP_PREVIOUS_APP:-0}"' in source
     assert 'if [[ "$KEEP_PREVIOUS_APP" == "1" ]]' in source
-    assert '/bin/rm -rf "$backup_container"' in source
+    assert '/bin/rm -rf "$backup_container"' not in source
+    assert "build_support_reconcile_app_backup" in source
+    assert "build_support_retire_preserved_backup" in source
     assert "Verified replacement; previous app backup removed" in source
     assert 'ALLOW_USER_TOOLCHAIN="${PCH_ALLOW_USER_TOOLCHAIN:-0}"' in source
     assert '"$ALLOW_USER_TOOLCHAIN" == "1" && "${PCH_SKIP_ADHOC_SIGN:-0}" == "1"' in source
@@ -904,7 +913,873 @@ def test_mac_builder_embeds_release_identity_without_local_path(project_root):
     assert 'Contents/Helpers/modore-python' not in source
     assert 'lib/python3.11/lib-dynload/README.txt' in source
     assert 'python_smoke_stderr' in source
-    assert '! -s "$python_smoke_stdout" || -s "$python_smoke_stderr"' in source
+    assert 'python_smoke_status=$?' in source
+    assert '"$python_smoke_status" -ne 0' in source
+    assert 'scree.py" sessions --limit 1 --home "$python_sessions_home"' in source
+    assert 'python_sessions_status=$?' in source
+    assert 'p["coverage"]["complete"] is True' in source
+    assert 'source "$BUILD_SUPPORT_MODULE"' in source
+    assert 'build_support_acquire_lock "$lock_file" "$current_uid"' in source
+    assert "build_support_recover_staging_directories" in source
+    assert "build_support_prune_runtime_cache" in source
+    assert "build_support_download" in source
+    assert 'PYTHON_RUNTIME_MAX_ARCHIVE_BYTES="268435456"' in source
+    assert '"$PYTHON_RUNTIME_MAX_ARCHIVE_BYTES"' in source
+
+    support = (project_root / "scripts/modules/build_support.sh").read_text(
+        encoding="utf-8"
+    )
+    for curl_bound in (
+        "--connect-timeout",
+        "--max-time",
+        "--proto-redir",
+        "--retry-max-time",
+        "--speed-limit",
+        "--speed-time",
+    ):
+        assert curl_bound in support
+
+
+def test_mac_builder_keeps_every_top_level_stdlib_dependency_imported_by_scree(
+    project_root,
+):
+    builder = (project_root / "scripts/build_macos_swift_app.sh").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"for excluded in \\\n(?P<body>.*?)\; do", builder, re.DOTALL)
+    assert match is not None
+    excluded = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]*", match.group("body")))
+
+    tree = ast.parse(
+        (project_root / "scripts/scree.py").read_text(encoding="utf-8")
+    )
+    imported = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.partition(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.partition(".")[0])
+
+    assert imported.isdisjoint(excluded), (
+        "embedded runtime prunes scree imports: "
+        f"{sorted(imported & excluded)}"
+    )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS lockf/stat behavior")
+def test_mac_build_support_process_group_sigkill_recovers_only_its_staging(
+    project_root, tmp_path
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    checkout = tmp_path / "checkout"
+    build_directory = checkout / "build" / "macos"
+    user_temp = tmp_path / "private-temp"
+    build_directory.mkdir(parents=True, mode=0o700)
+    user_temp.mkdir(mode=0o700)
+    ready = tmp_path / "ready"
+    harness = r'''
+set -euo pipefail
+source "$1"
+root="$2"
+build="$3"
+temp="$4"
+ready="$5"
+uid="$(/usr/bin/id -u)"
+build_support_acquire_lock "$build/.pch-build.lock" "$uid"
+identity="$(build_support_identity "$root" "$build")"
+build_support_recover_staging_directories "$build" ".pch-app-staging" "$identity" "$uid"
+build_support_recover_staging_directories "$temp" "pch-swift-binaries" "$identity" "$uid"
+if [[ "${6:-}" == "hold" ]]; then
+    app="$(build_support_create_staging_directory "$build" ".pch-app-staging" "$identity" "$uid")"
+    binary="$(build_support_create_staging_directory "$temp" "pch-swift-binaries" "$identity" "$uid")"
+    /bin/mkdir "$app/payload" "$binary/payload"
+    /usr/bin/printf 'partial app\n' > "$app/payload/file"
+    /usr/bin/printf 'partial binary\n' > "$binary/payload/file"
+    /usr/bin/printf '%s\n%s\n' "$app" "$binary" > "$ready"
+    /bin/sleep 30
+fi
+'''
+    command = [
+        "/bin/bash",
+        "-p",
+        "-c",
+        harness,
+        "bash",
+        str(support),
+        str(checkout),
+        str(build_directory),
+        str(user_temp),
+        str(ready),
+    ]
+    process = subprocess.Popen(
+        [*command, "hold"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 5
+    while (
+        (not ready.exists() or ready.stat().st_size == 0)
+        and process.poll() is None
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.02)
+    assert ready.exists() and ready.stat().st_size > 0, (
+        process.stderr.read() if process.poll() is not None else ""
+    )
+    app_staging, binary_staging = [Path(line) for line in ready.read_text().splitlines()]
+
+    # A concurrent invocation cannot acquire the kernel lock and therefore
+    # cannot reclaim directories belonging to the active build.
+    active_result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+    )
+    assert active_result.returncode == 75
+    assert app_staging.is_dir()
+    assert binary_staging.is_dir()
+
+    identity = hashlib.sha256(
+        f"{checkout}\0{build_directory}\0".encode("utf-8")
+    ).hexdigest()
+    foreign_identity = "f" * 64 if identity != "f" * 64 else "e" * 64
+    foreign = build_directory / f".pch-app-staging.{foreign_identity}.FOREIGN"
+    foreign.mkdir()
+    (foreign / ".pch-build-identity").write_text(
+        foreign_identity + "\n", encoding="utf-8"
+    )
+    unmarked = build_directory / f".pch-app-staging.{identity}.UNMARKED"
+    unmarked.mkdir()
+    (unmarked / "user.txt").write_text("preserve\n", encoding="utf-8")
+    forged_directory_mode = (
+        build_directory / f".pch-app-staging.{identity}.FORGED-DIRECTORY-MODE"
+    )
+    forged_directory_mode.mkdir(mode=0o700)
+    forged_directory_mode.chmod(0o755)
+    forged_directory_marker = forged_directory_mode / ".pch-build-identity"
+    forged_directory_marker.write_text(identity + "\n", encoding="utf-8")
+    forged_directory_marker.chmod(0o600)
+    forged_marker_mode = (
+        build_directory / f".pch-app-staging.{identity}.FORGED-MARKER-MODE"
+    )
+    forged_marker_mode.mkdir(mode=0o700)
+    forged_marker = forged_marker_mode / ".pch-build-identity"
+    forged_marker.write_text(identity + "\n", encoding="utf-8")
+    forged_marker.chmod(0o644)
+
+    os.killpg(process.pid, signal.SIGKILL)
+    process.wait(timeout=5)
+    recovered = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+    )
+
+    assert recovered.returncode == 0, recovered.stderr
+    assert not app_staging.exists()
+    assert not binary_staging.exists()
+    assert foreign.is_dir()
+    assert (unmarked / "user.txt").read_text(encoding="utf-8") == "preserve\n"
+    assert forged_directory_mode.is_dir()
+    assert forged_marker_mode.is_dir()
+    assert (build_directory / ".pch-build.lock").is_file()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS lockf descriptor inheritance")
+def test_mac_build_lock_survives_parent_only_sigkill_until_inheriting_child_exits(
+    project_root, tmp_path
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    lock = tmp_path / "build.lock"
+    ready = tmp_path / "ready"
+    release = tmp_path / "release.fifo"
+    os.mkfifo(release)
+    harness = r'''
+set -euo pipefail
+source "$1"
+build_support_acquire_lock "$2" "$(/usr/bin/id -u)"
+( IFS= read -r _ < "$4" ) &
+child=$!
+/usr/bin/printf '%s\n' "$child" > "$3"
+wait "$child"
+'''
+    process = subprocess.Popen(
+        [
+            "/bin/bash", "-p", "-c", harness, "bash",
+            str(support), str(lock), str(ready), str(release),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 5
+    while (
+        (not ready.exists() or ready.stat().st_size == 0)
+        and process.poll() is None
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert ready.exists() and ready.stat().st_size > 0
+    os.kill(process.pid, signal.SIGKILL)
+    process.wait(timeout=5)
+
+    acquire = [
+        "/bin/bash", "-p", "-c",
+        'source "$1"; build_support_acquire_lock "$2" "$(/usr/bin/id -u)"',
+        "bash", str(support), str(lock),
+    ]
+    blocked = subprocess.run(acquire, capture_output=True, timeout=5)
+    assert blocked.returncode == 75
+
+    with release.open("w", encoding="utf-8") as stream:
+        stream.write("finish\n")
+    deadline = time.monotonic() + 3
+    while True:
+        acquired = subprocess.run(acquire, capture_output=True, timeout=5)
+        if acquired.returncode == 0:
+            break
+        assert acquired.returncode == 75
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS lockf/stat behavior")
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "hardlink", "group-writable"])
+def test_mac_build_lock_rejects_unsafe_path_without_touching_its_target(
+    project_root, tmp_path, unsafe_kind
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    victim = tmp_path / "victim"
+    victim.write_text("preserve\n", encoding="utf-8")
+    lock = tmp_path / "build.lock"
+    if unsafe_kind == "symlink":
+        lock.symlink_to(victim)
+    elif unsafe_kind == "hardlink":
+        os.link(victim, lock)
+    else:
+        lock.write_text("preserve\n", encoding="utf-8")
+        lock.chmod(0o660)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-p",
+            "-c",
+            'source "$1"; build_support_acquire_lock "$2" "$(/usr/bin/id -u)"',
+            "bash",
+            str(support),
+            str(lock),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+    )
+
+    assert result.returncode == 73
+    assert victim.read_text(encoding="utf-8") == "preserve\n"
+    if unsafe_kind == "symlink":
+        assert lock.is_symlink()
+    else:
+        assert lock.read_text(encoding="utf-8") == "preserve\n"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="uses the macOS curl build helper")
+def test_mac_runtime_download_stalled_tls_peer_hits_external_hard_deadline(
+    project_root, tmp_path
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    stop = threading.Event()
+
+    def stall_peer():
+        try:
+            connection, _ = listener.accept()
+            with connection:
+                stop.wait(5)
+        finally:
+            listener.close()
+
+    thread = threading.Thread(target=stall_peer, daemon=True)
+    thread.start()
+    destination = tmp_path / "runtime.download"
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-p",
+                "-c",
+                'source "$1"; build_support_download "$2" "$3" "$4" "$5" 10 10 10 10 1 1 1048576',
+                "bash",
+                str(support),
+                str(Path.home()),
+                str(tmp_path),
+                str(destination),
+                f"https://127.0.0.1:{port}/runtime.tar.gz",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+        )
+    finally:
+        stop.set()
+        thread.join(timeout=1)
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 124, result.stderr
+    assert elapsed < 4
+    assert not list(tmp_path.glob("*.pch-timeout"))
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="uses macOS curl and TLS")
+@pytest.mark.parametrize("header_mode", ["missing", "false-content-length"])
+def test_mac_runtime_download_caps_real_destination_growth_and_removes_partial(
+    project_root, tmp_path, header_mode
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    certificate = tmp_path / "certificate.pem"
+    private_key = tmp_path / "private-key.pem"
+    openssl_config = tmp_path / "openssl.cnf"
+    openssl_config.write_text(
+        "[req]\n"
+        "distinguished_name=dn\n"
+        "x509_extensions=extensions\n"
+        "prompt=no\n"
+        "[dn]\n"
+        "CN=localhost\n"
+        "[extensions]\n"
+        "subjectAltName=DNS:localhost,IP:127.0.0.1\n",
+        encoding="utf-8",
+    )
+    certificate_result = subprocess.run(
+        [
+            "/usr/bin/openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-nodes", "-sha256", "-days", "1", "-keyout", str(private_key),
+            "-out", str(certificate), "-config", str(openssl_config),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+    )
+    assert certificate_result.returncode == 0, certificate_result.stderr
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls_context.load_cert_chain(certificate, private_key)
+    stop = threading.Event()
+
+    def stream_without_trustworthy_length():
+        try:
+            raw_connection, _ = listener.accept()
+            with raw_connection:
+                with tls_context.wrap_socket(raw_connection, server_side=True) as connection:
+                    request = b""
+                    while b"\r\n\r\n" not in request:
+                        block = connection.recv(4096)
+                        if not block:
+                            return
+                        request += block
+                    if header_mode == "missing":
+                        connection.sendall(
+                            b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
+                        )
+                    else:
+                        connection.sendall(
+                            b"HTTP/1.1 200 OK\r\n"
+                            b"Content-Length: 1\r\n"
+                            b"Transfer-Encoding: chunked\r\n"
+                            b"Connection: close\r\n\r\n"
+                        )
+                    payload = b"x" * 4096
+                    while not stop.is_set():
+                        if header_mode == "missing":
+                            connection.sendall(payload)
+                        else:
+                            connection.sendall(b"1000\r\n" + payload + b"\r\n")
+                        time.sleep(0.001)
+        except (BrokenPipeError, ConnectionResetError, OSError, ssl.SSLError):
+            pass
+        finally:
+            listener.close()
+
+    server_thread = threading.Thread(
+        target=stream_without_trustworthy_length, daemon=True
+    )
+    server_thread.start()
+    destination = tmp_path / "runtime.download"
+    peak_size = 0
+    observer_stop = threading.Event()
+
+    def observe_destination():
+        nonlocal peak_size
+        while not observer_stop.is_set():
+            try:
+                peak_size = max(peak_size, destination.stat().st_size)
+            except FileNotFoundError:
+                pass
+            time.sleep(0.001)
+
+    observer = threading.Thread(target=observe_destination, daemon=True)
+    observer.start()
+    maximum_bytes = 65536
+    try:
+        result = subprocess.run(
+            [
+                "/bin/bash", "-p", "-c",
+                'source "$1"; build_support_download "$2" "$3" "$4" "$5" 3 10 10 10 1 5 65536 "$6"',
+                "bash", str(support), str(Path.home()), str(tmp_path),
+                str(destination), f"https://localhost:{port}/runtime.tar.gz",
+                str(certificate),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=8,
+        )
+    finally:
+        observer_stop.set()
+        stop.set()
+        observer.join(timeout=1)
+        server_thread.join(timeout=1)
+
+    # curl may report its write failure or be delivered SIGXFSZ directly;
+    # either way the kernel-enforced file limit must fail the transfer.
+    assert result.returncode in {23, 63, 128 + signal.SIGXFSZ}, result.stderr
+    assert peak_size >= maximum_bytes // 2
+    assert peak_size <= maximum_bytes
+    assert not destination.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS lockf/curl behavior")
+def test_orphaned_download_keeps_lock_only_until_its_hard_deadline(
+    project_root, tmp_path
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    lock = tmp_path / "build.lock"
+    ready = tmp_path / "ready"
+    destination = tmp_path / "runtime.download"
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    accepted = threading.Event()
+    stop = threading.Event()
+
+    def stall_peer():
+        try:
+            connection, _ = listener.accept()
+            accepted.set()
+            with connection:
+                stop.wait(5)
+        finally:
+            listener.close()
+
+    thread = threading.Thread(target=stall_peer, daemon=True)
+    thread.start()
+    harness = r'''
+set -euo pipefail
+source "$1"
+build_support_acquire_lock "$2" "$(/usr/bin/id -u)"
+/usr/bin/printf 'ready\n' > "$3"
+build_support_download "$4" "$5" "$6" "$7" 10 10 10 10 1 1 1048576
+'''
+    process = subprocess.Popen(
+        [
+            "/bin/bash", "-p", "-c", harness, "bash", str(support),
+            str(lock), str(ready), str(Path.home()), str(tmp_path),
+            str(destination), f"https://127.0.0.1:{port}/runtime.tar.gz",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert accepted.wait(timeout=3)
+    os.kill(process.pid, signal.SIGKILL)
+    process.wait(timeout=5)
+    acquire = [
+        "/bin/bash", "-p", "-c",
+        'source "$1"; build_support_acquire_lock "$2" "$(/usr/bin/id -u)"',
+        "bash", str(support), str(lock),
+    ]
+    started = time.monotonic()
+    blocked = subprocess.run(acquire, capture_output=True, timeout=5)
+    assert blocked.returncode == 75
+    deadline = started + 3
+    try:
+        while True:
+            acquired = subprocess.run(acquire, capture_output=True, timeout=5)
+            if acquired.returncode == 0:
+                break
+            assert acquired.returncode == 75
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+    finally:
+        stop.set()
+        thread.join(timeout=1)
+    assert time.monotonic() - started < 3
+    assert not destination.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS stat flags")
+def test_mac_runtime_cache_prunes_only_old_managed_single_link_archives(
+    project_root, tmp_path
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    cache = tmp_path / "cache"
+    cache.mkdir(mode=0o700)
+    current = cache / "cpython-3.11.16+20260825-aarch64-apple-darwin-install_only_stripped.tar.gz"
+    old = cache / "cpython-3.11.15+20260701-aarch64-apple-darwin-install_only_stripped.tar.gz"
+    unused_arch = cache / "cpython-3.11.16+20260825-x86_64-apple-darwin-install_only_stripped.tar.gz"
+    unknown = cache / "notes.txt"
+    symlink = cache / "cpython-3.10.9+20250101-aarch64-apple-darwin-install_only_stripped.tar.gz"
+    directory = cache / "cpython-3.9.9+20240101-x86_64-apple-darwin-install_only_stripped.tar.gz"
+    hardlink = cache / "cpython-3.8.9+20230101-aarch64-apple-darwin-install_only_stripped.tar.gz"
+    for path in (current, old, unused_arch):
+        path.write_bytes(path.name.encode("ascii"))
+    unknown.write_text("preserve user file\n", encoding="utf-8")
+    victim = tmp_path / "victim"
+    victim.write_text("preserve target\n", encoding="utf-8")
+    symlink.symlink_to(victim)
+    directory.mkdir()
+    hardlink_source = tmp_path / "hardlink-source"
+    hardlink_source.write_text("preserve linked bytes\n", encoding="utf-8")
+    os.link(hardlink_source, hardlink)
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-p",
+            "-c",
+            'source "$1"; build_support_prune_runtime_cache "$2" "$(/usr/bin/id -u)" "$3"',
+            "bash",
+            str(support),
+            str(cache),
+            current.name,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert current.is_file()
+    assert not old.exists()
+    assert not unused_arch.exists()
+    assert unknown.read_text(encoding="utf-8") == "preserve user file\n"
+    assert symlink.is_symlink()
+    assert victim.read_text(encoding="utf-8") == "preserve target\n"
+    assert directory.is_dir()
+    assert hardlink.is_file()
+    assert hardlink_source.read_text(encoding="utf-8") == "preserve linked bytes\n"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS immutable file flags")
+def test_mac_runtime_cache_prune_reports_unlink_failure_without_masking_it(
+    project_root, tmp_path
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    cache = tmp_path / "cache"
+    cache.mkdir(mode=0o700)
+    blocked = cache / "cpython-1.0.0+20200101-aarch64-apple-darwin-install_only_stripped.tar.gz"
+    later = cache / "cpython-9.0.0+20990101-aarch64-apple-darwin-install_only_stripped.tar.gz"
+    blocked.write_bytes(b"immutable managed archive")
+    later.write_bytes(b"later managed archive")
+    subprocess.run(["/usr/bin/chflags", "uchg", str(blocked)], check=True)
+
+    try:
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-p",
+                "-c",
+                'source "$1"; build_support_prune_runtime_cache "$2" "$(/usr/bin/id -u)"',
+                "bash",
+                str(support),
+                str(cache),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+        )
+
+        assert result.returncode != 0
+        assert blocked.is_file()
+        assert later.is_file(), "pruning continued after its first unlink failure"
+    finally:
+        subprocess.run(["/usr/bin/chflags", "nouchg", str(blocked)], check=False)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS lockf/stat behavior")
+@pytest.mark.parametrize("replacement_installed", [False, True])
+def test_mac_app_backup_recovers_both_process_group_sigkill_swap_states(
+    project_root, tmp_path, replacement_installed
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    checkout = tmp_path / "checkout"
+    build_directory = checkout / "build" / "macos"
+    build_directory.mkdir(parents=True, mode=0o700)
+    final_app = build_directory / "Modore.app"
+    final_app.mkdir()
+    (final_app / "valid").write_text("old\n", encoding="utf-8")
+    ready = tmp_path / "ready"
+    crash_harness = r'''
+set -euo pipefail
+source "$1"
+uid="$(/usr/bin/id -u)"
+build_support_acquire_lock "$3/.pch-build.lock" "$uid"
+identity="$(build_support_identity "$2" "$3")"
+backup="$(build_support_create_staging_directory "$3" ".pch-app-backup" "$identity" "$uid")"
+/bin/mv "$3/Modore.app" "$backup/Modore.app"
+if [[ "$5" == "installed" ]]; then
+    /bin/mkdir "$3/Modore.app"
+    /usr/bin/printf 'new\n' > "$3/Modore.app/valid"
+fi
+/usr/bin/printf '%s\n' "$backup" > "$4"
+/bin/sleep 30
+'''
+    process = subprocess.Popen(
+        [
+            "/bin/bash", "-p", "-c", crash_harness, "bash", str(support),
+            str(checkout), str(build_directory), str(ready),
+            "installed" if replacement_installed else "missing",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 5
+    while (
+        (not ready.exists() or ready.stat().st_size == 0)
+        and process.poll() is None
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert ready.exists() and ready.stat().st_size > 0
+    backup = Path(ready.read_text(encoding="utf-8").strip())
+    os.killpg(process.pid, signal.SIGKILL)
+    process.wait(timeout=5)
+
+    recovery_harness = r'''
+set -euo pipefail
+source "$1"
+validate_app() { [[ -d "$1" && ! -L "$1" && -f "$1/valid" && ! -L "$1/valid" ]]; }
+uid="$(/usr/bin/id -u)"
+build_support_acquire_lock "$3/.pch-build.lock" "$uid"
+identity="$(build_support_identity "$2" "$3")"
+build_support_reconcile_app_backup "$3" "$3/Modore.app" "Modore.app" "$identity" "$uid" 0 validate_app
+/usr/bin/printf 'recovered=%s preserved=%s\n' "$BUILD_SUPPORT_BACKUP_RECOVERED" "$BUILD_SUPPORT_PRESERVED_BACKUP"
+'''
+    recovered = subprocess.run(
+        [
+            "/bin/bash", "-p", "-c", recovery_harness, "bash", str(support),
+            str(checkout), str(build_directory),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+    )
+
+    assert recovered.returncode == 0, recovered.stderr
+    expected = "new\n" if replacement_installed else "old\n"
+    assert (final_app / "valid").read_text(encoding="utf-8") == expected
+    assert not backup.exists()
+    assert not list(build_directory.glob(".pch-app-backup.*"))
+    assert (
+        "recovered=0" if replacement_installed else "recovered=1"
+    ) in recovered.stdout
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS stat behavior")
+def test_mac_keep_previous_backup_rotates_to_exactly_one_owned_generation(
+    project_root, tmp_path
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    checkout = tmp_path / "checkout"
+    build_directory = checkout / "build" / "macos"
+    build_directory.mkdir(parents=True, mode=0o700)
+    final_app = build_directory / "Modore.app"
+    final_app.mkdir()
+    (final_app / "valid").write_text("current\n", encoding="utf-8")
+    identity = hashlib.sha256(
+        f"{checkout}\0{build_directory}\0".encode("utf-8")
+    ).hexdigest()
+
+    def create_backup(version: str) -> Path:
+        result = subprocess.run(
+            [
+                "/bin/bash", "-p", "-c",
+                'source "$1"; build_support_create_staging_directory "$2" ".pch-app-backup" "$3" "$(/usr/bin/id -u)"',
+                "bash", str(support), str(build_directory), identity,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+        )
+        assert result.returncode == 0, result.stderr
+        container = Path(result.stdout.strip())
+        app = container / "Modore.app"
+        app.mkdir()
+        (app / "valid").write_text(version + "\n", encoding="utf-8")
+        return container
+
+    first = create_backup("first")
+    reconcile = r'''
+set -euo pipefail
+source "$1"
+validate_app() { [[ -d "$1" && -f "$1/valid" ]]; }
+build_support_reconcile_app_backup "$2" "$2/Modore.app" "Modore.app" "$3" "$(/usr/bin/id -u)" 1 validate_app
+/usr/bin/printf '%s\n' "$BUILD_SUPPORT_PRESERVED_BACKUP"
+'''
+    preserved = subprocess.run(
+        ["/bin/bash", "-p", "-c", reconcile, "bash", str(support),
+         str(build_directory), identity],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+    )
+    assert preserved.returncode == 0, preserved.stderr
+    assert Path(preserved.stdout.strip()) == first
+
+    retire = r'''
+set -euo pipefail
+source "$1"
+validate_app() { [[ -d "$1" && -f "$1/valid" ]]; }
+build_support_retire_preserved_backup "$2" "$3" "Modore.app" "$4" "$(/usr/bin/id -u)" validate_app
+'''
+    retired = subprocess.run(
+        ["/bin/bash", "-p", "-c", retire, "bash", str(support), str(first),
+         str(build_directory), identity],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+    )
+    assert retired.returncode == 0, retired.stderr
+    assert not first.exists()
+
+    second = create_backup("second")
+    preserved_again = subprocess.run(
+        ["/bin/bash", "-p", "-c", reconcile, "bash", str(support),
+         str(build_directory), identity],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+    )
+    assert preserved_again.returncode == 0, preserved_again.stderr
+    assert Path(preserved_again.stdout.strip()) == second
+    assert list(build_directory.glob(".pch-app-backup.*")) == [second]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS stat behavior")
+@pytest.mark.parametrize(
+    "unsafe_state",
+    [
+        "foreign", "unmarked", "ambiguous", "extra-payload", "invalid-app",
+        "forged-directory-mode", "forged-marker-mode",
+    ],
+)
+def test_mac_app_backup_preserves_and_rejects_untrusted_or_ambiguous_state(
+    project_root, tmp_path, unsafe_state
+):
+    support = project_root / "scripts/modules/build_support.sh"
+    checkout = tmp_path / "checkout"
+    build_directory = checkout / "build" / "macos"
+    build_directory.mkdir(parents=True, mode=0o700)
+    final_app = build_directory / "Modore.app"
+    final_app.mkdir()
+    (final_app / "valid").write_text("current\n", encoding="utf-8")
+    identity = hashlib.sha256(
+        f"{checkout}\0{build_directory}\0".encode("utf-8")
+    ).hexdigest()
+
+    def create_owned(container_identity: str = identity, *, valid: bool = True) -> Path:
+        result = subprocess.run(
+            [
+                "/bin/bash", "-p", "-c",
+                'source "$1"; build_support_create_staging_directory "$2" ".pch-app-backup" "$3" "$(/usr/bin/id -u)"',
+                "bash", str(support), str(build_directory), container_identity,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+        )
+        assert result.returncode == 0, result.stderr
+        container = Path(result.stdout.strip())
+        app = container / "Modore.app"
+        app.mkdir()
+        if valid:
+            (app / "valid").write_text("backup\n", encoding="utf-8")
+        return container
+
+    if unsafe_state == "foreign":
+        foreign_identity = "f" * 64 if identity != "f" * 64 else "e" * 64
+        containers = [create_owned(foreign_identity)]
+    elif unsafe_state == "unmarked":
+        container = build_directory / f".pch-app-backup.{identity}.UNMARKED"
+        container.mkdir(mode=0o700)
+        app = container / "Modore.app"
+        app.mkdir()
+        (app / "valid").write_text("backup\n", encoding="utf-8")
+        containers = [container]
+    elif unsafe_state == "ambiguous":
+        containers = [create_owned(), create_owned()]
+    elif unsafe_state == "extra-payload":
+        container = create_owned()
+        (container / "unexpected.txt").write_text("preserve\n", encoding="utf-8")
+        containers = [container]
+    elif unsafe_state == "forged-directory-mode":
+        container = create_owned()
+        container.chmod(0o755)
+        containers = [container]
+    elif unsafe_state == "forged-marker-mode":
+        container = create_owned()
+        (container / ".pch-build-identity").chmod(0o644)
+        containers = [container]
+    else:
+        containers = [create_owned(valid=False)]
+
+    reconcile = r'''
+source "$1"
+validate_app() { [[ -d "$1" && -f "$1/valid" ]]; }
+build_support_reconcile_app_backup "$2" "$2/Modore.app" "Modore.app" "$3" "$(/usr/bin/id -u)" 0 validate_app
+'''
+    result = subprocess.run(
+        ["/bin/bash", "-p", "-c", reconcile, "bash", str(support),
+         str(build_directory), identity],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+    )
+
+    assert result.returncode == 73
+    assert all(container.exists() for container in containers)
+    assert (final_app / "valid").read_text(encoding="utf-8") == "current\n"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS builder boundary")
@@ -989,6 +1864,11 @@ def test_mac_builder_preserves_unrecognized_existing_app(project_root, tmp_path)
         (project_root / "scripts/build_macos_swift_app.sh").read_bytes()
     )
     builder.chmod(0o755)
+    module_directory = script_directory / "modules"
+    module_directory.mkdir()
+    (module_directory / "build_support.sh").write_bytes(
+        (project_root / "scripts/modules/build_support.sh").read_bytes()
+    )
     build_directory = repository / "build" / "macos"
     existing_app = build_directory / "Modore.app"
     existing_app.mkdir(parents=True)
@@ -996,6 +1876,10 @@ def test_mac_builder_preserves_unrecognized_existing_app(project_root, tmp_path)
     sentinel.write_text("preserve me\n", encoding="utf-8")
     environment = os.environ.copy()
     environment["PCH_BUILD_DIR"] = str(build_directory)
+    # This test exercises preservation of an unrecognized destination, not
+    # distribution trust. Hosted macOS runners own their preinstalled Xcode,
+    # so opt into the build script's explicit non-distribution exception.
+    environment["PCH_ALLOW_USER_TOOLCHAIN"] = "1"
 
     result = subprocess.run(
         [str(builder)],
@@ -1137,6 +2021,26 @@ def test_mac_packager_sanitizes_dmg_before_distribution_trust_checks(project_roo
 def test_mac_packager_requires_a_verified_annotated_tag(project_root, tmp_path):
     if not Path("/usr/bin/ssh-keygen").is_file():
         pytest.skip("system ssh-keygen is unavailable")
+    developer_dir = Path(
+        subprocess.run(
+            ["/usr/bin/xcode-select", "-p"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+    )
+    swift_tool = Path(
+        subprocess.run(
+            ["/usr/bin/xcrun", "--find", "swift"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+    ).resolve()
+    if developer_dir.stat().st_uid != 0 or swift_tool.stat().st_uid != 0:
+        pytest.skip("distribution packaging requires a root-owned toolchain")
 
     repository = tmp_path / "project"
     script_directory = repository / "scripts"
@@ -1370,20 +2274,13 @@ def test_scanners_resolve_ignored_or_user_config_before_template(project_root):
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="runs the macOS scanner entry point")
 def test_release_extracted_scanner_does_not_abort_on_a_missing_module(project_root, tmp_path):
-    """Ground truth, not pattern-matching: copy exactly the files MACOS_FILES ships
-    into a clean directory — what a user gets from the source ZIP — and start
-    scripts/scanner.sh for real from there.
+    """Run the extracted scanner through its explicit runtime validation path.
 
-    A first attempt at this test parsed `source "$SCRIPT_DIR/..."` statements with
-    a regex and asserted the target was in the allowlist. That caught
-    modules/support_dir.sh but missed modules/macos/idle_cpu.sh, which scanner.sh
-    reaches through a variable built from MODULES_DIR two lines away from the
-    `source` statement — a pattern the regex never matched, even though it fails
-    exactly the same way. Any script that constructs its own source path is a way
-    to defeat a syntactic check, so this asserts the actual failure mode instead:
-    every `source`d module runs in the first few lines, before scanner.sh reads
-    any real system state, so a short-lived process is enough to observe whether
-    it survived past that point without waiting for a full scan to finish."""
+    The validation command sources every module shipped in the source archive,
+    prints a fixed milestone, and exits before collecting system state.  A clean
+    exit therefore proves the entry point reached the line after its dynamic
+    imports; merely killing a still-running scan after a few seconds did not.
+    """
     module = load_release_smoke(project_root)
     extracted = tmp_path / "extracted"
     for rel in module.MACOS_FILES:
@@ -1395,23 +2292,23 @@ def test_release_extracted_scanner_does_not_abort_on_a_missing_module(project_ro
         dst.write_bytes(src.read_bytes())
         dst.chmod(src.stat().st_mode)
 
-    proc = subprocess.Popen(
-        ["/bin/bash", "scripts/scanner.sh", "--quick"],
+    isolated_home = tmp_path / "home"
+    isolated_home.mkdir(mode=0o700)
+    environment = os.environ.copy()
+    environment["HOME"] = str(isolated_home)
+    result = subprocess.run(
+        ["/bin/bash", "scripts/scanner.sh", "--validate-runtime"],
         cwd=extracted,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
+        env=environment,
+        timeout=5,
+        check=False,
     )
-    try:
-        _, stderr = proc.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        _, stderr = proc.communicate()
-
-    for signature in ("No such file or directory", "command not found", "unbound variable"):
-        assert signature not in stderr, (
-            f"scanner.sh hit a missing-module failure from the extracted release: {stderr}"
-        )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Modore scanner runtime valid\n"
+    assert result.stderr == ""
+    assert list(isolated_home.iterdir()) == []
 
 
 def test_mac_source_release_ships_the_ai_work_audit(project_root):
@@ -1447,7 +2344,7 @@ MOTHBALL_DESTRUCTIVE_SYMBOLS = (
 )
 
 
-def test_modore_cannot_reach_mothballs_destructive_api_without_the_approval_gate(project_root):
+def test_modore_cannot_reach_mothballs_destructive_api(project_root):
     """Absorbing Mothball absorbed two different deletion disciplines, and only
     one of them is Modore's.
 
@@ -1468,33 +2365,29 @@ def test_modore_cannot_reach_mothballs_destructive_api_without_the_approval_gate
     in a view action and a second deletion path that the approval chain never
     sees.
 
-    Wiring it is allowed. Wiring it *around* the token is not: any file that
-    reaches the destructive API must also carry the approval symbol, so the
-    reviewer of that diff is looking at both halves at once. Today no file
-    reaches it at all, and this test says so out loud rather than leaving it to
-    be rediscovered.
+    An approval token elsewhere in the same source file does not prove the
+    destructive call consumed it. Until this dependency is split into a
+    read-only product or the call boundary accepts Modore's approval manifest,
+    Modore source must not name the destructive symbols at all.
     """
     sources = sorted((project_root / "macos" / "Modore" / "Sources").rglob("*.swift"))
     assert sources, "expected Modore Swift sources to exist"
 
-    unguarded: list[str] = []
+    reachable: list[str] = []
     for path in sources:
         text = path.read_text(encoding="utf-8")
         # Comments explain the boundary; only code may not cross it.
         code = "\n".join(line for line in text.splitlines()
                           if not line.lstrip().startswith(("//", "///", "*")))
         touched = [sym for sym in MOTHBALL_DESTRUCTIVE_SYMBOLS if sym in code]
-        if not touched:
-            continue
-        if "approvalToken" not in code:
+        if touched:
             rel = path.relative_to(project_root)
-            unguarded.append(f"{rel}: {', '.join(touched)}")
+            reachable.append(f"{rel}: {', '.join(touched)}")
 
-    assert not unguarded, (
-        "Mothball's destructive API is reachable from Modore without the "
-        "approval-token discipline. Route it through the preview/approve/"
-        "execute chain -- or, if this is deliberate, say why here:\n  "
-        + "\n  ".join(unguarded))
+    assert not reachable, (
+        "Mothball's destructive API is reachable from Modore source. Keep the "
+        "dependency read-only until its call boundary enforces Modore's approval "
+        "manifest:\n  " + "\n  ".join(reachable))
 
 
 def test_the_shipped_mothball_surface_is_scan_and_classify_only(project_root):

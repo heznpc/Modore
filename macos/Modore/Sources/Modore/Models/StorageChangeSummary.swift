@@ -58,11 +58,22 @@ struct StorageChangeSummary: Equatable {
         previous = sorted[sorted.count - 2]
         current = sorted[sorted.count - 1]
         let changes = Self.changes(previous: previous, current: current)
-        let growing = changes.filter { $0.deltaGB >= 0.05 }.sorted { $0.deltaGB > $1.deltaGB }
-        let shrinking = changes.filter { $0.deltaGB <= -0.05 }.sorted { $0.deltaGB < $1.deltaGB }
-        let exclusive = Self.exclusiveRootChanges(changes)
+        // Simulator UUID rows are drill-down evidence beneath the counted
+        // Devices aggregate. This also recognizes the former `simulator`
+        // category by kind so an on-disk history migration cannot fabricate a
+        // recovery when those legacy detail rows disappear.
+        let attributed = changes.filter { !$0.isAttributionDetail }
+        let details = changes.filter(\.isAttributionDetail)
+        let growing = attributed
+            .filter { $0.hasMeasuredEndpoints && $0.deltaGB >= 0.05 }
+            .sorted { $0.deltaGB > $1.deltaGB }
+        let shrinking = attributed
+            .filter { $0.hasMeasuredEndpoints && $0.deltaGB <= -0.05 }
+            .sorted { $0.deltaGB < $1.deltaGB }
+        let exclusive = Self.exclusiveRootChanges(attributed)
         itemChanges = changes
-        largestChanges = changes.sorted { abs($0.deltaGB) > abs($1.deltaGB) }
+        largestChanges = attributed.sorted { abs($0.deltaGB) > abs($1.deltaGB) }
+            + details.sorted { abs($0.deltaGB) > abs($1.deltaGB) }
         growingItems = growing
         shrinkingItems = shrinking
         let measuredExclusive = exclusive.filter(\.hasMeasuredEndpoints)
@@ -96,6 +107,7 @@ struct StorageChangeSummary: Equatable {
                 key: key,
                 label: source.label,
                 category: source.category,
+                kind: source.kind,
                 path: source.path,
                 beforeGB: beforeGB,
                 afterGB: afterGB,

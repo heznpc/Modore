@@ -71,7 +71,20 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
         var rows: [StorageHistoryItem] = []
         rows += Self.items(storage.cleanupCandidates, category: "cleanup")
         rows += Self.items(storage.reviewCandidates, category: "review")
-        rows += Self.items(storage.developerToolchains, category: "developer")
+        // The aggregate Devices root is the counted source of truth because it
+        // also includes orphaned/unavailable UUID directories that simctl cannot
+        // enrich. Per-device rows remain as drill-down evidence in a non-counted
+        // category so history can explain which known device changed without
+        // adding those bytes a second time.
+        rows += Self.items(
+            storage.developerToolchains.filter { !$0.kind.hasPrefix("simulator_") },
+            category: "developer"
+        )
+        rows += Self.items(
+            storage.developerToolchains.filter { $0.kind.hasPrefix("simulator_") },
+            category: "simulator"
+        )
+        rows += Self.simulatorItems(storage.simulatorDevices)
         self.items = rows
     }
 
@@ -128,14 +141,52 @@ struct StorageHistoryEntry: Codable, Identifiable, Equatable {
         return indexed.values.sorted { $0.key < $1.key }
     }
 
+    private static func simulatorItems(_ values: [SimulatorDevice]) -> [StorageHistoryItem] {
+        var indexed: [String: StorageHistoryItem] = [:]
+        for device in values {
+            // This is a history identity, not an executable cleanup recipe.
+            // Bind it directly to the canonical UUID so a recipe-label change
+            // or UUID casing difference cannot split one device across scans.
+            let canonicalUUID = UUID(uuidString: device.uuid)?.uuidString
+                ?? device.uuid.uppercased()
+            let historyCleanupID = "simulator_device:\(canonicalUUID)"
+            let identity = historyIdentity(
+                category: "simulator_detail",
+                kind: "simulator_device",
+                cleanupID: historyCleanupID,
+                path: device.path
+            )
+            indexed[identity] = StorageHistoryItem(
+                key: identity,
+                label: device.name,
+                category: "simulator_detail",
+                kind: "simulator_device",
+                sizeGB: device.sizeGB,
+                path: device.path,
+                cleanupID: historyCleanupID,
+                measureStatus: device.measureStatus
+            )
+        }
+        return indexed.values.sorted { $0.key < $1.key }
+    }
+
     static func historyIdentity(
         category: String,
         kind: String,
         cleanupID: String,
         path: String
     ) -> String {
+        // Simulator toolchains were persisted under `developer` before the
+        // dedicated Simulator surface existed. Canonicalize both forms so an
+        // upgrade cannot report the unchanged footprint as one disappearance
+        // plus one new multi-gigabyte allocation.
+        let simulatorHistoryCategories = ["developer", "simulator", "simulator_detail"]
+        let identityCategory = kind.hasPrefix("simulator_")
+            && simulatorHistoryCategories.contains(category)
+            ? "simulator"
+            : category
         let recipe = cleanupID.isEmpty ? kind : cleanupID
-        return "\(category)|\(recipe)|\(normalizedPath(path))"
+        return "\(identityCategory)|\(recipe)|\(normalizedPath(path))"
     }
 
     static func normalizedPath(_ path: String) -> String {
@@ -150,6 +201,7 @@ struct StorageItemChange: Identifiable, Equatable {
     let key: String
     let label: String
     let category: String
+    let kind: String
     let path: String
     let beforeGB: Double
     let afterGB: Double
@@ -161,6 +213,9 @@ struct StorageItemChange: Identifiable, Equatable {
     var appearedInTrackedList: Bool { !wasPresent && isPresent }
     var disappearedFromTrackedList: Bool { wasPresent && !isPresent }
     var hasMeasuredEndpoints: Bool { wasPresent && isPresent }
+    var isAttributionDetail: Bool {
+        category == "simulator_detail" || kind == "simulator_device"
+    }
 }
 
 struct FreeSpaceSample: Identifiable, Equatable, Sendable {

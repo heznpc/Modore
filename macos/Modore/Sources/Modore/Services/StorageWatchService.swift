@@ -84,6 +84,7 @@ enum StorageWatchService {
             environment: [
                 "PCH_STORAGE_WATCH_SCRIPT": execution.storageWatchScriptURL.path,
                 "PCH_STORAGE_WATCH_SHA256": watcherHash,
+                "PCH_STORAGE_WATCH_APP_BUNDLE": Bundle.main.bundleURL.path,
             ]
         )
         let values = Self.protocolValues(result.output)
@@ -149,13 +150,31 @@ enum StorageWatchService {
               let attemptAt = try? Date.ISO8601FormatStyle().parse(attemptString) else {
             return .neverAttempted
         }
+        let exitString = values["lastExitCode"]
+        let finishedString = values["lastFinishedAt"]
+        if exitString != nil || finishedString != nil {
+            guard let exitString,
+                  let exitCode = Int(exitString),
+                  (0...255).contains(exitCode),
+                  let finishedString,
+                  (try? Date.ISO8601FormatStyle().parse(finishedString)) != nil,
+                  exitCode == 0 else {
+                return .attemptedThenFailed
+            }
+        }
         guard let freshestSuccessAt else {
+            return .attemptedThenFailed
+        }
+        let successAge = now.timeIntervalSince(freshestSuccessAt)
+        guard successAge >= -StorageHistoryStore.futureTimestampTolerance else {
+            // A clock jump or corrupted future row cannot mask a real current
+            // failed attempt or keep the watch healthy indefinitely.
             return .attemptedThenFailed
         }
         if attemptAt > freshestSuccessAt {
             return .attemptedThenFailed
         }
-        return now.timeIntervalSince(freshestSuccessAt) <= heartbeatStalenessInterval
+        return successAge <= heartbeatStalenessInterval
             ? .recentSuccess
             : .staleSuccess
     }
@@ -184,7 +203,8 @@ enum StorageWatchService {
         expectedWatcherURL: URL,
         expectedWatcherSHA256: String? = nil,
         expectedHomeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
-        expectedAppBundlePath: String = Bundle.main.bundleURL.path
+        expectedAppBundlePath: String = Bundle.main.bundleURL.path,
+        expectedAppExecutableSHA256: String? = nil
     ) -> StorageWatchRuntimeState {
         guard let plistPath = protocolValues["plist"], plistPath.hasPrefix("/") else {
             return .stale
@@ -203,6 +223,14 @@ enum StorageWatchService {
         ), watcherHash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
             return .stale
         }
+        guard let appExecutableHash = expectedAppExecutableSHA256
+                ?? appExecutableSHA256(at: URL(fileURLWithPath: expectedAppBundlePath)),
+              appExecutableHash.range(
+                of: "^[0-9a-f]{64}$",
+                options: .regularExpression
+              ) != nil else {
+            return .stale
+        }
         let expectedArguments = [
             "/usr/bin/env",
             "-i",
@@ -211,6 +239,7 @@ enum StorageWatchService {
             "LANG=en_US.UTF-8",
             "LC_ALL=en_US.UTF-8",
             "PCH_STORAGE_WATCH_APP_BUNDLE=\(expectedAppBundlePath)",
+            "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256=\(appExecutableHash)",
             "/bin/bash",
             "-p",
             "-c",
@@ -254,6 +283,18 @@ enum StorageWatchService {
     }
 
     static let storageWatchWrapper = #"set -u; script="$2"; expected="$1"; hb="$HOME/Library/Application Support/Modore/storage-watch-heartbeat.tsv"; hbdir="$(/usr/bin/dirname "$hb")"; hb_write() { [[ -d "$hbdir" && ! -L "$hbdir" && ! -L "$hb" ]] || return 0; local tmp="$(/usr/bin/mktemp "$hbdir/.storage-watch-heartbeat.XXXXXX" 2>/dev/null)"; [[ -n "$tmp" ]] || return 0; /usr/bin/printf "%s" "$1" > "$tmp" 2>/dev/null || { /bin/rm -f "$tmp" 2>/dev/null; return 0; }; /bin/chmod 600 "$tmp" 2>/dev/null; /bin/mv -f "$tmp" "$hb" 2>/dev/null || /bin/rm -f "$tmp" 2>/dev/null; }; attempt_at="$(/bin/date -u "+%Y-%m-%dT%H:%M:%SZ")"; hb_write "$(/usr/bin/printf "lastAttemptAt\t%s\n" "$attempt_at")"; [[ -f "$script" && ! -L "$script" ]] || exit 78; size=$(/usr/bin/stat -f "%z" "$script") || exit 78; [[ "$size" -le 1048576 ]] || exit 78; payload=$(/usr/bin/base64 < "$script") || exit 78; digest=$(/usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /usr/bin/shasum -a 256) || exit 78; actual="${digest%% *}"; [[ "$actual" == "$expected" ]] || exit 78; /usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /bin/bash -p; ec=$?; hb_write "$(/usr/bin/printf "lastAttemptAt\t%s\nlastExitCode\t%s\nlastFinishedAt\t%s\n" "$attempt_at" "$ec" "$(/bin/date -u "+%Y-%m-%dT%H:%M:%SZ")")"; exit "$ec""#
+
+    static func appExecutableSHA256(at bundleURL: URL) -> String? {
+        guard let bundle = Bundle(url: bundleURL),
+              bundle.bundleIdentifier == "me.heznpc.modore",
+              let executableURL = bundle.executableURL,
+              !pathContainsSymbolicLink(bundleURL),
+              !pathContainsSymbolicLink(executableURL),
+              isSecureRegularFile(at: executableURL, allowsRootOwner: true) else {
+            return nil
+        }
+        return secureSHA256(at: executableURL, maximumBytes: 256 * 1_024 * 1_024)
+    }
 
     private static func loadFreeSpaceSamples() async -> [FreeSpaceSample] {
         await Task.detached(priority: .utility) {

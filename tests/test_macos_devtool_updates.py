@@ -11,11 +11,12 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
 
-def run_collector(project_root, tmp_path, brew_script: str):
+def run_collector(project_root, tmp_path, brew_script: str, extra_env=None):
     module = project_root / "scripts" / "modules" / "macos" / "devtool_updates.sh"
     brew_bin = tmp_path / "fake-brew"
     brew_bin.write_text(brew_script, encoding="utf-8")
@@ -29,6 +30,7 @@ def run_collector(project_root, tmp_path, brew_script: str):
             "TMP_DIR": str(tmp_path),
         }
     )
+    env.update(extra_env or {})
     harness = (
         'record_collection_status() { printf "%s\\t%s\\t%s\\t%s\\t%s\\n" "$@" >> "$TMP_DIR/status.tsv"; }\n'
         '. "$1"\n'
@@ -40,6 +42,7 @@ def run_collector(project_root, tmp_path, brew_script: str):
         text=True,
         encoding="utf-8",
         env=env,
+        timeout=10,
     )
     out_file = tmp_path / "devtool_updates.txt"
     status_file = tmp_path / "status.tsv"
@@ -83,16 +86,83 @@ def test_reports_ok_when_nothing_is_outdated(project_root, tmp_path):
     assert "모두 최신" in fields[4]
 
 
-def test_marks_unavailable_when_brew_exits_nonzero(project_root, tmp_path):
+def test_marks_failed_when_brew_exits_nonzero(project_root, tmp_path):
     brew_script = "#!/bin/bash\necho 'boom' >&2\nexit 1\n"
 
     result, out, status = run_collector(project_root, tmp_path, brew_script)
 
     assert result.returncode == 0, result.stderr
-    # A failed brew invocation must not leave stale/partial output behind.
+    # With no stdout there is no partial diagnostic to preserve.
     assert out == ""
     fields = status.strip("\n").split("\t")
-    assert fields[2] == "unavailable"
+    assert fields[2] == "failed"
+
+
+def test_brew_timeout_reaps_descendants_and_preserves_partial_output(
+    project_root, tmp_path
+):
+    child_pid_file = tmp_path / "brew-child.pid"
+    brew_script = textwrap.dedent(
+        f"""\
+        #!/bin/bash
+        printf 'partial-package (1.0) < 2.0\\n'
+        trap '' TERM
+        ( trap - TERM; exec /bin/sleep 30 ) &
+        child=$!
+        printf '%s' "$child" > "{child_pid_file}"
+        wait
+        """
+    )
+
+    result, out, status = run_collector(
+        project_root,
+        tmp_path,
+        brew_script,
+        {"PCH_DEVTOOL_COMMAND_TIMEOUT_TICKS": "5"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert out == "partial-package (1.0) < 2.0\n"
+    fields = status.strip("\n").split("\t")
+    assert fields[2] == "timed_out"
+    assert "일부 출력" in fields[4]
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    for _ in range(50):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("timed-out brew left a descendant running")
+
+
+def test_brew_output_limit_marks_collection_incomplete_and_keeps_prefix(
+    project_root, tmp_path
+):
+    brew_script = (
+        "#!/bin/bash\n"
+        "i=0\n"
+        "while [[ $i -lt 500 ]]; do "
+        "printf 'package-%04d (1.0) < 2.0\\n' \"$i\"; i=$((i + 1)); done\n"
+    )
+
+    result, out, status = run_collector(
+        project_root,
+        tmp_path,
+        brew_script,
+        {
+            "PCH_DEVTOOL_OUTPUT_LIMIT_KB": "1",
+            "PCH_DEVTOOL_COMMAND_TIMEOUT_TICKS": "20",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert out.startswith("package-0000")
+    assert 0 < len(out.encode("utf-8")) <= 1024
+    fields = status.strip("\n").split("\t")
+    assert fields[2] == "failed"
+    assert "일부 출력" in fields[4]
 
 
 def test_never_disables_auto_update_opt_out(project_root, tmp_path):

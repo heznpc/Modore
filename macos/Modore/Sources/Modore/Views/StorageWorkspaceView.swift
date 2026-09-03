@@ -109,7 +109,7 @@ private struct StorageWorkspaceToolbar: View {
         case .goal: return "목표 용량을 정하면 가장 큰 항목부터 채워 도달하는 최소 조합을 계산합니다."
         case .development: return "빌드 도구와 실행 중인 생성원을 구분해 보여줍니다."
         case .applications: return "앱 본체와 정확히 귀속되는 사용자 데이터만 검토합니다."
-        case .simulators: return "보존한 기기와 실행 중인 기기는 삭제하지 않습니다."
+        case .simulators: return "기기 데이터, runtime 지원 자산과 공유 캐시를 중복 없이 함께 봅니다."
         }
     }
 
@@ -119,7 +119,13 @@ private struct StorageWorkspaceToolbar: View {
         case .goal: return storage.recoveryText
         case .development: return storage.developerText
         case .applications: return storage.applicationsText
-        case .simulators: return storage.simulatorText
+        case .simulators:
+            if storage.simulatorFootprintMeasurementIncomplete {
+                return storage.simulatorFootprintGB > 0
+                    ? String(format: "최소 %.1fGB", storage.simulatorFootprintGB)
+                    : "측정 보류"
+            }
+            return storage.simulatorFootprintText
         }
     }
 }

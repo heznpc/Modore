@@ -221,7 +221,7 @@ private struct StorageWatchEvidenceSection: View {
                                 .help(row.path)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(measurementText(row))
+                        Text(row.measurementText)
                             .font(.callout.weight(.medium))
                             .foregroundStyle(row.measured ? .primary : .secondary)
                             .monospacedDigit()
@@ -239,29 +239,22 @@ private struct StorageWatchEvidenceSection: View {
     }
 
     private var evidenceSummary: String {
-        let rows = evidence.signalEvent?.rows ?? []
-        let hasSwap = rows.contains { $0.kind == .swap }
-        let hasProcessRSS = rows.contains { $0.kind == .processRSS }
-        let captured: String
-        switch (hasSwap, hasProcessRSS) {
-        case (true, true):
-            captured = "스왑·상위 RAM·제한된 경로를 확보했습니다"
-        case (true, false):
-            captured = "스왑·제한된 경로를 확보했고, RAM 신호는 수집되지 않았습니다"
-        case (false, true):
-            captured = "상위 RAM·제한된 경로를 확보했고, 스왑 신호는 수집되지 않았습니다"
-        case (false, false):
-            captured = "제한된 경로만 확보했고, 스왑·RAM 신호는 수집되지 않았습니다"
-        }
-        return "같은 점검에서 \(captured). 큰 값만으로 원인을 확정하지 않습니다."
+        let swap = evidence.signalEvent?.collectionSummary(for: .swap, label: "스왑")
+            ?? "스왑 신호 없음"
+        let rss = evidence.signalEvent?.collectionSummary(for: .processRSS, label: "상위 RAM")
+            ?? "상위 RAM 신호 없음"
+        return "같은 점검: \(swap) · \(rss) · \(pathCollectionSummary). 큰 값만으로 원인을 확정하지 않습니다."
     }
 
-    private func measurementText(_ row: StorageWatchPathSnapshot) -> String {
-        guard row.measured else {
-            return row.status == "timed_out" ? "시간 제한" : "측정 실패"
+    private var pathCollectionSummary: String {
+        guard let rows = evidence.pathEvent?.rows, !rows.isEmpty else {
+            return "경로 신호 없음"
         }
-        return String(format: "%.1fGB", row.sizeGB)
+        if rows.allSatisfy(\.measured) { return "제한된 경로 측정 완료" }
+        if rows.contains(where: \.measured) { return "제한된 경로 일부만 측정" }
+        return "제한된 경로 측정 미완료"
     }
+
 }
 
 private struct ScanHistorySection: View {

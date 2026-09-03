@@ -7,6 +7,7 @@ export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset BASH_ENV ENV CDPATH GLOBIGNORE
 
 ROOT_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /bin/pwd -P)"
+BUILD_SUPPORT_MODULE="$ROOT_DIR/scripts/modules/build_support.sh"
 PACKAGE_DIR="$ROOT_DIR/macos/Modore"
 BUILD_DIR="${PCH_BUILD_DIR:-$ROOT_DIR/build/macos}"
 APP_NAME="Modore.app"
@@ -22,6 +23,7 @@ PYTHON_RUNTIME_VERSION="3.11.16+20260825"
 PYTHON_RUNTIME_RELEASE="20260825"
 PYTHON_RUNTIME_ARM64_SHA256="a84adc050a29e0c7387c885ff13e6ac4b0027f9e841359e200d647313dbb5b03"
 PYTHON_RUNTIME_X86_64_SHA256="77bfa2b959edc0d653830f14f08ab8260156d4b5930368886d4e1c6a76f1d2d4"
+PYTHON_RUNTIME_MAX_ARCHIVE_BYTES="268435456"
 
 if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     /usr/bin/printf 'ERROR: PCH_APP_VERSION must be a numeric X.Y.Z version: %s\n' "$APP_VERSION" >&2
@@ -165,6 +167,38 @@ if [[ "$build_owner" != "$current_uid" || $((8#$build_permissions & 0022)) -ne 0
     /usr/bin/printf 'ERROR: unsafe owner or permissions on PCH_BUILD_DIR: %s\n' "$BUILD_DIR" >&2
     exit 64
 fi
+if [[ ! -f "$BUILD_SUPPORT_MODULE" || -L "$BUILD_SUPPORT_MODULE" ]]; then
+    /usr/bin/printf 'ERROR: build support module is missing or unsafe: %s\n' \
+        "$BUILD_SUPPORT_MODULE" >&2
+    exit 1
+fi
+# shellcheck source=scripts/modules/build_support.sh
+source "$BUILD_SUPPORT_MODULE"
+lock_file="$BUILD_DIR/.pch-build.lock"
+lock_status=0
+build_support_acquire_lock "$lock_file" "$current_uid" || lock_status=$?
+if [[ "$lock_status" -ne 0 ]]; then
+    if [[ "$lock_status" == "75" ]]; then
+        /usr/bin/printf 'ERROR: another Mac app build is already using: %s\n' \
+            "$BUILD_DIR" >&2
+    else
+        /usr/bin/printf 'ERROR: cannot establish a safe Mac app build lock: %s\n' \
+            "$lock_file" >&2
+    fi
+    exit "$lock_status"
+fi
+build_identity="$(build_support_identity "$ROOT_DIR" "$BUILD_DIR")"
+if [[ ! "$build_identity" =~ ^[0-9a-f]{64}$ ]]; then
+    /usr/bin/printf 'ERROR: cannot establish the build identity.\n' >&2
+    exit 1
+fi
+if ! build_support_recover_staging_directories \
+    "$BUILD_DIR" ".pch-app-staging" "$build_identity" "$current_uid" \
+    || ! build_support_recover_staging_directories \
+        "$user_temp" "pch-swift-binaries" "$build_identity" "$current_uid"; then
+    /usr/bin/printf 'ERROR: cannot safely recover an interrupted build staging directory.\n' >&2
+    exit 73
+fi
 FINAL_APP_DIR="$BUILD_DIR/$APP_NAME"
 
 clean_environment=(
@@ -219,7 +253,7 @@ done
     exit 1
 }
 
-required_commands=(xcrun codesign curl ditto plutil shasum tar)
+required_commands=(xcrun codesign curl ditto lockf perl plutil shasum tar)
 for command_name in "${required_commands[@]}"; do
     if ! /usr/bin/command -v "$command_name" >/dev/null 2>&1; then
         /usr/bin/printf 'ERROR: required command missing: %s\n' "$command_name" >&2
@@ -311,6 +345,19 @@ app_bundle_is_expected() {
 existing_app_is_expected() {
     app_bundle_is_expected "$FINAL_APP_DIR" 1
 }
+backup_recovery_status=0
+build_support_reconcile_app_backup \
+    "$BUILD_DIR" "$FINAL_APP_DIR" "$APP_NAME" "$build_identity" \
+    "$current_uid" "$KEEP_PREVIOUS_APP" app_bundle_is_expected \
+    || backup_recovery_status=$?
+if [[ "$backup_recovery_status" -ne 0 ]]; then
+    /usr/bin/printf 'ERROR: interrupted app backup is ambiguous or changed; preserving it for manual review.\n' >&2
+    exit "$backup_recovery_status"
+fi
+preserved_backup_container="$BUILD_SUPPORT_PRESERVED_BACKUP"
+if [[ "$BUILD_SUPPORT_BACKUP_RECOVERED" == "1" ]]; then
+    /usr/bin/printf 'Recovered the previous app after an interrupted replacement.\n'
+fi
 if [[ -e "$FINAL_APP_DIR" || -L "$FINAL_APP_DIR" ]]; then
     if ! existing_app_is_expected; then
         /usr/bin/printf 'ERROR: existing app output is not a valid %s bundle; preserve and review it manually: %s\n' \
@@ -329,21 +376,44 @@ if [[ -x "$running_app_binary" ]] && app_binary_is_running; then
     exit 75
 fi
 
-lock_directory="$BUILD_DIR/.pch-build.lock"
-if ! /bin/mkdir "$lock_directory" 2>/dev/null; then
-    /usr/bin/printf 'ERROR: another Mac app build is already using: %s\n' "$BUILD_DIR" >&2
-    exit 73
+PYTHON_RUNTIME_CACHE="$BUILD_DIR/.python-runtime-cache"
+if ! create_build_directory_without_symlinks "$BUILD_DIR" "$PYTHON_RUNTIME_CACHE"; then
+    /usr/bin/printf 'ERROR: cannot establish the pinned Python runtime cache.\n' >&2
+    exit 1
 fi
+runtime_cache_allowlist=()
+for architecture in "${architectures[@]}"; do
+    runtime_cache_allowlist+=("$(python_runtime_archive_name "$architecture")")
+done
+if ! build_support_prune_runtime_cache \
+    "$PYTHON_RUNTIME_CACHE" "$current_uid" "${runtime_cache_allowlist[@]}"; then
+    /usr/bin/printf 'ERROR: cannot safely prune old pinned Python runtime caches.\n' >&2
+    exit 1
+fi
+
 binary_staging=""
 app_staging=""
 cleanup() {
-    [[ -z "$binary_staging" ]] || /bin/rm -rf "$binary_staging"
-    [[ -z "$app_staging" ]] || /bin/rm -rf "$app_staging"
-    /bin/rmdir "$lock_directory" 2>/dev/null || true
+    if [[ -n "$binary_staging" && ( -e "$binary_staging" || -L "$binary_staging" ) ]]; then
+        build_support_remove_staging_directory \
+            "$binary_staging" "$user_temp" "pch-swift-binaries" \
+            "$build_identity" "$current_uid" \
+            || /usr/bin/printf 'WARNING: preserving changed binary staging for review: %s\n' \
+                "$binary_staging" >&2
+    fi
+    if [[ -n "$app_staging" && ( -e "$app_staging" || -L "$app_staging" ) ]]; then
+        build_support_remove_staging_directory \
+            "$app_staging" "$BUILD_DIR" ".pch-app-staging" \
+            "$build_identity" "$current_uid" \
+            || /usr/bin/printf 'WARNING: preserving changed app staging for review: %s\n' \
+                "$app_staging" >&2
+    fi
 }
 trap cleanup EXIT
-binary_staging="$(/usr/bin/mktemp -d "$user_temp/pch-swift-binaries.XXXXXX")"
-app_staging="$(/usr/bin/mktemp -d "$BUILD_DIR/.pch-app-staging.XXXXXX")"
+binary_staging="$(build_support_create_staging_directory \
+    "$user_temp" "pch-swift-binaries" "$build_identity" "$current_uid")"
+app_staging="$(build_support_create_staging_directory \
+    "$BUILD_DIR" ".pch-app-staging" "$build_identity" "$current_uid")"
 APP_DIR="$app_staging/$APP_NAME"
 
 for architecture in "${architectures[@]}"; do
@@ -452,11 +522,6 @@ done
 # build tools, pip, headers, Tk, site-packages, and extension bundles are not
 # shipped. A native app fetches one architecture; Universal 2 fetches both and
 # lipos the statically linked interpreter while sharing the pure-Python stdlib.
-PYTHON_RUNTIME_CACHE="$BUILD_DIR/.python-runtime-cache"
-if ! create_build_directory_without_symlinks "$BUILD_DIR" "$PYTHON_RUNTIME_CACHE"; then
-    /usr/bin/printf 'ERROR: cannot establish the pinned Python runtime cache.\n' >&2
-    exit 1
-fi
 PYTHON_RUNTIME_DIR="$APP_DIR/Contents/Resources/modore-python"
 PYTHON_RUNTIME_EXECUTABLE="$PYTHON_RUNTIME_DIR/bin/python3.11"
 /bin/mkdir -p "$PYTHON_RUNTIME_DIR/bin"
@@ -483,17 +548,12 @@ for architecture in "${architectures[@]}"; do
     else
         downloaded_archive="$binary_staging/$archive_name.download"
         /usr/bin/printf 'Fetching pinned CPython runtime for %s...\n' "$architecture"
-        run_clean /usr/bin/curl \
-            --fail \
-            --location \
-            --proto '=https' \
-            --retry 3 \
-            --retry-all-errors \
-            --show-error \
-            --silent \
-            --tlsv1.2 \
-            --output "$downloaded_archive" \
-            "$archive_url"
+        if ! build_support_download \
+            "$account_home" "$user_temp" "$downloaded_archive" "$archive_url" \
+            20 300 240 30 1024 360 "$PYTHON_RUNTIME_MAX_ARCHIVE_BYTES"; then
+            /usr/bin/printf 'ERROR: pinned CPython download exceeded its bounds or failed.\n' >&2
+            exit 1
+        fi
         actual_archive_sha256="$(run_clean /usr/bin/shasum -a 256 "$downloaded_archive" \
             | /usr/bin/awk '{print $1}')"
         if [[ "$actual_archive_sha256" != "$archive_sha256" ]]; then
@@ -559,7 +619,7 @@ for architecture in "${architectures[@]}"; do
         /usr/bin/ditto --norsrc --noextattr --noacl \
             "$source_stdlib" "$PYTHON_RUNTIME_DIR/lib/python3.11"
         for excluded in \
-            asyncio ctypes distutils email ensurepip http idlelib lib-dynload lib2to3 \
+            asyncio distutils email ensurepip http idlelib lib-dynload lib2to3 \
             multiprocessing pydoc_data site-packages tkinter turtledemo unittest venv xml xmlrpc; do
             /bin/rm -rf "$PYTHON_RUNTIME_DIR/lib/python3.11/$excluded"
         done
@@ -631,11 +691,48 @@ done
 # build stops here.
 python_smoke_stdout="$binary_staging/python-smoke.stdout"
 python_smoke_stderr="$binary_staging/python-smoke.stderr"
+python_smoke_status=0
 run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B \
     "$RUNTIME_DIR/scripts/scree.py" --help \
-    > "$python_smoke_stdout" 2> "$python_smoke_stderr"
-if [[ ! -s "$python_smoke_stdout" || -s "$python_smoke_stderr" ]]; then
-    /usr/bin/printf 'ERROR: embedded Python smoke produced no output or wrote to stderr.\n' >&2
+    > "$python_smoke_stdout" 2> "$python_smoke_stderr" \
+    || python_smoke_status=$?
+if [[ "$python_smoke_status" -ne 0 || ! -s "$python_smoke_stdout" \
+    || -s "$python_smoke_stderr" ]]; then
+    /usr/bin/printf 'ERROR: embedded Python smoke failed (exit %s).\n' \
+        "$python_smoke_status" >&2
+    if [[ -s "$python_smoke_stderr" ]]; then
+        /usr/bin/head -c 4096 "$python_smoke_stderr" >&2
+        /usr/bin/printf '\n' >&2
+    fi
+    exit 1
+fi
+
+# Exercise the shipped session index, not only argparse startup. An empty,
+# private home keeps the build from reading the builder's real conversations
+# while still importing and running the collectors used by the app.
+python_sessions_home="$binary_staging/python-sessions-home"
+python_sessions_stdout="$binary_staging/python-sessions.stdout"
+python_sessions_stderr="$binary_staging/python-sessions.stderr"
+/bin/mkdir -m 700 "$python_sessions_home"
+python_sessions_status=0
+run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B \
+    "$RUNTIME_DIR/scripts/scree.py" sessions --limit 1 --home "$python_sessions_home" \
+    > "$python_sessions_stdout" 2> "$python_sessions_stderr" \
+    || python_sessions_status=$?
+if [[ "$python_sessions_status" -ne 0 || ! -s "$python_sessions_stdout" \
+    || -s "$python_sessions_stderr" ]]; then
+    /usr/bin/printf 'ERROR: embedded Python session-index smoke failed (exit %s).\n' \
+        "$python_sessions_status" >&2
+    if [[ -s "$python_sessions_stderr" ]]; then
+        /usr/bin/head -c 4096 "$python_sessions_stderr" >&2
+        /usr/bin/printf '\n' >&2
+    fi
+    exit 1
+fi
+if ! run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B -c \
+    'import json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); assert p["total"] == 0 and p["sessions"] == [] and p["coverage"]["complete"] is True' \
+    "$python_sessions_stdout"; then
+    /usr/bin/printf 'ERROR: embedded Python session-index smoke returned an invalid payload.\n' >&2
     exit 1
 fi
 
@@ -717,16 +814,30 @@ if [[ -e "$FINAL_APP_DIR" || -L "$FINAL_APP_DIR" ]]; then
         /usr/bin/printf 'ERROR: existing app output changed during the build; preserving it and refusing replacement.\n' >&2
         exit 73
     fi
-    backup_container="$(/usr/bin/mktemp -d "$BUILD_DIR/.pch-app-backup.XXXXXX")"
-    backup_identity="$(/usr/bin/stat -f '%d:%i' "$backup_container")"
+    if [[ -n "$preserved_backup_container" ]]; then
+        if ! build_support_retire_preserved_backup \
+            "$preserved_backup_container" "$BUILD_DIR" "$APP_NAME" \
+            "$build_identity" "$current_uid" app_bundle_is_expected; then
+            /usr/bin/printf 'ERROR: preserved app backup changed during the build; keeping it for manual review.\n' >&2
+            exit 73
+        fi
+        preserved_backup_container=""
+        /usr/bin/printf 'Removed the older preserved app backup before replacement.\n'
+    fi
+    backup_container="$(build_support_create_staging_directory \
+        "$BUILD_DIR" ".pch-app-backup" "$build_identity" "$current_uid")"
     backup_app="$backup_container/$APP_NAME"
     if ! /bin/mv "$FINAL_APP_DIR" "$backup_app"; then
-        /bin/rmdir "$backup_container" 2>/dev/null || true
+        build_support_remove_staging_directory \
+            "$backup_container" "$BUILD_DIR" ".pch-app-backup" \
+            "$build_identity" "$current_uid" 2>/dev/null || true
         exit 74
     fi
     if app_binary_is_running; then
         if /bin/mv "$backup_app" "$FINAL_APP_DIR"; then
-            /bin/rmdir "$backup_container" 2>/dev/null || true
+            build_support_remove_staging_directory \
+                "$backup_container" "$BUILD_DIR" ".pch-app-backup" \
+                "$build_identity" "$current_uid" 2>/dev/null || true
         else
             /usr/bin/printf 'ERROR: previous app is preserved for manual recovery at: %s\n' "$backup_app" >&2
         fi
@@ -735,7 +846,9 @@ if [[ -e "$FINAL_APP_DIR" || -L "$FINAL_APP_DIR" ]]; then
     fi
     if ! /bin/mv "$APP_DIR" "$FINAL_APP_DIR"; then
         if /bin/mv "$backup_app" "$FINAL_APP_DIR"; then
-            /bin/rmdir "$backup_container" 2>/dev/null || true
+            build_support_remove_staging_directory \
+                "$backup_container" "$BUILD_DIR" ".pch-app-backup" \
+                "$build_identity" "$current_uid" 2>/dev/null || true
         else
             /usr/bin/printf 'ERROR: previous app is preserved for manual recovery at: %s\n' "$backup_app" >&2
         fi
@@ -747,7 +860,9 @@ if [[ -e "$FINAL_APP_DIR" || -L "$FINAL_APP_DIR" ]]; then
     fi
     if ! app_bundle_is_expected "$FINAL_APP_DIR" "$new_signature_required"; then
         if /bin/mv "$FINAL_APP_DIR" "$APP_DIR" && /bin/mv "$backup_app" "$FINAL_APP_DIR"; then
-            /bin/rmdir "$backup_container" 2>/dev/null || true
+            build_support_remove_staging_directory \
+                "$backup_container" "$BUILD_DIR" ".pch-app-backup" \
+                "$build_identity" "$current_uid" 2>/dev/null || true
         else
             /usr/bin/printf 'ERROR: previous app is preserved for manual recovery at: %s\n' "$backup_app" >&2
         fi
@@ -757,17 +872,15 @@ if [[ -e "$FINAL_APP_DIR" || -L "$FINAL_APP_DIR" ]]; then
     if [[ "$KEEP_PREVIOUS_APP" == "1" ]]; then
         /usr/bin/printf 'Previous app preserved for manual review: %s\n' "$backup_app"
     else
-        current_backup_identity="$(/usr/bin/stat -f '%d:%i' "$backup_container" 2>/dev/null || true)"
-        case "$backup_container" in
-            "$BUILD_DIR"/.pch-app-backup.*) ;;
-            *) current_backup_identity="" ;;
-        esac
-        if [[ -z "$backup_identity" || "$current_backup_identity" != "$backup_identity" ]] \
-            || ! app_bundle_is_expected "$backup_app" 1; then
+        if ! build_support_backup_container_has_exact_payload \
+            "$backup_container" "$APP_NAME" \
+            || ! app_bundle_is_expected "$backup_app" 1 \
+            || ! build_support_remove_staging_directory \
+                "$backup_container" "$BUILD_DIR" ".pch-app-backup" \
+                "$build_identity" "$current_uid"; then
             /usr/bin/printf 'ERROR: previous app backup changed after replacement; preserving for manual review: %s\n' "$backup_app" >&2
             exit 73
         fi
-        /bin/rm -rf "$backup_container"
         /usr/bin/printf 'Verified replacement; previous app backup removed.\n'
     fi
 else

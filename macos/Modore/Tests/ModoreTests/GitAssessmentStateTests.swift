@@ -34,6 +34,19 @@ final class GitAssessmentStateTests: XCTestCase {
             MothballService.scanScope(from: paths, limit: 3).roots.map(\.path))
     }
 
+    func test_unknownPathProbeIsNotScheduledAsARepositoryScan() {
+        let unknown = ScreeLineagePath(json: [
+            "path": "/Volumes/offline/repo",
+            "exists": NSNull(),
+            "has_git": NSNull(),
+        ])
+
+        let scope = MothballService.scanScope(from: [unknown])
+
+        XCTAssertTrue(scope.roots.isEmpty)
+        XCTAssertTrue(scope.notScanned.isEmpty)
+    }
+
     // MARK: - the three states reach the project
 
     private func project(

@@ -10,28 +10,85 @@ if ! declare -F collection_failure_status >/dev/null 2>&1; then
     collection_failure_status() { /usr/bin/printf 'failed'; }
 fi
 
-run_to_file_with_timeout() {
+run_to_file_with_timeout() (
     local seconds="$1"
     local output="$2"
     local error_output="${output}.err"
+    local output_limit_kb="${PCH_AUTORUN_COMMAND_OUTPUT_LIMIT_KB:-512}"
+    local output_limit_blocks output_limit_bytes output_size
+    local command_status=0
+    local status_marker="${output}.status.$$.$RANDOM"
+    local cmd_pid=""
+    # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+    cleanup_autorun_tool() {
+        local cleanup_pid="${cmd_pid:-}"
+        trap - HUP INT TERM EXIT
+        cmd_pid=""
+        if [[ -n "$cleanup_pid" ]]; then
+            /bin/kill -TERM -- "-$cleanup_pid" 2>/dev/null || true
+            /bin/sleep 0.2
+            /bin/kill -KILL -- "-$cleanup_pid" 2>/dev/null || true
+            wait "$cleanup_pid" 2>/dev/null || true
+        fi
+        /bin/rm -f "$status_marker" 2>/dev/null || true
+    }
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap cleanup_autorun_tool EXIT
     shift 2
 
+    case "$seconds" in ''|*[!0-9]*|0) return 124 ;; esac
+    case "$output_limit_kb" in ''|*[!0-9]*|0) output_limit_kb=512 ;; esac
+    [[ "$output_limit_kb" -le 2048 ]] || output_limit_kb=2048
+    output_limit_blocks="$output_limit_kb"
+    output_limit_bytes=$((output_limit_kb * 1024))
+
     : > "$error_output"
-    "$@" > "$output" 2> "$error_output" &
-    local cmd_pid=$!
+    : > "$output"
+    /bin/rm -f "$status_marker" 2>/dev/null || return 1
+    # Non-interactive Bash otherwise puts the child in this scanner's process
+    # group. Job control gives the provider and every descendant a private
+    # group that a deadline can stop without killing the scanner itself.
+    exec 2>/dev/null
+    set -m
+    (
+        ulimit -f "$output_limit_blocks" || exit 1
+        "$@"
+        provider_status=$?
+        /usr/bin/printf '%s' "$provider_status" > "$status_marker" 2>/dev/null || true
+        exit "$provider_status"
+    ) > "$output" 2> "$error_output" &
+    cmd_pid=$!
     local elapsed=0
-    while kill -0 "$cmd_pid" 2>/dev/null; do
+    while [[ ! -f "$status_marker" ]]; do
         if [[ "$elapsed" -ge "$seconds" ]]; then
-            kill "$cmd_pid" 2>/dev/null || true
+            /bin/kill -TERM -- "-$cmd_pid" 2>/dev/null || true
+            /bin/sleep 0.2
+            /bin/kill -KILL -- "-$cmd_pid" 2>/dev/null || true
             wait "$cmd_pid" 2>/dev/null || true
-            : > "$output"
+            cmd_pid=""
+            /bin/rm -f "$status_marker" 2>/dev/null || true
             return 124
         fi
-        sleep 1
+        /bin/sleep 1
         elapsed=$((elapsed + 1))
     done
-    wait "$cmd_pid" 2>/dev/null
-}
+    command_status="$(/bin/cat "$status_marker" 2>/dev/null || true)"
+    case "$command_status" in ''|*[!0-9]*) command_status=1 ;; esac
+    wait "$cmd_pid" 2>/dev/null || true
+    if /bin/kill -0 -- "-$cmd_pid" 2>/dev/null; then
+        /bin/kill -TERM -- "-$cmd_pid" 2>/dev/null || true
+        /bin/sleep 0.2
+        /bin/kill -KILL -- "-$cmd_pid" 2>/dev/null || true
+    fi
+    cmd_pid=""
+    /bin/rm -f "$status_marker" 2>/dev/null || true
+    output_size="$(/usr/bin/wc -c < "$output" 2>/dev/null | /usr/bin/tr -d ' ')"
+    case "$output_size" in ''|*[!0-9]*) output_size=0 ;; esac
+    [[ "$output_size" -lt "$output_limit_bytes" ]] || return 65
+    return "$command_status"
+)
 
 collect_autoruns() {
     local error_file status error_text collection_status row_count

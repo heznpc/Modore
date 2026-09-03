@@ -2,8 +2,145 @@ import Darwin
 import Foundation
 import SwiftUI
 
+struct ScanOutputBatch: Equatable, Sendable {
+    let lines: [String]
+    let omittedLineCount: Int
+
+    var text: String {
+        var output = lines
+        if omittedLineCount > 0 {
+            output.insert(
+                "[검사 출력 \(omittedLineCount)줄의 일부 또는 전부를 버퍼 상한으로 생략했습니다.]",
+                at: 0
+            )
+        }
+        return output.joined(separator: "\n")
+    }
+}
+
+/// A scan subprocess may emit close to the runner's two-megabyte output cap as
+/// one-byte lines. Crossing the actor once per line would enqueue millions of
+/// unstructured tasks. Keep one bounded newest-output buffer instead and use a
+/// single coalesced stream signal to wake the scan task that owns the process.
+final class BoundedScanOutputBuffer: @unchecked Sendable {
+    private struct BufferedLine {
+        let text: String
+        let byteCount: Int
+    }
+
+    private let maximumBufferedBytes: Int
+    private let maximumBufferedLines: Int
+    private let lock = NSLock()
+    private var bufferedLines: [BufferedLine] = []
+    private var bufferedByteCount = 0
+    private var omittedLineCount = 0
+    private var signalPending = false
+    private var acceptingOutput = true
+    private let continuation: AsyncStream<Void>.Continuation
+    let events: AsyncStream<Void>
+
+    init(
+        maximumBufferedBytes: Int = 64 * 1_024,
+        maximumBufferedLines: Int = 256
+    ) {
+        self.maximumBufferedBytes = max(1, maximumBufferedBytes)
+        self.maximumBufferedLines = max(1, maximumBufferedLines)
+        let pair = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        events = pair.stream
+        continuation = pair.continuation
+    }
+
+    func send(_ line: String) {
+        let rawBytes = line.utf8
+        let boundedText: String
+        let truncated = rawBytes.count > maximumBufferedBytes
+        if truncated {
+            boundedText = String(
+                decoding: rawBytes.suffix(maximumBufferedBytes),
+                as: UTF8.self
+            )
+        } else {
+            boundedText = line
+        }
+        let byteCount = boundedText.utf8.count
+        var shouldSignal = false
+
+        lock.lock()
+        guard acceptingOutput else {
+            lock.unlock()
+            return
+        }
+        if truncated { omittedLineCount += 1 }
+        while !bufferedLines.isEmpty,
+              bufferedLines.count >= maximumBufferedLines
+                || bufferedByteCount + byteCount > maximumBufferedBytes {
+            bufferedByteCount -= bufferedLines.removeFirst().byteCount
+            omittedLineCount += 1
+        }
+        bufferedLines.append(BufferedLine(text: boundedText, byteCount: byteCount))
+        bufferedByteCount += byteCount
+        if !signalPending {
+            signalPending = true
+            shouldSignal = true
+        }
+        lock.unlock()
+
+        if shouldSignal { continuation.yield(()) }
+    }
+
+    func takeBatch() -> ScanOutputBatch? {
+        lock.lock()
+        guard signalPending else {
+            lock.unlock()
+            return nil
+        }
+        let batch = ScanOutputBatch(
+            lines: bufferedLines.map(\.text),
+            omittedLineCount: omittedLineCount
+        )
+        bufferedLines.removeAll(keepingCapacity: true)
+        bufferedByteCount = 0
+        omittedLineCount = 0
+        signalPending = false
+        lock.unlock()
+        return batch
+    }
+
+    func finish() {
+        lock.lock()
+        acceptingOutput = false
+        let shouldSignalFinalBatch = signalPending
+        lock.unlock()
+        // A custom runner may return while a concurrently invoked callback is
+        // between unlocking `send` and yielding its wake signal. Re-yielding a
+        // single buffered signal here makes that final batch observable before
+        // the stream closes; bufferingNewest(1) coalesces the normal duplicate.
+        if shouldSignalFinalBatch { continuation.yield(()) }
+        continuation.finish()
+    }
+
+    func cancel() {
+        lock.lock()
+        acceptingOutput = false
+        bufferedLines.removeAll(keepingCapacity: false)
+        bufferedByteCount = 0
+        omittedLineCount = 0
+        signalPending = false
+        lock.unlock()
+        continuation.finish()
+    }
+}
+
 @MainActor
 final class ScanModel: ObservableObject {
+    typealias ScanRunner = @Sendable (
+        URL,
+        @escaping @Sendable (String) -> Void
+    ) async -> ScanRunResult
+    typealias ExistingResultsLoader = @Sendable (URL) async -> LoadedScanResult
+    typealias StorageWatchEvidenceLoader = @Sendable () async -> StorageWatchEvidenceSnapshot?
+    typealias CleanupMutationRecorder = @Sendable (URL) -> Bool
+
     enum TrackedTaskScope: Hashable {
         case workScreen
         case activityScreen
@@ -53,11 +190,19 @@ final class ScanModel: ObservableObject {
             committedAt: storageWatchCommittedEvidenceAt
         )
     }
+    var latestStorageWatchPathChange: StorageWatchPathChangeSummary? {
+        guard let storageWatchCommittedEvidenceAt else { return nil }
+        return StorageWatchPathChangeSummary.latest(
+            pathEvents: storageWatchPathEvents,
+            committedAt: storageWatchCommittedEvidenceAt
+        )
+    }
     @Published private(set) var resultLoading = true
     @Published private(set) var reportState = ReportState.unknown
     @Published private(set) var liveState = LiveState.unobserved
     @Published private(set) var deepScanFailure: DeepScanFailure?
     @Published private(set) var deepScanAt: Date?
+    @Published private(set) var cleanupMutationPending = false
     @Published var screeReport: ScreeReport?
     @Published var screeReportRevision = 0
     @Published var screeLoading = false
@@ -162,12 +307,21 @@ final class ScanModel: ObservableObject {
 
     let logStore = ScanLogStore()
     let projectRoot: URL
+    let scanRunner: ScanRunner
+    let existingResultsLoader: ExistingResultsLoader
+    let storageWatchEvidenceLoader: StorageWatchEvidenceLoader
+    let cleanupExecution: CleanupExecutionClient
+    let cleanupMutationRecorder: CleanupMutationRecorder
+    var cleanupRequest: CleanupExecutionRequest?
     private let normalReportName = "검사결과.html"
     private let shareReportName = "검사결과_공유용.html"
     private let terminationSafetyGate = AppTerminationSafetyGate()
     /// Retained so application termination can cancel the scan and await the
     /// LocalProcessRunner cancellation handler before the host process exits.
     var scanTask: Task<Void, Never>?
+    /// Invalidates output and post-processing from a cancelled scan before its
+    /// subprocess has finished bounded process-group cleanup.
+    var scanGeneration = 0
     private var liveStateTask: Task<Void, Never>?
     var applicationTerminationWaitGeneration = 0
     var applicationTerminationWaitTask: Task<Void, Never>?
@@ -197,9 +351,37 @@ final class ScanModel: ObservableObject {
     nonisolated static let automaticScanRetryInterval: TimeInterval = 5 * 60
     nonisolated static let liveFreeSpaceRefreshInterval: UInt64 = 5_000_000_000
 
-    init(automaticallyScansStaleResults: Bool = true) {
-        self.projectRoot = Self.detectProjectRoot()
-        self.virusTotalEnabled = Self.loadVirusTotalEnabled(projectRoot: projectRoot)
+    init(
+        automaticallyScansStaleResults: Bool = true,
+        projectRoot: URL? = nil,
+        scanRunner: @escaping ScanRunner = { projectRoot, onOutput in
+            await ScanPipeline.run(projectRoot: projectRoot, onOutput: onOutput)
+        },
+        existingResultsLoader: @escaping ExistingResultsLoader = { projectRoot in
+            await Task.detached(priority: .utility) {
+                ScanResultLoader.load(projectRoot: projectRoot)
+            }.value
+        },
+        storageWatchEvidenceLoader: @escaping StorageWatchEvidenceLoader = {
+            await Task.detached(priority: .utility) {
+                StorageWatchEvidenceStore.load()
+            }.value
+        },
+        cleanupExecution: CleanupExecutionClient = .live,
+        cleanupMutationRecorder: @escaping CleanupMutationRecorder = {
+            ScanPublication.markCleanupMutationPending(in: $0)
+        }
+    ) {
+        self.projectRoot = projectRoot ?? Self.detectProjectRoot()
+        self.scanRunner = scanRunner
+        self.existingResultsLoader = existingResultsLoader
+        self.storageWatchEvidenceLoader = storageWatchEvidenceLoader
+        self.cleanupExecution = cleanupExecution
+        self.cleanupMutationRecorder = cleanupMutationRecorder
+        self.cleanupMutationPending = ScanPublication.cleanupMutationIsPending(
+            in: self.projectRoot
+        )
+        self.virusTotalEnabled = Self.loadVirusTotalEnabled(projectRoot: self.projectRoot)
         let keepState = SimulatorKeepStore.load()
         self.simulatorKeepUUIDs = keepState.uuids
         self.simulatorLegacyKeepEntries = keepState.legacyEntries
@@ -303,7 +485,9 @@ final class ScanModel: ObservableObject {
         return age >= Self.deepScanFreshnessInterval || age < -60
     }
     func deepScanSnapshotNeedsRefresh(at date: Date = Date()) -> Bool {
-        isDeepScanSnapshotStale(at: date) || hasNewerStorageHistory
+        cleanupMutationPending
+            || isDeepScanSnapshotStale(at: date)
+            || hasNewerStorageHistory
     }
     var deepScanSnapshotAgeText: String {
         guard let deepScanAt else { return "검사 기록 없음" }
@@ -316,8 +500,11 @@ final class ScanModel: ObservableObject {
         return deepScanAt.formatted(date: .abbreviated, time: .shortened)
     }
 
-    func runScan() {
-        startScan(at: Date())
+    func runScan(preservingUserDiagnostics: Bool = false) {
+        startScan(
+            at: Date(),
+            preservingUserDiagnostics: preservingUserDiagnostics
+        )
     }
 
     func setApplicationActive(_ active: Bool) {
@@ -358,34 +545,93 @@ final class ScanModel: ObservableObject {
         liveState.recordFreeSpaceAttempt(observation, attemptedAt: attemptedAt)
     }
 
-    private func startScan(at date: Date) {
+    private func startScan(
+        at date: Date,
+        preservingUserDiagnostics: Bool = false
+    ) {
         guard !applicationTerminationStarted, !isBusy else { return }
+        scanGeneration &+= 1
+        let generation = scanGeneration
         lastScanAttemptAt = date
         state = .running
-        errorMessage = nil
+        if !preservingUserDiagnostics {
+            errorMessage = nil
+            logStore.clear()
+        }
         deepScanFailure = nil
         reportState = .unknown
-        logStore.clear()
-        appendLog("Modore 시작")
+        appendLog(
+            preservingUserDiagnostics
+                ? "정리 후 현재 상태를 다시 검사합니다."
+                : "Modore 시작"
+        )
         appendLog("프로젝트: \(projectRoot.path)")
 
         let root = projectRoot
         scanTask = Task {
-            let result = await ScanPipeline.run(projectRoot: root) { line in
-                Task { @MainActor in
-                    self.appendLog(line)
-                }
-            }
-            guard !Task.isCancelled else {
-                state = .idle
-                appendLog("검사를 취소했습니다.")
-                AccessibilityAnnouncer.announce("검사를 취소했습니다")
-                scanTask = nil
+            let result = await runScanRunner(root: root, generation: generation)
+            guard scanCanPublish(generation: generation) else {
+                finishCancelledScan()
                 return
             }
-            await finishRun(result: result)
+            guard await finishRun(result: result, generation: generation) else {
+                finishCancelledScan()
+                return
+            }
             scanTask = nil
         }
+    }
+
+    private func runScanRunner(root: URL, generation: Int) async -> ScanRunResult {
+        let output = BoundedScanOutputBuffer()
+        let runner = scanRunner
+        return await withTaskCancellationHandler {
+            await withTaskGroup(of: ScanRunResult.self) { group in
+                group.addTask {
+                    let result = await runner(root) { line in
+                        output.send(line)
+                    }
+                    output.finish()
+                    return result
+                }
+
+                for await _ in output.events {
+                    guard scanCanPublish(generation: generation) else {
+                        output.cancel()
+                        group.cancelAll()
+                        break
+                    }
+                    if let batch = output.takeBatch() {
+                        let text = batch.text
+                        if !text.isEmpty { appendLog(text) }
+                    }
+                }
+                if !scanCanPublish(generation: generation) {
+                    group.cancelAll()
+                }
+                let result = await group.next() ?? .scanFailed
+                group.cancelAll()
+                output.cancel()
+                return result
+            }
+        } onCancel: {
+            output.cancel()
+        }
+    }
+
+    private func scanCanPublish(generation: Int) -> Bool {
+        !Task.isCancelled
+            && !applicationTerminationStarted
+            && generation == scanGeneration
+    }
+
+    private func finishCancelledScan() {
+        if !applicationTerminationStarted {
+            state = .idle
+            appendLog("검사를 취소했습니다.")
+            AccessibilityAnnouncer.announce("검사를 취소했습니다")
+        }
+        scanTask = nil
     }
 
     /// The saved result remains visible while it is restored. Once restoration
@@ -398,6 +644,7 @@ final class ScanModel: ObservableObject {
             isBusy: isBusy,
             lastDeepScanAt: deepScanAt,
             hasNewerStorageHistory: hasNewerStorageHistory,
+            cleanupMutationPending: cleanupMutationPending,
             lastScanAttemptAt: lastScanAttemptAt,
             now: date
         ) else { return }
@@ -412,6 +659,7 @@ final class ScanModel: ObservableObject {
         isBusy: Bool,
         lastDeepScanAt: Date?,
         hasNewerStorageHistory: Bool,
+        cleanupMutationPending: Bool = false,
         lastScanAttemptAt: Date?,
         now: Date
     ) -> Bool {
@@ -422,6 +670,7 @@ final class ScanModel: ObservableObject {
                 return false
             }
         }
+        if cleanupMutationPending { return true }
         if hasNewerStorageHistory { return true }
         guard let lastDeepScanAt else { return true }
         let resultAge = now.timeIntervalSince(lastDeepScanAt)
@@ -430,6 +679,7 @@ final class ScanModel: ObservableObject {
 
     func cancelScan() {
         guard isRunning else { return }
+        scanGeneration &+= 1
         scanTask?.cancel()
     }
 
@@ -439,6 +689,7 @@ final class ScanModel: ObservableObject {
     /// separate termination safety gate lets the transaction finish instead.
     func cancelNonDestructiveApplicationTaskHandles() -> [Task<Void, Never>] {
         var tasks = [scanTask, liveStateTask].compactMap { $0 }
+        if scanTask != nil { scanGeneration &+= 1 }
         observationGeneration += 1
         observationInFlight = false
         tasks.append(contentsOf: cancelTrackedApplicationTasks())
@@ -571,10 +822,18 @@ final class ScanModel: ObservableObject {
         terminationSafetyGate.deferTerminationUntilSafe(completion)
     }
 
-    func finishRun(result: ScanRunResult) async {
+    @discardableResult
+    func finishRun(result: ScanRunResult, generation: Int) async -> Bool {
+        guard scanCanPublish(generation: generation) else { return false }
         if result.scanSucceeded {
-            await refreshExistingResults()
+            guard await refreshExistingResults(forScanGeneration: generation),
+                  scanCanPublish(generation: generation) else {
+                return false
+            }
             state = .finished
+            cleanupMutationPending = ScanPublication.cleanupMutationIsPending(
+                in: projectRoot
+            )
             reportState = ReportState(runResult: result, attemptedAt: Date())
             if result.normalReport == .succeeded || result.shareReport == .succeeded {
                 reportRevision += 1
@@ -599,6 +858,24 @@ final class ScanModel: ObservableObject {
                 detail: "표시된 이전 정밀 검사 결과를 현재 상태로 해석하지 마세요. 기록 화면에서 실패 단계를 확인할 수 있습니다."
             )
         }
+        return true
+    }
+
+    @discardableResult
+    func persistCleanupMutationIntent() -> Bool {
+        if cleanupMutationPending,
+           ScanPublication.cleanupMutationIsPending(in: projectRoot) {
+            deepScanAt = nil
+            return true
+        }
+        guard cleanupMutationRecorder(projectRoot) else {
+            errorMessage = "정리 전 재검사 필요 상태를 디스크에 기록하지 못해 실행하지 않았습니다. 먼저 여유 공간을 확보한 뒤 다시 시도하세요."
+            appendLog("정리 실행 중단: 재검사 필요 상태를 디스크에 기록하지 못함")
+            return false
+        }
+        cleanupMutationPending = true
+        deepScanAt = nil
+        return true
     }
 
     private func markFailedReportAsPrevious(_ result: ScanRunResult) {
@@ -612,12 +889,19 @@ final class ScanModel: ObservableObject {
         }
     }
 
-    private func refreshExistingResults() async {
+    @discardableResult
+    private func refreshExistingResults(forScanGeneration generation: Int? = nil) async -> Bool {
         resultLoading = true
+        defer { resultLoading = false }
+        guard resultPublicationIsAllowed(forScanGeneration: generation) else { return false }
         let root = projectRoot
-        let loaded = await Task.detached(priority: .utility) {
-            ScanResultLoader.load(projectRoot: root)
-        }.value
+        let loaded = await existingResultsLoader(root)
+        guard resultPublicationIsAllowed(forScanGeneration: generation) else { return false }
+        storageWatchEvidenceGeneration &+= 1
+        let evidenceGeneration = storageWatchEvidenceGeneration
+        let evidence = await storageWatchEvidenceLoader()
+        guard resultPublicationIsAllowed(forScanGeneration: generation) else { return false }
+
         deepScanSnapshot = loaded.content
         deepScanAt = loaded.deepScanAt
         if let completedScanVirusTotalEnabled = loaded.content.virusTotalEnabled {
@@ -628,7 +912,11 @@ final class ScanModel: ObservableObject {
         displayedStorageEntry = loaded.displayedStorageEntry
         storageChange = loaded.storageChange
         freeSpaceSamples = loaded.freeSpaceSamples
-        await refreshStorageWatchEvidence()
+        if evidenceGeneration == storageWatchEvidenceGeneration, let evidence {
+            storageWatchPathEvents = evidence.pathEvents
+            storageWatchSignalEvents = evidence.signalEvents
+            storageWatchCommittedEvidenceAt = evidence.committedAt
+        }
         if let diagnostic = loaded.diagnostic {
             appendLog(diagnostic)
         }
@@ -639,15 +927,17 @@ final class ScanModel: ObservableObject {
             selectedReportURL = shareReportURL
             selectedReportTitle = "공유용 리포트"
         }
-        resultLoading = false
+        return true
+    }
+
+    private func resultPublicationIsAllowed(forScanGeneration generation: Int?) -> Bool {
+        guard !Task.isCancelled, !applicationTerminationStarted else { return false }
+        guard let generation else { return true }
+        return generation == scanGeneration
     }
 
     func refreshStorageWatchEvidence() async {
-        await refreshStorageWatchEvidence {
-            await Task.detached(priority: .utility) {
-                StorageWatchEvidenceStore.load()
-            }.value
-        }
+        await refreshStorageWatchEvidence(using: storageWatchEvidenceLoader)
     }
 
     /// A later refresh owns publication even if an earlier filesystem read

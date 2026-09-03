@@ -237,8 +237,13 @@ private struct DevelopmentAssetsSection: View {
 
     var body: some View {
         Section {
-            ForEach(storage.developerToolchains) { item in
-                DevelopmentAssetRow(item: item)
+            if developerAssets.isEmpty {
+                Label("별도 개발 자산이 없습니다", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(developerAssets) { item in
+                    DevelopmentAssetRow(item: item)
+                }
             }
         } header: {
             NativeSectionHeader(
@@ -247,6 +252,10 @@ private struct DevelopmentAssetsSection: View {
                 value: storage.developerText
             )
         }
+    }
+
+    private var developerAssets: [StorageItem] {
+        storage.developerToolchains.filter { !$0.kind.hasPrefix("simulator_") }
     }
 }
 

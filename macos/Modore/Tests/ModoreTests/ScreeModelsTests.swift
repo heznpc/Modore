@@ -68,6 +68,16 @@ final class ScreeModelsTests: XCTestCase {
         XCTAssertFalse(ScreeExpiringSession(json: expiringJson()).ownerDeleted)
     }
 
+    func testExpiringSessionDoesNotTurnAnUnknownWorkspaceProbeIntoDeletion() {
+        var json = expiringJson()
+        json["story_alive"] = NSNull()
+
+        let session = ScreeExpiringSession(json: json)
+
+        XCTAssertNil(session.storyAlive)
+        XCTAssertEqual(session.workspaceStateText, "작업 경로 확인 못함")
+    }
+
     private func worktreeJson(
         strayCheckout: Bool? = nil,
         path: String = "/Users/test/IdeaProjects/repo/.claude/worktrees/wt1",
@@ -245,12 +255,26 @@ final class ScreeModelsTests: XCTestCase {
 
         XCTAssertEqual(report.lineagePaths.count, 2)
         let repo = try XCTUnwrap(report.lineagePaths.first { $0.path == "/Users/test/repo-a" })
-        XCTAssertTrue(repo.exists)
-        XCTAssertTrue(repo.hasGit)
+        XCTAssertEqual(repo.exists, true)
+        XCTAssertEqual(repo.hasGit, true)
         XCTAssertEqual(repo.caseVariants, [])
 
         let plain = try XCTUnwrap(report.lineagePaths.first { $0.path == "/Users/test/plain-folder" })
-        XCTAssertFalse(plain.hasGit)
+        XCTAssertEqual(plain.hasGit, false)
+    }
+
+    func testLineagePathPreservesUnknownProbeResults() throws {
+        let report = try XCTUnwrap(ScreeReport(json: [
+            "lineage": [
+                "summary": ["unknown": 1],
+                "paths": [["path": "/Volumes/offline", "exists": NSNull(), "has_git": NSNull()]],
+            ],
+        ]))
+
+        let item = try XCTUnwrap(report.lineagePaths.first)
+        XCTAssertNil(item.exists)
+        XCTAssertNil(item.hasGit)
+        XCTAssertEqual(report.lineageSummary.unknown, 1)
     }
 
     func testLineagePathDecodesCaseVariantsWhenPresent() throws {

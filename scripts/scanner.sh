@@ -39,25 +39,14 @@ SUPPORT_DIR_MODULE="${PCH_PINNED_SUPPORT_DIR_MODULE:-$SCRIPT_DIR/modules/support
 # shellcheck source=scripts/modules/support_dir.sh
 source "$SUPPORT_DIR_MODULE"
 NO_VT=false
-
-if [[ -z "$CONFIG_PATH" ]]; then
-    migrate_support_directory_if_needed "${HOME}/Library/Application Support" || true
-    if [[ -f "${HOME}/Library/Application Support/$SUPPORT_DIR_NAME/config.json" ]]; then
-        # User-owned config is shared by standalone and source app builds.
-        CONFIG_PATH="${HOME}/Library/Application Support/$SUPPORT_DIR_NAME/config.json"
-    elif [[ -f "${PROJECT_DIR}/data/config.json" ]]; then
-        # Source/archive CLI fallback: an explicitly created, ignored config.
-        CONFIG_PATH="${PROJECT_DIR}/data/config.json"
-    else
-        CONFIG_PATH="${PROJECT_DIR}/data/config.example.json"
-    fi
-fi
+VALIDATE_RUNTIME=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --output) OUTPUT="$2"; shift 2 ;;
         --raw) RAW_PATH="$2"; shift 2 ;;
         --no-vt) NO_VT=true; shift ;;
+        --validate-runtime) VALIDATE_RUNTIME=true; shift ;;
         *) shift ;;
     esac
 done
@@ -67,20 +56,6 @@ if [[ "$(uname)" != "Darwin" ]]; then
     echo "ERROR: 이 스크립트는 macOS 전용입니다. Windows는 scanner.ps1을 사용하세요." >&2
     exit 1
 fi
-
-echo "Modore (macOS) 시작..."
-
-COMPUTER_NAME="$(scutil --get ComputerName 2>/dev/null || hostname)"
-USER_NAME="$(whoami)"
-OS_VERSION="macOS $(sw_vers -productVersion) (Darwin $(uname -r))"
-SCANNED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
-
-TMP_DIR="$(mktemp -d -t pchealth)"
-trap 'rm -rf "$TMP_DIR"' EXIT
-export TMP_DIR
-COLLECTION_STATUS_PATH="$TMP_DIR/collection_status.tsv"
-: > "$COLLECTION_STATUS_PATH"
-export COLLECTION_STATUS_PATH
 
 record_collection_status() {
     local source_id="$1"
@@ -153,6 +128,38 @@ collection_failure_status() {
 # shellcheck source=modules/macos/devtool_updates.sh
 # shellcheck disable=SC1091
 . "$DEVTOOL_UPDATES_MODULE"
+
+if [[ "$VALIDATE_RUNTIME" == "true" ]]; then
+    /usr/bin/printf 'Modore scanner runtime valid\n'
+    exit 0
+fi
+
+if [[ -z "$CONFIG_PATH" ]]; then
+    migrate_support_directory_if_needed "${HOME}/Library/Application Support" || true
+    if [[ -f "${HOME}/Library/Application Support/$SUPPORT_DIR_NAME/config.json" ]]; then
+        # User-owned config is shared by standalone and source app builds.
+        CONFIG_PATH="${HOME}/Library/Application Support/$SUPPORT_DIR_NAME/config.json"
+    elif [[ -f "${PROJECT_DIR}/data/config.json" ]]; then
+        # Source/archive CLI fallback: an explicitly created, ignored config.
+        CONFIG_PATH="${PROJECT_DIR}/data/config.json"
+    else
+        CONFIG_PATH="${PROJECT_DIR}/data/config.example.json"
+    fi
+fi
+
+COMPUTER_NAME="$(scutil --get ComputerName 2>/dev/null || hostname)"
+USER_NAME="$(whoami)"
+OS_VERSION="macOS $(sw_vers -productVersion) (Darwin $(uname -r))"
+SCANNED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
+
+TMP_DIR="$(mktemp -d -t pchealth)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+export TMP_DIR
+COLLECTION_STATUS_PATH="$TMP_DIR/collection_status.tsv"
+: > "$COLLECTION_STATUS_PATH"
+export COLLECTION_STATUS_PATH
+
+echo "Modore (macOS) 시작..."
 
 # ------------------------------------------------------------
 # 섹션별 수집
