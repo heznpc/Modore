@@ -322,12 +322,13 @@ _pch_storage_tool_to_file() (
     local timeout_seconds="$2"
     shift 2
     local command_pid="" command_status=0 ticks=0 guard_ticks=0
-    local controller_pid="$$"
-    local controller_dead=0
+    local collector_pid="$$" helper_pid=""
+    local collector_dead=0
     local output_limit_kb="${_pch_storage_tool_output_limit_kb:-8}"
     local preserve_partial="${_pch_storage_tool_preserve_partial:-0}"
     local output_limit_blocks output_limit_bytes output_size
     local guard_directory="" guard_ready="" guard_done="" start_marker=""
+    local helper_pid_marker=""
     local status_marker="" status_staging="" guard_fd_open=0
     # shellcheck disable=SC2329 # Invoked through EXIT/HUP/INT/TERM traps below.
     cleanup_bounded_tool() {
@@ -352,6 +353,7 @@ _pch_storage_tool_to_file() (
         done
         if [[ -n "${guard_directory:-}" ]]; then
             /bin/rm -f "$guard_ready" "$guard_done" "$start_marker" \
+                "$helper_pid_marker" \
                 "$status_marker" "$status_staging" 2>/dev/null || true
             /bin/rmdir "$guard_directory" 2>/dev/null || true
         fi
@@ -372,15 +374,25 @@ _pch_storage_tool_to_file() (
     guard_ready="$guard_directory/ready"
     guard_done="$guard_directory/done"
     start_marker="$guard_directory/start"
+    helper_pid_marker="$guard_directory/helper-pid"
     status_marker="$guard_directory/status"
     status_staging="$guard_directory/status.tmp"
 
+    # macOS ships Bash 3.2, where $$ stays equal to the parent shell PID inside
+    # a function subshell. A directly invoked child sees this helper's real PID
+    # as PPID, so use that observation instead of pretending $$ identifies the
+    # helper. The marker remains private inside the mode-700 guard directory.
+    /bin/sh -c '/usr/bin/printf "%s" "$PPID" > "$1"' sh "$helper_pid_marker" \
+        || return 1
+    helper_pid="$(/bin/cat "$helper_pid_marker" 2>/dev/null || true)"
+    case "$helper_pid" in ''|*[!0-9]*|0) return 1 ;; esac
+
     # A provider gets its own process group, while a second private-group guardian
-    # watches an inherited pipe while this helper also checks the top-level
-    # collector PID. If either collector layer is killed, the write end closes
-    # and the guardian terminates the provider group. The start gate prevents the
-    # external command from running before that guardian is ready, so cancellation
-    # cannot escape through the setup window.
+    # watches both an inherited pipe and this helper's actual PID, while the helper
+    # checks the top-level collector PID. If either collector layer is killed, the
+    # guardian terminates the provider group even when an inherited descriptor
+    # delays pipe EOF. The start gate prevents the external command from running
+    # before that guardian is ready, so cancellation cannot escape through setup.
     exec 2>/dev/null
     set -m
     exec 19> >(
@@ -392,8 +404,11 @@ _pch_storage_tool_to_file() (
             trap '' HUP INT TERM
             : > "$guard_ready" 2>/dev/null || exit 1
             if IFS= read -r watched_pid <&18; then
-                while IFS= read -r guard_message <&18; do
-                    [[ "$guard_message" == "done" ]] && break
+                while /bin/kill -0 "$helper_pid" 2>/dev/null; do
+                    guard_message=""
+                    if IFS= read -r -t 1 guard_message <&18; then
+                        [[ "$guard_message" == "done" ]] && break
+                    fi
                 done
                 if [[ -z "$watched_pid" || "$watched_pid" == *[!0-9]* ]]; then
                     watched_pid=""
@@ -444,14 +459,14 @@ _pch_storage_tool_to_file() (
     /usr/bin/printf '%s\n' "$command_pid" >&19 || return 1
     : > "$start_marker" || return 1
     while [[ ! -f "$status_marker" ]]; do
-        controller_dead=0
-        if ! /bin/kill -0 "$controller_pid" 2>/dev/null; then
-            controller_dead=1
+        collector_dead=0
+        if ! /bin/kill -0 "$collector_pid" 2>/dev/null; then
+            collector_dead=1
         elif [[ "$ticks" -gt 0 && $((ticks % 10)) -eq 0 ]] \
-            && ! _pch_storage_process_is_live "$controller_pid"; then
-            controller_dead=1
+            && ! _pch_storage_process_is_live "$collector_pid"; then
+            collector_dead=1
         fi
-        if [[ "$controller_dead" -eq 1 ]]; then
+        if [[ "$collector_dead" -eq 1 ]]; then
             /usr/bin/printf 'done\n' >&19 2>/dev/null || true
             exec 19>&-
             guard_fd_open=0
