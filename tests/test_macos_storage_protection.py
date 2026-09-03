@@ -614,7 +614,8 @@ def test_storage_helper_sigkill_closes_guardian_pipe_and_reaps_provider(
         (
             "/bin/sleep 30 &\n"
             "child=$!\n"
-            f'printf "%s" "$child" > "{provider_child_file}"\n'
+            f'printf "%s" "$child" > "{provider_child_file}.tmp"\n'
+            f'/bin/mv "{provider_child_file}.tmp" "{provider_child_file}"\n'
             "wait\n"
         ),
     )
@@ -623,7 +624,8 @@ def test_storage_helper_sigkill_closes_guardian_pipe_and_reaps_provider(
 . "$1"
 _pch_storage_tool_to_file "$2" 20 "$3" &
 helper=$!
-/usr/bin/printf '%s' "$helper" > "$4"
+/usr/bin/printf '%s' "$helper" > "$4.tmp"
+/bin/mv "$4.tmp" "$4"
 wait "$helper" 2>/dev/null || true
 : > "$5"
 /bin/sleep 30
