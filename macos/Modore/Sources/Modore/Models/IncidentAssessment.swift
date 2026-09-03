@@ -4,6 +4,7 @@ struct IncidentAssessment: Equatable {
     enum Kind: Equatable {
         case noResult
         case securityDanger
+        case sustainedCPU
         case storageCritical
         case collectionIncomplete
         case browserAutomation
@@ -16,6 +17,7 @@ struct IncidentAssessment: Equatable {
             switch self {
             case .noResult: return "no_result"
             case .securityDanger: return "security_danger"
+            case .sustainedCPU: return "sustained_cpu"
             case .storageCritical: return "storage_critical"
             case .collectionIncomplete: return "collection_incomplete"
             case .browserAutomation: return "browser_automation"
@@ -59,6 +61,31 @@ struct IncidentAssessment: Equatable {
                 impact: "알 수 없는 상주 작업이나 외부 통신이 계속될 수 있으므로 삭제 전에 프로세스와 경로를 확인해야 합니다.",
                 value: "위험",
                 symbol: "exclamationmark.shield"
+            )
+        }
+
+        // Trust and resource health are separate judgments. A known runtime can
+        // be perfectly legitimate and still be stuck consuming a full core.
+        // The old ladder only considered the row's security risk, so a trusted
+        // Node binary running inside Taxi.app was collected at 102.7% but buried
+        // below storage/browser findings. Correlate the observation with the
+        // point-in-time process row to recover the owning app and executable.
+        if let cpu = sustainedCPU(in: content) {
+            let window = cpu.row.windowSeconds > 0 ? "\(cpu.row.windowSeconds)초 관찰에서 " : "관찰 구간에 "
+            let path = cpu.path.isEmpty ? "" : " 실행 경로: \(cpu.path)"
+            return IncidentAssessment(
+                kind: .sustainedCPU,
+                title: "\(cpu.displayName)가 CPU 한 코어 이상을 계속 사용합니다",
+                detail: String(
+                    format: "%@%@ 프로세스가 평균 %.1f%%를 사용했습니다.%@",
+                    window,
+                    cpu.row.name,
+                    cpu.row.cpuPercent,
+                    path
+                ),
+                impact: "발열, 배터리 소모와 다른 앱의 응답 지연이 계속될 수 있습니다.",
+                value: String(format: "%.1f%%", cpu.row.cpuPercent),
+                symbol: "gauge.with.needle.fill"
             )
         }
 
@@ -153,5 +180,37 @@ struct IncidentAssessment: Equatable {
             value: "범위 내 정상",
             symbol: "checkmark.circle"
         )
+    }
+
+    private struct SustainedCPU {
+        let row: BackgroundCpuRow
+        let displayName: String
+        let path: String
+    }
+
+    private static func sustainedCPU(in content: ScanContent) -> SustainedCPU? {
+        content.backgroundCpuRows
+            .filter { $0.cpuPercent >= 90 }
+            .compactMap { row -> SustainedCPU? in
+                let process = content.cpuRows.first { $0.pid == row.pid }
+                let path = process?.path ?? ""
+                guard row.name.caseInsensitiveCompare("Modore") != .orderedSame,
+                      !path.localizedCaseInsensitiveContains("/Modore.app/Contents/") else {
+                    return nil
+                }
+                let appName = appBundleName(in: path)
+                let responsible = row.responsibleName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let displayName = appName
+                    ?? (responsible.isEmpty ? row.name : responsible)
+                return SustainedCPU(row: row, displayName: displayName, path: path)
+            }
+            .max { $0.row.cpuPercent < $1.row.cpuPercent }
+    }
+
+    private static func appBundleName(in path: String) -> String? {
+        guard let component = path.split(separator: "/").last(where: {
+            $0.lowercased().hasSuffix(".app")
+        }) else { return nil }
+        return String(component.dropLast(4))
     }
 }
