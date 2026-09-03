@@ -1427,10 +1427,20 @@ _pch_collect_transient_workspaces() {
         # cheaper than starting du for thousands of stale test folders. Sort
         # by directory mtime so a workspace created by the current incident is
         # measured before historical residue can consume the shared deadline.
-        /usr/bin/find "$canonical_root" -mindepth 1 -maxdepth 1 -type d \
-            -uid "$(/usr/bin/id -u)" \
-            -exec /usr/bin/stat -f $'%m\t%N' {} + \
-            >> "$inventory_file" 2>/dev/null || true
+        if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
+            /usr/bin/find "$canonical_root" -mindepth 1 -maxdepth 1 -type d \
+                -uid "$(/usr/bin/id -u)" \
+                -exec /usr/bin/stat -f $'%m\t%N' {} + \
+                >> "$inventory_file" 2>/dev/null || true
+        else
+            # Linux is used by the source-contract CI suite. This branch is not
+            # shipped as a Linux scanner; it keeps the deterministic collector
+            # harness honest about the same mtime/path inventory contract.
+            /usr/bin/find "$canonical_root" -mindepth 1 -maxdepth 1 -type d \
+                -uid "$(/usr/bin/id -u)" \
+                -exec /usr/bin/stat -c $'%Y\t%n' {} + \
+                >> "$inventory_file" 2>/dev/null || true
+        fi
     done
 
     while IFS=$'\t' read -r _modified target; do
