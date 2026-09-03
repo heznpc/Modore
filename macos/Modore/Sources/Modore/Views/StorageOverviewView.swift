@@ -589,6 +589,7 @@ private struct StatusRecoverySection: View {
     private var actionSymbol: String {
         switch assessment.kind {
         case .securityDanger, .securityAttention: return "lock.shield"
+        case .sustainedCPU: return "gauge.with.needle"
         case .storageCritical: return "internaldrive"
         case .collectionIncomplete, .noResult: return "arrow.clockwise"
         case .browserAutomation, .runtimeAttention: return "hammer"
@@ -599,6 +600,7 @@ private struct StatusRecoverySection: View {
     private var actionTitle: String {
         switch assessment.kind {
         case .securityDanger, .securityAttention: return "증거를 먼저 확인하세요"
+        case .sustainedCPU: return "지속 점유 프로세스를 확인하세요"
         case .storageCritical: return "승인 가능한 정리 후보를 검토하세요"
         case .collectionIncomplete, .noResult: return "검사 범위를 다시 수집하세요"
         case .browserAutomation: return "자동화 소유자와 격리 설정을 확인하세요"
@@ -618,6 +620,8 @@ private struct StatusRecoverySection: View {
             return "세션 기록과 개발 필수 자산은 자동 정리 대상에서 제외합니다."
         case .securityDanger, .securityAttention:
             return "경로, 실행 맥락과 수집 범위를 확인한 뒤 별도 제거 여부를 판단합니다."
+        case .sustainedCPU:
+            return "자동 종료하지 않습니다. 프로세스와 실행 경로를 확인한 뒤 의도한 작업인지 판단하세요."
         case .runtimeAttention:
             return "Codex·Claude 세션 데이터는 보존하고 실행 중인 작업만 구분합니다."
         case .storageDrop:
@@ -640,6 +644,7 @@ private struct StatusRecoverySection: View {
         switch assessment.kind {
         case .collectionIncomplete, .noResult: return "정밀 검사"
         case .securityDanger, .securityAttention: return "보안 보기"
+        case .sustainedCPU: return "활동 보기"
         case .storageCritical: return "확보 계획"
         case .browserAutomation, .runtimeAttention: return "개발 보기"
         case .storageDrop, .clear: return "기록 보기"
@@ -650,6 +655,7 @@ private struct StatusRecoverySection: View {
         switch assessment.kind {
         case .collectionIncomplete, .noResult: return runScan
         case .securityDanger, .securityAttention: return onOpenSecurity
+        case .sustainedCPU: return onOpenActivity
         case .storageCritical: return { onOpenStorage(.goal) }
         case .browserAutomation, .runtimeAttention: return { onOpenStorage(.development) }
         case .storageDrop, .clear: return onOpenActivity
