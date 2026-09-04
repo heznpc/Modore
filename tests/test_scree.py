@@ -3995,6 +3995,73 @@ def test_current_session_fails_closed_without_consistent_context(tmp_path):
     assert conflict["reason"] == "codex-context-conflict"
 
 
+def test_inspect_many_joins_codex_fragments_and_dedupes_replayed_events(tmp_path):
+    session_id = "01a0476f-51b6-70d2-b416-9d5651cd8191"
+    store = tmp_path / ".codex" / "sessions" / "2026" / "09" / "04"
+    older = store / f"rollout-old-{session_id}.jsonl"
+    newer = store / f"rollout-new-{session_id}.jsonl"
+    meta = {"type": "session_meta", "payload": {
+        "id": session_id, "cwd": "/work"}}
+    first = {"timestamp": "2026-09-04T00:00:00Z",
+             "type": "response_item", "payload": {
+                 "type": "message", "id": "event-one", "role": "user",
+                 "content": [{"type": "input_text", "text": "first turn"}]}}
+    second = {"timestamp": "2026-09-04T00:01:00Z",
+              "type": "response_item", "payload": {
+                  "type": "message", "id": "event-two", "role": "assistant",
+                  "content": [{"type": "output_text", "text": "second turn"}]}}
+    _write(older, _jsonl(meta, first))
+    _write(newer, _jsonl(meta, first, second))
+
+    payload = scree.build_inspect_many([newer, older], tmp_path)
+
+    assert payload["status"] == "ok"
+    assert payload["sessionId"] == session_id
+    assert payload["messageCount"] == 2
+    assert [turn["text"] for turn in payload["turns"]] == [
+        "first turn", "second turn"]
+
+
+def test_inspect_many_rejects_different_codex_task_ids(tmp_path):
+    store = tmp_path / ".codex" / "sessions"
+    sources = []
+    for index in range(2):
+        source = store / f"rollout-{index}.jsonl"
+        _write(source, _jsonl({"type": "session_meta", "payload": {
+            "id": f"task-{index}", "cwd": "/work"}}))
+        sources.append(source)
+
+    with pytest.raises(ValueError, match="do not belong to one session"):
+        scree.build_inspect_many(sources, tmp_path)
+
+
+def test_inspect_many_cli_reads_an_owned_source_list(tmp_path, capsys):
+    session_id = "01a0476f-51b6-70d2-b416-9d5651cd8191"
+    store = tmp_path / ".codex" / "sessions"
+    sources = []
+    for index, text in enumerate(("first", "second")):
+        source = store / f"rollout-{index}.jsonl"
+        _write(source, _jsonl(
+            {"type": "session_meta", "payload": {
+                "id": session_id, "cwd": "/work"}},
+            {"type": "response_item", "payload": {
+                "type": "message", "id": f"event-{index}", "role": "user",
+                "content": [{"type": "input_text", "text": text}]}}))
+        sources.append(source)
+    listing = tmp_path / "sources.json"
+    listing.write_text(
+        json.dumps([str(source) for source in reversed(sources)]),
+        encoding="utf-8")
+
+    assert scree.main([
+        "inspect-many", "--sources", str(listing),
+        "--home", str(tmp_path),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sessionId"] == session_id
+    assert [turn["text"] for turn in payload["turns"]] == ["first", "second"]
+
+
 def test_claude_discovery_bounds_fds_for_300_sibling_buckets(tmp_path):
     root = tmp_path / ".claude" / "projects"
     expected_sources = set()

@@ -102,6 +102,7 @@ final class ScreeServiceTests: XCTestCase {
             "scree-bind-targets-\(uuid.lowercased()).json",
             "scree-bind-results-\(uuid.lowercased()).json",
             "scree-title-sources-\(uuid.uppercased()).json",
+            "scree-inspect-sources-\(uuid.lowercased()).json",
         ]
         for name in names {
             try writeScratch(name, in: root, modifiedAt: now.addingTimeInterval(-7_200))

@@ -590,6 +590,59 @@ extension ScreeService {
         return .success(conversation)
     }
 
+    /// Reads every physical rollout belonging to one logical task in one
+    /// subprocess. The Python side verifies that all sources carry the same
+    /// provider task identity before joining their visible turns.
+    static func inspect(
+        execution: RuntimeExecutionContext,
+        sources: [URL],
+        turns: Int = 20,
+        homeOverride: URL? = nil
+    ) async -> Result<SessionConversation, ScreeInspectionError> {
+        guard !sources.isEmpty else {
+            return .failure(.init(message: "표시할 대화 기록이 없습니다."))
+        }
+        if sources.count == 1 {
+            return await inspect(
+                execution: execution, source: sources[0], turns: turns,
+                homeOverride: homeOverride)
+        }
+        guard sources.count <= 64,
+              let payload = try? JSONSerialization.data(
+                withJSONObject: sources.map(\.path)) else {
+            return .failure(.init(message: "대화 기록 조각이 너무 많습니다."))
+        }
+        let listing = execution.outputRoot
+            .appending(path: "scree-inspect-sources-\(UUID().uuidString).json")
+        guard (try? payload.write(to: listing, options: [.atomic])) != nil else {
+            return .failure(.init(message: "대화 기록 목록을 준비하지 못했습니다."))
+        }
+        defer { try? FileManager.default.removeItem(at: listing) }
+
+        var arguments = [
+            "inspect-many", "--sources", listing.path,
+            "--turns", String(turns),
+        ]
+        if let homeOverride { arguments += ["--home", homeOverride.path] }
+        let outcome = await invoke(
+            execution: execution, arguments: arguments, timeout: 60)
+        let output: String
+        switch outcome {
+        case .success(let value): output = value
+        case .timedOut:
+            return .failure(.init(message: "대화를 읽는 데 시간이 너무 걸려 중단했습니다."))
+        case .failure(let message):
+            return .failure(.init(message: message))
+        }
+        guard let start = output.firstIndex(of: "{"),
+              let data = output[start...].data(using: .utf8),
+              let conversation = try? JSONDecoder().decode(
+                SessionConversation.self, from: data) else {
+            return .failure(.init(message: "scree가 돌려준 대화 형식을 읽지 못했습니다."))
+        }
+        return .success(conversation)
+    }
+
     /// The metadata index behind the session browser, via `scree.py
     /// sessions`. No transcript body is read to build this.
     /// `limit` 0 means every session. It has to: a cap here is invisible
@@ -800,6 +853,7 @@ extension ScreeService {
         ("scree-bind-targets", "json"),
         ("scree-bind-results", "json"),
         ("scree-title-sources", "json"),
+        ("scree-inspect-sources", "json"),
     ]
 
     private struct ScratchIdentity: Equatable {

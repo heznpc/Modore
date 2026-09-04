@@ -512,12 +512,24 @@ extension ScanModel {
     /// Same fetch as `loadConversation(for:)`, for a browser row that has
     /// a transcript but no binding to any repo.
     func loadConversation(for entry: SessionIndexEntry, retry: Bool = false) {
-        loadConversation(source: entry.sourceURL, provider: entry.provider, retry: retry)
+        loadConversation(
+            sources: entry.artifactSources.map { URL(fileURLWithPath: $0) },
+            source: entry.sourceURL,
+            provider: entry.provider,
+            retry: retry)
     }
 
     /// The fetch itself, given only a transcript. Every caller that has a
     /// path can use it, whether or not the session is in the index.
     func loadConversation(source: URL, provider: SessionProvider, retry: Bool = false) {
+        loadConversation(
+            sources: [source], source: source, provider: provider, retry: retry)
+    }
+
+    private func loadConversation(
+        sources: [URL], source: URL, provider: SessionProvider,
+        retry: Bool = false
+    ) {
         let entrySource = source.path
         let key = Self.conversationKey(
             provider: provider, sessionID: entrySource, source: source
@@ -550,7 +562,7 @@ extension ScanModel {
                 return
             }
             let state: ConversationLoadState
-            switch await ScreeService.inspect(execution: execution, source: source) {
+            switch await ScreeService.inspect(execution: execution, sources: sources) {
             case .success(let conversation):
                 state = .loaded(conversation)
             case .failure(let error):

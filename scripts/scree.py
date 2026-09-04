@@ -57,6 +57,9 @@ default:
   display commands imply: judgment stays metadata-only, but the owner can
   always look at what the machine already holds. Never an input to any
   verdict.
+- `scree.py inspect-many --sources <json>` applies the same display contract
+  to the explicitly named physical fragments of one logical Codex task. It
+  verifies their provider identity and removes replayed event IDs.
 Raw backup commands are a separate, explicit exception: `backup` copies one
 named Claude Code/Codex transcript or one Claude Desktop conversation unit and
 its owned sidecars byte-for-byte only with --include-sensitive. `backup-verify` hashes an explicitly named
@@ -6166,6 +6169,22 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
     """
     provider = _session_provider(source, home)
     turns, status = visible_turns(source, home)
+    return _inspect_payload(
+        turns, status=status, provider=provider,
+        session_id=_file_access_session_id(
+            provider if provider in ("claude", "codex", "gemini",
+                                     CLAUDE_DESKTOP_PROVIDER) else "claude",
+            source, home),
+        workspace=_session_workspace(provider, source, home),
+        home=home, raw=raw, turn_limit=turn_limit)
+
+
+def _inspect_payload(
+        turns: list[VisibleTurn], *, status: str, provider: str,
+        session_id: str, workspace: Optional[str], home: Path,
+        raw: bool, turn_limit: int,
+        ) -> dict:
+    """Render already-resolved turns through inspect's one output contract."""
 
     def clip(text: str) -> str:
         cleaned = " ".join(text.split())
@@ -6184,11 +6203,8 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
         # someone about to delete this that there was nothing to lose.
         "status": status,
         "provider": provider,
-        "sessionId": _file_access_session_id(
-            provider if provider in ("claude", "codex", "gemini",
-                                     CLAUDE_DESKTOP_PROVIDER) else "claude",
-            source, home),
-        "workspace": _session_workspace(provider, source, home),
+        "sessionId": session_id,
+        "workspace": workspace,
         "messageCount": len(turns),
         "userTurnCount": sum(1 for role, _ in turns if _is_user_role(role)),
         "firstUserTurn": first_user,
@@ -6203,6 +6219,57 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
         "omittedTurns": max(0, len(turns) - len(window)),
         "masked": not raw,
     }
+
+
+def build_inspect_many(
+        sources: list[Path], home: Path, *, raw: bool = False,
+        turn_limit: int = INSPECT_DEFAULT_TURNS,
+        ) -> dict:
+    """One logical Codex conversation assembled from named rollout files."""
+    if not sources or len(sources) > 64:
+        raise ValueError("inspect-many requires between 1 and 64 sources")
+    if len(sources) == 1:
+        return build_inspect(
+            sources[0], home, raw=raw, turn_limit=turn_limit)
+
+    expected_provider: Optional[str] = None
+    expected_session_id: Optional[str] = None
+    combined: list[VisibleTurn] = []
+    seen_events: set[tuple[str, str]] = set()
+    # Session index supplies newest first. Read oldest first so the resulting
+    # conversation keeps its original chronology.
+    for source in reversed(sources):
+        provider = _session_provider(source, home)
+        session_id = _file_access_session_id(
+            provider if provider in ("claude", "codex", "gemini",
+                                     CLAUDE_DESKTOP_PROVIDER) else "claude",
+            source, home)
+        if expected_provider is None:
+            expected_provider = provider
+            expected_session_id = session_id
+        if provider != expected_provider or session_id != expected_session_id:
+            raise ValueError("inspect-many sources do not belong to one session")
+        turns, status = visible_turns(source, home)
+        if status != "ok":
+            return _inspect_payload(
+                [], status=status, provider=provider,
+                session_id=session_id,
+                workspace=_session_workspace(provider, sources[0], home),
+                home=home, raw=raw, turn_limit=turn_limit)
+        for turn in turns:
+            if turn.event_id:
+                identity = (turn.role.casefold(), turn.event_id)
+                if identity in seen_events:
+                    continue
+                seen_events.add(identity)
+            combined.append(turn)
+
+    combined = _canonical_visible_turns(combined)
+    return _inspect_payload(
+        combined, status="ok", provider=expected_provider or "codex",
+        session_id=expected_session_id or "",
+        workspace=_session_workspace(expected_provider or "codex", sources[0], home),
+        home=home, raw=raw, turn_limit=turn_limit)
 
 
 def render_preserve(source: Path, home: Path, *, raw: bool) -> str:
@@ -11181,6 +11248,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                          help="disable masking (explicit opt-out, off by default)")
     inspect.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
 
+    inspect_many = sub.add_parser(
+        "inspect-many", help="one logical session assembled from named rollout files")
+    inspect_many.add_argument("--sources", type=Path, required=True,
+                              help="file holding a JSON array of session paths")
+    inspect_many.add_argument("--turns", type=int, default=INSPECT_DEFAULT_TURNS,
+                              help="recent turns to include")
+    inspect_many.add_argument("--raw", action="store_true",
+                              help="disable masking (explicit opt-out, off by default)")
+    inspect_many.add_argument("--home", type=Path, default=Path.home(),
+                              help=argparse.SUPPRESS)
+
     sessions = sub.add_parser(
         "sessions", help="metadata index of every visible session, newest first (no bodies read)")
     sessions.add_argument("scope", nargs="?", choices=("current",),
@@ -11324,6 +11402,27 @@ def main(argv: Optional[list[str]] = None) -> int:
                                     turn_limit=args.turns)
         except OSError as exc:
             print(f"inspect: {exc}", file=sys.stderr)
+            return 1
+        _print_wire(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "inspect-many":
+        try:
+            raw_sources, _, source_status = _read_regular_bytes_nofollow(
+                args.sources, 512 * 1024)
+            if raw_sources is None:
+                raise ValueError(
+                    f"source list is not a readable regular file ({source_status})")
+            decoded_sources = json.loads(raw_sources.decode("utf-8"))
+            if (not isinstance(decoded_sources, list)
+                    or not all(isinstance(source, str) and source
+                               for source in decoded_sources)):
+                raise ValueError("expected a JSON array of paths")
+            payload = build_inspect_many(
+                [Path(source) for source in decoded_sources], args.home,
+                raw=args.raw, turn_limit=args.turns)
+        except JSON_FILE_ERRORS as exc:
+            print(f"inspect-many: {exc}", file=sys.stderr)
             return 1
         _print_wire(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
