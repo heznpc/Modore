@@ -3,11 +3,19 @@
 ## Session continuity
 
 ```bash
+modore sessions current
 modore sessions --limit 50
+modore search --first                         # query bytes arrive on stdin
 modore search --limit 20 --budget-seconds 30  # query bytes arrive on stdin
 ```
 
-`sessions` reads metadata only. `search` is the explicit content-reading path;
+`sessions current` is the narrow first choice for the calling Codex task. It
+uses `CODEX_THREAD_ID`/`CODEX_SESSION_ID` only as lookup hints, validates the
+matching JSONL header, and reads no conversation body. `sessions` reads
+metadata only and groups Codex rollout fragments by provider session ID while
+retaining their physical sources. `search --first` returns the newest hit and
+explicitly reports incomplete coverage. Ordinary `search` is the exhaustive
+content-reading path;
 snippets remain masked unless a user separately invokes lower-level raw mode.
 The agent surface defaults session listing to 50 and caps it at 500; search is
 capped at 200 matches, a 55-second internal budget, a 60-second outer wall

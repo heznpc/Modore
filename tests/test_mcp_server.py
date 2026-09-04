@@ -371,6 +371,7 @@ _SCREE_FIXTURE = {
 
 _SESSIONS_FIXTURE = {
     "total": 3,
+    "artifactTotal": 5,
     "sessions": [
         {"tool": "Codex", "source": "/sessions/new.jsonl", "workspace": "/repo",
          "workspaceExists": True, "kind": "session", "sizeBytes": 100,
@@ -483,6 +484,7 @@ def test_agent_session_list_delegates_to_metadata_only_scree_sessions(stub_scrip
     assert [item["tool"] for item in payload["sessions"]] == ["Codex", "Claude"]
     assert payload["returned"] == 2
     assert payload["total"] == 3
+    assert payload["artifactTotal"] == 5
     assert payload["truncated"] is True and payload["omitted"] == 1
 
 

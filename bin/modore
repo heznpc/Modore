@@ -26,7 +26,8 @@ usage() {
     /usr/bin/printf '%s\n' \
         'Usage:' \
         '  modore sessions [--limit N]' \
-        '  modore search [--limit N] [--budget-seconds N]  # query on stdin' \
+        '  modore sessions current' \
+        '  modore search [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
         '  modore storage status' \
         '  modore storage recovery' \
         '  modore cleanup list' \
@@ -86,6 +87,12 @@ case "$COMMAND" in
         usage
         ;;
     sessions)
+        if [[ "${1:-}" == "current" ]]; then
+            [[ "$#" -eq 1 ]] \
+                || fail_usage 'sessions current accepts no additional arguments.'
+            exec "$PYTHON" -I -B "$BOUNDED_EXEC" 5 -- \
+                "$PYTHON" -I -B "$SCREE" sessions current
+        fi
         SESSION_LIMIT=50
         while [[ "$#" -gt 0 ]]; do
             case "$1" in
@@ -97,7 +104,7 @@ case "$COMMAND" in
                     SESSION_LIMIT="$2"
                     shift 2
                     ;;
-                *) fail_usage 'sessions accepts only --limit.' ;;
+                *) fail_usage 'sessions accepts current or --limit.' ;;
             esac
         done
         exec "$PYTHON" -I -B "$BOUNDED_EXEC" 30 -- \
@@ -122,12 +129,18 @@ case "$COMMAND" in
                     fi
                     shift 2
                     ;;
-                *) fail_usage 'search accepts only --limit and --budget-seconds; send the query on stdin.' ;;
+                --first)
+                    SEARCH_FIRST=1
+                    shift
+                    ;;
+                *) fail_usage 'search accepts only --first, --limit and --budget-seconds; send the query on stdin.' ;;
             esac
         done
+        SEARCH_ARGS=(search --query-file /dev/stdin --limit "$SEARCH_LIMIT" \
+            --budget-seconds "$SEARCH_BUDGET_SECONDS")
+        [[ "${SEARCH_FIRST:-0}" == "0" ]] || SEARCH_ARGS+=(--first)
         exec "$PYTHON" -I -B "$BOUNDED_EXEC" 60 -- \
-            "$PYTHON" -I -B "$SCREE" search --query-file /dev/stdin \
-                --limit "$SEARCH_LIMIT" --budget-seconds "$SEARCH_BUDGET_SECONDS"
+            "$PYTHON" -I -B "$SCREE" "${SEARCH_ARGS[@]}"
         ;;
     storage)
         SUBCOMMAND="${1:-}"
