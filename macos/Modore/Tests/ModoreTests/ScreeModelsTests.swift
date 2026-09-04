@@ -20,11 +20,45 @@ final class ScreeModelsTests: XCTestCase {
         let index = try JSONDecoder().decode(SessionIndex.self, from: data)
 
         XCTAssertEqual(index.total, 1)
+        XCTAssertEqual(index.artifactTotal, 1)
         XCTAssertEqual(index.coverage.stores.count, 2)
         XCTAssertEqual(
             index.coverage.warningText,
             "일부 로컬 대화 저장소를 끝까지 확인하지 못했습니다: Claude Desktop 읽기 실패 · Codex 형식 미인식 2개. 현재 목록을 전체 기록으로 단정하지 않습니다."
         )
+    }
+
+    func testSessionIndexKeepsLogicalIdentityAndPhysicalFragments() throws {
+        let data = Data("""
+        {
+          "total": 1,
+          "artifactTotal": 2,
+          "sessions": [{
+            "tool": "Codex",
+            "source": "/sessions/new.jsonl",
+            "workspace": "/work",
+            "workspaceExists": true,
+            "kind": "session",
+            "sizeBytes": 300,
+            "lastActive": "2026-09-04 12:00",
+            "sessionId": "logical-one",
+            "artifactSources": ["/sessions/new.jsonl", "/sessions/old.jsonl"],
+            "segmentCount": 2
+          }],
+          "coverage": {"complete": true, "stores": []}
+        }
+        """.utf8)
+
+        let index = try JSONDecoder().decode(SessionIndex.self, from: data)
+        let session = try XCTUnwrap(index.sessions.first)
+
+        XCTAssertEqual(index.artifactTotal, 2)
+        XCTAssertEqual(session.id, "codex:logical-one")
+        XCTAssertEqual(session.artifactSources, [
+            "/sessions/new.jsonl", "/sessions/old.jsonl",
+        ])
+        XCTAssertEqual(session.segmentCount, 2)
+        XCTAssertTrue(session.subtitle.contains("기록 조각 2개"))
     }
 
     func testCompleteSessionIndexCoverageHasNoWarning() {

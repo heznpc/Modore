@@ -46,11 +46,21 @@ not currently install this command. It owns AI-session continuity and storage
 recovery only; it does not route Git, PR, or multi-repository work.
 
 ```bash
+modore sessions current
 modore sessions --limit 50
+printf '%s' 'exact phrase' | modore search --first
 modore storage status
 modore cleanup list
 modore storage recovery
 ```
+
+`sessions current` resolves the calling Codex task from its process context and
+validates the matching JSONL metadata. It does not search conversation bodies.
+Codex rollout fragments with the same provider session ID are listed as one
+logical session while their physical sources remain available for backup and
+inspection.
+`search --first` stops at the newest matching turn; ordinary `search` keeps its
+full coverage contract for absence claims.
 
 ### Windows
 

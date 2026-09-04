@@ -26,6 +26,7 @@ def test_help_exposes_only_modore_owned_routes(project_root):
 
     assert result.returncode == 0
     assert "modore sessions" in result.stdout
+    assert "modore sessions current" in result.stdout
     assert "modore storage recovery" in result.stdout
     assert "modore cleanup list" in result.stdout
     assert "hydrojet" not in result.stdout.lower()
@@ -125,7 +126,30 @@ def test_sessions_rejects_lower_level_flags(project_root):
     result = run_cli(project_root, "sessions", "--raw")
 
     assert result.returncode == 64
-    assert "sessions accepts only --limit" in result.stderr
+    assert "sessions accepts current or --limit" in result.stderr
+
+
+def test_sessions_current_is_a_bounded_metadata_only_route(project_root):
+    result = run_cli(project_root, "sessions", "current", extra_env={
+        "CODEX_THREAD_ID": "01a0476f-51b6-70d2-b416-9d5651cd8191",
+        "CODEX_SESSION_ID": "11a0476f-51b6-70d2-b416-9d5651cd8191",
+    })
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "found": False,
+        "reason": "codex-context-conflict",
+        "provider": "codex",
+        "metadataOnly": True,
+    }
+
+
+def test_sessions_current_rejects_extra_options(project_root):
+    result = run_cli(project_root, "sessions", "current", "--limit", "1")
+
+    assert result.returncode == 64
+    assert "sessions current accepts no additional arguments" in result.stderr
 
 
 def test_agent_numeric_budgets_are_bounded(project_root):
@@ -306,6 +330,7 @@ def test_agent_routes_have_outer_wall_clock_limits(project_root):
     assert '"$BOUNDED_EXEC" 60 --' in source
     assert "SEARCH_LIMIT=20" in source
     assert "SEARCH_BUDGET_SECONDS=30" in source
+    assert "--first" in source
 
 
 def test_search_query_has_a_hard_byte_bound(project_root):

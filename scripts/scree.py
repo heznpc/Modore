@@ -89,7 +89,7 @@ import unicodedata
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import unquote, urlparse
 
 # ``json.JSONDecodeError`` is only one ValueError shape from json.loads.
@@ -215,10 +215,12 @@ def _uri_to_path(uri: str) -> Optional[str]:
 
 def _record(tool: str, kind: str, source: Path, workspace: Optional[str], *,
             repo_url: Optional[str] = None, branch: Optional[str] = None,
+            provider: Optional[str] = None,
+            session_id: Optional[str] = None,
             weight: int = 1,
             source_info: Optional[os.stat_result] = None) -> dict:
     source_stat = source_info or source.lstat()
-    return {
+    record = {
         "tool": tool,
         "kind": kind,
         "source": str(source),
@@ -229,6 +231,11 @@ def _record(tool: str, kind: str, source: Path, workspace: Optional[str], *,
         "last_active": source_stat.st_mtime,
         "weight": weight,
     }
+    if provider is not None:
+        record["provider"] = provider
+    if session_id is not None:
+        record["session_id"] = session_id
+    return record
 
 
 @dataclass(frozen=True)
@@ -1554,9 +1561,19 @@ def collect_codex(home: Path) -> tuple[list[dict], dict]:
                 unrecognized += 1
                 continue
             git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
+            # `id` is this task's identity. `session_id` is the root lineage
+            # and is inherited by spawned subagents, so preferring it would
+            # collapse every child task into the parent's conversation.
+            session_id = payload.get("id") or payload.get("session_id")
+            if not isinstance(session_id, str) or not session_id.strip():
+                session_id = None
+            elif len(session_id) > 256 or any(
+                    ord(character) < 32 for character in session_id):
+                session_id = None
             records.append(_record(
                 "Codex", "session", path, payload.get("cwd"),
                 repo_url=git.get("repository_url"), branch=git.get("branch"),
+                provider="codex", session_id=session_id,
                 source_info=opened))
     status_value = "missing"
     if seen_root:
@@ -3589,6 +3606,163 @@ def collect_gemini_chats(home: Path) -> list[dict]:
 
 SESSIONS_DEFAULT_LIMIT = 0
 SESSION_INDEX_ISOLATION_MAX_BYTES = 64 * 1024 * 1024
+CODEX_SESSION_ID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _group_logical_sessions(records: list[dict]) -> list[dict]:
+    """Collapse provider fragments without losing their physical sources.
+
+    Codex may continue one task in several rollout JSONL files.  A file is an
+    artifact; the provider session id is the conversation identity.  Records
+    without a trustworthy provider identity deliberately remain separate.
+    """
+    grouped: list[dict] = []
+    positions: dict[tuple[str, str, str], int] = {}
+    for original in records:
+        item = dict(original)
+        source = item.get("source")
+        if item.get("kind") == "session" and isinstance(source, str) and source:
+            item["_artifacts"] = [{
+                "source": source,
+                "size_bytes": int(item.get("size_bytes") or 0),
+                "last_active": float(item.get("last_active") or 0),
+            }]
+        session_id = item.get("session_id")
+        provider = item.get("provider")
+        if (item.get("kind") != "session"
+                or not isinstance(session_id, str) or not session_id
+                or not isinstance(provider, str) or not provider):
+            grouped.append(item)
+            continue
+        key = (str(item.get("tool") or ""), provider, session_id)
+        existing_position = positions.get(key)
+        if existing_position is None:
+            positions[key] = len(grouped)
+            grouped.append(item)
+            continue
+        existing = grouped[existing_position]
+        artifacts = existing.get("_artifacts", []) + item.get("_artifacts", [])
+        newest = item if float(item.get("last_active") or 0) > float(
+            existing.get("last_active") or 0) else existing
+        merged = dict(newest)
+        merged["_artifacts"] = sorted(
+            artifacts,
+            key=lambda artifact: (
+                -float(artifact["last_active"]), artifact["source"]),
+        )
+        merged["size_bytes"] = sum(
+            int(artifact["size_bytes"]) for artifact in artifacts)
+        merged["last_active"] = max(
+            float(artifact["last_active"]) for artifact in artifacts)
+        grouped[existing_position] = merged
+    return grouped
+
+
+def _current_codex_id(environ: Mapping[str, str]) -> tuple[Optional[str], str]:
+    values = [
+        value.strip()
+        for name in ("CODEX_THREAD_ID", "CODEX_SESSION_ID")
+        for value in [environ.get(name, "")]
+        if value.strip()
+    ]
+    if not values:
+        return (None, "codex-context-unavailable")
+    if len(set(values)) != 1:
+        return (None, "codex-context-conflict")
+    session_id = values[0]
+    if CODEX_SESSION_ID_RE.fullmatch(session_id) is None:
+        return (None, "codex-context-invalid")
+    return (session_id, "ok")
+
+
+def _current_codex_candidates(
+        home: Path, session_id: str,
+        ) -> tuple[list[_DiscoveredRegularFile], bool]:
+    """Find filename candidates without opening every transcript body."""
+    found: list[_DiscoveredRegularFile] = []
+    complete = True
+    for root in (home / ".codex" / "sessions",
+                 home / ".codex" / "archived_sessions"):
+        discovered, coverage = _discover_regular_files_nofollow(
+            root, "Codex current", ".jsonl")
+        if (coverage.get("status") not in ("ok", "missing")
+                or int(coverage.get("unrecognized", 0)) != 0):
+            complete = False
+        found.extend(candidate for candidate in discovered
+                     if session_id in candidate.path.name)
+    return (found, complete)
+
+
+def build_current_session(home: Path, *,
+                          environ: Optional[Mapping[str, str]] = None) -> dict:
+    """Resolve the calling Codex task from process context, metadata-only."""
+    session_id, context_status = _current_codex_id(
+        os.environ if environ is None else environ)
+    if session_id is None:
+        return {"found": False, "reason": context_status,
+                "provider": "codex", "metadataOnly": True}
+
+    records: list[dict] = []
+    rejected = 0
+    candidates, discovery_complete = _current_codex_candidates(
+        home, session_id)
+    for candidate in candidates:
+        descriptor, opened, _ = _open_regular_nofollow(candidate.path)
+        if descriptor is None or opened is None:
+            rejected += 1
+            continue
+        try:
+            with os.fdopen(os.dup(descriptor), "rb") as handle:
+                first = _read_json_line(handle)
+            after = os.fstat(descriptor)
+        except OSError:
+            rejected += 1
+            continue
+        finally:
+            os.close(descriptor)
+        payload = (first or {}).get("payload")
+        candidate_id = ((payload.get("id") or payload.get("session_id"))
+                        if isinstance(payload, dict) else None)
+        if ((first or {}).get("type") != "session_meta"
+                or candidate_id != session_id
+                or _stat_signature(opened) != _stat_signature(after)
+                or _stat_identity(opened) != _stat_identity(candidate.info)):
+            rejected += 1
+            continue
+        git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
+        records.append(_record(
+            "Codex", "session", candidate.path, payload.get("cwd"),
+            repo_url=git.get("repository_url"), branch=git.get("branch"),
+            provider="codex", session_id=session_id, source_info=opened))
+
+    logical = _group_logical_sessions(records)
+    if not logical:
+        reason = ("session-artifacts-not-found" if discovery_complete
+                  else "session-artifact-discovery-incomplete")
+        return {"found": False, "reason": reason,
+                "provider": "codex", "sessionId": session_id,
+                "rejectedCandidates": rejected, "metadataOnly": True}
+    item = logical[0]
+    artifacts = item["_artifacts"]
+    return {
+        "found": True,
+        "provider": "codex",
+        "tool": "Codex",
+        "sessionId": session_id,
+        "source": item["source"],
+        "artifactSources": [artifact["source"] for artifact in artifacts],
+        "segmentCount": len(artifacts),
+        "sizeBytes": item["size_bytes"],
+        "workspace": item.get("workspace") or "",
+        "lastActive": time.strftime(
+            "%Y-%m-%d %H:%M", time.localtime(item["last_active"])),
+        "lastActiveEpoch": item["last_active"],
+        "rejectedCandidates": rejected,
+        "artifactCoverageComplete": discovery_complete and rejected == 0,
+        "metadataOnly": True,
+    }
 
 
 def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
@@ -3615,6 +3789,11 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
     gemini_chats, gemini_chat_coverage = (
         _collect_gemini_chats_with_coverage(home))
     records += gemini_chats
+    artifact_total = sum(
+        1 for item in records
+        if item.get("kind") in ("session", "workspace_state")
+        and item.get("source"))
+    records = _group_logical_sessions(records)
     # Provider-controlled workspace strings may name a sleeping network mount
     # or an automount endpoint. Never let an index/search call perform an
     # unbounded stat in the main process. Desktop records already carry the
@@ -3663,6 +3842,21 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
                 "%Y-%m-%d %H:%M", time.localtime(item["last_active"])),
             "lastActiveEpoch": item["last_active"],
         }
+        if item["kind"] == "session":
+            artifacts = item.get("_artifacts") or [{
+                "source": item["source"],
+                "size_bytes": item["size_bytes"],
+                "last_active": item["last_active"],
+            }]
+            session.update({
+                "artifactSources": [
+                    artifact["source"] for artifact in artifacts],
+                "segmentCount": len(artifacts),
+            })
+            if item.get("session_id"):
+                session["sessionId"] = item["session_id"]
+            if item.get("provider"):
+                session["provider"] = item["provider"]
         if item.get("provider") == CLAUDE_DESKTOP_PROVIDER:
             # Dedicated metadata files contain many private fields.  Only this
             # whitelist crosses the index boundary; no catch-all copy or
@@ -3702,6 +3896,7 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
     )
     return {
         "total": len(sessions),
+        "artifactTotal": artifact_total,
         "sessions": sessions[:limit] if limit > 0 else sessions,
         "coverage": {"complete": complete, "stores": coverage_stores,
                      "workerLeaked": False},
@@ -9497,6 +9692,17 @@ def _content_sessions_and_coverage(session_index: dict) -> tuple[list[dict], boo
     return (sessions, complete)
 
 
+def _session_artifact_sources(session: dict) -> list[str]:
+    sources = session.get("artifactSources")
+    if isinstance(sources, list):
+        valid = [source for source in sources
+                 if isinstance(source, str) and source]
+        if valid:
+            return valid
+    source = session.get("source")
+    return [source] if isinstance(source, str) and source else []
+
+
 def _isolated_content_json(deadline: float, producer: Callable[[], dict]
                            ) -> tuple[Optional[dict], str]:
     """Run one transcript reader behind a hard process deadline."""
@@ -9638,6 +9844,7 @@ def _session_evidence_isolated(
 
 def build_search(query: str, home: Path, *, raw: bool = False,
                  limit: int = SEARCH_DEFAULT_LIMIT,
+                 first: bool = False,
                  budget_seconds: float = SEARCH_DEFAULT_BUDGET_SECONDS) -> dict:
     """Find a phrase across every session on the machine.
 
@@ -9662,7 +9869,8 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     needle = " ".join(query.split()).casefold()
     if not needle:
         return {"query": query, "matches": [], "scannedSessions": 0,
-                "totalSessions": 0, "unreadableSessions": 0,
+                "scannedArtifacts": 0, "totalSessions": 0,
+                "totalArtifacts": 0, "unreadableSessions": 0,
                 "leakedWorkerSessions": 0,
                 "parseErrorSessions": 0,
                 "truncatedSessions": 0,
@@ -9676,7 +9884,11 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     sessions, discovery_complete = _content_sessions_and_coverage(
         session_index)
     matches: list[dict] = []
+    match_ids: set[tuple] = set()
     scanned = unreadable = parse_errors = leaked_workers = truncated_sessions = 0
+    scanned_artifacts = 0
+    total_artifacts = sum(
+        len(_session_artifact_sources(session)) for session in sessions)
     matches_omitted_at_least = 0
     sessions_skipped_by_limit = 0
     truncated_reason: Optional[str] = (
@@ -9689,39 +9901,72 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         if time.monotonic() >= deadline:
             truncated_reason = "time"
             break
-        source = Path(session["source"])
-        found, read_status, session_omitted = _search_one_session_isolated(
-            source, needle, raw=raw, home=home, deadline=deadline)
-        scanned += 1
-        if read_status == "time":
-            truncated_sessions += 1
-            truncated_reason = "time"
-        elif read_status == "truncated":
-            truncated_sessions += 1
-        elif read_status == "worker-leaked":
-            unreadable += 1
-            leaked_workers += 1
-        elif read_status == "parse":
-            parse_errors += 1
-        elif read_status != "ok":
-            unreadable += 1
-        if session_omitted:
-            matches_omitted_at_least += session_omitted
-            if read_status == "ok":
-                truncated_sessions += 1
-            if truncated_reason != "time":
-                truncated_reason = "limit"
-        for hit in found:
-            if limit > 0 and len(matches) >= limit:
-                matches_omitted_at_least += 1
+        session_unreadable = session_parse = session_leaked = session_truncated = False
+        session_timed_out = False
+        for artifact_source in _session_artifact_sources(session):
+            if time.monotonic() >= deadline:
+                session_truncated = session_timed_out = True
+                truncated_reason = "time"
+                break
+            found, read_status, session_omitted = _search_one_session_isolated(
+                Path(artifact_source), needle, raw=raw, home=home,
+                deadline=deadline)
+            scanned_artifacts += 1
+            if read_status == "time":
+                session_truncated = session_timed_out = True
+                truncated_reason = "time"
+            elif read_status == "truncated":
+                session_truncated = True
+            elif read_status == "worker-leaked":
+                session_unreadable = session_leaked = True
+            elif read_status == "parse":
+                session_parse = True
+            elif read_status != "ok":
+                session_unreadable = True
+            if session_omitted:
+                matches_omitted_at_least += session_omitted
+                session_truncated = True
                 if truncated_reason != "time":
                     truncated_reason = "limit"
-                continue
-            matches.append({**hit, "tool": session["tool"],
-                            "source": session["source"],
-                            "workspace": session["workspace"],
-                            "lastActive": session["lastActive"]})
-        if read_status == "time":
+            for hit in found:
+                identity = (
+                    "event", session["tool"], session.get("sessionId"),
+                    hit["eventId"],
+                ) if hit.get("eventId") else (
+                    "fallback", session["tool"], session.get("sessionId"),
+                    hit.get("role"), hit.get("at"), hit.get("snippet"),
+                )
+                if identity in match_ids:
+                    continue
+                match_ids.add(identity)
+                if limit > 0 and len(matches) >= limit:
+                    matches_omitted_at_least += 1
+                    if truncated_reason != "time":
+                        truncated_reason = "limit"
+                    continue
+                context = {
+                    **hit,
+                    "tool": session["tool"],
+                    "source": artifact_source,
+                    "workspace": session["workspace"],
+                    "lastActive": session["lastActive"],
+                }
+                if session.get("sessionId"):
+                    context["sessionId"] = session["sessionId"]
+                matches.append(context)
+            if first and matches:
+                truncated_reason = "first-match"
+                break
+            if session_timed_out or (limit > 0 and len(matches) >= limit):
+                break
+        scanned += 1
+        unreadable += int(session_unreadable)
+        parse_errors += int(session_parse)
+        leaked_workers += int(session_leaked)
+        truncated_sessions += int(session_truncated)
+        if session_timed_out:
+            break
+        if first and matches:
             break
         if limit > 0 and len(matches) >= limit:
             sessions_skipped_by_limit = max(0, len(sessions) - scanned)
@@ -9747,7 +9992,9 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         # reading, and the older ones are what "see all" is for.
         "matches": sorted(matches, key=lambda m: m["lastActive"], reverse=True),
         "scannedSessions": scanned,
+        "scannedArtifacts": scanned_artifacts,
         "totalSessions": len(sessions),
+        "totalArtifacts": total_artifacts,
         "unreadableSessions": unreadable,
         "leakedWorkerSessions": leaked_workers,
         "parseErrorSessions": parse_errors,
@@ -10666,6 +10913,9 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
     mention_ids: set[tuple] = set()
     invocation_ids: dict[tuple, int] = {}
     scanned = unreadable = parse_errors = leaked_workers = truncated_sessions = 0
+    scanned_artifacts = 0
+    total_artifacts = sum(
+        len(_session_artifact_sources(session)) for session in sessions)
     evidence_omitted_at_least = 0
     sessions_skipped_by_limit = 0
     truncated_reason: Optional[str] = (
@@ -10678,10 +10928,32 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
         if time.monotonic() >= deadline:
             truncated_reason = "time"
             break
-        (found_mentions, found_invocations, read_status,
-         session_omissions) = _session_evidence_isolated(
-            Path(session["source"]), needle, raw=raw, home=home,
-            deadline=deadline)
+        found_mentions: list[dict] = []
+        found_invocations: list[dict] = []
+        session_omissions = {
+            "mentions_at_least": 0, "invocations_at_least": 0}
+        artifact_statuses: list[str] = []
+        for artifact_source in _session_artifact_sources(session):
+            (artifact_mentions, artifact_invocations, artifact_status,
+             artifact_omissions) = _session_evidence_isolated(
+                Path(artifact_source), needle, raw=raw, home=home,
+                deadline=deadline)
+            scanned_artifacts += 1
+            artifact_statuses.append(artifact_status)
+            for hit in artifact_mentions:
+                found_mentions.append({**hit, "_artifact_source": artifact_source})
+            for hit in artifact_invocations:
+                found_invocations.append({**hit, "_artifact_source": artifact_source})
+            for key in session_omissions:
+                session_omissions[key] += int(artifact_omissions.get(key, 0))
+            if artifact_status == "time":
+                break
+        read_status = next(
+            (status for status in (
+                "time", "worker-leaked", "unreadable", "parse", "truncated")
+             if status in artifact_statuses),
+            next((status for status in artifact_statuses if status != "ok"),
+                 "ok"))
         scanned += 1
         if read_status == "time":
             truncated_sessions += 1
@@ -10703,7 +10975,7 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
                 truncated_sessions += 1
             if truncated_reason != "time":
                 truncated_reason = "limit"
-        context = {"tool": session["tool"], "source": session["source"],
+        base_context = {"tool": session["tool"],
                    "workspace": session["workspace"],
                    "lastActive": session["lastActive"],
                    # The display string is local time while storage-watch
@@ -10711,6 +10983,8 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
                    # consumers never have to compare those two spellings as
                    # strings or guess which timezone the first one used.
                    "lastActiveEpoch": session["lastActiveEpoch"]}
+        if session.get("sessionId"):
+            base_context["sessionId"] = session["sessionId"]
         for hit in found_mentions:
             identity = (
                 "event", session["tool"], hit["eventId"]
@@ -10721,13 +10995,15 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
             if identity in mention_ids:
                 continue
             mention_ids.add(identity)
+            artifact_source = hit.pop("_artifact_source")
             hit = {key: value for key, value in hit.items() if key != "_identity"}
             if limit > 0 and len(mentions) + len(invocations) >= limit:
                 evidence_omitted_at_least += 1
                 if truncated_reason != "time":
                     truncated_reason = "limit"
                 continue
-            mentions.append({**hit, "kind": "conversation_mention", **context})
+            mentions.append({**hit, "kind": "conversation_mention",
+                             **base_context, "source": artifact_source})
         for hit in found_invocations:
             identity = (
                 "call", session["tool"], hit["callId"]
@@ -10735,8 +11011,9 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
                 "fallback", session["tool"], hit.get("at") or "",
                 hit["_identity"],
             )
+            artifact_source = hit.pop("_artifact_source")
             hit = {key: value for key, value in hit.items() if key != "_identity"}
-            candidate = {**hit, **context}
+            candidate = {**hit, **base_context, "source": artifact_source}
             if identity in invocation_ids:
                 existing_index = invocation_ids[identity]
                 strength = {"unknown": 0, "requested": 1,
@@ -10792,7 +11069,9 @@ def build_evidence(query: str, home: Path, *, raw: bool = False,
         "filesystemObservations": storage_observations,
         "auxiliaryCoverage": auxiliary_coverage,
         "scannedSessions": scanned,
+        "scannedArtifacts": scanned_artifacts,
         "totalSessions": len(sessions),
+        "totalArtifacts": total_artifacts,
         "unreadableSessions": unreadable,
         "leakedWorkerSessions": leaked_workers,
         "parseErrorSessions": parse_errors,
@@ -10904,6 +11183,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     sessions = sub.add_parser(
         "sessions", help="metadata index of every visible session, newest first (no bodies read)")
+    sessions.add_argument("scope", nargs="?", choices=("current",),
+                          help="resolve only the calling Codex task")
     sessions.add_argument("--limit", type=int, default=SESSIONS_DEFAULT_LIMIT,
                           help="sessions to return; 0 (the default) for all")
     sessions.add_argument("--out", type=Path, default=None,
@@ -10920,7 +11201,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     search.add_argument("--query-file", type=Path, default=None,
                         help="read the phrase from this file instead of the command line")
     search.add_argument("--limit", type=int, default=SEARCH_DEFAULT_LIMIT,
-                        help="maximum matches to return")
+                         help="maximum matches to return")
+    search.add_argument("--first", action="store_true",
+                        help="stop after the newest matching turn")
     search.add_argument("--budget-seconds", type=float,
                         default=SEARCH_DEFAULT_BUDGET_SECONDS,
                         help="stop after this long and report truncated coverage")
@@ -11113,6 +11396,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         # `defer` does not run when the app is force quit.
         _print_wire(json.dumps(
             build_search(query, args.home, raw=args.raw, limit=args.limit,
+                         first=args.first,
                          budget_seconds=args.budget_seconds),
             ensure_ascii=False, indent=2))
         return 0
@@ -11135,6 +11419,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if args.command == "sessions":
+        if args.scope == "current":
+            _print_wire(json.dumps(
+                build_current_session(args.home),
+                ensure_ascii=False, indent=2))
+            return 0
         payload = _wire_text(json.dumps(
             build_sessions(args.home, limit=args.limit),
             ensure_ascii=False, indent=2))
