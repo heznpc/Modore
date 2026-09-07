@@ -48,6 +48,7 @@ struct CleanupExecutionClient: Sendable {
 }
 
 enum CleanupExecutionService {
+    static let previewTimeout: TimeInterval = 60
     static let executionTimeout: TimeInterval = 15 * 60
     static let stagingRecoveryDisplayPath = "~/Library/Application Support/Modore/cleanup-staging"
 
@@ -95,9 +96,47 @@ enum CleanupExecutionService {
             expectedSignedBundleURL: context.execution.signedBundleURL,
             pinnedFiles: invocation.pinnedFiles,
             environment: context.environment,
-            timeout: 60,
+            timeout: previewTimeout,
             maxOutputBytes: 256_000
         )
+    }
+
+    static func validatedPreview(_ result: CapturedProcessResult, recipeID: String) -> CleanupPreview? {
+        guard result.succeeded,
+              let preview = CleanupPreview(protocolText: result.output),
+              preview.operation == "preview", preview.recipeID == recipeID else { return nil }
+        return preview
+    }
+
+    /// Log only allowlisted stages and process metadata, never raw output:
+    /// the protocol also carries an approval capability and private paths.
+    static func previewDiagnostic(_ result: CapturedProcessResult, elapsed: TimeInterval) -> String {
+        let phases = [
+            "runtime-setup": "런타임 준비",
+            "request-validation": "요청 검증",
+            "target-validation": "대상 검증",
+            "process-check": "사용 프로세스 확인",
+            "manifest-measurement": "승인 근거·크기 측정",
+            "complete": "응답 완료",
+        ]
+        var phase = "단계 미확인"
+        for line in result.output.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            if parts.count == 2, parts[0] == "previewPhase", let known = phases[String(parts[1])] {
+                phase = known
+            }
+        }
+        let end: String
+        switch result.endState {
+        case .exited: end = "프로세스 종료"
+        case .timedOut: end = "시간 초과"
+        case .cancelled: end = "취소"
+        case .outputLimit: end = "출력 상한 초과"
+        case .launchFailed: end = "실행 시작 실패"
+        }
+        let duration = elapsed.isFinite ? String(format: "%.1f", max(0, elapsed)) : "?"
+        return "\(duration)초 · \(phase) · \(end)(\(result.status))"
+            + (result.outputTruncated ? " · 출력 잘림" : "")
     }
 
     static func execute(

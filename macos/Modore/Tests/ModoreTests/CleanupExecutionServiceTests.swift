@@ -5,6 +5,46 @@ import XCTest
 final class CleanupExecutionServiceTests: XCTestCase {
     private let baseFiles = ["cleanup": Data("sealed cleanup".utf8)]
 
+    func testPreviewRequiresSuccessfulCompleteMatchingTransport() {
+        let text = "version\t1\noperation\tpreview\nstatus\tready\nrecipeId\tnpm_cache\n"
+        func result(_ status: Int32 = 0, _ end: ProcessEndState = .exited, _ truncated: Bool = false) -> CapturedProcessResult {
+            CapturedProcessResult(status: status, output: text, endState: end, outputTruncated: truncated)
+        }
+        XCTAssertNotNil(CleanupExecutionService.validatedPreview(result(), recipeID: "npm_cache"))
+        XCTAssertNil(CleanupExecutionService.validatedPreview(result(64), recipeID: "npm_cache"))
+        XCTAssertNil(CleanupExecutionService.validatedPreview(result(0, .timedOut), recipeID: "npm_cache"))
+        XCTAssertNil(CleanupExecutionService.validatedPreview(result(0, .exited, true), recipeID: "npm_cache"))
+        XCTAssertNil(CleanupExecutionService.validatedPreview(result(), recipeID: "pip_cache"))
+        let execution = CapturedProcessResult(status: 0, output: text.replacingOccurrences(of: "operation\tpreview", with: "operation\texecute"), endState: .exited, outputTruncated: false)
+        XCTAssertNil(CleanupExecutionService.validatedPreview(execution, recipeID: "npm_cache"))
+    }
+
+    func testPreviewDiagnosticsKeepLastKnownStageWithoutLoggingSecrets() {
+        let result = CapturedProcessResult(status: 124, output: """
+        previewPhase\ttarget-validation
+        previewPhase\tprocess-check
+        approvalToken\tsecret-token
+        target\t/private/sensitive-path
+        previewPhase\tuntrusted-secret
+        """, endState: .timedOut, outputTruncated: false)
+        let diagnostic = CleanupExecutionService.previewDiagnostic(result, elapsed: 60)
+        XCTAssertTrue(diagnostic.contains("60.0초"))
+        XCTAssertTrue(diagnostic.contains("사용 프로세스 확인"))
+        XCTAssertTrue(diagnostic.contains("시간 초과(124)"))
+        XCTAssertFalse(diagnostic.contains("secret"))
+        XCTAssertFalse(diagnostic.contains("sensitive"))
+    }
+
+    func testPreviewDiagnosticsDescribeEveryTransportFailureAndMissingStage() {
+        for (state, label) in [(ProcessEndState.launchFailed, "실행 시작 실패"), (.outputLimit, "출력 상한 초과"), (.cancelled, "취소"), (.exited, "프로세스 종료")] {
+            let result = CapturedProcessResult(status: 1, output: "", endState: state, outputTruncated: true)
+            let diagnostic = CleanupExecutionService.previewDiagnostic(result, elapsed: 1)
+            XCTAssertTrue(diagnostic.contains(label))
+            XCTAssertTrue(diagnostic.contains("단계 미확인"))
+            XCTAssertTrue(diagnostic.contains("출력 잘림"))
+        }
+    }
+
     private func projectRequest() throws -> CleanupExecutionRequest {
         let item = try XCTUnwrap(StorageItem(json: [
             "risk": "warning",

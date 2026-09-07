@@ -35,6 +35,8 @@ PROJECT_RESIDUE_PARENT=""
 PROJECT_RESIDUE_BASENAME=""
 PROJECT_RESIDUE_PRIMARY_MARKER=""
 PROJECT_PROCESS_PATH_PATTERN=""
+PROJECT_PROCESS_ROWS=""
+PROJECT_PROCESS_ROWS_CACHED="false"
 TRANSIENT_WORKSPACE_TARGET=""
 HOME_ROOT="${HOME:-}"
 VAR_FOLDERS_ROOT="/private/var/folders"
@@ -1573,6 +1575,22 @@ exclude_self_and_measurement() {
             '^(/usr/bin/du|/usr/bin/mdls|/usr/libexec/PlistBuddy)( -[^ ]+)* [^&|;]*$'
 }
 
+wait_for_process_probe() {
+    local pid="$1" limit="$2" attempts=0
+    while /bin/kill -0 "$pid" 2>/dev/null; do
+        if [[ "$attempts" -ge "$limit" ]]; then
+            /bin/kill -TERM "$pid" 2>/dev/null || true
+            /bin/sleep 0.1
+            /bin/kill -KILL "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        attempts=$((attempts + 1))
+        /bin/sleep 0.1
+    done
+    wait "$pid" 2>/dev/null
+}
+
 process_cwd_for_pid() {
     local pid="$1"
     if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
@@ -1584,10 +1602,20 @@ process_cwd_for_pid() {
         return $?
     fi
     [[ -x /usr/sbin/lsof ]] || return 1
-    # One PID and only its cwd descriptor: unlike `lsof +D`, this does not walk
-    # the project tree. Callers cap candidate build processes at 64.
-    /usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null \
-        | /usr/bin/awk '/^n\// {sub(/^n/, ""); print; found=1; exit} END {exit !found}'
+    # Bound even one cwd query: lsof can stall on an unrelated filesystem.
+    # The caller also bounds the whole candidate pass. Unknown always blocks.
+    local output probe status
+    output="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/modore-cwd.XXXXXX")" || return 1
+    /usr/sbin/lsof -a -p "$pid" -d cwd -Fn > "$output" 2>/dev/null &
+    probe=$!
+    wait_for_process_probe "$probe" 20
+    status=$?
+    if [[ "$status" -eq 0 ]]; then
+        /usr/bin/awk '/^n\// {sub(/^n/, ""); print; found=1; exit} END {exit !found}' "$output"
+        status=$?
+    fi
+    /bin/rm -f "$output"
+    return "$status"
 }
 
 process_cwd_is_project() {
@@ -1604,7 +1632,9 @@ process_cwd_is_project() {
 }
 
 project_process_rows_with_pid() {
-    local tool_pattern pid command filtered candidate_count=0 cwd_status
+    local tool_pattern pid command candidate_count=0 cwd_status matches=0 started=$SECONDS
+    local self_pattern='scripts/cleanup\.sh|/usr/bin/grep -E|Contents/MacOS/Modore'
+    local measurement_pattern='^(/usr/bin/du|/usr/bin/mdls|/usr/libexec/PlistBuddy)( -[^ ]+)* [^&|;]*$'
     tool_pattern="$(project_residue_tool_pattern)" || return 1
     process_snapshot_with_pid \
         | /usr/bin/awk '
@@ -1616,29 +1646,40 @@ project_process_rows_with_pid() {
             }' \
         | while IFS=$'\t' read -r pid command; do
             [[ "$pid" =~ ^[0-9]+$ && -n "$command" ]] || continue
-            filtered="$(/usr/bin/printf '%s\n' "$command" | exclude_self_and_measurement || true)"
-            [[ -n "$filtered" ]] || continue
-            if /usr/bin/printf '%s\n' "$command" | /usr/bin/grep -E -q "$PROJECT_PROCESS_PATH_PATTERN"; then
+            # Bash ERE avoids spawning several filters for every process on
+            # the machine, including the hundreds unrelated to this project.
+            [[ ! "$command" =~ $self_pattern && ! "$command" =~ $measurement_pattern ]] || continue
+            if [[ "$command" =~ $PROJECT_PROCESS_PATH_PATTERN ]]; then
                 /usr/bin/printf '%s\t%s\n' "$pid" "$command"
+                matches=$((matches + 1))
+                [[ "$matches" -lt 5 ]] || break
                 continue
             fi
-            /usr/bin/printf '%s\n' "$command" | /usr/bin/grep -E -q "$tool_pattern" || continue
+            [[ "$command" =~ $tool_pattern ]] || continue
             candidate_count=$((candidate_count + 1))
-            if [[ "$candidate_count" -gt 64 ]]; then
-                # An unexpectedly large candidate set makes the bounded cwd
-                # proof incomplete. Fail closed rather than silently skipping
-                # a possible writer to the approved target.
-                /usr/bin/printf '%s\t%s\n' "$pid" "$command"
-                continue
+            if [[ "$candidate_count" -gt 64 || $((SECONDS - started)) -ge 8 ]]; then
+                cwd_status=2
+            else
+                process_cwd_is_project "$pid"
+                cwd_status=$?
             fi
-            process_cwd_is_project "$pid"
-            cwd_status=$?
             if [[ "$cwd_status" -eq 0 || "$cwd_status" -eq 2 ]]; then
+                [[ "$cwd_status" -ne 2 ]] || command="__MODORE_CWD_UNKNOWN__ $command"
                 /usr/bin/printf '%s\t%s\n' "$pid" "$command"
+                matches=$((matches + 1))
+                [[ "$matches" -lt 5 ]] || break
             fi
         done \
         | /usr/bin/awk -F '\t' '!seen[$1 FS $2]++' \
         | /usr/bin/head -n 5
+}
+
+current_project_process_rows() {
+    if [[ "$PROJECT_PROCESS_ROWS_CACHED" == "true" ]]; then
+        /usr/bin/printf '%s\n' "$PROJECT_PROCESS_ROWS"
+    else
+        project_process_rows_with_pid
+    fi
 }
 
 matching_project_processes() {
@@ -1653,7 +1694,7 @@ matching_project_processes() {
             || true
         return 0
     fi
-    project_process_rows_with_pid \
+    current_project_process_rows \
         | /usr/bin/awk -F '\t' '{ $1=""; sub(/^ /, ""); print }' \
         | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' \
         | /usr/bin/cut -c 1-240 \
@@ -1678,6 +1719,10 @@ matching_processes() {
 process_display_name() {
     local command="$1"
     local display_name
+    if [[ "$command" == '__MODORE_CWD_UNKNOWN__ '* ]]; then
+        /usr/bin/printf '%s (사용 여부 미확인)' "$(process_display_name "${command#__MODORE_CWD_UNKNOWN__ }")"
+        return
+    fi
     if [[ "$RECIPE_ID" == app_uninstall:* ]]; then
         display_name="$LABEL"
     else
@@ -1722,7 +1767,7 @@ display_process_names() {
 matching_processes_with_pid() {
     [[ -n "$PROCESS_PATTERN" ]] || return 0
     if [[ "$RECIPE_ID" == "project_residue" ]]; then
-        project_process_rows_with_pid \
+        current_project_process_rows \
             | /usr/bin/awk -F '\t' 'NF >= 2 {pid=$1; $1=""; sub(/^ /, ""); printf "%s %s\n", pid, $0}' \
             | /usr/bin/sed -E 's/[[:space:]]+/ /g' \
             | /usr/bin/cut -c 1-240 \
@@ -2013,6 +2058,7 @@ preview_status() {
         return 0
     fi
 
+    emit "previewPhase" "target-validation" >&2
     for target in "${TARGETS[@]}"; do
         if ! validate_target "$RECIPE_ID" "$target"; then
             PREVIEW_STATUS="blocked"
@@ -2044,14 +2090,26 @@ preview_status() {
         return 0
     fi
 
+    emit "previewPhase" "process-check" >&2
+    # Use one snapshot for the verdict and its displayed evidence only. The
+    # approval manifest and every execute boundary still recheck live state.
+    if [[ "$RECIPE_ID" == "project_residue" ]]; then
+        PROJECT_PROCESS_ROWS="$(project_process_rows_with_pid)"
+        PROJECT_PROCESS_ROWS_CACHED="true"
+    fi
     matches="$(matching_processes)"
     if [[ -n "$matches" ]]; then
         RUNNING_PROCESSES="$(display_process_evidence | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
         if [[ "$PROCESS_POLICY" == "block" ]]; then
             PREVIEW_STATUS="blocked"
             BLOCKED_REASON="${PROCESS_NOTE:-관련 프로세스를 먼저 종료하세요.}"
+            if [[ "$matches" == *'__MODORE_CWD_UNKNOWN__ '* ]]; then
+                BLOCKED_REASON="관련 프로세스의 작업 위치를 제한 시간 안에 확인하지 못해 정리를 차단했습니다. 사용 여부 미확인 항목을 확인한 뒤 다시 측정하세요."
+            fi
         fi
     fi
+    PROJECT_PROCESS_ROWS_CACHED="false"
+    PROJECT_PROCESS_ROWS=""
 }
 
 emit_state() {
@@ -2636,6 +2694,7 @@ parse_arguments() {
 run_preview() {
     preview_status
     if [[ "$PREVIEW_STATUS" == "ready" ]]; then
+        emit "previewPhase" "manifest-measurement" >&2
         if create_approval_manifest; then
             ESTIMATED_KB="$MANIFEST_ESTIMATED_KB"
             ESTIMATE_MEASURED="true"
@@ -2647,6 +2706,7 @@ run_preview() {
     elif [[ "$PREVIEW_STATUS" == "empty" ]]; then
         ESTIMATE_MEASURED="true"
     fi
+    emit "previewPhase" "complete" >&2
     emit_state "preview" "$PREVIEW_STATUS" "$ESTIMATED_KB"
 }
 
@@ -2824,6 +2884,7 @@ run_execute() {
 
 main() {
     parse_arguments "$@"
+    [[ "$OPERATION" != "preview" ]] || emit "previewPhase" "runtime-setup" >&2
     configure_roots
 
     if [[ "$OPERATION" == "list" ]]; then
@@ -2831,6 +2892,7 @@ main() {
         return 0
     fi
 
+    [[ "$OPERATION" != "preview" ]] || emit "previewPhase" "request-validation" >&2
     define_recipe "$RECIPE_ID" || fail_usage "허용되지 않은 recipe ID입니다: $RECIPE_ID"
     ESTIMATED_KB=0
 

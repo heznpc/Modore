@@ -107,6 +107,8 @@ store, including case variants and resolved symlink aliases.
 - Child commands are spawned into a private process group and have bounded output/termination handling. Normal Cmd-Q termination is delayed while an approved destructive transaction is active so cleanup cannot become an unsupervised child.
 - Directory traversal uses no-follow, descriptor-relative operations; symlinked or non-canonical targets are rejected at use time.
 - A local receipt is written after execution.
+- Project-residue process checks bound each cwd probe to about 2 seconds and stop starting probes after an 8-second pass budget (at most 64 candidates). An unknown cwd or exhausted budget blocks cleanup and is labeled as unverified, not as proven active use. Verdict and displayed evidence share one preview snapshot; approval-manifest and execution checks remain fresh.
+- Preview diagnostics expose only allowlisted stage names, elapsed time and process termination metadata. Raw protocol output (including approval tokens) is not copied into logs. A failed, truncated, wrong-operation or wrong-recipe response cannot become an executable preview.
 
 ### Recovery accounting
 
