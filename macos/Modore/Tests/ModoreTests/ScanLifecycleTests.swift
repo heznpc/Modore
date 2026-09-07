@@ -85,6 +85,88 @@ private actor ScanOutputLifecycleProbe {
 
 @MainActor
 final class ScanLifecycleTests: XCTestCase {
+    func testRecoveryStopsBeforeNextItemWhenResultCheckpointFails() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = try makeCleanupContext(in: root)
+        let probe = CleanupLifecycleProbe()
+        let scanGate = ScanLifecycleGate()
+        let first = try readyCleanupPreview()
+        let second = try readyCleanupPreview(recipeID: "npm_cache")
+        let plan = CleanupRecoveryPlan(baselineFreeBytes: StorageBytes.perGiB,
+                                      requestedGainBytes: 99 * StorageBytes.perGiB,
+                                      entries: [CleanupPlanEntry(preview: first, tier: .rebuild, request: nil),
+                                                CleanupPlanEntry(preview: second, tier: .safe, request: nil)])
+        let success = cleanupExecutionResult(status: "complete")
+        let observation = freeSpaceObservation()
+        let client = CleanupExecutionClient(prepare: { _ in context }, preview: { _, _, _ in success },
+                                            execute: { _, request, _ in
+            await probe.recordExecution(request)
+            return success
+        })
+        let model = ScanModel(automaticallyScansStaleResults: false, projectRoot: root,
+                              scanRunner: { _, _ in await scanGate.wait(); return .scanFailed },
+                              cleanupExecution: client,
+                              recoveryHistoryWriter: { record, root in
+            if record.phase == .running && !record.items.isEmpty { throw CocoaError(.fileWriteOutOfSpace) }
+            return try RecoveryHistoryStore.save(record, in: root)
+        })
+        await settleStartup(model)
+        model.cleanupRecoveryPlan = plan
+        model.executeRecoveryPlan(plan, observeFreeSpace: { observation })
+        await waitForEntry(scanGate, "checkpoint failure did not schedule rescan")
+        let requests = await probe.requests()
+        XCTAssertEqual(requests.execution.count, 1)
+        XCTAssertTrue(model.cleanupRecoveryResult?.stoppedAfterFailure == true)
+        let record = try XCTUnwrap(RecoveryHistoryStore.load(in: root).first)
+        XCTAssertEqual(record.items.count, 1)
+        XCTAssertEqual(record.phase, .finished)
+        XCTAssertTrue(record.stoppedAfterFailure)
+        model.cancelScan()
+        await scanGate.release()
+        await waitUntil("checkpoint failure rescan did not drain") { model.scanTask == nil }
+    }
+
+    func testRecoveryHistorySurvivesRestartWithoutRestoringExecutionAuthority() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = recoveryPlan(for: try readyCleanupPreview())
+        var record = RecoveryHistory(plan: plan)
+        record.phase = .running
+        record.approvedAt = Date()
+        record.activeEntryID = plan.entries[0].id
+        try RecoveryHistoryStore.save(record, in: root)
+        let model = ScanModel(automaticallyScansStaleResults: false, projectRoot: root)
+        await settleStartup(model)
+        XCTAssertEqual(model.recoveryHistory.first?.phase, .interrupted)
+        XCTAssertEqual(model.recoveryHistory.first?.id, plan.id)
+        XCTAssertNil(model.cleanupRecoveryPlan)
+        XCTAssertNil(model.cleanupRecoveryResult)
+        XCTAssertFalse(model.cleanupInFlight)
+    }
+
+    func testRecoveryDoesNotStartWhenApprovalHistoryCannotBeSaved() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let probe = CleanupLifecycleProbe()
+        let context = try makeCleanupContext(in: root)
+        let unused = processResult("")
+        let plan = recoveryPlan(for: try readyCleanupPreview())
+        let client = CleanupExecutionClient(prepare: { _ in context }, preview: { _, _, _ in unused },
+                                            execute: { _, request, _ in await probe.recordExecution(request); return nil })
+        let model = ScanModel(automaticallyScansStaleResults: false, projectRoot: root,
+                              cleanupExecution: client,
+                              recoveryHistoryWriter: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        await settleStartup(model)
+        model.cleanupRecoveryPlan = plan
+        model.executeRecoveryPlan(plan, observeFreeSpace: { nil })
+        let requests = await probe.requests()
+        XCTAssertTrue(requests.execution.isEmpty)
+        XCTAssertFalse(model.cleanupInFlight)
+        XCTAssertNotNil(model.recoveryHistoryError)
+        XCTAssertFalse(ScanPublication.cleanupMutationIsPending(in: root))
+    }
+
     func testRecoveryDoesNotReuseEarlierMeasurementWhenFinalReadFails() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -108,6 +190,11 @@ final class ScanLifecycleTests: XCTestCase {
         XCTAssertNil(model.cleanupRecoveryResult?.finalFreeBytes)
         XCTAssertNil(model.cleanupRecoveryResult?.actualChangeBytes)
         XCTAssertFalse(model.cleanupRecoveryResult?.goalMet ?? true)
+        let saved = try XCTUnwrap(RecoveryHistoryStore.load(in: root).first)
+        XCTAssertEqual(saved.phase, .finished)
+        XCTAssertEqual(saved.items.count, 1)
+        XCTAssertNil(saved.finalFreeBytes)
+        XCTAssertFalse(saved.goalMet)
         XCTAssertTrue(model.logText.contains("확인하지 못했습니다"))
         model.cancelScan()
         await scanGate.release()
@@ -141,6 +228,12 @@ final class ScanLifecycleTests: XCTestCase {
             if sample != nil {
                 XCTAssertEqual(model.cleanupRecoveryPlan?.requestedGainBytes, StorageBytes.perGiB)
                 XCTAssertEqual(model.cleanupRecoveryPlan?.desiredFreeBytes, 11 * StorageBytes.perGiB)
+                let saved = try XCTUnwrap(RecoveryHistoryStore.load(in: root).first)
+                XCTAssertEqual(saved.id, model.cleanupRecoveryPlan?.id)
+                XCTAssertEqual(saved.phase, .reviewed)
+                XCTAssertNil(saved.approvedAt)
+                model.dismissRecoveryPlan()
+                XCTAssertEqual(try RecoveryHistoryStore.load(in: root).first?.phase, .cancelled)
             } else {
                 XCTAssertNil(model.cleanupRecoveryPlan)
                 XCTAssertTrue(model.errorMessage?.contains("측정하지 못해") == true)
