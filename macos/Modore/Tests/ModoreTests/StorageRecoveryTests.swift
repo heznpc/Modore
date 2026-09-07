@@ -139,16 +139,16 @@ final class StorageRecoveryTests: XCTestCase {
         let blocked = try preview(label: "Swift", recipeID: "swiftpm_cache", status: "blocked", token: "", estimatedKB: 2_048)
 
         let executable = CleanupRecoveryPlan(
-            baselineFreeGB: 4,
-            desiredFreeGB: 20,
+            baselineFreeBytes: 4 * StorageBytes.perGiB,
+            requestedGainBytes: 16 * StorageBytes.perGiB,
             entries: [CleanupPlanEntry(preview: ready, tier: .safe, request: nil)]
         )
         XCTAssertTrue(executable.canExecute)
-        XCTAssertEqual(executable.estimatedKB, 1_024)
+        XCTAssertEqual(executable.estimatedBytes, 1_048_576)
 
         let mixed = CleanupRecoveryPlan(
-            baselineFreeGB: 4,
-            desiredFreeGB: 20,
+            baselineFreeBytes: 4 * StorageBytes.perGiB,
+            requestedGainBytes: 16 * StorageBytes.perGiB,
             entries: [
                 CleanupPlanEntry(preview: ready, tier: .safe, request: nil),
                 CleanupPlanEntry(preview: blocked, tier: .rebuild, request: nil),
@@ -165,8 +165,8 @@ final class StorageRecoveryTests: XCTestCase {
             token: token("a"), estimatedKB: 1_024, approvalExpiresEpoch: expires
         )
         let plan = CleanupRecoveryPlan(
-            baselineFreeGB: 4,
-            desiredFreeGB: 20,
+            baselineFreeBytes: 4 * StorageBytes.perGiB,
+            requestedGainBytes: 16 * StorageBytes.perGiB,
             entries: [CleanupPlanEntry(preview: ready, tier: .safe, request: nil)]
         )
 
@@ -177,10 +177,9 @@ final class StorageRecoveryTests: XCTestCase {
 
     func testUnmeasuredFinalSpaceNeverClaimsTheGoalWasMet() {
         let result = CleanupRecoveryResult(
-            baselineFreeGB: 3,
-            finalFreeGB: 30,
-            desiredFreeGB: 20,
-            freeSpaceMeasured: false,
+            baselineFreeBytes: 3 * StorageBytes.perGiB,
+            finalFreeBytes: nil,
+            desiredFreeBytes: 20 * StorageBytes.perGiB,
             plannedCount: 2,
             items: [],
             stoppedAfterFailure: true,
@@ -188,7 +187,7 @@ final class StorageRecoveryTests: XCTestCase {
         )
 
         XCTAssertFalse(result.goalMet)
-        XCTAssertEqual(result.actualGainGB, 0)
+        XCTAssertNil(result.actualChangeBytes)
         XCTAssertEqual(result.skippedCount, 2)
     }
 

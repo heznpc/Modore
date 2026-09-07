@@ -2065,6 +2065,12 @@ emit_state() {
     emit "recipeId" "$RECIPE_ID"
     emit "label" "$LABEL"
     emit "estimatedKB" "$estimated_kb"
+    emit "accountingVersion" "2"
+    if [[ "$ESTIMATE_MEASURED" == "true" ]]; then
+        emit "estimatedBytes" "$(kb_to_bytes "$estimated_kb")"
+    else
+        emit "estimatedBytes" ""
+    fi
     emit "estimateMeasured" "$ESTIMATE_MEASURED"
     emit "actionMode" "$REMOVE_MODE"
     emit "warning" "$WARNING"
@@ -2469,6 +2475,42 @@ available_kb() {
     /bin/df -Pk "$HOME_ROOT" 2>/dev/null | /usr/bin/awk 'NR == 2 {print $4; exit}'
 }
 
+kb_to_bytes() {
+    # df/du report KiB. Empty, malformed and overflowing measurements remain
+    # unknown; shell arithmetic must not interpret leading zeroes as octal.
+    local value="$1" sign=1
+    [[ "$value" =~ ^-?[0-9]+$ ]] || return 0
+    if [[ "$value" == -* ]]; then sign=-1; value="${value#-}"; fi
+    while [[ ${#value} -gt 1 && "$value" == 0* ]]; do value="${value#0}"; done
+    [[ ${#value} -le 16 ]] || return 0
+    [[ "$value" -le 9007199254740991 ]] || return 0
+    /usr/bin/printf '%s' "$((sign * 10#$value * 1024))"
+}
+
+calculate_recovery_accounting() {
+    FREE_BEFORE_BYTES="$(kb_to_bytes "$FREE_BEFORE")"
+    FREE_AFTER_BYTES="$(kb_to_bytes "$FREE_AFTER")"
+    PHYSICAL_DELTA_BYTES=""
+    PHYSICAL_DELTA_KB=""
+    if [[ -n "$FREE_BEFORE_BYTES" && -n "$FREE_AFTER_BYTES" \
+          && "$FREE_BEFORE_BYTES" -ge 0 && "$FREE_AFTER_BYTES" -ge 0 ]]; then
+        PHYSICAL_DELTA_BYTES=$((FREE_AFTER_BYTES - FREE_BEFORE_BYTES))
+        PHYSICAL_DELTA_KB=$((PHYSICAL_DELTA_BYTES / 1024))
+    fi
+    # Target accounting must never substitute the whole-volume delta.
+    local estimated_bytes remaining_bytes
+    estimated_bytes="$(kb_to_bytes "$ESTIMATED_KB")"
+    remaining_bytes="$(kb_to_bytes "$REMAINING_KB")"
+    RECLAIMED_BYTES=""
+    RECLAIMED_KB=""
+    if [[ -n "$estimated_bytes" && -n "$remaining_bytes" \
+          && "$estimated_bytes" -ge 0 && "$remaining_bytes" -ge 0 ]]; then
+        RECLAIMED_BYTES=$((estimated_bytes - remaining_bytes))
+        [[ "$RECLAIMED_BYTES" -ge 0 ]] || RECLAIMED_BYTES=0
+        RECLAIMED_KB=$((RECLAIMED_BYTES / 1024))
+    fi
+}
+
 write_receipt() {
     local status="$1"
     local estimated_kb="$2"
@@ -2495,6 +2537,12 @@ write_receipt() {
         /usr/bin/printf 'estimatedKB\t%s\n' "$estimated_kb"
         /usr/bin/printf 'reclaimedKB\t%s\n' "$reclaimed_kb"
         /usr/bin/printf 'physicalDeltaKB\t%s\n' "$physical_delta_kb"
+        /usr/bin/printf 'accountingVersion\t2\n'
+        /usr/bin/printf 'estimatedBytes\t%s\n' "$(kb_to_bytes "$estimated_kb")"
+        /usr/bin/printf 'reclaimedBytes\t%s\n' "$(kb_to_bytes "$reclaimed_kb")"
+        /usr/bin/printf 'physicalDeltaBytes\t%s\n' "$(kb_to_bytes "$physical_delta_kb")"
+        /usr/bin/printf 'freeBeforeBytes\t%s\n' "${FREE_BEFORE_BYTES:-}"
+        /usr/bin/printf 'freeAfterBytes\t%s\n' "${FREE_AFTER_BYTES:-}"
         /usr/bin/printf 'actionMode\t%s\n' "$REMOVE_MODE"
         /usr/bin/printf 'trashRun\t%s\n' "$TRASH_RUN"
         # A path containing a literal tab (unusual, but not forbidden by the
@@ -2606,6 +2654,8 @@ emit_final_result() {
     emit_state "execute" "$RESULT_STATUS" "$ESTIMATED_KB"
     emit "reclaimedKB" "$RECLAIMED_KB"
     emit "physicalDeltaKB" "$PHYSICAL_DELTA_KB"
+    emit "reclaimedBytes" "$RECLAIMED_BYTES"
+    emit "physicalDeltaBytes" "$PHYSICAL_DELTA_BYTES"
     emit "receipt" "$RECEIPT_PATH"
     emit "trashRun" "$TRASH_RUN"
 
@@ -2679,7 +2729,6 @@ run_execute() {
     fi
 
     FREE_BEFORE="$(available_kb)"
-    case "$FREE_BEFORE" in ''|*[!0-9]*) FREE_BEFORE=0 ;; esac
     FAILED=0
     TARGET_INDEX=0
     if [[ "$RECIPE_ID" == app_uninstall:* ]]; then
@@ -2760,18 +2809,8 @@ run_execute() {
     fi
 
     FREE_AFTER="$(available_kb)"
-    case "$FREE_AFTER" in ''|*[!0-9]*) FREE_AFTER=0 ;; esac
-    PHYSICAL_DELTA_KB=$((FREE_AFTER - FREE_BEFORE))
-    [[ "$PHYSICAL_DELTA_KB" -ge 0 ]] || PHYSICAL_DELTA_KB=0
     REMAINING_KB="$(remaining_targets_size_kb)"
-    if [[ "$REMAINING_KB" == "__UNMEASURED__" ]]; then
-        # Cannot verify how much remains; report only the measured free-space gain
-        # rather than overstating logical reclaim.
-        RECLAIMED_KB="$PHYSICAL_DELTA_KB"
-    else
-        RECLAIMED_KB=$((ESTIMATED_KB - REMAINING_KB))
-        [[ "$RECLAIMED_KB" -ge 0 ]] || RECLAIMED_KB=0
-    fi
+    calculate_recovery_accounting
 
     RESULT_STATUS="complete"
     [[ "$FAILED" -eq 0 ]] || RESULT_STATUS="$EXECUTION_FAILURE_STATUS"

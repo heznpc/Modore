@@ -108,6 +108,15 @@ store, including case variants and resolved symlink aliases.
 - Directory traversal uses no-follow, descriptor-relative operations; symlinked or non-canonical targets are rejected at use time.
 - A local receipt is written after execution.
 
+### Recovery accounting
+
+- A recovery goal is the user's additional byte amount, not a hard-coded final free-space threshold. Approval takes a fresh volume reading and sets the final target to baseline plus that amount. The 20 GiB recommendation remains separate; retry after execution targets the remaining distance to the approved endpoint.
+- Recovery arithmetic uses checked `Int64` bytes. Legacy scanner GiB estimates and `df`/`du` KiB readings convert at their boundaries; the recovery UI names binary units explicitly.
+- Cleanup protocol version 1 gains additive `accountingVersion=2` and `estimatedBytes`, `reclaimedBytes`, and `physicalDeltaBytes` fields. Receipts also retain before/after available bytes. Legacy KB fields remain for older readers.
+- Target occupancy reduction and whole-volume available-space net change are separate measurements. Volume changes remain signed, including decreases and measured zero; missing, malformed, or overflowing measurements are unknown. Unknown target occupancy never substitutes volume change.
+- Byte fields are authoritative for accounting version 2. Older receipts convert KiB, but their clamped zero volume delta is unknown because the old writer conflated zero, decrease, and measurement failure. A missing final volume reading cannot prove goal attainment, even if an earlier reading succeeded.
+- Plan-level durable history is separate future work; this accounting change does not add it or alter approval, token expiry, target revalidation, or process-draining boundaries.
+
 ## Good contribution areas
 
 - Verified Korean/Japanese application whitelist entries.

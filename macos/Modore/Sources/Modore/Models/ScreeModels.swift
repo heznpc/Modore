@@ -719,6 +719,25 @@ struct ScreeCleanupReceipt: Decodable, Equatable {
     let estimatedKB: Int64?
     let reclaimedKB: Int64?
     let physicalDeltaKB: Int64?
+    let accountingVersion: Int?
+    let estimatedBytes: Int64?
+    let reclaimedBytes: Int64?
+    let physicalDeltaBytes: Int64?
+
+    var targetEstimateBytes: Int64? {
+        guard accountingVersion == nil || accountingVersion == 1 || accountingVersion == 2 else { return nil }
+        return accountingVersion == nil ? StorageBytes.fromKiB(estimatedKB) : estimatedBytes
+    }
+    var targetReductionBytes: Int64? {
+        guard accountingVersion == nil || accountingVersion == 1 || accountingVersion == 2 else { return nil }
+        return accountingVersion == nil ? StorageBytes.fromKiB(reclaimedKB) : reclaimedBytes
+    }
+    var volumeChangeBytes: Int64? {
+        guard accountingVersion == nil || accountingVersion == 1 || accountingVersion == 2 else { return nil }
+        return accountingVersion == nil
+            ? (physicalDeltaKB == 0 ? nil : StorageBytes.fromKiB(physicalDeltaKB))
+            : physicalDeltaBytes
+    }
 }
 
 struct ScreeFilesystemObservation: Decodable, Equatable {

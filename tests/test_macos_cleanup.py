@@ -308,6 +308,15 @@ def test_cleanup_preview_is_read_only_and_execute_requires_approval(project_root
     receipt = Path(str(result["receipt"]))
     assert receipt.is_file()
     assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
+    recorded = parse_protocol(receipt.read_text())
+    assert payload["accountingVersion"] == result["accountingVersion"] == recorded["accountingVersion"] == "2"
+    assert int(str(payload["estimatedBytes"])) == int(str(payload["estimatedKB"])) * 1024
+    for key in ("estimated", "reclaimed", "physicalDelta"):
+        assert result[key + "Bytes"] == recorded[key + "Bytes"]
+        assert int(str(result[key + "Bytes"])) == int(str(result[key + "KB"])) * 1024
+    assert int(str(recorded["physicalDeltaBytes"])) == (
+        int(str(recorded["freeAfterBytes"])) - int(str(recorded["freeBeforeBytes"]))
+    )
 
 
 def test_cleanup_rejects_token_minted_for_a_different_recipe(project_root, tmp_path):
@@ -1840,6 +1849,7 @@ def test_write_receipt_strips_embedded_tabs_from_target_paths(project_root, tmp_
         project_root / "scripts" / "modules" / "approval_token.sh", "prepare_private_directory() {"
     )
     write_receipt_src = extract(project_root / "scripts" / "cleanup.sh", "write_receipt() {")
+    kb_to_bytes_src = extract(project_root / "scripts" / "cleanup.sh", "kb_to_bytes() {")
     for src in (prepare_private_directory_src, write_receipt_src):
         assert src.endswith("}"), "extraction boundary moved; update this test"
 
@@ -1865,6 +1875,8 @@ STAGED_REMAINDERS=()
 
 {prepare_private_directory_src}
 
+{kb_to_bytes_src}
+
 {write_receipt_src}
 
 write_receipt "complete" 100 100 100
@@ -1884,6 +1896,39 @@ echo "RECEIPT_PATH=$RECEIPT_PATH"
     fields = target_line.split("\t")
     assert len(fields) == 2, f"embedded tab injected an extra TSV column: {fields!r}"
     assert fields[1] == "/tmp/weirddirectory/with-a-tab"
+
+
+@pytest.mark.parametrize("before,after,remaining,delta,reclaimed", [
+    ("1024", "2048", "50", "1048576", "51200"),
+    ("4096", "1024", "50", "-3145728", "51200"),
+    ("1024", "1024", "50", "0", "51200"),
+    ("", "1024", "50", "", "51200"),
+    ("1024", "failed", "50", "", "51200"),
+    ("1024", "2048", "__UNMEASURED__", "1048576", ""),
+    ("999999999999999999999999", "2048", "50", "", "51200"),
+    ("01024", "02048", "50", "1048576", "51200"),
+])
+def test_recovery_accounting_preserves_signed_bytes_and_unknown(
+    project_root, before, after, remaining, delta, reclaimed
+):
+    source = (project_root / "scripts" / "cleanup.sh").read_text(encoding="utf-8").splitlines()
+
+    def function(name):
+        start = source.index(name + "() {")
+        end = next(i for i in range(start, len(source)) if source[i] == "}")
+        return "\n".join(source[start:end + 1])
+
+    harness = "\n".join([
+        "set -u", function("kb_to_bytes"), function("calculate_recovery_accounting"),
+        'FREE_BEFORE="$1"; FREE_AFTER="$2"; REMAINING_KB="$3"; ESTIMATED_KB=100',
+        "calculate_recovery_accounting",
+        'printf "delta=%s\\nreclaimed=%s\\n" "$PHYSICAL_DELTA_BYTES" "$RECLAIMED_BYTES"',
+    ])
+    result = subprocess.run(["/bin/bash", "-c", harness, "accounting", before, after, remaining],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout == f"delta={delta}\nreclaimed={reclaimed}\n"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS plist tools are required")
