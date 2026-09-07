@@ -1,7 +1,8 @@
 # Project / Asset Model v1
 
-Status: **Design intent — review before implementation.** The Swift declarations below
-describe the first migration contract; they are not currently shipped APIs.
+Status: **Phase 1 implemented; later migrations remain design intent.** The declarations
+below summarize the contract. The validated public APIs live in `shared/ModoreDomain`;
+the Work observations and adapter live in the Mac app. Storage/runtime integration remains planned.
 
 Modore explains the structure and provenance of durable local state, supplies evidence
 for protection and recovery decisions, and revalidates every action at a separate
@@ -55,7 +56,7 @@ public struct AssetIdentity: Hashable, Codable, Sendable {
 }
 
 public enum EvidenceSource: String, Codable, Sendable {
-    case scree, repositoryAssessment, storageScan, processObservation
+    case scree, projectAttribution, repositoryAssessment, storageScan, processObservation
     case fileAccess, sessionBackup, cleanupReceipt, recoveryHistory
 }
 
@@ -86,7 +87,7 @@ public struct Coverage: Equatable, Codable, Sendable {
 }
 
 public enum EvidenceMethod: String, Codable, Sendable {
-    case recordedWorkspace, knownRootAncestry, conventionalWorktreePath
+    case recordedWorkspace, knownRootAncestry, conventionalWorktreePath, workspaceFallback
     case gitRegistry, pathAncestry, projectManifest
     case processWorkingDirectory, processOpenFile
     case transcriptReadInvocation, transcriptWriteInvocation, transcriptShellReference
@@ -111,7 +112,11 @@ public struct ProducerFailure: Equatable, Codable, Sendable {
     public let detail: String // Display only; never an assessment input.
 }
 
-public struct ProducerSnapshot<Record: Codable & Sendable>: Codable, Sendable {
+public protocol EvidenceBackedRecord: Codable, Sendable {
+    var evidence: EvidenceRecord { get }
+}
+
+public struct ProducerSnapshot<Record: EvidenceBackedRecord>: Codable, Sendable {
     public let producer: EvidenceSource
     public let runID: String
     public let schemaVersion: Int
@@ -233,20 +238,27 @@ executable plan or validated target.
 ## Producer contract
 
 Keep producer implementations and composition in app `Services/`; put only pure schema
-and semantics in `shared/ModoreDomain`. The first Work adapter consumes an actual
-`SessionIndexEntry` and the existing builder's resolved project key. It emits a typed Work
-workspace observation with the logical session identity, recorded workspace, project identity
-and `EvidenceRecord` using `recordedWorkspace + recordedClaim`. If the builder maps that
-workspace to an ancestor or conventional worktree root, represent that mapping separately
-as inferred evidence rather than asserting the session recorded that root. Reuse the
-builder's result and matching rule, without changing its grouping algorithm. Missing
-workspace produces no membership evidence and stays in the existing unassigned bucket.
+and semantics in `shared/ModoreDomain`. The Work adapter emits separate records:
+`WorkWorkspaceObservation` carries the provider's recorded workspace with `.scree` provenance;
+`WorkProjectAttribution` carries the builder's inferred project mapping with
+`.projectAttribution` provenance and its input observation. An unknown workspace produces
+neither and stays in the unassigned bucket. Physical artifact identity remains explicit
+when no logical provider ID exists.
 
-Phase 1 uses `ProducerSnapshot<WorkWorkspaceObservation>` at this adapter boundary.
-The existing collection invocation supplies a run ID that survives re-adaptation/rendering;
-the adapter derives record IDs deterministically within that run. It does not request
-another scan or invent missing timestamps. Observation payloads and adapter code stay in
-the app; only the envelope and pure value types live in `ModoreDomain`.
+Each accepted session-index publication gets a collection run ID. Each publication of any
+builder input (session index, scree report, repository assessments, failures or unscanned roots)
+also gets a new composition run ID and retains the input revision tuple. Root-only changes
+never relabel the session observation. `WorkProvenance` creates IDs at these publication
+boundaries, not in `workProjects`, adapters or SwiftUI bodies. Task generations remain
+separate stale-write controls. Failed/cancelled loads cannot re-stamp retained facts.
+
+The adapter emits separate `ProducerSnapshot<WorkWorkspaceObservation>` and
+`ProducerSnapshot<WorkProjectAttribution>` envelopes. Record IDs identify input positions
+within immutable runs; repeated adaptation retains references. The collector timestamp is
+unknown when absent from the DTO; composition time describes the actual inference. The
+existing builder supplies both the root and the matching rule, including an explicitly
+inferred workspace fallback. Work rows attach the result without changing their legacy
+String IDs, equality, sorting, selection or action behavior.
 
 Snapshots distinguish collection outcome from positive records. Failed/not-collected/unknown
 attempts emit no current positive records; recovered valid records from a run interrupted by

@@ -129,12 +129,13 @@ store, including case variants and resolved symlink aliases.
 
 ## Good contribution areas
 
-The [Project / Asset Model v1 proposal](PROJECT_ASSET_MODEL_V1.md) defines the next
-identity/evidence contract, producer boundaries and staged migration. It is design intent
-for review, not an implemented common model. Its contract separates collection outcomes,
-positive evidence with explicit provenance references, and assessments. The first migration
-must produce evidence from a real Work input while preserving the existing UI identity;
-the execution boundaries above remain authoritative.
+The [Project / Asset Model v1 contract](PROJECT_ASSET_MODEL_V1.md) separates collection
+outcomes, positive evidence with explicit provenance references, and assessments. Phase 1
+implements pure identity/evidence/snapshot types in `ModoreDomain` and one Work adapter.
+Recorded workspace claims retain their session collection run; inferred project mappings
+have a separate composition run that changes only when a builder input is published.
+Work keeps its legacy IDs, equality and UI behavior. Storage/runtime integration remains
+planned, and the execution boundaries above remain authoritative.
 
 - Verified Korean/Japanese application whitelist entries.
 - False-positive fixtures that contain no personal scan data.
