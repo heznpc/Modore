@@ -378,7 +378,7 @@ final class ModoreTests: XCTestCase {
         """))
 
         XCTAssertEqual(preview.statusText, "먼저 종료할 작업이 있습니다")
-        XCTAssertEqual(preview.estimatedText, "2.0GB")
+        XCTAssertEqual(preview.estimatedText, "2.0 GiB")
         XCTAssertEqual(preview.targets.count, 2)
         XCTAssertFalse(preview.canExecute)
     }
@@ -452,7 +452,7 @@ final class ModoreTests: XCTestCase {
         """))
 
         XCTAssertTrue(measuredReady.estimateMeasured)
-        XCTAssertEqual(measuredReady.estimatedText, "1.0GB")
+        XCTAssertEqual(measuredReady.estimatedText, "1.0 GiB")
     }
 
     func testCleanupPresentationExplainsDeferredMeasurement() {

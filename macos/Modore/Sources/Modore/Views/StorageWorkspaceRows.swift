@@ -5,6 +5,7 @@ struct WorkspaceStorageItemRow: View {
     let item: StorageItem
     let fallbackSymbol: String
     var detail: String?
+    let sizeTextOverride: String?
     let status: String?
     let actionTitle: String?
     let action: () -> Void
@@ -13,6 +14,7 @@ struct WorkspaceStorageItemRow: View {
         item: StorageItem,
         fallbackSymbol: String,
         detail: String? = nil,
+        sizeTextOverride: String? = nil,
         status: String? = nil,
         actionTitle: String? = nil,
         action: @escaping () -> Void = {}
@@ -20,6 +22,7 @@ struct WorkspaceStorageItemRow: View {
         self.item = item
         self.fallbackSymbol = fallbackSymbol
         self.detail = detail
+        self.sizeTextOverride = sizeTextOverride
         self.status = status
         self.actionTitle = actionTitle
         self.action = action
@@ -49,7 +52,7 @@ struct WorkspaceStorageItemRow: View {
                 fallbackSymbol: fallbackSymbol,
                 detail: detailText
             )
-            Text(item.sizeText)
+            Text(sizeTextOverride ?? item.sizeText)
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
@@ -69,7 +72,7 @@ struct WorkspaceStorageItemRow: View {
     }
 
     private func accessibilityText(actionTitle: String?) -> String {
-        [actionTitle, item.label, item.sizeText, status, detailText, item.path]
+        [actionTitle, item.label, sizeTextOverride ?? item.sizeText, status, detailText, item.path]
             .compactMap { $0 }
             .filter { !$0.isEmpty }
             .joined(separator: ", ")

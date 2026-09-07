@@ -3157,7 +3157,7 @@ def test_claude_desktop_index_emits_only_the_metadata_whitelist(tmp_path):
         "tool", "provider", "sessionId", "source", "workspace",
         "workspaceExists", "kind", "sizeBytes", "lastActive",
         "sizeComplete", "lastActiveEpoch", "title", "createdAt", "lastActivityAt", "cwd",
-        "userSelectedFolders",
+        "userSelectedFolders", "artifactSources", "segmentCount",
     }
     assert set(session) == allowed
     encoded = json.dumps(session, ensure_ascii=False)
@@ -3860,10 +3860,14 @@ def test_sessions_is_metadata_only(bind_home):
     디스크 전체를 내용 읽기 하는 것이 된다. 본문은 inspect가 하나씩만
     읽는다."""
     out = scree.build_sessions(bind_home["home"])
-    allowed = {"tool", "source", "workspace", "workspaceExists", "kind",
-               "sizeBytes", "lastActive", "lastActiveEpoch"}
+    required = {"tool", "source", "workspace", "workspaceExists", "kind",
+                "sizeBytes", "lastActive", "lastActiveEpoch"}
+    allowed = required | {"provider", "sessionId", "artifactSources",
+                          "segmentCount"}
     for session in out["sessions"]:
-        assert set(session) == allowed
+        assert required <= set(session) <= allowed
+        if session["kind"] == "session":
+            assert session["segmentCount"] == len(session["artifactSources"])
     # inspect가 내는 본문 키는 어디에도 없어야 한다.
     blob = json.dumps(out, ensure_ascii=False)
     for key in ("turns", "firstUserTurn", "messageCount", "title"):
@@ -3892,6 +3896,170 @@ def test_sessions_returns_everything_by_default(bind_home):
     알면서도 찾을 방법을 주지 않았다."""
     out = scree.build_sessions(bind_home["home"])
     assert len(out["sessions"]) == out["total"]
+
+
+def test_codex_rollout_fragments_are_one_logical_session(tmp_path):
+    session_id = "01a0476f-51b6-70d2-b416-9d5651cd8191"
+    store = tmp_path / ".codex" / "sessions" / "2026" / "09" / "04"
+    older = store / f"rollout-old-{session_id}-a.jsonl"
+    newer = store / f"rollout-new-{session_id}-b.jsonl"
+    for source, cwd in ((older, "/old"), (newer, "/new")):
+        _write(source, _jsonl({
+            "type": "session_meta",
+            "payload": {"session_id": session_id, "cwd": cwd},
+        }))
+    os.utime(older, (100, 100))
+    os.utime(newer, (200, 200))
+
+    payload = scree.build_sessions(tmp_path)
+
+    assert payload["total"] == 1
+    assert payload["artifactTotal"] == 2
+    session = payload["sessions"][0]
+    assert session["sessionId"] == session_id
+    assert session["source"] == str(newer)
+    assert session["workspace"] == "/new"
+    assert session["segmentCount"] == 2
+    assert session["artifactSources"] == [str(newer), str(older)]
+    assert session["sizeBytes"] == newer.stat().st_size + older.stat().st_size
+
+
+def test_logical_session_identity_is_provider_scoped():
+    common = {"kind": "session", "source": "/one", "workspace": "/w",
+              "size_bytes": 1, "last_active": 1, "session_id": "shared"}
+    grouped = scree._group_logical_sessions([
+        {**common, "tool": "Codex", "provider": "codex"},
+        {**common, "source": "/two", "tool": "Other", "provider": "other"},
+    ])
+
+    assert len(grouped) == 2
+
+
+def test_codex_subagent_inherits_lineage_without_merging_into_parent(tmp_path):
+    parent_id = "01a0476f-51b6-70d2-b416-9d5651cd8191"
+    child_id = "01a060f9-738e-7603-943e-b3a26ea04c10"
+    store = tmp_path / ".codex" / "sessions" / "2026" / "09" / "04"
+    for task_id in (parent_id, child_id):
+        _write(store / f"rollout-{task_id}.jsonl", _jsonl({
+            "type": "session_meta",
+            "payload": {"id": task_id, "session_id": parent_id,
+                        "cwd": "/work"},
+        }))
+
+    payload = scree.build_sessions(tmp_path)
+
+    assert payload["total"] == 2
+    assert {row["sessionId"] for row in payload["sessions"]} == {
+        parent_id, child_id}
+    assert all(row["segmentCount"] == 1 for row in payload["sessions"])
+
+
+def test_current_session_uses_context_and_validates_the_jsonl_header(tmp_path):
+    session_id = "01a0476f-51b6-70d2-b416-9d5651cd8191"
+    store = tmp_path / ".codex" / "sessions" / "2026" / "09" / "04"
+    valid = store / f"rollout-{session_id}-one.jsonl"
+    mismatched = store / f"rollout-{session_id}-wrong.jsonl"
+    _write(valid, _jsonl({
+        "type": "session_meta",
+        "payload": {"id": session_id, "cwd": "/work"},
+    }) + "this trailing body is deliberately not JSON\n")
+    _write(mismatched, _jsonl({
+        "type": "session_meta",
+        "payload": {"id": "00000000-0000-0000-0000-000000000000",
+                    "cwd": "/wrong"},
+    }))
+
+    payload = scree.build_current_session(
+        tmp_path,
+        environ={"CODEX_THREAD_ID": session_id,
+                 "CODEX_SESSION_ID": session_id},
+    )
+
+    assert payload["found"] is True
+    assert payload["sessionId"] == session_id
+    assert payload["source"] == str(valid)
+    assert payload["segmentCount"] == 1
+    assert payload["rejectedCandidates"] == 1
+    assert payload["artifactCoverageComplete"] is False
+    assert payload["metadataOnly"] is True
+
+
+def test_current_session_fails_closed_without_consistent_context(tmp_path):
+    absent = scree.build_current_session(tmp_path, environ={})
+    conflict = scree.build_current_session(tmp_path, environ={
+        "CODEX_THREAD_ID": "01a0476f-51b6-70d2-b416-9d5651cd8191",
+        "CODEX_SESSION_ID": "11a0476f-51b6-70d2-b416-9d5651cd8191",
+    })
+
+    assert absent["reason"] == "codex-context-unavailable"
+    assert conflict["reason"] == "codex-context-conflict"
+
+
+def test_inspect_many_joins_codex_fragments_and_dedupes_replayed_events(tmp_path):
+    session_id = "01a0476f-51b6-70d2-b416-9d5651cd8191"
+    store = tmp_path / ".codex" / "sessions" / "2026" / "09" / "04"
+    older = store / f"rollout-old-{session_id}.jsonl"
+    newer = store / f"rollout-new-{session_id}.jsonl"
+    meta = {"type": "session_meta", "payload": {
+        "id": session_id, "cwd": "/work"}}
+    first = {"timestamp": "2026-09-04T00:00:00Z",
+             "type": "response_item", "payload": {
+                 "type": "message", "id": "event-one", "role": "user",
+                 "content": [{"type": "input_text", "text": "first turn"}]}}
+    second = {"timestamp": "2026-09-04T00:01:00Z",
+              "type": "response_item", "payload": {
+                  "type": "message", "id": "event-two", "role": "assistant",
+                  "content": [{"type": "output_text", "text": "second turn"}]}}
+    _write(older, _jsonl(meta, first))
+    _write(newer, _jsonl(meta, first, second))
+
+    payload = scree.build_inspect_many([newer, older], tmp_path)
+
+    assert payload["status"] == "ok"
+    assert payload["sessionId"] == session_id
+    assert payload["messageCount"] == 2
+    assert [turn["text"] for turn in payload["turns"]] == [
+        "first turn", "second turn"]
+
+
+def test_inspect_many_rejects_different_codex_task_ids(tmp_path):
+    store = tmp_path / ".codex" / "sessions"
+    sources = []
+    for index in range(2):
+        source = store / f"rollout-{index}.jsonl"
+        _write(source, _jsonl({"type": "session_meta", "payload": {
+            "id": f"task-{index}", "cwd": "/work"}}))
+        sources.append(source)
+
+    with pytest.raises(ValueError, match="do not belong to one session"):
+        scree.build_inspect_many(sources, tmp_path)
+
+
+def test_inspect_many_cli_reads_an_owned_source_list(tmp_path, capsys):
+    session_id = "01a0476f-51b6-70d2-b416-9d5651cd8191"
+    store = tmp_path / ".codex" / "sessions"
+    sources = []
+    for index, text in enumerate(("first", "second")):
+        source = store / f"rollout-{index}.jsonl"
+        _write(source, _jsonl(
+            {"type": "session_meta", "payload": {
+                "id": session_id, "cwd": "/work"}},
+            {"type": "response_item", "payload": {
+                "type": "message", "id": f"event-{index}", "role": "user",
+                "content": [{"type": "input_text", "text": text}]}}))
+        sources.append(source)
+    listing = tmp_path / "sources.json"
+    listing.write_text(
+        json.dumps([str(source) for source in reversed(sources)]),
+        encoding="utf-8")
+
+    assert scree.main([
+        "inspect-many", "--sources", str(listing),
+        "--home", str(tmp_path),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sessionId"] == session_id
+    assert [turn["text"] for turn in payload["turns"]] == ["first", "second"]
 
 
 def test_claude_discovery_bounds_fds_for_300_sibling_buckets(tmp_path):
@@ -4226,6 +4394,38 @@ def test_search_finds_the_phrase_across_sessions(tmp_path):
     assert out["matches"][0]["isUser"] is True
 
 
+def test_search_scans_every_fragment_but_counts_one_codex_session(tmp_path):
+    session_id = "01a0476f-51b6-70d2-b416-9d5651cd8191"
+    store = tmp_path / ".codex" / "sessions" / "2026" / "09" / "04"
+    sources = [
+        store / f"rollout-{session_id}-one.jsonl",
+        store / f"rollout-{session_id}-two.jsonl",
+    ]
+    message = {
+        "timestamp": "2026-09-04T00:00:00Z",
+        "type": "response_item",
+        "payload": {"type": "message", "id": "same-event",
+                    "role": "user", "content": [{
+                        "type": "input_text", "text": "logical fragment needle"}]},
+    }
+    for source in sources:
+        _write(source, _jsonl(
+            {"type": "session_meta", "payload": {
+                "id": session_id, "cwd": "/work"}},
+            message,
+        ))
+
+    out = scree.build_search("logical fragment needle", tmp_path)
+
+    assert out["totalSessions"] == 1
+    assert out["scannedSessions"] == 1
+    assert out["totalArtifacts"] == 2
+    assert out["scannedArtifacts"] == 2
+    assert len(out["matches"]) == 1
+    assert out["matches"][0]["sessionId"] == session_id
+    assert out["matches"][0]["source"] in {str(source) for source in sources}
+
+
 def test_search_is_case_insensitive_and_whitespace_normalised(tmp_path):
     _stored_session(tmp_path, "a", ("user", "Xcode   DerivedData 지움"))
     assert scree.build_search("xcode derivedData", tmp_path)["matches"]
@@ -4250,6 +4450,22 @@ def test_search_reports_coverage_rather_than_implying_it_looked_everywhere(tmp_p
     timed = scree.build_search("찾는말", tmp_path, budget_seconds=-1)
     assert timed["coverage"] == "truncated"
     assert timed["truncatedReason"] == "time"
+
+
+def test_search_first_stops_after_newest_hit_and_withholds_global_coverage(tmp_path):
+    for index in range(3):
+        source = _stored_session(
+            tmp_path, f"first-{index}", ("user", f"first match {index}"))
+        os.utime(source, (100 + index, 100 + index))
+
+    out = scree.build_search("first match", tmp_path, first=True)
+
+    assert len(out["matches"]) == 1
+    assert out["scannedSessions"] == 1
+    assert out["totalSessions"] == 3
+    assert out["coverage"] == "truncated"
+    assert out["truncatedReason"] == "first-match"
+    assert out["definitive"] is False
 
 
 def test_search_counts_sessions_it_could_not_read(tmp_path):
@@ -5013,6 +5229,44 @@ def test_evidence_reads_modore_receipts_as_their_own_kind(tmp_path):
     assert receipts[0]["estimatedKB"] == 3_400_000
     assert receipts[0]["reclaimedKB"] == 3_200_000
     assert receipts[0]["physicalDeltaKB"] == 3_100_000
+    assert receipts[0]["physicalDeltaBytes"] == 3_100_000 * 1024
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("-1024", -1024), ("0", 0), ("1024", 1024), ("", None),
+    ("invalid", None), ("9223372036854775808", None), ("-9223372036854775809", None),
+])
+def test_receipt_byte_accounting_preserves_sign_and_unknown(tmp_path, raw, expected):
+    directory = tmp_path / "Library" / "Application Support" / "Modore" / "cleanup-receipts"
+    directory.mkdir(parents=True)
+    (directory / "sample.tsv").write_text(
+        "version\t1\ntimestamp\t2026-09-07T00:00:00Z\nstatus\tcomplete\n"
+        "accountingVersion\t2\nphysicalDeltaKB\t777\n"
+        f"physicalDeltaBytes\t{raw}\nreclaimedBytes\t\nreclaimedKB\t888\n", encoding="utf-8"
+    )
+    receipts, status = scree._read_cleanup_receipts_bounded(tmp_path)
+    assert status == "ok"
+    assert receipts[0]["physicalDeltaBytes"] == expected
+    assert receipts[0]["reclaimedBytes"] is None
+
+
+def test_legacy_receipt_zero_does_not_prove_an_unchanged_volume():
+    assert scree._receipt_bytes({"physicalDeltaKB": "0"}, "physicalDelta", signed=True) is None
+    assert scree._receipt_bytes({"physicalDeltaKB": "-2"}, "physicalDelta", signed=True) == -2048
+    assert scree._receipt_bytes({"physicalDeltaKB": "2"}, "physicalDelta", signed=True) == 2048
+
+
+@pytest.mark.parametrize("version", ["invalid", "", "99", "9223372036854775808"])
+def test_receipt_unknown_accounting_version_never_reenables_legacy_fallback(tmp_path, version):
+    directory = tmp_path / "Library" / "Application Support" / "Modore" / "cleanup-receipts"
+    directory.mkdir(parents=True)
+    (directory / "sample.tsv").write_text(
+        "version\t1\ntimestamp\t2026-09-07T00:00:00Z\nstatus\tcomplete\n"
+        f"accountingVersion\t{version}\nphysicalDeltaKB\t777\nphysicalDeltaBytes\t1024\n"
+    )
+    receipt = scree.read_cleanup_receipts(tmp_path)[0]
+    assert receipt["accountingVersion"] is not None
+    assert receipt["physicalDeltaBytes"] is None
 
 
 def test_evidence_reads_free_space_observations_without_joining_them(tmp_path):
