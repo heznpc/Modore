@@ -131,7 +131,10 @@ store, including case variants and resolved symlink aliases.
 
 The [Project / Asset Model v1 proposal](PROJECT_ASSET_MODEL_V1.md) defines the next
 identity/evidence contract, producer boundaries and staged migration. It is design intent
-for review, not an implemented common model; the execution boundaries above remain authoritative.
+for review, not an implemented common model. Its contract separates collection outcomes,
+positive evidence with explicit provenance references, and assessments. The first migration
+must produce evidence from a real Work input while preserving the existing UI identity;
+the execution boundaries above remain authoritative.
 
 - Verified Korean/Japanese application whitelist entries.
 - False-positive fixtures that contain no personal scan data.

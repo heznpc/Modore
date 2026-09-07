@@ -26,8 +26,9 @@ Currently implemented:
   it is not bundled and has no Swift caller.
 - `RecoveryHistory` is display-only and contains no approval token.
 
-The first implementation adds identity/evidence value types and adapts Work without
-changing its rows, ordering, selection, counts, Git labels or action behavior. Storage
+The first implementation adds identity/provenance/coverage value types and one Work
+producer adapter that emits actual evidence from session workspace inputs. It preserves
+Work's rows, ordering, selection, counts, Git labels and action behavior. Storage
 attribution is a subsequent change. No graph database, collector rewrite, parser split,
 executor change or persistent content index belongs in that first implementation.
 
@@ -58,8 +59,19 @@ public enum EvidenceSource: String, Codable, Sendable {
     case fileAccess, sessionBackup, cleanupReceipt, recoveryHistory
 }
 
-public enum ObservationState: String, Codable, Sendable {
-    case observed, inferred, unknown, failed, notCollected
+public struct EvidenceReference: Hashable, Codable, Sendable {
+    public let source: EvidenceSource
+    public let runID: String
+    public let recordID: String
+}
+
+// Positive support for a stated claim; never a collection result.
+public enum EvidenceBasis: String, Codable, Sendable {
+    case observed, inferred, recordedClaim, reference
+}
+
+public enum CollectionOutcome: String, Codable, Sendable {
+    case complete, partial, failed, notCollected, unknown
 }
 
 public enum CoverageState: String, Codable, Sendable {
@@ -68,6 +80,7 @@ public enum CoverageState: String, Codable, Sendable {
 
 public struct Coverage: Equatable, Codable, Sendable {
     public let state: CoverageState
+    // Opaque display descriptions. Consumers must not parse these strings.
     public let scope: String
     public let limitations: [String]
 }
@@ -76,17 +89,37 @@ public enum EvidenceMethod: String, Codable, Sendable {
     case recordedWorkspace, knownRootAncestry, conventionalWorktreePath
     case gitRegistry, pathAncestry, projectManifest
     case processWorkingDirectory, processOpenFile
-    case transcriptRead, transcriptWrite, transcriptShellReference
+    case transcriptReadInvocation, transcriptWriteInvocation, transcriptShellReference
     case archiveHashVerification, cleanupReceipt, recoveryCheckpoint
 }
 
-public struct AssetEvidence: Equatable, Codable, Sendable {
-    public let source: EvidenceSource
-    public let observationID: String
+public struct EvidenceRecord: Equatable, Codable, Sendable {
+    public let reference: EvidenceReference
     public let method: EvidenceMethod
+    public let basis: EvidenceBasis
     public let observedAt: Date?
-    public let state: ObservationState
     public let coverage: Coverage
+}
+
+public enum CollectionFailureCode: String, Codable, Sendable {
+    case unavailable, unreadable, malformed, timedOut, cancelled, unsupported
+}
+
+public struct ProducerFailure: Equatable, Codable, Sendable {
+    public let code: CollectionFailureCode
+    public let recordID: String?
+    public let detail: String // Display only; never an assessment input.
+}
+
+public struct ProducerSnapshot<Record: Codable & Sendable>: Codable, Sendable {
+    public let producer: EvidenceSource
+    public let runID: String
+    public let schemaVersion: Int
+    public let observedAt: Date?
+    public let outcome: CollectionOutcome
+    public let coverage: Coverage
+    public let records: [Record]
+    public let failures: [ProducerFailure]
 }
 ```
 
@@ -96,8 +129,13 @@ Namespace values are adapter-owned constants, not arbitrary producer-controlled 
 Initial namespaces distinguish filesystem paths, logical provider sessions and physical
 transcript artifacts. A logical session key includes its provider; artifact keys cannot
 reuse that session key. File replacement at the same path is a new observation, even
-when its display identity remains the same. Observation IDs identify a producer run and
-record, never a fresh UUID generated every time the same snapshot is rendered.
+when its display identity remains the same. An `EvidenceReference` is the explicit tuple
+`source + runID + recordID`: run IDs identify collection attempts; record IDs are unique
+within that producer run. References remain stable when a snapshot is rendered again.
+New collection attempts receive new run IDs even if their values happen to match. Validate
+nonempty IDs and require every emitted evidence reference to match its enclosing snapshot's
+producer/run. Assessment inputs retain these exact references, not display strings or
+an ambiguous combined observation ID. A reference identifies evidence, not an executable target.
 
 Pure domain types accept already interpreted values. Filesystem resolution, Git commands,
 remote parsing and case-sensitivity probes stay in OS adapters. Repository remotes are
@@ -111,6 +149,30 @@ canonical root or use it as an executor target.
 
 ## Evidence and relation semantics
 
+Keep three layers separate, followed by the existing action boundary:
+
+```text
+Collection outcome: complete / partial / failed / notCollected / unknown
+    → Evidence: observed / inferred / recordedClaim / reference
+    → Assessment: protection / rebuildability / cleanup / continuity
+    → Action planning + independent revalidation
+```
+
+`EvidenceRecord` contains only positive factual support and its provenance. It has no
+failed, unknown or not-collected case. `CollectionOutcome`, coverage and producer failures
+describe collection, not relations. Unknown attribution is an unresolved attribution result
+in app composition, never `belongsTo(unknown)` or a membership supported only by a failure.
+The typed observation containing an evidence record must state its subject and claim;
+provenance by itself is not a fact about arbitrary endpoints.
+
+`EvidenceBasis` qualifies that claim, not the certainty of the collection machinery.
+For example, a transcript Read invocation uses `transcriptReadInvocation + recordedClaim`:
+the record supports “this session recorded a Read invocation for this path,” not “the OS
+successfully read this file.” A shell path mention uses `transcriptShellReference + reference`.
+Adapters must validate method/basis combinations; neither can be silently promoted to
+direct OS access evidence. `recordedWorkspace` supports a provider-recorded workspace claim;
+ancestry and conventional worktree mapping are separate inferred claims.
+
 `observedAt` is the producer's observation time. Missing or ambiguous legacy timestamps
 remain nil; adapter load time must not impersonate observation time. Collection time,
 provider event time and source-file modification time are distinct. Freshness is assessed
@@ -122,8 +184,21 @@ Partial scans may support positive observations but cannot prove absence. Do not
 timeouts, omitted rows, unknown roots or empty failed results into “unused” or “safe”.
 Conflicting evidence is retained for assessment rather than overwritten by latest arrival.
 
+`Coverage.scope` is an opaque, display-only explanation, and `limitations` are display-only
+diagnostics. Consumers must not parse, compare labels or search these strings to choose a
+verdict. A producer that needs machine-readable scope adds its own typed endpoint/scope
+contract alongside coverage. This is required before proving absence: `.complete` plus a
+scope string alone cannot establish that the relevant stores, paths or time range were
+exhaustively examined. Use typed outcome/failure codes for control flow; add typed limit
+fields when a consumer needs them, rather than interpreting diagnostic text.
+
 Phase 2 introduces a typed `ProjectAssetMembership` containing one asset, one project
-and a nonempty evidence collection. This is the first `belongsTo` relation. Do not add
+and positive evidence specifically supporting those endpoints and that membership claim.
+Its validated constructor requires nonempty relevant evidence, not just an arbitrary
+nonempty array: unrelated observations or a shell reference alone cannot establish ownership.
+Without that support, the composer retains unresolved attribution and creates no membership.
+This is the first shared `belongsTo` relation; Phase 1 already emits a scoped Work observation
+from the existing workspace input without introducing a general relationship model. Do not add
 other relation cases until a producer and a consumer exist. The reserved vocabulary is:
 
 | Relation | Direction and claim |
@@ -151,18 +226,39 @@ established root; ambiguous, missing or symlink-dependent matches remain unresol
 
 `ProtectionAssessment`, `RebuildAssessment`, `CleanupAssessment` and
 `ContinuityAssessment` belong above these facts. Each assessment names its policy/version,
-input observations, evaluation time, and reasons, with unknown/incomplete/conflicting
-outcomes. None can construct an approval token, executable plan or validated target.
+exact input `EvidenceReference` values, evaluation time, and typed outcome/reasons,
+including unknown/incomplete/conflicting outcomes. None can construct an approval token,
+executable plan or validated target.
 
 ## Producer contract
 
 Keep producer implementations and composition in app `Services/`; put only pure schema
-and semantics in `shared/ModoreDomain`. The first Work adapter takes the existing inputs
-to `WorkProjectBuilder` and associates their identity with the evidence actually supplied.
-It does not request another scan or invent missing timestamps.
+and semantics in `shared/ModoreDomain`. The first Work adapter consumes an actual
+`SessionIndexEntry` and the existing builder's resolved project key. It emits a typed Work
+workspace observation with the logical session identity, recorded workspace, project identity
+and `EvidenceRecord` using `recordedWorkspace + recordedClaim`. If the builder maps that
+workspace to an ancestor or conventional worktree root, represent that mapping separately
+as inferred evidence rather than asserting the session recorded that root. Reuse the
+builder's result and matching rule, without changing its grouping algorithm. Missing
+workspace produces no membership evidence and stays in the existing unassigned bucket.
 
-Subsequent adapters return immutable snapshots with a producer/run identifier, schema
-version, observation time (when known), coverage, records and path-specific failures.
+Phase 1 uses `ProducerSnapshot<WorkWorkspaceObservation>` at this adapter boundary.
+The existing collection invocation supplies a run ID that survives re-adaptation/rendering;
+the adapter derives record IDs deterministically within that run. It does not request
+another scan or invent missing timestamps. Observation payloads and adapter code stay in
+the app; only the envelope and pure value types live in `ModoreDomain`.
+
+Snapshots distinguish collection outcome from positive records. Failed/not-collected/unknown
+attempts emit no current positive records; recovered valid records from a run interrupted by
+failure require `.partial` and explicit coverage/failures. `.complete` means the producer
+finished its declared collection, not that every possible product claim has complete coverage.
+Record coverage may still be partial, for example when a metadata listing completes but
+content was bounded. Failures refer to affected input record IDs when known and do not
+become `EvidenceReference` values. Old successful records remain in their original snapshot.
+
+Subsequent producers/adapters use the same immutable envelope, with their own typed payloads
+and scope contracts where needed. Phase 2 and Phase 3 require producer/DTO contract changes,
+not merely adapters over today's lossy or incomplete rows.
 The application owns cancellation, time/output limits and publication of a consistent
 snapshot. Late output from an earlier run cannot overwrite a newer observation. Existing
 facts kept after a failed refresh retain their original time and show the refresh failure.
@@ -170,18 +266,30 @@ facts kept after a failed refresh retain their original time and show the refres
 | Producer | Adaptation | Required limits/unknowns |
 | --- | --- | --- |
 | scree + Mothball | Work identities and membership evidence | root caps, scan failures, conventional worktree inference |
-| storage scan | path asset, measured occupancy, project membership | invalid size/status, unknown ownership, overlapping paths |
-| process observation | runtime usage evidence | current CPU row alone cannot identify a project; bounded path probes required |
+| storage scan | preserve raw measurement validity before DTO coercion, then compose assets/membership | invalid size/status, unknown ownership, overlapping paths |
+| process observation | extend producer and DTO with process instance identity, then runtime evidence | PID alone is insufficient; bounded start-identity/path probes required |
 | fileaccess | session/path touch evidence | propagate store failures, truncation, omitted IDs/rows, budget and timestamp limits |
 | backup verification | backed-up artifact coverage | selected transcript never means all logical-session fragments |
 | receipts + recovery history | historical outcomes | no retrospective token/plan reconstruction; unknown volume delta stays unknown |
 
-Storage adapters convert legacy GiB only at the boundary using checked byte conversion;
-they must inspect original measurement validity, since the current DTO can coerce malformed
-input to zero. Occupancy uses nonnegative optional Int64 bytes, while volume change uses
+Phase 2 must first extend the storage decoder/DTO to retain raw measurement validity before
+coercion. The current `StorageItem` has already turned malformed/non-finite `sizeGB` into
+zero; an adapter downstream cannot recover whether that zero was measured. Preserve a typed
+measurement state and optional checked byte value while keeping legacy display fields
+compatible. Perform conversion where raw values are still available, distinguishing missing,
+malformed, non-finite, overflow and timed-out values from a valid measured zero. Do not
+infer validity from the coerced DTO value or a default `measureStatus`.
+Occupancy uses nonnegative optional Int64 bytes, while volume change uses
 signed optional Int64 bytes. Estimated/measured and partial/complete remain distinct.
 Do not sum parent and child assets twice or infer a project's reclaimable total from sizes
 alone. Keep old storage-history serialization until an explicit versioned migration exists.
+
+Phase 3 must extend the observation producer and `ObservedProcessRow` contract with a
+process start identity/time and collection context before emitting `usedBy`. Today's PID
+and transient row UUID cannot distinguish reused PIDs. Collect start identity and bounded
+cwd/open-file evidence for the same process instance, rechecking instance identity around
+the probes. Missing/denied start data or an instance change yields unresolved runtime
+attribution; never synthesize a start time from collection time or treat a UUID as OS identity.
 
 Before fileaccess ships in the app, add its bounded Swift caller, bundled runtime allowlist
 entry, transitive dependency/payload audit, decoder and failure-path tests together. Read
@@ -190,17 +298,31 @@ private owner data; use synthetic paths and transcripts in committed fixtures.
 
 ## Migration and acceptance gates
 
-1. **Identity/evidence contract.** Add pure types and unit tests for invalid identity,
-   serialization and unknown/partial observations. Adapt `WorkProject` with an optional
-   identity for the unassigned case, preserving its existing String UI ID and initializer
-   compatibility. Keep the builder algorithm and all action inputs unchanged. Run existing
-   WorkProject/GitAssessmentState/selection tests and inspect the Work UI with the built app.
-2. **Storage membership.** Introduce typed membership and a read-only composer. Verify
-   nested roots, same-prefix sibling paths, unassigned assets, ambiguous ownership,
+1. **Identity/evidence contract.** Add pure identity/provenance/coverage types and the
+   snapshot envelope, then one Work workspace producer adapter. Test real `SessionIndexEntry`
+   fixtures through that adapter: a recorded workspace creates the expected positive
+   evidence and exact source/run/record reference; inferred ancestor mapping remains
+   distinct; an empty workspace creates none. Verify repeat adaptation preserves references,
+   a new run changes provenance, and missing timestamps remain unknown. Test partial/failed/
+   not-collected snapshots without manufacturing evidence from collection failures.
+   Check invalid identity, serialization and snapshot/reference consistency. Adapt
+   `WorkProject` with an optional identity for the unassigned case, preserving its String UI ID and initializer
+   compatibility. Keep the builder algorithm and all action inputs unchanged. Assert
+   identical IDs, row equality, ordering, selection and UI output for the same fixtures;
+   run existing WorkProject/GitAssessmentState/selection tests and inspect the Work UI with
+   the built app. Unused evidence scaffolding does not satisfy this gate. Storage is excluded.
+2. **Storage membership.** First preserve validity in the raw decoder/DTO and test valid
+   zero versus missing, malformed, non-finite, overflow and timed-out measurements. Then
+   introduce validated typed membership and a read-only composer; no supporting evidence
+   means unresolved attribution. Verify nested roots, same-prefix sibling paths,
+   unassigned assets, ambiguous ownership,
    symlinks, partial scans and overlap accounting. Work and Storage reference the same
    project key. UI explains attribution; cleanup still goes through its current preview.
-3. **Runtime and touches.** Reuse fileaccess and add bounded runtime path evidence. Verify
-   PID reuse, stale observations, denied probes and partial transcript coverage. Demonstrate
+3. **Runtime and touches.** Extend the process producer/DTO with start identity and collection
+   context, and verify that probes refer to that same instance. Reuse fileaccess and add
+   bounded runtime path evidence. Test PID reuse during probing, missing start identity,
+   stale observations, denied probes and partial transcript coverage. Verify transcript
+   invocation/reference evidence never becomes successful OS access evidence. Demonstrate
    a synthetic project's observed session/path relationship in the native app.
 4. **Continuity.** Attach verified backup coverage and display-only recovery outcomes.
    Demonstrate restart rendering without approval resurrection; distinguish one fragment
