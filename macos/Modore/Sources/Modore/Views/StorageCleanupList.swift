@@ -249,9 +249,9 @@ struct StorageEvidenceTimelineItem: Identifiable {
 
     static func contextItems(from result: ScreeEvidenceResult) -> [Self] {
         let receipts = result.modoreCleanupReceipts.enumerated().map { index, receipt in
-            let estimate = receipt.estimatedKB.map(sizeText(kilobytes:))
-            let reclaimed = receipt.reclaimedKB.map(sizeText(kilobytes:))
-            let physicalDelta = receipt.physicalDeltaKB.map(sizeText(kilobytes:))
+            let estimate = StorageBytes.text(receipt.targetEstimateBytes)
+            let reclaimed = StorageBytes.text(receipt.targetReductionBytes)
+            let physicalDelta = StorageBytes.changeText(receipt.volumeChangeBytes)
             return Self(
                 id: "receipt|\(receipt.at)|\(receipt.recipeId)|\(index)",
                 occurredAt: isoDate(receipt.at),
@@ -260,9 +260,9 @@ struct StorageEvidenceTimelineItem: Identifiable {
                 title: receipt.label.isEmpty ? receipt.recipeId : receipt.label,
                 detail: [
                     cleanupStatusText(receipt.status),
-                    reclaimed.map { "회수 기록 \($0)" },
-                    physicalDelta.map { "가용 공간 변화 \($0)" },
-                    estimate.map { "사전 추정 \($0)" },
+                    "대상 점유 감소 \(reclaimed)",
+                    "여유 공간 순변화 \(physicalDelta)",
+                    "사전 추정 \(estimate)",
                 ]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
             )
@@ -310,10 +310,7 @@ struct StorageEvidenceTimelineItem: Identifiable {
     }
 
     private static func sizeText(kilobytes: Int64) -> String {
-        ByteCountFormatter.string(
-            fromByteCount: max(0, kilobytes) * 1_024,
-            countStyle: .file
-        )
+        StorageBytes.text(StorageBytes.fromKiB(kilobytes))
     }
 
     private static func cleanupStatusText(_ status: String) -> String? {

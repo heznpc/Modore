@@ -10703,6 +10703,27 @@ def _session_evidence(source: Path, needle: str, *,
     return (mentions, invocations, status, omissions)
 
 
+def _receipt_integer(value: str, *, signed: bool = False) -> Optional[int]:
+    if not re.fullmatch(r"-?[0-9]+" if signed else r"[0-9]+", value) or len(value) > 20:
+        return None
+    number = int(value)
+    return number if -(2**63) <= number < 2**63 else None
+
+
+def _receipt_bytes(fields: dict[str, str], key: str, *, signed: bool = False) -> Optional[int]:
+    if fields.get("accountingVersion") == "2":
+        return _receipt_integer(fields.get(key + "Bytes", ""), signed=signed)
+    if fields.get("accountingVersion") not in (None, "1"):
+        return None
+    value = _receipt_integer(fields.get(key + "KB", ""), signed=signed)
+    # Old writers clamped decreases and failed readings to zero. Preserve the
+    # old field, but do not claim that its zero proves an unchanged volume.
+    if value is None or (signed and value == 0):
+        return None
+    number = value * 1024
+    return number if -(2**63) <= number < 2**63 else None
+
+
 def _read_cleanup_receipts_bounded(
         home: Path, *, limit: int = 50,
         deadline: Optional[float] = None,
@@ -10779,12 +10800,13 @@ def _read_cleanup_receipts_bounded(
             "recipeId": fields.get("recipeId", ""),
             "label": fields.get("label", ""),
             "status": fields.get("status", ""),
-            "estimatedKB": int(fields["estimatedKB"])
-                           if fields.get("estimatedKB", "").isdigit() else None,
-            "reclaimedKB": int(fields["reclaimedKB"])
-                         if fields.get("reclaimedKB", "").isdigit() else None,
-            "physicalDeltaKB": int(fields["physicalDeltaKB"])
-                             if fields.get("physicalDeltaKB", "").isdigit() else None,
+            "estimatedKB": _receipt_integer(fields.get("estimatedKB", "")),
+            "reclaimedKB": _receipt_integer(fields.get("reclaimedKB", "")),
+            "physicalDeltaKB": _receipt_integer(fields.get("physicalDeltaKB", ""), signed=True),
+            "accountingVersion": _receipt_integer(fields.get("accountingVersion", "1")) or 0,
+            "estimatedBytes": _receipt_bytes(fields, "estimated"),
+            "reclaimedBytes": _receipt_bytes(fields, "reclaimed"),
+            "physicalDeltaBytes": _receipt_bytes(fields, "physicalDelta", signed=True),
         })
     return (receipts, "truncated" if truncated else "ok")
 

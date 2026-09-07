@@ -5229,6 +5229,44 @@ def test_evidence_reads_modore_receipts_as_their_own_kind(tmp_path):
     assert receipts[0]["estimatedKB"] == 3_400_000
     assert receipts[0]["reclaimedKB"] == 3_200_000
     assert receipts[0]["physicalDeltaKB"] == 3_100_000
+    assert receipts[0]["physicalDeltaBytes"] == 3_100_000 * 1024
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("-1024", -1024), ("0", 0), ("1024", 1024), ("", None),
+    ("invalid", None), ("9223372036854775808", None), ("-9223372036854775809", None),
+])
+def test_receipt_byte_accounting_preserves_sign_and_unknown(tmp_path, raw, expected):
+    directory = tmp_path / "Library" / "Application Support" / "Modore" / "cleanup-receipts"
+    directory.mkdir(parents=True)
+    (directory / "sample.tsv").write_text(
+        "version\t1\ntimestamp\t2026-09-07T00:00:00Z\nstatus\tcomplete\n"
+        "accountingVersion\t2\nphysicalDeltaKB\t777\n"
+        f"physicalDeltaBytes\t{raw}\nreclaimedBytes\t\nreclaimedKB\t888\n", encoding="utf-8"
+    )
+    receipts, status = scree._read_cleanup_receipts_bounded(tmp_path)
+    assert status == "ok"
+    assert receipts[0]["physicalDeltaBytes"] == expected
+    assert receipts[0]["reclaimedBytes"] is None
+
+
+def test_legacy_receipt_zero_does_not_prove_an_unchanged_volume():
+    assert scree._receipt_bytes({"physicalDeltaKB": "0"}, "physicalDelta", signed=True) is None
+    assert scree._receipt_bytes({"physicalDeltaKB": "-2"}, "physicalDelta", signed=True) == -2048
+    assert scree._receipt_bytes({"physicalDeltaKB": "2"}, "physicalDelta", signed=True) == 2048
+
+
+@pytest.mark.parametrize("version", ["invalid", "", "99", "9223372036854775808"])
+def test_receipt_unknown_accounting_version_never_reenables_legacy_fallback(tmp_path, version):
+    directory = tmp_path / "Library" / "Application Support" / "Modore" / "cleanup-receipts"
+    directory.mkdir(parents=True)
+    (directory / "sample.tsv").write_text(
+        "version\t1\ntimestamp\t2026-09-07T00:00:00Z\nstatus\tcomplete\n"
+        f"accountingVersion\t{version}\nphysicalDeltaKB\t777\nphysicalDeltaBytes\t1024\n"
+    )
+    receipt = scree.read_cleanup_receipts(tmp_path)[0]
+    assert receipt["accountingVersion"] is not None
+    assert receipt["physicalDeltaBytes"] is None
 
 
 def test_evidence_reads_free_space_observations_without_joining_them(tmp_path):

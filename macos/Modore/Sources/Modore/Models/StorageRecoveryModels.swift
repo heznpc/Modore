@@ -61,31 +61,31 @@ struct CleanupRecoveryPlan: Identifiable {
 
     let id: UUID
     let createdAt: Date
-    let baselineFreeGB: Double
-    let desiredFreeGB: Double
+    let baselineFreeBytes: Int64
+    let requestedGainBytes: Int64
     let entries: [CleanupPlanEntry]
 
     init(
-        id: UUID = UUID(),
-        createdAt: Date = Date(),
-        baselineFreeGB: Double,
-        desiredFreeGB: Double,
+        id: UUID = UUID(), createdAt: Date = Date(),
+        baselineFreeBytes: Int64, requestedGainBytes: Int64,
         entries: [CleanupPlanEntry]
     ) {
         self.id = id
         self.createdAt = createdAt
-        self.baselineFreeGB = baselineFreeGB
-        self.desiredFreeGB = desiredFreeGB
+        self.baselineFreeBytes = baselineFreeBytes
+        self.requestedGainBytes = requestedGainBytes
         self.entries = entries
     }
 
-    var requestedGainGB: Double { max(0, desiredFreeGB - baselineFreeGB) }
+    var desiredFreeBytes: Int64? { StorageBytes.adding(baselineFreeBytes, requestedGainBytes) }
     var readyEntries: [CleanupPlanEntry] { entries.filter { $0.preview.canExecute } }
     var blockedEntries: [CleanupPlanEntry] { entries.filter { !$0.preview.canExecute } }
-    var estimatedKB: Int64 {
-        readyEntries.reduce(0) { $0 + max(0, $1.preview.estimatedKB) }
+    var estimatedBytes: Int64? {
+        readyEntries.reduce(Optional(Int64(0))) { total, entry in
+            guard let total, let bytes = entry.preview.estimatedBytes else { return nil }
+            return StorageBytes.adding(total, bytes)
+        }
     }
-    var estimatedGB: Double { Double(estimatedKB) / 1_048_576 }
     var earliestApprovalExpiry: Date? {
         let expiries = readyEntries.compactMap(\.preview.approvalExpiresAt)
         guard expiries.count == readyEntries.count else { return nil }
@@ -94,7 +94,7 @@ struct CleanupRecoveryPlan: Identifiable {
     var canExecute: Bool { canExecute(at: Date()) }
 
     func canExecute(at date: Date) -> Bool {
-        !readyEntries.isEmpty && readyEntries.allSatisfy {
+        requestedGainBytes > 0 && desiredFreeBytes != nil && !readyEntries.isEmpty && readyEntries.allSatisfy {
             $0.preview.approvalIsFresh(
                 at: date,
                 minimumRemaining: Self.minimumApprovalValidity
@@ -128,8 +128,8 @@ struct CleanupRecoveryItemResult: Identifiable {
     let requestTarget: String
     let label: String
     let status: String
-    let reclaimedKB: Int64
-    let physicalDeltaKB: Int64
+    let reclaimedBytes: Int64?
+    let physicalDeltaBytes: Int64?
     let receipt: String
     let detail: String
 
@@ -138,19 +138,17 @@ struct CleanupRecoveryItemResult: Identifiable {
 }
 
 struct CleanupRecoveryResult {
-    let baselineFreeGB: Double
-    let finalFreeGB: Double
-    let desiredFreeGB: Double
-    let freeSpaceMeasured: Bool
+    let baselineFreeBytes: Int64
+    let finalFreeBytes: Int64?
+    let desiredFreeBytes: Int64
     let plannedCount: Int
     let items: [CleanupRecoveryItemResult]
     let stoppedAfterFailure: Bool
     let rescanScheduled: Bool
 
-    var actualGainGB: Double {
-        freeSpaceMeasured ? max(0, finalFreeGB - baselineFreeGB) : 0
-    }
-    var goalMet: Bool { freeSpaceMeasured && finalFreeGB >= desiredFreeGB }
+    var freeSpaceMeasured: Bool { finalFreeBytes != nil }
+    var actualChangeBytes: Int64? { finalFreeBytes.map { $0 - baselineFreeBytes } }
+    var goalMet: Bool { finalFreeBytes.map { $0 >= desiredFreeBytes } ?? false }
     var succeededCount: Int { items.filter(\.succeeded).count }
     var skippedCount: Int { max(0, plannedCount - items.count) }
     var failedItems: [CleanupRecoveryItemResult] { items.filter { !$0.succeeded } }

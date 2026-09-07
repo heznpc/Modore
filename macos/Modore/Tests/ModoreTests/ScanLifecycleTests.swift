@@ -85,6 +85,69 @@ private actor ScanOutputLifecycleProbe {
 
 @MainActor
 final class ScanLifecycleTests: XCTestCase {
+    func testRecoveryDoesNotReuseEarlierMeasurementWhenFinalReadFails() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = try makeCleanupContext(in: root)
+        let preview = try readyCleanupPreview()
+        let plan = recoveryPlan(for: preview)
+        let success = cleanupExecutionResult(status: "complete")
+        let client = CleanupExecutionClient(prepare: { _ in context },
+                                            preview: { _, _, _ in success }, execute: { _, _, _ in success })
+        let sample = freeSpaceObservation()
+        let readings = RecoveryObservationSequence([sample, sample, nil])
+        let scanGate = ScanLifecycleGate()
+        let model = ScanModel(automaticallyScansStaleResults: false, projectRoot: root,
+                              scanRunner: { _, _ in await scanGate.wait(); return .scanFailed },
+                              cleanupExecution: client)
+        await settleStartup(model)
+        model.cleanupRecoveryPlan = plan
+        model.executeRecoveryPlan(plan, observeFreeSpace: { await readings.next() })
+        await waitForEntry(scanGate, "successful batch did not schedule its rescan")
+        XCTAssertEqual(model.cleanupRecoveryResult?.succeededCount, 1)
+        XCTAssertNil(model.cleanupRecoveryResult?.finalFreeBytes)
+        XCTAssertNil(model.cleanupRecoveryResult?.actualChangeBytes)
+        XCTAssertFalse(model.cleanupRecoveryResult?.goalMet ?? true)
+        XCTAssertTrue(model.logText.contains("확인하지 못했습니다"))
+        model.cancelScan()
+        await scanGate.release()
+        await waitUntil("accounting test rescan did not drain") { model.scanTask == nil }
+    }
+
+    func testRecoveryPreparationPreservesAdditionalBytesAndRejectsMissingBaseline() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = try makeCleanupContext(in: root)
+        let response = processResult("""
+        version\t1
+        operation\tpreview
+        status\tready
+        recipeId\tproject_residue
+        estimatedKB\t256
+        approvalToken\t\(String(repeating: "a", count: 64))
+        approvalExpiresEpoch\t4102444800
+        """)
+        let client = CleanupExecutionClient(prepare: { _ in context },
+                                            preview: { _, _, _ in response }, execute: { _, _, _ in nil })
+        let observation = Observation(value: LiveFreeSpace(freeBytes: 10 * StorageBytes.perGiB,
+                                                           totalBytes: 100 * StorageBytes.perGiB),
+                                      observedAt: Date(), source: .systemVolume)
+        for sample: Observation<LiveFreeSpace>? in [observation, nil] {
+            let model = ScanModel(automaticallyScansStaleResults: false, projectRoot: root, cleanupExecution: client)
+            await settleStartup(model)
+            model.prepareRecoveryPlan([try projectStorageItem(in: root)], requestedGainBytes: StorageBytes.perGiB,
+                                      observeFreeSpace: { sample })
+            await waitUntil("recovery preparation did not finish") { !model.cleanupInFlight }
+            if sample != nil {
+                XCTAssertEqual(model.cleanupRecoveryPlan?.requestedGainBytes, StorageBytes.perGiB)
+                XCTAssertEqual(model.cleanupRecoveryPlan?.desiredFreeBytes, 11 * StorageBytes.perGiB)
+            } else {
+                XCTAssertNil(model.cleanupRecoveryPlan)
+                XCTAssertTrue(model.errorMessage?.contains("측정하지 못해") == true)
+            }
+        }
+    }
+
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("modore-scan-lifecycle-\(UUID().uuidString)", isDirectory: true)
@@ -181,8 +244,8 @@ final class ScanLifecycleTests: XCTestCase {
 
     private func recoveryPlan(for preview: CleanupPreview) -> CleanupRecoveryPlan {
         CleanupRecoveryPlan(
-            baselineFreeGB: 1,
-            desiredFreeGB: 100,
+            baselineFreeBytes: StorageBytes.perGiB,
+            requestedGainBytes: 99 * StorageBytes.perGiB,
             entries: [CleanupPlanEntry(preview: preview, tier: .rebuild, request: nil)]
         )
     }
@@ -584,7 +647,7 @@ final class ScanLifecycleTests: XCTestCase {
 
         model.prepareRecoveryPlan(
             [try projectStorageItem(in: root)],
-            desiredFreeGB: 100
+            requestedGainBytes: 99 * StorageBytes.perGiB
         )
         await waitForEntry(previewGate, "batch cleanup preview did not enter")
         model.cancelCleanupPreviewRequest()
@@ -1038,4 +1101,10 @@ final class ScanLifecycleTests: XCTestCase {
             model.state == .idle && model.scanTask == nil
         }
     }
+}
+
+private actor RecoveryObservationSequence {
+    private var samples: [Observation<LiveFreeSpace>?]
+    init(_ samples: [Observation<LiveFreeSpace>?]) { self.samples = samples }
+    func next() -> Observation<LiveFreeSpace>? { samples.isEmpty ? nil : samples.removeFirst() }
 }

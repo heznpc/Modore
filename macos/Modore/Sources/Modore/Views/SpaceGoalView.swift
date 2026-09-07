@@ -16,8 +16,12 @@ enum SpaceGoalSelection {
     /// an unknown candidate so the preview can measure it again, while
     /// contributing zero until that fresh measurement succeeds.
     static func planningSizeGB(_ item: StorageItem) -> Double {
+        Double(planningBytes(item)) / Double(StorageBytes.perGiB)
+    }
+
+    static func planningBytes(_ item: StorageItem) -> Int64 {
         guard item.measureStatus != "timed_out" else { return 0 }
-        return item.sizeGB.isFinite ? max(0, item.sizeGB) : 0
+        return StorageBytes.fromLegacyGiB(item.sizeGB) ?? 0
     }
 
     static func isPlanningCandidate(_ item: StorageItem) -> Bool {
@@ -26,15 +30,20 @@ enum SpaceGoalSelection {
     }
 
     static func select(from candidates: [StorageItem], targetGB: Double) -> [StorageItem] {
-        guard targetGB > 0 else { return [] }
+        select(from: candidates, targetBytes: StorageBytes.fromLegacyGiB(targetGB)
+               ?? (targetGB > 0 ? Int64.max : 0))
+    }
+
+    static func select(from candidates: [StorageItem], targetBytes: Int64) -> [StorageItem] {
+        guard targetBytes > 0 else { return [] }
         let eligible = candidates
             .filter(isPlanningCandidate)
             .sorted { lhs, rhs in
                 if lhs.cleanupTier != rhs.cleanupTier {
                     return lhs.cleanupTier! < rhs.cleanupTier!
                 }
-                let lhsSize = planningSizeGB(lhs)
-                let rhsSize = planningSizeGB(rhs)
+                let lhsSize = planningBytes(lhs)
+                let rhsSize = planningBytes(rhs)
                 if lhsSize != rhsSize { return lhsSize > rhsSize }
                 if lhs.label != rhs.label { return lhs.label < rhs.label }
                 // Same size and same label still has to resolve to one fixed
@@ -45,11 +54,13 @@ enum SpaceGoalSelection {
                 return lhs.path < rhs.path
             }
         var selected: [StorageItem] = []
-        var total = 0.0
+        var total: Int64 = 0
         for item in eligible {
-            if total >= targetGB - goalTolerance { break }
+            // Legacy scanner estimates are rounded decimal GiB. Tolerance is
+            // for candidate selection only; execution compares exact bytes.
+            if total >= max(1, targetBytes - Int64(goalTolerance * Double(StorageBytes.perGiB))) { break }
             selected.append(item)
-            total += planningSizeGB(item)
+            total = StorageBytes.adding(total, planningBytes(item)) ?? Int64.max
         }
         return selected
     }
@@ -58,16 +69,21 @@ enum SpaceGoalSelection {
 struct SpaceGoalWorkspaceList: View {
     @EnvironmentObject private var model: ScanModel
     let storage: StorageSnapshot
-    @State private var targetGB: Double
+    @State private var targetBytes: Int64
+    private var targetGB: Double { Double(targetBytes) / Double(StorageBytes.perGiB) }
     @State private var showsPendingMeasurements = false
 
     init(storage: StorageSnapshot, currentFreeGB: Double? = nil) {
         self.storage = storage
         let achievable = Self.achievableGB(storage)
         let freeGB = currentFreeGB ?? storage.freeGB
-        let pressureGap = StorageRecoveryPolicy.requiredGainGB(currentFreeGB: freeGB)
+        let pressureGap = Double(StorageRecoveryPolicy.default.requiredGainBytes(
+            currentAvailableBytes: StorageBytes.fromLegacyGiB(freeGB) ?? 0
+        )) / Double(StorageBytes.perGiB)
         let initial = pressureGap > 0 ? pressureGap.rounded(.up) : min(5, max(achievable, 1))
-        _targetGB = State(initialValue: max(initial, achievable > 0 ? min(achievable, 1) : 1))
+        _targetBytes = State(initialValue: StorageBytes.fromLegacyGiB(
+            max(initial, achievable > 0 ? min(achievable, 1) : 1)
+        ) ?? StorageBytes.perGiB)
     }
 
     private var eligibleCandidates: [StorageItem] {
@@ -92,11 +108,15 @@ struct SpaceGoalWorkspaceList: View {
     private var supportsGoalSlider: Bool { achievableGB >= 1 }
 
     private var selection: [StorageItem] {
-        SpaceGoalSelection.select(from: storage.recoveryCandidates, targetGB: targetGB)
+        SpaceGoalSelection.select(from: storage.recoveryCandidates, targetBytes: targetBytes)
     }
 
     private var selectedTotalGB: Double {
-        selection.reduce(0) { $0 + SpaceGoalSelection.planningSizeGB($1) }
+        Double(selectedTotalBytes) / Double(StorageBytes.perGiB)
+    }
+
+    private var selectedTotalBytes: Int64 {
+        selection.reduce(0) { StorageBytes.adding($0, SpaceGoalSelection.planningBytes($1)) ?? Int64.max }
     }
 
     private var measuredSelection: [StorageItem] {
@@ -107,7 +127,7 @@ struct SpaceGoalWorkspaceList: View {
         selection.filter { $0.measureStatus == "timed_out" }
     }
 
-    private var metGoal: Bool { selectedTotalGB >= targetGB - 0.000_001 }
+    private var metGoal: Bool { selectedTotalBytes >= max(0, targetBytes - 1_074) }
 
     var body: some View {
         ScrollView {
@@ -142,22 +162,22 @@ struct SpaceGoalWorkspaceList: View {
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(metGoal ? Color.green : Color.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(metGoal ? "확보 목표를 충족합니다" : "확보 목표까지 용량이 부족합니다")
+                    Text(metGoal ? "계획상 추가 확보 목표를 충족합니다" : "계획상 추가 확보량이 부족합니다")
                         .font(.title3.weight(.semibold))
                     Text("캐시를 먼저 쓰고, 부족할 때만 다시 만들 수 있는 항목을 더합니다.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(metGoal ? "충족" : goalShortfallText)
+                Text(metGoal ? "계획상 충족" : goalShortfallText)
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(metGoal ? Color.green : Color.secondary)
                     .monospacedDigit()
             }
 
             HStack(spacing: 10) {
-                SpaceGoalMetric(title: "목표", value: String(format: "%.0fGB", targetGB))
-                SpaceGoalMetric(title: "확인됨", value: String(format: "%.1fGB", selectedTotalGB))
+                SpaceGoalMetric(title: "추가 확보 목표", value: StorageBytes.text(targetBytes))
+                SpaceGoalMetric(title: "후보 점유", value: StorageBytes.text(selectedTotalBytes))
                 SpaceGoalMetric(title: "재측정", value: "\(pendingSelection.count)개")
             }
 
@@ -165,6 +185,9 @@ struct SpaceGoalWorkspaceList: View {
                 .progressViewStyle(.linear)
 
             goalPicker
+            Text("권장 최종 여유: 20 GiB · 이 권장값은 선택한 추가 확보량을 바꾸지 않습니다. 후보 점유가 실제 여유 증가량을 보장하지는 않습니다.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .spaceGoalSurface()
     }
@@ -235,12 +258,12 @@ struct SpaceGoalWorkspaceList: View {
             }
 
             Button {
-                model.prepareRecoveryPlan(selection, desiredFreeGB: desiredFreeGB)
+                model.prepareRecoveryPlan(selection, requestedGainBytes: targetBytes)
             } label: {
                 HStack {
                     Label("확보 계획 검토", systemImage: "checklist")
                     Spacer()
-                    Text("\(selection.count)개 · 확인됨 \(String(format: "%.1fGB", selectedTotalGB))")
+                    Text("\(selection.count)개 · 후보 점유 \(StorageBytes.text(selectedTotalBytes))")
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -271,11 +294,14 @@ struct SpaceGoalWorkspaceList: View {
     private var goalPicker: some View {
         Group {
             if supportsGoalSlider {
-                Slider(value: $targetGB, in: 1...goalUpperBoundGB, step: 1)
-                    .accessibilityLabel("확보 목표")
-                    .accessibilityValue("\(Int(targetGB))GB")
+                Slider(value: Binding(
+                    get: { targetGB },
+                    set: { if let bytes = StorageBytes.fromLegacyGiB($0) { targetBytes = bytes } }
+                ), in: 1...goalUpperBoundGB, step: 1)
+                    .accessibilityLabel("추가 확보 목표")
+                    .accessibilityValue("\(Int(targetGB)) GiB")
             } else {
-                Text("확인된 용량이 1GB 미만이라 목표 조절은 재측정 후 사용할 수 있습니다.")
+                Text("확인된 용량이 1 GiB 미만이라 목표 조절은 재측정 후 사용할 수 있습니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -285,7 +311,7 @@ struct SpaceGoalWorkspaceList: View {
         // new range (slider pinned at its end, header quoting a goal the
         // track cannot reach).
         .onChange(of: goalUpperBoundGB) { newUpperBound in
-            targetGB = min(max(targetGB, 1), newUpperBound)
+            targetBytes = StorageBytes.fromLegacyGiB(min(max(targetGB, 1), newUpperBound)) ?? targetBytes
         }
     }
 
@@ -295,7 +321,7 @@ struct SpaceGoalWorkspaceList: View {
     }
 
     private var goalShortfallText: String {
-        String(format: "%.1fGB 부족", max(targetGB - selectedTotalGB, 0))
+        "\(StorageBytes.text(max(targetBytes - selectedTotalBytes, 0))) 부족"
     }
 
     private var planSubtitle: String {
@@ -309,17 +335,11 @@ struct SpaceGoalWorkspaceList: View {
     }
 
     private static func achievableGB(_ storage: StorageSnapshot) -> Double {
-        SpaceGoalSelection.select(from: storage.recoveryCandidates, targetGB: .greatestFiniteMagnitude)
-            .reduce(0) { $0 + SpaceGoalSelection.planningSizeGB($1) }
+        let bytes = SpaceGoalSelection.select(from: storage.recoveryCandidates, targetBytes: Int64.max)
+            .reduce(Int64(0)) { StorageBytes.adding($0, SpaceGoalSelection.planningBytes($1)) ?? Int64.max }
+        return Double(bytes) / Double(StorageBytes.perGiB)
     }
 
-    private var desiredFreeGB: Double {
-        let current = model.currentFreeGB ?? storage.freeGB
-        if current < StorageRecoveryPolicy.desiredFreeGB {
-            return StorageRecoveryPolicy.desiredFreeGB
-        }
-        return current + targetGB
-    }
 }
 
 private struct SpaceGoalMetric: View {
@@ -366,6 +386,8 @@ private struct SpaceGoalCandidateRow: View {
             item: item,
             fallbackSymbol: tier == .safe ? "folder.badge.gearshape" : "arrow.triangle.2.circlepath",
             detail: detail,
+            sizeTextOverride: item.measureStatus == "timed_out"
+                ? "미확인" : StorageBytes.text(StorageBytes.fromLegacyGiB(item.sizeGB)),
             status: tier.shortTitle
         )
         .contextMenu { StorageItemContextMenu(item: item) }
