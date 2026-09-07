@@ -360,18 +360,33 @@ extension ScanModel {
     /// Everything the Work screen shows, assembled from the three
     /// scanners that used to own a screen each.
     var workProjects: [WorkProject] {
-        WorkProjectBuilder.build(
+        let worktrees = screeReport?.worktreeItems ?? []
+        let assessments = repoAssessments ?? []
+        let gitRoots = (screeReport?.lineagePaths ?? []).filter { $0.hasGit == true }.map(\.path)
+        var projects = WorkProjectBuilder.build(
             sessions: sessionIndex?.sessions ?? [],
-            worktrees: screeReport?.worktreeItems ?? [],
-            assessments: repoAssessments ?? [],
+            worktrees: worktrees,
+            assessments: assessments,
             // Every git path the audit saw, so project identity does not
             // depend on which repos survived the archive classifier or the
             // scanner's own root limit.
-            gitRoots: (screeReport?.lineagePaths ?? [])
-                .filter { $0.hasGit == true }.map(\.path),
+            gitRoots: gitRoots,
             scanFailures: repoScanFailures,
             notScanned: reposNotScanned
         )
+        // Evidence cannot influence the established UI grouping, equality, selection
+        // or action paths. An adaptation failure leaves those rows intact.
+        if let evidence = try? WorkWorkspaceAdapter.adapt(
+            index: sessionIndex,
+            roots: WorkProjectBuilder.knownRoots(worktrees: worktrees, assessments: assessments, gitRoots: gitRoots),
+            provenance: workProvenance
+        ) {
+            let byProject = Dictionary(grouping: evidence.attribution.records, by: { $0.project.comparisonKey })
+            for index in projects.indices {
+                projects[index].workspaceAttributions = byProject[projects[index].id] ?? []
+            }
+        }
+        return projects
     }
 
     /// Loads what the Work screen needs the moment someone opens it.

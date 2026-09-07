@@ -1,5 +1,6 @@
 import Foundation
 import MothballCore
+import ModoreDomain
 
 /// One title for one session, as `scree.py titles` returns it.
 struct SessionTitle: Decodable, Equatable {
@@ -30,6 +31,8 @@ struct WorkProject: Identifiable {
     let path: String
     var sessions: [SessionIndexEntry] = []
     var worktrees: [ScreeWorktreeItem] = []
+    /// Display-only evidence; deliberately excluded from legacy row equality and IDs.
+    var workspaceAttributions: [WorkProjectAttribution] = []
 
     /// What is known about this project's git state -- including the two
     /// cases where the answer is that nothing is known.
@@ -57,6 +60,10 @@ struct WorkProject: Identifiable {
     }
 
     var id: String { WorkProjectBuilder.canonical(path) }
+
+    var identity: ProjectIdentity? {
+        isUnassigned ? nil : try? ProjectIdentity(comparisonKey: id)
+    }
 
     /// Conversations that exist but could not be placed in a project.
     var isUnassigned: Bool { path == WorkProjectBuilder.unassignedID }
@@ -258,10 +265,7 @@ enum WorkProjectBuilder {
         scanFailures: [String: String] = [:],
         notScanned: [String] = []
     ) -> [WorkProject] {
-        var roots: Set<String> = []
-        for assessment in assessments { roots.insert(canonical(assessment.pathText)) }
-        for worktree in worktrees { roots.insert(canonical(worktree.repo)) }
-        for root in gitRoots { roots.insert(canonical(root)) }
+        let roots = knownRoots(worktrees: worktrees, assessments: assessments, gitRoots: gitRoots)
 
         var projects: [String: WorkProject] = [:]
         // Case-folded key, real spelling for display. macOS filesystems are
@@ -324,6 +328,15 @@ enum WorkProjectBuilder {
             }
     }
 
+    static func knownRoots(worktrees: [ScreeWorktreeItem], assessments: [ArchiveCandidate],
+                           gitRoots: [String]) -> Set<String> {
+        var roots: Set<String> = []
+        for assessment in assessments { roots.insert(canonical(assessment.pathText)) }
+        for worktree in worktrees { roots.insert(canonical(worktree.repo)) }
+        for root in gitRoots { roots.insert(canonical(root)) }
+        return roots
+    }
+
     /// The project a workspace belongs to.
     ///
     /// Agent worktrees are folded into their repo even when no scanner has
@@ -332,6 +345,12 @@ enum WorkProjectBuilder {
     /// confirm it would leave the list looking like a pile of adjectives
     /// and surnames.
     static func projectRoot(for workspace: String, roots: Set<String>) -> String {
+        projectMapping(for: workspace, roots: roots).path
+    }
+
+    /// The same legacy algorithm, returning the rule used as well as its result.
+    /// This is attribution evidence, never a second filesystem/Git observation.
+    static func projectMapping(for workspace: String, roots: Set<String>) -> (path: String, method: EvidenceMethod) {
         let normalized = normalize(workspace)
         let folded = canonical(workspace)
         var best: String?
@@ -346,15 +365,15 @@ enum WorkProjectBuilder {
         if let best {
             // Return the caller's own spelling when the match is the whole
             // path, so a project keeps the casing it was recorded with.
-            return folded == best ? normalized : String(normalized.prefix(best.count))
+            return (folded == best ? normalized : String(normalized.prefix(best.count)), .knownRootAncestry)
         }
         for marker in ["/.claude/worktrees/", "/.git/worktrees/"] {
             if let range = folded.range(of: marker) {
-                return String(normalized.prefix(folded.distance(
-                    from: folded.startIndex, to: range.lowerBound)))
+                return (String(normalized.prefix(folded.distance(
+                    from: folded.startIndex, to: range.lowerBound))), .conventionalWorktreePath)
             }
         }
-        return normalized
+        return (normalized, .workspaceFallback)
     }
 
     /// The comparison key: trailing slash removed, case folded.
