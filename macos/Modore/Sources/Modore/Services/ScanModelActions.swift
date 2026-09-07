@@ -157,6 +157,7 @@ extension ScanModel {
                 appendLog("정리 미리보기 중단: 런타임 신뢰 검증 실패")
                 return
             }
+            let previewStarted = Date()
             let result = await cleanupExecution.preview(recipeID, request, context)
             guard !Task.isCancelled,
                   !applicationTerminationStarted,
@@ -166,16 +167,18 @@ extension ScanModel {
                 }
                 return
             }
-            guard result.endState == .exited else {
+            let diagnostic = CleanupExecutionService.previewDiagnostic(result, elapsed: Date().timeIntervalSince(previewStarted))
+            appendLog("미리보기 진단: \(label) · \(diagnostic)")
+            guard result.succeeded else {
                 if result.endState == .cancelled {
                     appendLog("정리 미리보기를 취소했습니다.")
                 } else {
-                    errorMessage = "정리 대상을 제한 시간과 출력 상한 안에서 확인하지 못했습니다. 다시 시도하세요."
-                    appendLog("정리 미리보기 중단: \(result.endState)")
+                    errorMessage = "정리 대상을 확인하지 못했습니다. \(diagnostic). 다시 측정하세요."
+                    appendLog("정리 미리보기 중단: \(diagnostic)")
                 }
                 return
             }
-            guard let preview = CleanupPreview(protocolText: result.output) else {
+            guard let preview = CleanupExecutionService.validatedPreview(result, recipeID: recipeID) else {
                 errorMessage = "정리 미리보기 결과를 읽지 못했습니다. 실행 로그를 확인하세요."
                 appendLog("정리 미리보기 실패: \(result.status)")
                 return
@@ -342,16 +345,18 @@ extension ScanModel {
                     totalCount: candidates.count,
                     currentLabel: candidate.item.label
                 )
+                let previewStarted = Date()
                 let result = await cleanupExecution.preview(
                     candidate.item.cleanupID,
                     candidate.request,
                     context
                 )
                 guard !Task.isCancelled, !applicationTerminationStarted else { return }
-                guard result.endState == .exited,
-                      let preview = CleanupPreview(protocolText: result.output) else {
-                    errorMessage = "\(candidate.item.label)의 정리 대상을 안전하게 확인하지 못해 계획을 만들지 않았습니다."
-                    appendLog("공간 확보 계획 중단: \(candidate.item.label) 미리보기 실패")
+                let diagnostic = CleanupExecutionService.previewDiagnostic(result, elapsed: Date().timeIntervalSince(previewStarted))
+                appendLog("미리보기 진단: \(candidate.item.label) · \(diagnostic)")
+                guard let preview = CleanupExecutionService.validatedPreview(result, recipeID: candidate.item.cleanupID) else {
+                    errorMessage = "\(candidate.item.label)의 정리 대상을 안전하게 확인하지 못해 계획을 만들지 않았습니다. \(diagnostic)."
+                    appendLog("공간 확보 계획 중단: \(candidate.item.label) · \(diagnostic) · 유효한 미리보기 없음")
                     return
                 }
                 entries.append(CleanupPlanEntry(

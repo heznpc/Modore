@@ -1285,6 +1285,87 @@ def test_project_residue_does_not_block_same_tool_in_another_project_cwd(
     assert payload["runningProcesses"] == ""
 
 
+def test_project_residue_unknown_cwd_blocks_without_claiming_active_use(project_root, tmp_path):
+    home = tmp_path / "home"
+    _, target = make_node_project(home)
+    preview = run_project_residue_preview(
+        project_root, home, target,
+        processes_with_pid="4242 /usr/local/bin/npm install\n",
+    )
+    payload = parse_protocol(preview.stdout)
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert "사용 여부 미확인" in payload["runningProcesses"]
+    assert "확인하지 못해" in payload["blockedReason"]
+    assert not payload["approvalToken"]
+    assert "previewPhase\tprocess-check" in preview.stderr
+    assert "previewPhase\tcomplete" in preview.stderr
+    assert target.exists()
+
+
+def cleanup_functions(project_root, *names):
+    lines = (project_root / "scripts/cleanup.sh").read_text(encoding="utf-8").splitlines()
+    result = []
+    for name in names:
+        start = lines.index(f"{name}() {{")
+        end = lines.index("}", start) + 1
+        result.append("\n".join(lines[start:end]))
+    return "\n".join(result)
+
+
+def test_process_probe_timeout_reaps_child_and_returns_unknown(project_root, tmp_path):
+    harness = tmp_path / "bounded-probe.sh"
+    harness.write_text(cleanup_functions(project_root, "wait_for_process_probe") + """
+/bin/sleep 30 &
+probe=$!
+wait_for_process_probe "$probe" 1
+status=$?
+/bin/kill -0 "$probe" 2>/dev/null && exit 99
+printf 'probe-status=%s\n' "$status"
+""", encoding="utf-8")
+    result = subprocess.run(["/bin/bash", str(harness)], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert "probe-status=124" in result.stdout
+
+
+def test_project_process_total_budget_fails_closed_without_more_cwd_queries(project_root, tmp_path):
+    harness = tmp_path / "process-budget.sh"
+    harness.write_text("""
+set -u
+set -o pipefail
+PROJECT_PROCESS_PATH_PATTERN='/unused-project'
+project_residue_tool_pattern() { printf 'npm'; }
+process_snapshot_with_pid() { printf '1 npm install\n2 npm install\n3 npm install\n'; }
+process_cwd_is_project() { echo queried >&2; SECONDS=100; return 1; }
+""" + cleanup_functions(project_root, "project_process_rows_with_pid") + """
+SECONDS=0
+project_process_rows_with_pid
+""", encoding="utf-8")
+    result = subprocess.run(["/bin/bash", str(harness)], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.count("queried") == 1
+    assert "2\t__MODORE_CWD_UNKNOWN__ npm install" in result.stdout
+    assert "3\t__MODORE_CWD_UNKNOWN__ npm install" in result.stdout
+
+
+def test_project_process_evidence_stops_after_five_blockers(project_root, tmp_path):
+    harness = tmp_path / "process-limit.sh"
+    harness.write_text("""
+set -u
+set -o pipefail
+PROJECT_PROCESS_PATH_PATTERN='/active-project'
+project_residue_tool_pattern() { printf 'npm'; }
+process_snapshot_with_pid() { for pid in {1..100}; do printf '%s npm /active-project\n' "$pid"; done; }
+process_cwd_is_project() { echo unexpected-query >&2; return 2; }
+""" + cleanup_functions(project_root, "project_process_rows_with_pid") + """
+project_process_rows_with_pid
+""", encoding="utf-8")
+    result = subprocess.run(["/bin/bash", str(harness)], capture_output=True, text=True, timeout=5)
+    # Upstream may receive SIGPIPE once the five-row reader has enough evidence.
+    assert len(result.stdout.splitlines()) == 5
+    assert not result.stderr
+
+
 def test_execute_rejects_target_drift_and_consumed_approval(project_root, tmp_path):
     home = tmp_path / "home"
     cache_file = home / ".npm" / "_cacache" / "entry"
