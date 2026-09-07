@@ -115,7 +115,15 @@ store, including case variants and resolved symlink aliases.
 - Cleanup protocol version 1 gains additive `accountingVersion=2` and `estimatedBytes`, `reclaimedBytes`, and `physicalDeltaBytes` fields. Receipts also retain before/after available bytes. Legacy KB fields remain for older readers.
 - Target occupancy reduction and whole-volume available-space net change are separate measurements. Volume changes remain signed, including decreases and measured zero; missing, malformed, or overflowing measurements are unknown. Unknown target occupancy never substitutes volume change.
 - Byte fields are authoritative for accounting version 2. Older receipts convert KiB, but their clamped zero volume delta is unknown because the old writer conflated zero, decrease, and measurement failure. A missing final volume reading cannot prove goal attainment, even if an earlier reading succeeded.
-- Plan-level durable history is separate future work; this accounting change does not add it or alter approval, token expiry, target revalidation, or process-draining boundaries.
+- Plan-level history is stored separately from the old storage snapshots; it does not alter token expiry, target revalidation, or process-draining boundaries.
+
+### Recovery plan history
+
+- `RecoveryHistory` is a display-only record of one plan ID: byte goal and baseline, previewed paths and eligibility, approval time, per-item outcomes and receipt paths, final volume reading, and interruption state. Approval tokens are never serialized, and records cannot reconstruct executable plans.
+- `recovery-history.json` lives in the private results root. `RecoveryHistoryStore` uses bounded owner-checked no-follow reads and atomic file/directory-synced writes. Unsupported or corrupt files are not overwritten. The first version caps storage at 200 plans / 8 MiB and refuses new writes at capacity instead of silently deleting history.
+- Review, approval, before-item and after-item checkpoints are durable. Approval or pre-item write failure prevents execution; a failed result checkpoint prevents the next item. Cancellation/termination records whatever outcome is known, and the existing mutation marker still governs rescanning.
+- On restart, approved/running records without a final checkpoint are shown as interrupted with unconfirmed results. Completed item records remain visible, but unrecorded receipts are not guessed or joined automatically. No historical plan is automatically resumed or re-approved.
+- The Activity page presents the journal independently of scan snapshots. Existing receipts remain readable without inventing retroactive plan associations.
 
 ## Good contribution areas
 

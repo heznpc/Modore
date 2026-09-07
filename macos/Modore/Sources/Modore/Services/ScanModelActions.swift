@@ -378,11 +378,16 @@ extension ScanModel {
                 return
             }
             recordLiveFreeSpaceObservation(currentObservation)
-            cleanupRecoveryPlan = CleanupRecoveryPlan(
+            let plan = CleanupRecoveryPlan(
                 baselineFreeBytes: baseline,
                 requestedGainBytes: gain,
                 entries: entries
             )
+            guard saveRecoveryHistory(RecoveryHistory(plan: plan)) else {
+                cleanupRecoveryPlan = nil
+                return
+            }
+            cleanupRecoveryPlan = plan
             appendLog("공간 확보 계획 준비 완료: 재측정 \(entries.count)개")
             AccessibilityAnnouncer.announce("공간 확보 계획을 준비했습니다")
         }
@@ -415,6 +420,11 @@ extension ScanModel {
             return
         }
 
+        var history = RecoveryHistory(plan: plan)
+        history.phase = .approved
+        history.approvedAt = Date()
+        history.updatedAt = Date()
+        guard saveRecoveryHistory(history) else { return }
         cleanupInFlight = true
         cleanupRecoveryResult = nil
         cleanupRecoveryProgress = CleanupRecoveryProgress(
@@ -428,7 +438,21 @@ extension ScanModel {
 
         cleanupTask = Task {
             var shouldRescan = false
+            var itemResults: [CleanupRecoveryItemResult] = []
+            var journalHealthy = true
             defer {
+                history.items = itemResults.map(RecoveryHistory.Item.init)
+                history.updatedAt = Date()
+                history.detail = errorMessage ?? ""
+                if let result = cleanupRecoveryResult {
+                    history.phase = .finished
+                    history.finalFreeBytes = result.finalFreeBytes
+                    history.stoppedAfterFailure = result.stoppedAfterFailure
+                    history.activeEntryID = nil
+                } else {
+                    history.phase = .interrupted
+                }
+                saveRecoveryHistory(history)
                 cleanupInFlight = false
                 cleanupRecoveryProgress = nil
                 cleanupTask = nil
@@ -444,11 +468,14 @@ extension ScanModel {
                 return
             }
 
-            var itemResults: [CleanupRecoveryItemResult] = []
             var stoppedAfterFailure = false
             var latestFreeBytes = plan.baselineFreeBytes
 
             for (index, entry) in plan.readyEntries.enumerated() {
+                guard journalHealthy else {
+                    stoppedAfterFailure = true
+                    break
+                }
                 guard !Task.isCancelled, !applicationTerminationStarted else { return }
                 guard entry.preview.approvalIsFresh(
                     at: Date(),
@@ -481,6 +508,23 @@ extension ScanModel {
                 )
                 appendLog("계획 정리 실행: \(entry.preview.label)")
                 guard !Task.isCancelled, !applicationTerminationStarted else { return }
+                history.phase = .running
+                history.activeEntryID = entry.id
+                history.updatedAt = Date()
+                guard saveRecoveryHistory(history) else {
+                    stoppedAfterFailure = true
+                    break
+                }
+                // Runs on success, break and cancellation. The next item may
+                // not start unless this checkpoint was written durably.
+                defer {
+                    history.items = itemResults.map(RecoveryHistory.Item.init)
+                    if history.items.contains(where: { $0.id == entry.id }) {
+                        history.activeEntryID = nil
+                    }
+                    history.updatedAt = Date()
+                    journalHealthy = saveRecoveryHistory(history)
+                }
                 guard persistCleanupMutationIntent() else {
                     stoppedAfterFailure = true
                     break
@@ -582,6 +626,7 @@ extension ScanModel {
             }
 
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
+            if !journalHealthy { stoppedAfterFailure = true }
             let finalObservation = await observeFreeSpace()
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
             // An earlier successful sample is not a successful final measurement.
@@ -630,6 +675,12 @@ extension ScanModel {
 
     func dismissRecoveryPlan() {
         guard !cleanupInFlight else { return }
+        if let plan = cleanupRecoveryPlan, cleanupRecoveryResult == nil,
+           var history = recoveryHistory.first(where: { $0.id == plan.id }), history.phase == .reviewed {
+            history.phase = .cancelled
+            history.updatedAt = Date()
+            saveRecoveryHistory(history)
+        }
         cleanupRecoveryPlan = nil
         cleanupRecoveryProgress = nil
         cleanupRecoveryResult = nil

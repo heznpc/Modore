@@ -15,6 +15,12 @@ struct CleanupRecoverySheet: View {
             } else {
                 reviewContent
             }
+            if let error = model.recoveryHistoryError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(24)
         .frame(
