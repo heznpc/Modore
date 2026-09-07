@@ -9,9 +9,11 @@ execution boundary. The project/asset model describes state and grants no author
 
 ## Baseline and scope
 
-The baseline candidate is PR #109, ending at `1ac962f`: logical Codex session grouping,
+The baseline is [PR #109](https://github.com/heznpc/Modore/pull/109), merged into main
+at `8e2f412` after full CI passed. Its five commits end at `1ac962f`: logical Codex session grouping,
 multi-fragment inspection, checked recovery accounting, bounded previews, and a durable
-display-only recovery journal. Integration status belongs to Git/CI, not this proposal.
+display-only recovery journal. The native app was built and its Work and recovery-history
+screens inspected; all 513 Mac tests passed locally, including the isolated live recovery harness.
 
 Currently implemented:
 
