@@ -205,7 +205,10 @@ final class ScanModel: ObservableObject {
     @Published private(set) var deepScanFailure: DeepScanFailure?
     @Published private(set) var deepScanAt: Date?
     @Published private(set) var cleanupMutationPending = false
-    @Published var screeReport: ScreeReport?
+    private(set) var workProvenance = WorkProvenance()
+    @Published var screeReport: ScreeReport? {
+        didSet { workProvenance.didPublish(.screeReport) }
+    }
     @Published var screeReportRevision = 0
     @Published var screeLoading = false
     @Published var screeError: String?
@@ -222,12 +225,18 @@ final class ScanModel: ObservableObject {
     /// Every repo the scan judged, archivable or not. Named for what it
     /// is: `rankCandidates` drops `.unsafe` repos, which is right for a
     /// retirement list and wrong as a project's git state.
-    @Published var repoAssessments: [ArchiveCandidate]?
+    @Published var repoAssessments: [ArchiveCandidate]? {
+        didSet { workProvenance.didPublish(.repoAssessments) }
+    }
     /// Repo path to why it could not be read, and the repos the scan's
     /// root cap never reached. Both travel per path: a total says
     /// something somewhere is untrustworthy, only a path says which row.
-    @Published var repoScanFailures: [String: String] = [:]
-    @Published var reposNotScanned: [String] = []
+    @Published var repoScanFailures: [String: String] = [:] {
+        didSet { workProvenance.didPublish(.repoScanFailures) }
+    }
+    @Published var reposNotScanned: [String] = [] {
+        didSet { workProvenance.didPublish(.reposNotScanned) }
+    }
     /// Conversations a person opened, and how each fetch went, keyed by
     /// the transcript's byte identity rather than its path -- see
     /// `loadConversation`. Display-only cache; never consulted by any
@@ -235,7 +244,9 @@ final class ScanModel: ObservableObject {
     @Published var conversationLoads: [String: ConversationLoadState] = [:]
     var conversationLoadTokens: [String: UUID] = [:]
     /// The session browser's index, and how fetching it went.
-    @Published var sessionIndex: SessionIndex?
+    @Published var sessionIndex: SessionIndex? {
+        didSet { workProvenance.didPublish(.sessionIndex) }
+    }
     @Published var sessionIndexLoading = false
     @Published var sessionIndexError: String?
     var sessionIndexGeneration = 0
