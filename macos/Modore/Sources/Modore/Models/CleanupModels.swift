@@ -9,8 +9,9 @@ struct CleanupPreview: Identifiable, Sendable {
     let label: String
     let estimatedKB: Int64
     let estimateMeasured: Bool
-    let reclaimedKB: Int64
-    let physicalDeltaKB: Int64
+    let estimatedBytes: Int64?
+    let reclaimedBytes: Int64?
+    let physicalDeltaBytes: Int64?
     let warning: String
     let summary: String
     let avoidWhen: String
@@ -35,8 +36,9 @@ struct CleanupPreview: Identifiable, Sendable {
         label = payload.label
         estimatedKB = payload.estimatedKB
         estimateMeasured = payload.estimateMeasured
-        reclaimedKB = payload.reclaimedKB
-        physicalDeltaKB = payload.physicalDeltaKB
+        estimatedBytes = payload.estimatedBytes
+        reclaimedBytes = payload.reclaimedBytes
+        physicalDeltaBytes = payload.physicalDeltaBytes
         warning = payload.warning
         summary = payload.summary
         avoidWhen = payload.avoidWhen
@@ -91,10 +93,10 @@ struct CleanupPreview: Identifiable, Sendable {
     }
 
     var estimatedText: String {
-        estimateMeasured ? Self.sizeText(estimatedKB) : "측정 보류"
+        estimateMeasured ? StorageBytes.text(estimatedBytes) : "측정 보류"
     }
-    var reclaimedText: String { Self.sizeText(reclaimedKB) }
-    var physicalDeltaText: String { Self.sizeText(physicalDeltaKB) }
+    var reclaimedText: String { StorageBytes.text(reclaimedBytes) }
+    var physicalDeltaText: String { StorageBytes.changeText(physicalDeltaBytes) }
 
     var statusText: String {
         switch status {
@@ -107,15 +109,6 @@ struct CleanupPreview: Identifiable, Sendable {
         }
     }
 
-    private static func sizeText(_ value: Int64) -> String {
-        if value >= 1_048_576 {
-            return String(format: "%.1fGB", Double(value) / 1_048_576)
-        }
-        if value >= 1_024 {
-            return String(format: "%.1fMB", Double(value) / 1_024)
-        }
-        return "\(max(value, 0))KB"
-    }
 }
 
 private struct ParsedProtocolLines {
@@ -134,8 +127,9 @@ private struct CleanupProtocolPayload {
     let label: String
     let estimatedKB: Int64
     let estimateMeasured: Bool
-    let reclaimedKB: Int64
-    let physicalDeltaKB: Int64
+    let estimatedBytes: Int64?
+    let reclaimedBytes: Int64?
+    let physicalDeltaBytes: Int64?
     let warning: String
     let summary: String
     let avoidWhen: String
@@ -167,8 +161,9 @@ private struct CleanupProtocolPayload {
             label: values["label"] ?? recipeID,
             estimatedKB: integer(values["estimatedKB"]),
             estimateMeasured: estimateMeasured(values, status: status),
-            reclaimedKB: integer(values["reclaimedKB"]),
-            physicalDeltaKB: integer(values["physicalDeltaKB"]),
+            estimatedBytes: byteValue(values, key: "estimated"),
+            reclaimedBytes: byteValue(values, key: "reclaimed"),
+            physicalDeltaBytes: byteValue(values, key: "physicalDelta", signed: true),
             warning: values["warning"] ?? "",
             // 구버전 런타임 미러에는 두 키가 없다. 설명이 비면 UI가 해당 줄을 숨긴다.
             summary: values["description"] ?? "",
@@ -223,6 +218,30 @@ private struct CleanupProtocolPayload {
 
     private static func integer(_ value: String?) -> Int64 {
         Int64(value ?? "0") ?? 0
+    }
+
+    private static func byteValue(_ values: [String: String], key: String, signed: Bool = false) -> Int64? {
+        let value: Int64?
+        if values["accountingVersion"] == "2" {
+            // An explicit empty/invalid measurement must not fall back to an
+            // old placeholder, nor may a missing value become a measured zero.
+            value = byteInteger(values[key + "Bytes"])
+        } else if values["accountingVersion"] == nil || values["accountingVersion"] == "1" {
+            let legacyValue = byteInteger(values[key + "KB"])
+            if signed && legacyValue == 0 { return nil }
+            value = StorageBytes.fromKiB(legacyValue)
+        } else {
+            value = nil
+        }
+        guard let value, signed || value >= 0 else { return nil }
+        return value
+    }
+
+    private static func byteInteger(_ text: String?) -> Int64? {
+        guard let text, !text.isEmpty, text.utf8.count <= 20 else { return nil }
+        let digits = text.hasPrefix("-") ? text.dropFirst() : text[...]
+        guard !digits.isEmpty, digits.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+        return Int64(text)
     }
 
     // 구버전 런타임 미러에는 estimateMeasured 키가 없다. 그 경우 차단 상태의

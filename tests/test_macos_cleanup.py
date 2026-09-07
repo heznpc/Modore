@@ -308,6 +308,15 @@ def test_cleanup_preview_is_read_only_and_execute_requires_approval(project_root
     receipt = Path(str(result["receipt"]))
     assert receipt.is_file()
     assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
+    recorded = parse_protocol(receipt.read_text())
+    assert payload["accountingVersion"] == result["accountingVersion"] == recorded["accountingVersion"] == "2"
+    assert int(str(payload["estimatedBytes"])) == int(str(payload["estimatedKB"])) * 1024
+    for key in ("estimated", "reclaimed", "physicalDelta"):
+        assert result[key + "Bytes"] == recorded[key + "Bytes"]
+        assert int(str(result[key + "Bytes"])) == int(str(result[key + "KB"])) * 1024
+    assert int(str(recorded["physicalDeltaBytes"])) == (
+        int(str(recorded["freeAfterBytes"])) - int(str(recorded["freeBeforeBytes"]))
+    )
 
 
 def test_cleanup_rejects_token_minted_for_a_different_recipe(project_root, tmp_path):
@@ -1276,6 +1285,87 @@ def test_project_residue_does_not_block_same_tool_in_another_project_cwd(
     assert payload["runningProcesses"] == ""
 
 
+def test_project_residue_unknown_cwd_blocks_without_claiming_active_use(project_root, tmp_path):
+    home = tmp_path / "home"
+    _, target = make_node_project(home)
+    preview = run_project_residue_preview(
+        project_root, home, target,
+        processes_with_pid="4242 /usr/local/bin/npm install\n",
+    )
+    payload = parse_protocol(preview.stdout)
+    assert preview.returncode == 0, preview.stderr
+    assert payload["status"] == "blocked"
+    assert "사용 여부 미확인" in payload["runningProcesses"]
+    assert "확인하지 못해" in payload["blockedReason"]
+    assert not payload["approvalToken"]
+    assert "previewPhase\tprocess-check" in preview.stderr
+    assert "previewPhase\tcomplete" in preview.stderr
+    assert target.exists()
+
+
+def cleanup_functions(project_root, *names):
+    lines = (project_root / "scripts/cleanup.sh").read_text(encoding="utf-8").splitlines()
+    result = []
+    for name in names:
+        start = lines.index(f"{name}() {{")
+        end = lines.index("}", start) + 1
+        result.append("\n".join(lines[start:end]))
+    return "\n".join(result)
+
+
+def test_process_probe_timeout_reaps_child_and_returns_unknown(project_root, tmp_path):
+    harness = tmp_path / "bounded-probe.sh"
+    harness.write_text(cleanup_functions(project_root, "wait_for_process_probe") + """
+/bin/sleep 30 &
+probe=$!
+wait_for_process_probe "$probe" 1
+status=$?
+/bin/kill -0 "$probe" 2>/dev/null && exit 99
+printf 'probe-status=%s\n' "$status"
+""", encoding="utf-8")
+    result = subprocess.run(["/bin/bash", str(harness)], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert "probe-status=124" in result.stdout
+
+
+def test_project_process_total_budget_fails_closed_without_more_cwd_queries(project_root, tmp_path):
+    harness = tmp_path / "process-budget.sh"
+    harness.write_text("""
+set -u
+set -o pipefail
+PROJECT_PROCESS_PATH_PATTERN='/unused-project'
+project_residue_tool_pattern() { printf 'npm'; }
+process_snapshot_with_pid() { printf '1 npm install\n2 npm install\n3 npm install\n'; }
+process_cwd_is_project() { echo queried >&2; SECONDS=100; return 1; }
+""" + cleanup_functions(project_root, "project_process_rows_with_pid") + """
+SECONDS=0
+project_process_rows_with_pid
+""", encoding="utf-8")
+    result = subprocess.run(["/bin/bash", str(harness)], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.count("queried") == 1
+    assert "2\t__MODORE_CWD_UNKNOWN__ npm install" in result.stdout
+    assert "3\t__MODORE_CWD_UNKNOWN__ npm install" in result.stdout
+
+
+def test_project_process_evidence_stops_after_five_blockers(project_root, tmp_path):
+    harness = tmp_path / "process-limit.sh"
+    harness.write_text("""
+set -u
+set -o pipefail
+PROJECT_PROCESS_PATH_PATTERN='/active-project'
+project_residue_tool_pattern() { printf 'npm'; }
+process_snapshot_with_pid() { for pid in {1..100}; do printf '%s npm /active-project\n' "$pid"; done; }
+process_cwd_is_project() { echo unexpected-query >&2; return 2; }
+""" + cleanup_functions(project_root, "project_process_rows_with_pid") + """
+project_process_rows_with_pid
+""", encoding="utf-8")
+    result = subprocess.run(["/bin/bash", str(harness)], capture_output=True, text=True, timeout=5)
+    # Upstream may receive SIGPIPE once the five-row reader has enough evidence.
+    assert len(result.stdout.splitlines()) == 5
+    assert not result.stderr
+
+
 def test_execute_rejects_target_drift_and_consumed_approval(project_root, tmp_path):
     home = tmp_path / "home"
     cache_file = home / ".npm" / "_cacache" / "entry"
@@ -1840,6 +1930,7 @@ def test_write_receipt_strips_embedded_tabs_from_target_paths(project_root, tmp_
         project_root / "scripts" / "modules" / "approval_token.sh", "prepare_private_directory() {"
     )
     write_receipt_src = extract(project_root / "scripts" / "cleanup.sh", "write_receipt() {")
+    kb_to_bytes_src = extract(project_root / "scripts" / "cleanup.sh", "kb_to_bytes() {")
     for src in (prepare_private_directory_src, write_receipt_src):
         assert src.endswith("}"), "extraction boundary moved; update this test"
 
@@ -1865,6 +1956,8 @@ STAGED_REMAINDERS=()
 
 {prepare_private_directory_src}
 
+{kb_to_bytes_src}
+
 {write_receipt_src}
 
 write_receipt "complete" 100 100 100
@@ -1884,6 +1977,39 @@ echo "RECEIPT_PATH=$RECEIPT_PATH"
     fields = target_line.split("\t")
     assert len(fields) == 2, f"embedded tab injected an extra TSV column: {fields!r}"
     assert fields[1] == "/tmp/weirddirectory/with-a-tab"
+
+
+@pytest.mark.parametrize("before,after,remaining,delta,reclaimed", [
+    ("1024", "2048", "50", "1048576", "51200"),
+    ("4096", "1024", "50", "-3145728", "51200"),
+    ("1024", "1024", "50", "0", "51200"),
+    ("", "1024", "50", "", "51200"),
+    ("1024", "failed", "50", "", "51200"),
+    ("1024", "2048", "__UNMEASURED__", "1048576", ""),
+    ("999999999999999999999999", "2048", "50", "", "51200"),
+    ("01024", "02048", "50", "1048576", "51200"),
+])
+def test_recovery_accounting_preserves_signed_bytes_and_unknown(
+    project_root, before, after, remaining, delta, reclaimed
+):
+    source = (project_root / "scripts" / "cleanup.sh").read_text(encoding="utf-8").splitlines()
+
+    def function(name):
+        start = source.index(name + "() {")
+        end = next(i for i in range(start, len(source)) if source[i] == "}")
+        return "\n".join(source[start:end + 1])
+
+    harness = "\n".join([
+        "set -u", function("kb_to_bytes"), function("calculate_recovery_accounting"),
+        'FREE_BEFORE="$1"; FREE_AFTER="$2"; REMAINING_KB="$3"; ESTIMATED_KB=100',
+        "calculate_recovery_accounting",
+        'printf "delta=%s\\nreclaimed=%s\\n" "$PHYSICAL_DELTA_BYTES" "$RECLAIMED_BYTES"',
+    ])
+    result = subprocess.run(["/bin/bash", "-c", harness, "accounting", before, after, remaining],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout == f"delta={delta}\nreclaimed={reclaimed}\n"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS plist tools are required")

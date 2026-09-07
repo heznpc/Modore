@@ -15,6 +15,12 @@ struct CleanupRecoverySheet: View {
             } else {
                 reviewContent
             }
+            if let error = model.recoveryHistoryError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(24)
         .frame(
@@ -55,10 +61,11 @@ struct CleanupRecoverySheet: View {
             }
 
             HStack(spacing: 18) {
-                recoveryMetric("현재 여유", value: Self.gbText(plan.baselineFreeGB))
+                recoveryMetric("기준 여유", value: StorageBytes.text(plan.baselineFreeBytes))
+                recoveryMetric("추가 확보 목표", value: StorageBytes.text(plan.requestedGainBytes))
                 Image(systemName: "arrow.right")
                     .foregroundStyle(.secondary)
-                recoveryMetric("목표 여유", value: Self.gbText(plan.desiredFreeGB))
+                recoveryMetric("최종 여유 목표", value: StorageBytes.text(plan.desiredFreeBytes))
                 Spacer()
                 TimelineView(.periodic(from: .now, by: 1)) { timeline in
                     Text(plan.approvalStatusText(at: timeline.date))
@@ -141,12 +148,12 @@ struct CleanupRecoverySheet: View {
 
         HStack(spacing: 22) {
             recoveryMetric(
-                "실제 증가",
-                value: result.freeSpaceMeasured ? "+" + Self.gbText(result.actualGainGB) : "확인 실패"
+                "여유 공간 순변화",
+                value: StorageBytes.changeText(result.actualChangeBytes)
             )
             recoveryMetric(
                 "현재 여유",
-                value: result.freeSpaceMeasured ? Self.gbText(result.finalFreeGB) : "확인 실패"
+                value: StorageBytes.text(result.finalFreeBytes)
             )
             recoveryMetric("완료", value: "\(result.succeededCount)개")
             if result.skippedCount > 0 {
@@ -169,7 +176,7 @@ struct CleanupRecoverySheet: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(item.label).font(.body.weight(.medium))
                             Text(item.succeeded
-                                ? "처리 대상 \(Self.kbText(item.reclaimedKB)) · 실행 중 실제 여유 변화 \(Self.kbText(item.physicalDeltaKB))"
+                                ? "대상 점유 감소 \(StorageBytes.text(item.reclaimedBytes)) · 여유 공간 순변화 \(StorageBytes.changeText(item.physicalDeltaBytes))"
                                 : item.detail)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -195,7 +202,7 @@ struct CleanupRecoverySheet: View {
 
         Divider()
         HStack {
-            Text("목표 \(Self.gbText(result.desiredFreeGB))")
+            Text("추가 확보 목표 \(StorageBytes.text(result.desiredFreeBytes - result.baselineFreeBytes)) · 최종 여유 목표 \(StorageBytes.text(result.desiredFreeBytes))\n공간 순변화에는 다른 앱의 활동도 포함됩니다.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -219,13 +226,6 @@ struct CleanupRecoverySheet: View {
         }
     }
 
-    private static func gbText(_ value: Double) -> String {
-        String(format: "%.1fGB", max(0, value))
-    }
-
-    private static func kbText(_ value: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: max(0, value) * 1_024, countStyle: .file)
-    }
 }
 
 private struct CleanupPlanEntryView: View {
@@ -279,6 +279,6 @@ private struct CleanupPlanEntryView: View {
 
 private extension CleanupRecoveryPlan {
     var estimatedText: String {
-        ByteCountFormatter.string(fromByteCount: max(0, estimatedKB) * 1_024, countStyle: .file)
+        StorageBytes.text(estimatedBytes)
     }
 }

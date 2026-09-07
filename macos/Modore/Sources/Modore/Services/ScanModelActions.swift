@@ -157,6 +157,7 @@ extension ScanModel {
                 appendLog("정리 미리보기 중단: 런타임 신뢰 검증 실패")
                 return
             }
+            let previewStarted = Date()
             let result = await cleanupExecution.preview(recipeID, request, context)
             guard !Task.isCancelled,
                   !applicationTerminationStarted,
@@ -166,16 +167,18 @@ extension ScanModel {
                 }
                 return
             }
-            guard result.endState == .exited else {
+            let diagnostic = CleanupExecutionService.previewDiagnostic(result, elapsed: Date().timeIntervalSince(previewStarted))
+            appendLog("미리보기 진단: \(label) · \(diagnostic)")
+            guard result.succeeded else {
                 if result.endState == .cancelled {
                     appendLog("정리 미리보기를 취소했습니다.")
                 } else {
-                    errorMessage = "정리 대상을 제한 시간과 출력 상한 안에서 확인하지 못했습니다. 다시 시도하세요."
-                    appendLog("정리 미리보기 중단: \(result.endState)")
+                    errorMessage = "정리 대상을 확인하지 못했습니다. \(diagnostic). 다시 측정하세요."
+                    appendLog("정리 미리보기 중단: \(diagnostic)")
                 }
                 return
             }
-            guard let preview = CleanupPreview(protocolText: result.output) else {
+            guard let preview = CleanupExecutionService.validatedPreview(result, recipeID: recipeID) else {
                 errorMessage = "정리 미리보기 결과를 읽지 못했습니다. 실행 로그를 확인하세요."
                 appendLog("정리 미리보기 실패: \(result.status)")
                 return
@@ -281,8 +284,15 @@ extension ScanModel {
         cleanupRequest = nil
     }
 
-    func prepareRecoveryPlan(_ items: [StorageItem], desiredFreeGB: Double) {
-        guard !applicationTerminationStarted, !isBusy, desiredFreeGB > 0 else { return }
+    func prepareRecoveryPlan(
+        _ items: [StorageItem], requestedGainBytes: Int64,
+        targetFreeBytes: Int64? = nil,
+        observeFreeSpace: @escaping @Sendable () async -> Observation<LiveFreeSpace>? = {
+            await Task.detached(priority: .utility) { LiveStateService.observeFreeSpace() }.value
+        }
+    ) {
+        guard !applicationTerminationStarted, !isBusy, requestedGainBytes > 0,
+              (targetFreeBytes ?? 0) >= 0 else { return }
         var seenExecutions: Set<String> = []
         let candidates = items.compactMap {
             item -> (item: StorageItem, tier: CleanupTier, request: CleanupExecutionRequest?)? in
@@ -309,7 +319,6 @@ extension ScanModel {
         errorMessage = nil
         appendLog("공간 확보 계획 준비: \(candidates.count)개 후보")
         let root = projectRoot
-        let fallbackFreeGB = currentFreeGB ?? 0
 
         cleanupTask = Task {
             defer {
@@ -336,16 +345,18 @@ extension ScanModel {
                     totalCount: candidates.count,
                     currentLabel: candidate.item.label
                 )
+                let previewStarted = Date()
                 let result = await cleanupExecution.preview(
                     candidate.item.cleanupID,
                     candidate.request,
                     context
                 )
                 guard !Task.isCancelled, !applicationTerminationStarted else { return }
-                guard result.endState == .exited,
-                      let preview = CleanupPreview(protocolText: result.output) else {
-                    errorMessage = "\(candidate.item.label)의 정리 대상을 안전하게 확인하지 못해 계획을 만들지 않았습니다."
-                    appendLog("공간 확보 계획 중단: \(candidate.item.label) 미리보기 실패")
+                let diagnostic = CleanupExecutionService.previewDiagnostic(result, elapsed: Date().timeIntervalSince(previewStarted))
+                appendLog("미리보기 진단: \(candidate.item.label) · \(diagnostic)")
+                guard let preview = CleanupExecutionService.validatedPreview(result, recipeID: candidate.item.cleanupID) else {
+                    errorMessage = "\(candidate.item.label)의 정리 대상을 안전하게 확인하지 못해 계획을 만들지 않았습니다. \(diagnostic)."
+                    appendLog("공간 확보 계획 중단: \(candidate.item.label) · \(diagnostic) · 유효한 미리보기 없음")
                     return
                 }
                 entries.append(CleanupPlanEntry(
@@ -356,19 +367,32 @@ extension ScanModel {
                 appendLog("계획 측정: \(preview.label) · \(preview.statusText) · \(preview.estimatedText)")
             }
 
-            let currentObservation = await Task.detached(priority: .utility) {
-                LiveStateService.observeFreeSpace()
-            }.value
+            let currentObservation = await observeFreeSpace()
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
-            let baselineFreeGB = currentObservation?.value.freeGB ?? fallbackFreeGB
-            if let currentObservation {
-                recordLiveFreeSpaceObservation(currentObservation)
+            guard let currentObservation else {
+                cleanupRecoveryPlan = nil
+                errorMessage = "현재 여유 공간을 측정하지 못해 승인 계획을 만들지 않았습니다. 다시 측정하세요."
+                appendLog("공간 확보 계획 중단: 기준 여유 공간 미확인")
+                return
             }
-            cleanupRecoveryPlan = CleanupRecoveryPlan(
-                baselineFreeGB: baselineFreeGB,
-                desiredFreeGB: desiredFreeGB,
+            let baseline = currentObservation.value.freeBytes
+            let gain = targetFreeBytes.map { max(0, $0 - baseline) } ?? requestedGainBytes
+            guard gain > 0, StorageBytes.adding(baseline, gain) != nil else {
+                cleanupRecoveryPlan = nil
+                errorMessage = "목표가 이미 충족되었거나 유효한 목표 범위를 벗어났습니다."
+                return
+            }
+            recordLiveFreeSpaceObservation(currentObservation)
+            let plan = CleanupRecoveryPlan(
+                baselineFreeBytes: baseline,
+                requestedGainBytes: gain,
                 entries: entries
             )
+            guard saveRecoveryHistory(RecoveryHistory(plan: plan)) else {
+                cleanupRecoveryPlan = nil
+                return
+            }
+            cleanupRecoveryPlan = plan
             appendLog("공간 확보 계획 준비 완료: 재측정 \(entries.count)개")
             AccessibilityAnnouncer.announce("공간 확보 계획을 준비했습니다")
         }
@@ -389,7 +413,10 @@ extension ScanModel {
         guard !applicationTerminationStarted,
               !isBusy,
               !plan.readyEntries.isEmpty,
+              let desiredFreeBytes = plan.desiredFreeBytes,
               cleanupRecoveryPlan?.id == plan.id,
+              cleanupRecoveryPlan?.baselineFreeBytes == plan.baselineFreeBytes,
+              cleanupRecoveryPlan?.requestedGainBytes == plan.requestedGainBytes,
               cleanupRecoveryPlan?.entries.map({ $0.preview.approvalToken })
                 == plan.entries.map({ $0.preview.approvalToken }) else { return }
         guard plan.canExecute(at: Date()) else {
@@ -398,6 +425,11 @@ extension ScanModel {
             return
         }
 
+        var history = RecoveryHistory(plan: plan)
+        history.phase = .approved
+        history.approvedAt = Date()
+        history.updatedAt = Date()
+        guard saveRecoveryHistory(history) else { return }
         cleanupInFlight = true
         cleanupRecoveryResult = nil
         cleanupRecoveryProgress = CleanupRecoveryProgress(
@@ -411,7 +443,21 @@ extension ScanModel {
 
         cleanupTask = Task {
             var shouldRescan = false
+            var itemResults: [CleanupRecoveryItemResult] = []
+            var journalHealthy = true
             defer {
+                history.items = itemResults.map(RecoveryHistory.Item.init)
+                history.updatedAt = Date()
+                history.detail = errorMessage ?? ""
+                if let result = cleanupRecoveryResult {
+                    history.phase = .finished
+                    history.finalFreeBytes = result.finalFreeBytes
+                    history.stoppedAfterFailure = result.stoppedAfterFailure
+                    history.activeEntryID = nil
+                } else {
+                    history.phase = .interrupted
+                }
+                saveRecoveryHistory(history)
                 cleanupInFlight = false
                 cleanupRecoveryProgress = nil
                 cleanupTask = nil
@@ -427,12 +473,14 @@ extension ScanModel {
                 return
             }
 
-            var itemResults: [CleanupRecoveryItemResult] = []
             var stoppedAfterFailure = false
-            var latestFreeGB = plan.baselineFreeGB
-            var freeSpaceMeasured = false
+            var latestFreeBytes = plan.baselineFreeBytes
 
             for (index, entry) in plan.readyEntries.enumerated() {
+                guard journalHealthy else {
+                    stoppedAfterFailure = true
+                    break
+                }
                 guard !Task.isCancelled, !applicationTerminationStarted else { return }
                 guard entry.preview.approvalIsFresh(
                     at: Date(),
@@ -451,10 +499,9 @@ extension ScanModel {
                     appendLog("공간 확보 중단: 실행 전 여유 공간 측정 실패")
                     break
                 }
-                latestFreeGB = before.value.freeGB
-                freeSpaceMeasured = true
+                latestFreeBytes = before.value.freeBytes
                 recordLiveFreeSpaceObservation(before)
-                if latestFreeGB >= plan.desiredFreeGB {
+                if latestFreeBytes >= desiredFreeBytes {
                     appendLog("확보 목표에 도달해 남은 \(plan.readyEntries.count - index)개 항목은 실행하지 않았습니다.")
                     break
                 }
@@ -465,8 +512,24 @@ extension ScanModel {
                     currentLabel: entry.preview.label
                 )
                 appendLog("계획 정리 실행: \(entry.preview.label)")
-                freeSpaceMeasured = false
                 guard !Task.isCancelled, !applicationTerminationStarted else { return }
+                history.phase = .running
+                history.activeEntryID = entry.id
+                history.updatedAt = Date()
+                guard saveRecoveryHistory(history) else {
+                    stoppedAfterFailure = true
+                    break
+                }
+                // Runs on success, break and cancellation. The next item may
+                // not start unless this checkpoint was written durably.
+                defer {
+                    history.items = itemResults.map(RecoveryHistory.Item.init)
+                    if history.items.contains(where: { $0.id == entry.id }) {
+                        history.activeEntryID = nil
+                    }
+                    history.updatedAt = Date()
+                    journalHealthy = saveRecoveryHistory(history)
+                }
                 guard persistCleanupMutationIntent() else {
                     stoppedAfterFailure = true
                     break
@@ -485,8 +548,8 @@ extension ScanModel {
                         requestTarget: entry.request?.target ?? "",
                         label: entry.preview.label,
                         status: "failed",
-                        reclaimedKB: 0,
-                        physicalDeltaKB: 0,
+                        reclaimedBytes: nil,
+                        physicalDeltaBytes: nil,
                         receipt: "",
                         detail: "고정 실행 입력을 구성하지 못했습니다."
                     ))
@@ -502,8 +565,8 @@ extension ScanModel {
                         requestTarget: entry.request?.target ?? "",
                         label: entry.preview.label,
                         status: "failed",
-                        reclaimedKB: 0,
-                        physicalDeltaKB: 0,
+                        reclaimedBytes: nil,
+                        physicalDeltaBytes: nil,
                         receipt: "",
                         detail: "실행이 제한 시간 안에 끝나지 않았습니다. 격리 복구 경로: \(CleanupExecutionService.stagingRecoveryDisplayPath)"
                     ))
@@ -519,8 +582,8 @@ extension ScanModel {
                         requestTarget: entry.request?.target ?? "",
                         label: entry.preview.label,
                         status: "failed",
-                        reclaimedKB: 0,
-                        physicalDeltaKB: 0,
+                        reclaimedBytes: nil,
+                        physicalDeltaBytes: nil,
                         receipt: "",
                         detail: "정리 실행 결과를 안전하게 읽지 못했습니다."
                     ))
@@ -536,8 +599,8 @@ extension ScanModel {
                     requestTarget: entry.request?.target ?? "",
                     label: executed.label,
                     status: executed.status,
-                    reclaimedKB: executed.reclaimedKB,
-                    physicalDeltaKB: executed.physicalDeltaKB,
+                    reclaimedBytes: executed.reclaimedBytes,
+                    physicalDeltaBytes: executed.physicalDeltaBytes,
                     receipt: executed.receipt,
                     detail: succeeded ? "" : executed.failureMessage
                 ))
@@ -558,8 +621,7 @@ extension ScanModel {
                     appendLog("공간 확보 중단: 정리 후 여유 공간 측정 실패")
                     break
                 }
-                latestFreeGB = after.value.freeGB
-                freeSpaceMeasured = true
+                latestFreeBytes = after.value.freeBytes
                 recordLiveFreeSpaceObservation(after)
                 cleanupRecoveryProgress = CleanupRecoveryProgress(
                     completedCount: index + 1,
@@ -569,31 +631,32 @@ extension ScanModel {
             }
 
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
+            if !journalHealthy { stoppedAfterFailure = true }
             let finalObservation = await observeFreeSpace()
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
+            // An earlier successful sample is not a successful final measurement.
+            let freeSpaceMeasured = finalObservation != nil
             if let finalObservation {
-                latestFreeGB = finalObservation.value.freeGB
-                freeSpaceMeasured = true
+                latestFreeBytes = finalObservation.value.freeBytes
                 recordLiveFreeSpaceObservation(finalObservation)
             }
             cleanupRecoveryResult = CleanupRecoveryResult(
-                baselineFreeGB: plan.baselineFreeGB,
-                finalFreeGB: latestFreeGB,
-                desiredFreeGB: plan.desiredFreeGB,
-                freeSpaceMeasured: freeSpaceMeasured,
+                baselineFreeBytes: plan.baselineFreeBytes,
+                finalFreeBytes: freeSpaceMeasured ? latestFreeBytes : nil,
+                desiredFreeBytes: desiredFreeBytes,
                 plannedCount: plan.readyEntries.count,
                 items: itemResults,
                 stoppedAfterFailure: stoppedAfterFailure,
                 rescanScheduled: shouldRescan
             )
             if freeSpaceMeasured {
-                let gain = max(0, latestFreeGB - plan.baselineFreeGB)
-                appendLog(String(format: "공간 확보 확인: 실제 %.1fGB 증가 · 현재 %.1fGB", gain, latestFreeGB))
+                let change = latestFreeBytes - plan.baselineFreeBytes
+                appendLog("공간 확보 확인: 여유 공간 순변화 \(StorageBytes.changeText(change)) · 현재 \(StorageBytes.text(latestFreeBytes))")
             } else {
                 appendLog("공간 확보 결과의 실제 여유 공간을 확인하지 못했습니다.")
             }
             AccessibilityAnnouncer.announce(
-                freeSpaceMeasured && latestFreeGB >= plan.desiredFreeGB
+                freeSpaceMeasured && latestFreeBytes >= desiredFreeBytes
                     ? "공간 확보 목표를 달성했습니다"
                     : "공간 확보 실행을 마쳤습니다"
             )
@@ -609,11 +672,20 @@ extension ScanModel {
                     && (entry.request == nil || $0.path == entry.request?.target)
             }
         }
-        prepareRecoveryPlan(items, desiredFreeGB: plan.desiredFreeGB)
+        prepareRecoveryPlan(
+            items, requestedGainBytes: plan.requestedGainBytes,
+            targetFreeBytes: cleanupRecoveryResult == nil ? nil : plan.desiredFreeBytes
+        )
     }
 
     func dismissRecoveryPlan() {
         guard !cleanupInFlight else { return }
+        if let plan = cleanupRecoveryPlan, cleanupRecoveryResult == nil,
+           var history = recoveryHistory.first(where: { $0.id == plan.id }), history.phase == .reviewed {
+            history.phase = .cancelled
+            history.updatedAt = Date()
+            saveRecoveryHistory(history)
+        }
         cleanupRecoveryPlan = nil
         cleanupRecoveryProgress = nil
         cleanupRecoveryResult = nil

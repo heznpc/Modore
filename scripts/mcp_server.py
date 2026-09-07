@@ -268,6 +268,11 @@ def tool_agent_session_list(args: dict) -> dict:
     total = report.get("total")
     if isinstance(total, bool) or not isinstance(total, int) or total < len(sessions):
         total = len(sessions)
+    artifact_total = report.get("artifactTotal")
+    if (isinstance(artifact_total, bool)
+            or not isinstance(artifact_total, int)
+            or artifact_total < total):
+        artifact_total = total
     returned = len(items)
     window = {"returned": returned, "total": total, "truncated": total > returned}
     if total > returned:
@@ -276,6 +281,7 @@ def tool_agent_session_list(args: dict) -> dict:
         "contract": "metadata-only; session bodies were not read",
         "delegated_to": "scree sessions",
         "sessions": items,
+        "artifactTotal": artifact_total,
         **window,
     }
 
@@ -825,7 +831,8 @@ TOOLS: list[dict] = [
             "Newest-first metadata index of local Claude Code, Codex, Gemini CLI, "
             "and supported editor workspace records. Delegates directly to Modore's "
             "existing `scree sessions` command: it returns tool, source path, workspace, "
-            "existence, kind, size, and last-active time without opening conversation "
+            "existence, kind, logical session identity, physical artifact sources, size, "
+            "and last-active time without opening conversation "
             "bodies. Use this to locate a session or replace a provider-specific frozen "
             "session listing. It does not return titles or snippets and cannot inspect "
             "a conversation. Read-only; truncation is explicit."),

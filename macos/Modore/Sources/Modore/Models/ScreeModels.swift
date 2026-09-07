@@ -316,8 +316,15 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
     /// unit walk. The explicit backup receipt computes the exact byte total.
     let sizeComplete: Bool?
     let lastActive: String
+    /// Provider identity shared by every physical rollout fragment.
+    let providerSessionId: String?
+    /// Newest first. Older runtimes omit this and imply one physical source.
+    let artifactSources: [String]
+    let segmentCount: Int
 
-    var id: String { source }
+    var id: String {
+        providerSessionId.map { "\(tool.lowercased()):\($0)" } ?? source
+    }
     var sourceURL: URL { URL(fileURLWithPath: source) }
 
     /// The workspace's last component, or the transcript's own name when
@@ -375,6 +382,9 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
 
     var subtitle: String {
         var parts = [tool, isReadable ? "대화" : "편집기 상태", lastActive]
+        if segmentCount > 1 {
+            parts.append("기록 조각 \(segmentCount)개")
+        }
         parts.append(sizeComplete == false ? "전체 크기는 백업 시 계산" : sizeText)
         if !workspace.isEmpty {
             if workspaceExists == false {
@@ -389,7 +399,32 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
     /// What a search matches against. Path included: people look for a
     /// session by the project it ran in as often as by its name.
     var searchHaystack: String {
-        "\(displayLabel)\n\(workspace)\n\(tool)\n\(source)".lowercased()
+        "\(displayLabel)\n\(workspace)\n\(tool)\n\(artifactSources.joined(separator: "\n"))"
+            .lowercased()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tool, source, workspace, workspaceExists, kind, sizeBytes
+        case sizeComplete, lastActive, sessionId, artifactSources, segmentCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        tool = try values.decode(String.self, forKey: .tool)
+        source = try values.decode(String.self, forKey: .source)
+        workspace = try values.decode(String.self, forKey: .workspace)
+        workspaceExists = try values.decodeIfPresent(Bool.self, forKey: .workspaceExists)
+        kind = try values.decode(String.self, forKey: .kind)
+        sizeBytes = try values.decode(Int64.self, forKey: .sizeBytes)
+        sizeComplete = try values.decodeIfPresent(Bool.self, forKey: .sizeComplete)
+        lastActive = try values.decode(String.self, forKey: .lastActive)
+        providerSessionId = try values.decodeIfPresent(String.self, forKey: .sessionId)
+        artifactSources = try values.decodeIfPresent(
+            [String].self, forKey: .artifactSources
+        ) ?? [source]
+        segmentCount = try values.decodeIfPresent(
+            Int.self, forKey: .segmentCount
+        ) ?? artifactSources.count
     }
 }
 
@@ -398,6 +433,7 @@ struct SessionIndex: Decodable, Equatable {
     /// Sessions before the cap, so the view can say what it is not showing
     /// rather than presenting a truncated list as the whole machine.
     let total: Int
+    let artifactTotal: Int
     let sessions: [SessionIndexEntry]
     /// Store-by-store discovery coverage. A result from an older runtime that
     /// omitted it decodes as incomplete rather than silently implying that the
@@ -406,21 +442,26 @@ struct SessionIndex: Decodable, Equatable {
 
     init(
         total: Int,
+        artifactTotal: Int? = nil,
         sessions: [SessionIndexEntry],
         coverage: SessionIndexCoverage = .unknown
     ) {
         self.total = total
+        self.artifactTotal = artifactTotal ?? total
         self.sessions = sessions
         self.coverage = coverage
     }
 
     private enum CodingKeys: String, CodingKey {
-        case total, sessions, coverage
+        case total, artifactTotal, sessions, coverage
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         total = try values.decode(Int.self, forKey: .total)
+        artifactTotal = try values.decodeIfPresent(
+            Int.self, forKey: .artifactTotal
+        ) ?? total
         sessions = try values.decode([SessionIndexEntry].self, forKey: .sessions)
         coverage = try values.decodeIfPresent(
             SessionIndexCoverage.self,
@@ -678,6 +719,25 @@ struct ScreeCleanupReceipt: Decodable, Equatable {
     let estimatedKB: Int64?
     let reclaimedKB: Int64?
     let physicalDeltaKB: Int64?
+    let accountingVersion: Int?
+    let estimatedBytes: Int64?
+    let reclaimedBytes: Int64?
+    let physicalDeltaBytes: Int64?
+
+    var targetEstimateBytes: Int64? {
+        guard accountingVersion == nil || accountingVersion == 1 || accountingVersion == 2 else { return nil }
+        return accountingVersion == nil ? StorageBytes.fromKiB(estimatedKB) : estimatedBytes
+    }
+    var targetReductionBytes: Int64? {
+        guard accountingVersion == nil || accountingVersion == 1 || accountingVersion == 2 else { return nil }
+        return accountingVersion == nil ? StorageBytes.fromKiB(reclaimedKB) : reclaimedBytes
+    }
+    var volumeChangeBytes: Int64? {
+        guard accountingVersion == nil || accountingVersion == 1 || accountingVersion == 2 else { return nil }
+        return accountingVersion == nil
+            ? (physicalDeltaKB == 0 ? nil : StorageBytes.fromKiB(physicalDeltaKB))
+            : physicalDeltaBytes
+    }
 }
 
 struct ScreeFilesystemObservation: Decodable, Equatable {

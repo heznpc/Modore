@@ -163,6 +163,8 @@ final class ScanModel: ObservableObject {
     @Published var cleanupRecoveryPlan: CleanupRecoveryPlan?
     @Published var cleanupRecoveryProgress: CleanupRecoveryProgress?
     @Published var cleanupRecoveryResult: CleanupRecoveryResult?
+    @Published var recoveryHistory: [RecoveryHistory] = []
+    @Published var recoveryHistoryError: String?
     @Published var cleanupInFlight = false
     @Published var cleanupIsExecuting = false
     @Published var browserAutomationStopPreview: BrowserAutomationStopPreview?
@@ -312,6 +314,7 @@ final class ScanModel: ObservableObject {
     let storageWatchEvidenceLoader: StorageWatchEvidenceLoader
     let cleanupExecution: CleanupExecutionClient
     let cleanupMutationRecorder: CleanupMutationRecorder
+    let recoveryHistoryWriter: (RecoveryHistory, URL) throws -> [RecoveryHistory]
     var cleanupRequest: CleanupExecutionRequest?
     private let normalReportName = "검사결과.html"
     private let shareReportName = "검사결과_공유용.html"
@@ -370,6 +373,9 @@ final class ScanModel: ObservableObject {
         cleanupExecution: CleanupExecutionClient = .live,
         cleanupMutationRecorder: @escaping CleanupMutationRecorder = {
             ScanPublication.markCleanupMutationPending(in: $0)
+        },
+        recoveryHistoryWriter: @escaping (RecoveryHistory, URL) throws -> [RecoveryHistory] = {
+            try RecoveryHistoryStore.save($0, in: $1)
         }
     ) {
         self.projectRoot = projectRoot ?? Self.detectProjectRoot()
@@ -378,6 +384,7 @@ final class ScanModel: ObservableObject {
         self.storageWatchEvidenceLoader = storageWatchEvidenceLoader
         self.cleanupExecution = cleanupExecution
         self.cleanupMutationRecorder = cleanupMutationRecorder
+        self.recoveryHistoryWriter = recoveryHistoryWriter
         self.cleanupMutationPending = ScanPublication.cleanupMutationIsPending(
             in: self.projectRoot
         )
@@ -385,6 +392,7 @@ final class ScanModel: ObservableObject {
         let keepState = SimulatorKeepStore.load()
         self.simulatorKeepUUIDs = keepState.uuids
         self.simulatorLegacyKeepEntries = keepState.legacyEntries
+        loadRecoveryHistory()
         startTrackedApplicationTask { [weak self] in
             guard let self else { return }
             await refreshExistingResults()

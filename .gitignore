@@ -1,5 +1,6 @@
 # 스캔 결과물 (사용자 PC 정보 포함 - 커밋 금지)
 scan_result.json
+/recovery-history.json
 monitor_result.json
 raw_facts.json
 검사결과.html

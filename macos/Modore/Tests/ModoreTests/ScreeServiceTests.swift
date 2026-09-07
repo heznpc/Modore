@@ -102,6 +102,7 @@ final class ScreeServiceTests: XCTestCase {
             "scree-bind-targets-\(uuid.lowercased()).json",
             "scree-bind-results-\(uuid.lowercased()).json",
             "scree-title-sources-\(uuid.uppercased()).json",
+            "scree-inspect-sources-\(uuid.lowercased()).json",
         ]
         for name in names {
             try writeScratch(name, in: root, modifiedAt: now.addingTimeInterval(-7_200))
@@ -1025,8 +1026,8 @@ final class ScreeEvidenceResultTests: XCTestCase {
         let item = try XCTUnwrap(StorageEvidenceTimelineItem.contextItems(from: result).first)
         XCTAssertEqual(item.evidenceLabel, "Modore 조치 기록")
         XCTAssertTrue(item.detail.contains("실행 차단"))
-        XCTAssertTrue(item.detail.contains("회수 기록"))
-        XCTAssertTrue(item.detail.contains("가용 공간 변화"))
+        XCTAssertTrue(item.detail.contains("대상 점유 감소 0 B"))
+        XCTAssertTrue(item.detail.contains("여유 공간 순변화 미확인"))
         XCTAssertTrue(item.detail.contains("사전 추정"))
     }
 }

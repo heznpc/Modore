@@ -35,6 +35,8 @@ PROJECT_RESIDUE_PARENT=""
 PROJECT_RESIDUE_BASENAME=""
 PROJECT_RESIDUE_PRIMARY_MARKER=""
 PROJECT_PROCESS_PATH_PATTERN=""
+PROJECT_PROCESS_ROWS=""
+PROJECT_PROCESS_ROWS_CACHED="false"
 TRANSIENT_WORKSPACE_TARGET=""
 HOME_ROOT="${HOME:-}"
 VAR_FOLDERS_ROOT="/private/var/folders"
@@ -1573,6 +1575,22 @@ exclude_self_and_measurement() {
             '^(/usr/bin/du|/usr/bin/mdls|/usr/libexec/PlistBuddy)( -[^ ]+)* [^&|;]*$'
 }
 
+wait_for_process_probe() {
+    local pid="$1" limit="$2" attempts=0
+    while /bin/kill -0 "$pid" 2>/dev/null; do
+        if [[ "$attempts" -ge "$limit" ]]; then
+            /bin/kill -TERM "$pid" 2>/dev/null || true
+            /bin/sleep 0.1
+            /bin/kill -KILL "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        attempts=$((attempts + 1))
+        /bin/sleep 0.1
+    done
+    wait "$pid" 2>/dev/null
+}
+
 process_cwd_for_pid() {
     local pid="$1"
     if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
@@ -1584,10 +1602,20 @@ process_cwd_for_pid() {
         return $?
     fi
     [[ -x /usr/sbin/lsof ]] || return 1
-    # One PID and only its cwd descriptor: unlike `lsof +D`, this does not walk
-    # the project tree. Callers cap candidate build processes at 64.
-    /usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null \
-        | /usr/bin/awk '/^n\// {sub(/^n/, ""); print; found=1; exit} END {exit !found}'
+    # Bound even one cwd query: lsof can stall on an unrelated filesystem.
+    # The caller also bounds the whole candidate pass. Unknown always blocks.
+    local output probe status
+    output="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/modore-cwd.XXXXXX")" || return 1
+    /usr/sbin/lsof -a -p "$pid" -d cwd -Fn > "$output" 2>/dev/null &
+    probe=$!
+    wait_for_process_probe "$probe" 20
+    status=$?
+    if [[ "$status" -eq 0 ]]; then
+        /usr/bin/awk '/^n\// {sub(/^n/, ""); print; found=1; exit} END {exit !found}' "$output"
+        status=$?
+    fi
+    /bin/rm -f "$output"
+    return "$status"
 }
 
 process_cwd_is_project() {
@@ -1604,7 +1632,9 @@ process_cwd_is_project() {
 }
 
 project_process_rows_with_pid() {
-    local tool_pattern pid command filtered candidate_count=0 cwd_status
+    local tool_pattern pid command candidate_count=0 cwd_status matches=0 started=$SECONDS
+    local self_pattern='scripts/cleanup\.sh|/usr/bin/grep -E|Contents/MacOS/Modore'
+    local measurement_pattern='^(/usr/bin/du|/usr/bin/mdls|/usr/libexec/PlistBuddy)( -[^ ]+)* [^&|;]*$'
     tool_pattern="$(project_residue_tool_pattern)" || return 1
     process_snapshot_with_pid \
         | /usr/bin/awk '
@@ -1616,29 +1646,40 @@ project_process_rows_with_pid() {
             }' \
         | while IFS=$'\t' read -r pid command; do
             [[ "$pid" =~ ^[0-9]+$ && -n "$command" ]] || continue
-            filtered="$(/usr/bin/printf '%s\n' "$command" | exclude_self_and_measurement || true)"
-            [[ -n "$filtered" ]] || continue
-            if /usr/bin/printf '%s\n' "$command" | /usr/bin/grep -E -q "$PROJECT_PROCESS_PATH_PATTERN"; then
+            # Bash ERE avoids spawning several filters for every process on
+            # the machine, including the hundreds unrelated to this project.
+            [[ ! "$command" =~ $self_pattern && ! "$command" =~ $measurement_pattern ]] || continue
+            if [[ "$command" =~ $PROJECT_PROCESS_PATH_PATTERN ]]; then
                 /usr/bin/printf '%s\t%s\n' "$pid" "$command"
+                matches=$((matches + 1))
+                [[ "$matches" -lt 5 ]] || break
                 continue
             fi
-            /usr/bin/printf '%s\n' "$command" | /usr/bin/grep -E -q "$tool_pattern" || continue
+            [[ "$command" =~ $tool_pattern ]] || continue
             candidate_count=$((candidate_count + 1))
-            if [[ "$candidate_count" -gt 64 ]]; then
-                # An unexpectedly large candidate set makes the bounded cwd
-                # proof incomplete. Fail closed rather than silently skipping
-                # a possible writer to the approved target.
-                /usr/bin/printf '%s\t%s\n' "$pid" "$command"
-                continue
+            if [[ "$candidate_count" -gt 64 || $((SECONDS - started)) -ge 8 ]]; then
+                cwd_status=2
+            else
+                process_cwd_is_project "$pid"
+                cwd_status=$?
             fi
-            process_cwd_is_project "$pid"
-            cwd_status=$?
             if [[ "$cwd_status" -eq 0 || "$cwd_status" -eq 2 ]]; then
+                [[ "$cwd_status" -ne 2 ]] || command="__MODORE_CWD_UNKNOWN__ $command"
                 /usr/bin/printf '%s\t%s\n' "$pid" "$command"
+                matches=$((matches + 1))
+                [[ "$matches" -lt 5 ]] || break
             fi
         done \
         | /usr/bin/awk -F '\t' '!seen[$1 FS $2]++' \
         | /usr/bin/head -n 5
+}
+
+current_project_process_rows() {
+    if [[ "$PROJECT_PROCESS_ROWS_CACHED" == "true" ]]; then
+        /usr/bin/printf '%s\n' "$PROJECT_PROCESS_ROWS"
+    else
+        project_process_rows_with_pid
+    fi
 }
 
 matching_project_processes() {
@@ -1653,7 +1694,7 @@ matching_project_processes() {
             || true
         return 0
     fi
-    project_process_rows_with_pid \
+    current_project_process_rows \
         | /usr/bin/awk -F '\t' '{ $1=""; sub(/^ /, ""); print }' \
         | /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' \
         | /usr/bin/cut -c 1-240 \
@@ -1678,6 +1719,10 @@ matching_processes() {
 process_display_name() {
     local command="$1"
     local display_name
+    if [[ "$command" == '__MODORE_CWD_UNKNOWN__ '* ]]; then
+        /usr/bin/printf '%s (사용 여부 미확인)' "$(process_display_name "${command#__MODORE_CWD_UNKNOWN__ }")"
+        return
+    fi
     if [[ "$RECIPE_ID" == app_uninstall:* ]]; then
         display_name="$LABEL"
     else
@@ -1722,7 +1767,7 @@ display_process_names() {
 matching_processes_with_pid() {
     [[ -n "$PROCESS_PATTERN" ]] || return 0
     if [[ "$RECIPE_ID" == "project_residue" ]]; then
-        project_process_rows_with_pid \
+        current_project_process_rows \
             | /usr/bin/awk -F '\t' 'NF >= 2 {pid=$1; $1=""; sub(/^ /, ""); printf "%s %s\n", pid, $0}' \
             | /usr/bin/sed -E 's/[[:space:]]+/ /g' \
             | /usr/bin/cut -c 1-240 \
@@ -2013,6 +2058,7 @@ preview_status() {
         return 0
     fi
 
+    emit "previewPhase" "target-validation" >&2
     for target in "${TARGETS[@]}"; do
         if ! validate_target "$RECIPE_ID" "$target"; then
             PREVIEW_STATUS="blocked"
@@ -2044,14 +2090,26 @@ preview_status() {
         return 0
     fi
 
+    emit "previewPhase" "process-check" >&2
+    # Use one snapshot for the verdict and its displayed evidence only. The
+    # approval manifest and every execute boundary still recheck live state.
+    if [[ "$RECIPE_ID" == "project_residue" ]]; then
+        PROJECT_PROCESS_ROWS="$(project_process_rows_with_pid)"
+        PROJECT_PROCESS_ROWS_CACHED="true"
+    fi
     matches="$(matching_processes)"
     if [[ -n "$matches" ]]; then
         RUNNING_PROCESSES="$(display_process_evidence | /usr/bin/tr '\n' ';' | /usr/bin/sed 's/;$//')"
         if [[ "$PROCESS_POLICY" == "block" ]]; then
             PREVIEW_STATUS="blocked"
             BLOCKED_REASON="${PROCESS_NOTE:-관련 프로세스를 먼저 종료하세요.}"
+            if [[ "$matches" == *'__MODORE_CWD_UNKNOWN__ '* ]]; then
+                BLOCKED_REASON="관련 프로세스의 작업 위치를 제한 시간 안에 확인하지 못해 정리를 차단했습니다. 사용 여부 미확인 항목을 확인한 뒤 다시 측정하세요."
+            fi
         fi
     fi
+    PROJECT_PROCESS_ROWS_CACHED="false"
+    PROJECT_PROCESS_ROWS=""
 }
 
 emit_state() {
@@ -2065,6 +2123,12 @@ emit_state() {
     emit "recipeId" "$RECIPE_ID"
     emit "label" "$LABEL"
     emit "estimatedKB" "$estimated_kb"
+    emit "accountingVersion" "2"
+    if [[ "$ESTIMATE_MEASURED" == "true" ]]; then
+        emit "estimatedBytes" "$(kb_to_bytes "$estimated_kb")"
+    else
+        emit "estimatedBytes" ""
+    fi
     emit "estimateMeasured" "$ESTIMATE_MEASURED"
     emit "actionMode" "$REMOVE_MODE"
     emit "warning" "$WARNING"
@@ -2469,6 +2533,42 @@ available_kb() {
     /bin/df -Pk "$HOME_ROOT" 2>/dev/null | /usr/bin/awk 'NR == 2 {print $4; exit}'
 }
 
+kb_to_bytes() {
+    # df/du report KiB. Empty, malformed and overflowing measurements remain
+    # unknown; shell arithmetic must not interpret leading zeroes as octal.
+    local value="$1" sign=1
+    [[ "$value" =~ ^-?[0-9]+$ ]] || return 0
+    if [[ "$value" == -* ]]; then sign=-1; value="${value#-}"; fi
+    while [[ ${#value} -gt 1 && "$value" == 0* ]]; do value="${value#0}"; done
+    [[ ${#value} -le 16 ]] || return 0
+    [[ "$value" -le 9007199254740991 ]] || return 0
+    /usr/bin/printf '%s' "$((sign * 10#$value * 1024))"
+}
+
+calculate_recovery_accounting() {
+    FREE_BEFORE_BYTES="$(kb_to_bytes "$FREE_BEFORE")"
+    FREE_AFTER_BYTES="$(kb_to_bytes "$FREE_AFTER")"
+    PHYSICAL_DELTA_BYTES=""
+    PHYSICAL_DELTA_KB=""
+    if [[ -n "$FREE_BEFORE_BYTES" && -n "$FREE_AFTER_BYTES" \
+          && "$FREE_BEFORE_BYTES" -ge 0 && "$FREE_AFTER_BYTES" -ge 0 ]]; then
+        PHYSICAL_DELTA_BYTES=$((FREE_AFTER_BYTES - FREE_BEFORE_BYTES))
+        PHYSICAL_DELTA_KB=$((PHYSICAL_DELTA_BYTES / 1024))
+    fi
+    # Target accounting must never substitute the whole-volume delta.
+    local estimated_bytes remaining_bytes
+    estimated_bytes="$(kb_to_bytes "$ESTIMATED_KB")"
+    remaining_bytes="$(kb_to_bytes "$REMAINING_KB")"
+    RECLAIMED_BYTES=""
+    RECLAIMED_KB=""
+    if [[ -n "$estimated_bytes" && -n "$remaining_bytes" \
+          && "$estimated_bytes" -ge 0 && "$remaining_bytes" -ge 0 ]]; then
+        RECLAIMED_BYTES=$((estimated_bytes - remaining_bytes))
+        [[ "$RECLAIMED_BYTES" -ge 0 ]] || RECLAIMED_BYTES=0
+        RECLAIMED_KB=$((RECLAIMED_BYTES / 1024))
+    fi
+}
+
 write_receipt() {
     local status="$1"
     local estimated_kb="$2"
@@ -2495,6 +2595,12 @@ write_receipt() {
         /usr/bin/printf 'estimatedKB\t%s\n' "$estimated_kb"
         /usr/bin/printf 'reclaimedKB\t%s\n' "$reclaimed_kb"
         /usr/bin/printf 'physicalDeltaKB\t%s\n' "$physical_delta_kb"
+        /usr/bin/printf 'accountingVersion\t2\n'
+        /usr/bin/printf 'estimatedBytes\t%s\n' "$(kb_to_bytes "$estimated_kb")"
+        /usr/bin/printf 'reclaimedBytes\t%s\n' "$(kb_to_bytes "$reclaimed_kb")"
+        /usr/bin/printf 'physicalDeltaBytes\t%s\n' "$(kb_to_bytes "$physical_delta_kb")"
+        /usr/bin/printf 'freeBeforeBytes\t%s\n' "${FREE_BEFORE_BYTES:-}"
+        /usr/bin/printf 'freeAfterBytes\t%s\n' "${FREE_AFTER_BYTES:-}"
         /usr/bin/printf 'actionMode\t%s\n' "$REMOVE_MODE"
         /usr/bin/printf 'trashRun\t%s\n' "$TRASH_RUN"
         # A path containing a literal tab (unusual, but not forbidden by the
@@ -2588,6 +2694,7 @@ parse_arguments() {
 run_preview() {
     preview_status
     if [[ "$PREVIEW_STATUS" == "ready" ]]; then
+        emit "previewPhase" "manifest-measurement" >&2
         if create_approval_manifest; then
             ESTIMATED_KB="$MANIFEST_ESTIMATED_KB"
             ESTIMATE_MEASURED="true"
@@ -2599,6 +2706,7 @@ run_preview() {
     elif [[ "$PREVIEW_STATUS" == "empty" ]]; then
         ESTIMATE_MEASURED="true"
     fi
+    emit "previewPhase" "complete" >&2
     emit_state "preview" "$PREVIEW_STATUS" "$ESTIMATED_KB"
 }
 
@@ -2606,6 +2714,8 @@ emit_final_result() {
     emit_state "execute" "$RESULT_STATUS" "$ESTIMATED_KB"
     emit "reclaimedKB" "$RECLAIMED_KB"
     emit "physicalDeltaKB" "$PHYSICAL_DELTA_KB"
+    emit "reclaimedBytes" "$RECLAIMED_BYTES"
+    emit "physicalDeltaBytes" "$PHYSICAL_DELTA_BYTES"
     emit "receipt" "$RECEIPT_PATH"
     emit "trashRun" "$TRASH_RUN"
 
@@ -2679,7 +2789,6 @@ run_execute() {
     fi
 
     FREE_BEFORE="$(available_kb)"
-    case "$FREE_BEFORE" in ''|*[!0-9]*) FREE_BEFORE=0 ;; esac
     FAILED=0
     TARGET_INDEX=0
     if [[ "$RECIPE_ID" == app_uninstall:* ]]; then
@@ -2760,18 +2869,8 @@ run_execute() {
     fi
 
     FREE_AFTER="$(available_kb)"
-    case "$FREE_AFTER" in ''|*[!0-9]*) FREE_AFTER=0 ;; esac
-    PHYSICAL_DELTA_KB=$((FREE_AFTER - FREE_BEFORE))
-    [[ "$PHYSICAL_DELTA_KB" -ge 0 ]] || PHYSICAL_DELTA_KB=0
     REMAINING_KB="$(remaining_targets_size_kb)"
-    if [[ "$REMAINING_KB" == "__UNMEASURED__" ]]; then
-        # Cannot verify how much remains; report only the measured free-space gain
-        # rather than overstating logical reclaim.
-        RECLAIMED_KB="$PHYSICAL_DELTA_KB"
-    else
-        RECLAIMED_KB=$((ESTIMATED_KB - REMAINING_KB))
-        [[ "$RECLAIMED_KB" -ge 0 ]] || RECLAIMED_KB=0
-    fi
+    calculate_recovery_accounting
 
     RESULT_STATUS="complete"
     [[ "$FAILED" -eq 0 ]] || RESULT_STATUS="$EXECUTION_FAILURE_STATUS"
@@ -2785,6 +2884,7 @@ run_execute() {
 
 main() {
     parse_arguments "$@"
+    [[ "$OPERATION" != "preview" ]] || emit "previewPhase" "runtime-setup" >&2
     configure_roots
 
     if [[ "$OPERATION" == "list" ]]; then
@@ -2792,6 +2892,7 @@ main() {
         return 0
     fi
 
+    [[ "$OPERATION" != "preview" ]] || emit "previewPhase" "request-validation" >&2
     define_recipe "$RECIPE_ID" || fail_usage "허용되지 않은 recipe ID입니다: $RECIPE_ID"
     ESTIMATED_KB=0
 
