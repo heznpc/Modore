@@ -84,6 +84,8 @@ SERVER_INSTRUCTIONS = (
     "and what is the machine's disk pressure, reclaimable storage, or macOS "
     "security posture (system_scan_summary -- reads the scan already on disk and "
     "reports its age and staleness explicitly). "
+    "Discover existing simulators, runtime IDs, project/session leases and external SSD users "
+    "before creating a simulator or ejecting a disk (work_resource_status). "
     "This surface is read-only by contract: it exposes judgment only. Cleanup, "
     "deletion, and scan execution are not available here and must not be "
     "attempted through it -- Modore gates those on an approval a human grants on "
@@ -789,6 +791,10 @@ def _required_text_arg(args: dict, name: str, *, maximum_bytes: int) -> str:
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False,
              "idempotentHint": True, "openWorldHint": False}
 
+def tool_work_resource_status(args: dict) -> dict:
+    return _run_json(SCRIPT_DIR / "work_resources.py", ["status"], 45)
+
+
 TOOLS: list[dict] = [
     {
         "name": "agent_state_report",
@@ -1079,6 +1085,15 @@ TOOLS: list[dict] = [
         "annotations": {"title": "Moraine — what stayed after the installer left", **READ_ONLY},
         "handler": tool_moraine_report,
     },
+    {
+        "name": "work_resource_status",
+        "title": "Live simulators and external disks",
+        "description": "Discover existing simulator UDIDs before creating devices. Shows runtime, duplicate groups, explicit project/session leases and observed SSD open-file users. Unregistered session ownership remains unknown. Use modore resources acquire/claim to register use; heartbeat every five minutes and release on exit.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "annotations": {"title": "Work resource inventory", **READ_ONLY},
+        "handler": tool_work_resource_status,
+    },
+
 ]
 
 # Read-only contract, ported from AirMCP's iOS server (`IOSPreviewContract` in
@@ -1092,7 +1107,7 @@ TOOLS: list[dict] = [
 EXPOSED_TOOL_NAMES = frozenset({"agent_state_report", "agent_session_list",
                                 "agent_session_search", "operator_friction_report", "model_residue_report",
                                 "mcp_hygiene", "agent_file_access", "system_scan_summary",
-                                "uninstall_residue_report"})
+                                "uninstall_residue_report", "work_resource_status"})
 
 
 def contract_allows(tool: dict) -> bool:

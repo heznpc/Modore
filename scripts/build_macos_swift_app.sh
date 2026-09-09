@@ -476,6 +476,7 @@ RUNTIME_FILES=(
     "scripts/schedule.sh"
     "scripts/scree.py"
     "scripts/asset_retirement.py"
+    "scripts/work_resources.py"
     "scripts/report.jxa.js"
     "scripts/scanner_helper.jxa.js"
     "scripts/idle_cpu.sh"
