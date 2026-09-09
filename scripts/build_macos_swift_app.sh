@@ -423,6 +423,7 @@ for architecture in "${architectures[@]}"; do
         --package-path "$PACKAGE_DIR"
         --scratch-path "$scratch_path"
         --configuration release
+        --jobs 2
         --triple "$triple"
         -debug-info-format none
         --disable-local-rpath
@@ -793,11 +794,22 @@ generate_python_runtime_manifest() {
 }
 
 if [[ "${PCH_SKIP_ADHOC_SIGN:-0}" != "1" ]]; then
+    # Preserve the designated requirement across local updates, so macOS privacy
+    # grants are attached to an identity rather than a changing ad-hoc cdhash.
+    signing_identity="${PCH_SIGNING_IDENTITY:-}"
+    if [[ -z "$signing_identity" ]]; then
+        signing_identity="$(/usr/bin/security find-identity -v -p codesigning \
+            | /usr/bin/awk '/Developer ID Application/ {print $2; exit}')"
+    fi
+    if [[ -z "$signing_identity" ]]; then
+        /usr/bin/printf 'ERROR: set PCH_SIGNING_IDENTITY to a signing identity (or - for an explicitly ad-hoc development build).\n' >&2
+        exit 78
+    fi
     # Sign nested code inside-out. `--deep` remains verification-only; using it
     # to sign would hide which executable the release actually authorizes.
-    run_clean /usr/bin/codesign --force --sign - "$PYTHON_RUNTIME_EXECUTABLE" >/dev/null
+    run_clean /usr/bin/codesign --force --sign "$signing_identity" "$PYTHON_RUNTIME_EXECUTABLE" >/dev/null
     generate_python_runtime_manifest
-    run_clean /usr/bin/codesign --force --sign - "$APP_DIR" >/dev/null
+    run_clean /usr/bin/codesign --force --sign "$signing_identity" "$APP_DIR" >/dev/null
 else
     generate_python_runtime_manifest
 fi

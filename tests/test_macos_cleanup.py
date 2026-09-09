@@ -705,9 +705,10 @@ def test_homebrew_still_blocks_across_its_two_stage_self_exec(project_root, tmp_
 def test_headless_converters_do_not_block_chrome_clone_cleanup(project_root, tmp_path):
     home = tmp_path / "home"
     var_folders = home / "VarFoldersRoot" / "aa" / "bb" / "X"
-    clone = var_folders / "com.google.Chrome.code_sign_clone"
-    clone.mkdir(parents=True)
-    (clone / "payload").write_bytes(b"fixture")
+    clone = var_folders / "com.google.Chrome.code_sign_clone" / "code_sign_clone.ABC123"
+    executable = clone / "Google Chrome.app.bundle/Contents/MacOS/Google Chrome"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"fixture")
 
     # The same generic Chromium flags that over-blocked the Playwright cache were
     # still here, catching LibreOffice and Edge, while missing the Chrome updater
@@ -2646,3 +2647,70 @@ def test_every_scanned_cache_cleanup_id_has_an_executor_recipe(project_root):
     executor = _cleanup_recipe_ids(project_root)
     orphaned = scanner - executor
     assert not orphaned, f"scanner emits cleanup_ids with no executor recipe: {orphaned}"
+
+
+def test_chrome_only_offers_idle_children_while_browser_remains_open(project_root, tmp_path):
+    home = tmp_path / "home"
+    root = home / "VarFoldersRoot/aa/bb/X/com.google.Chrome.code_sign_clone"
+    idle = root / "code_sign_clone.ABC123"
+    active = root / "code_sign_clone.DEF456"
+    for clone in (idle, active):
+        executable = clone / "Google Chrome.app.bundle/Contents/MacOS/Google Chrome"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"fixture")
+    open_paths = home / "open-paths.txt"
+    open_paths.write_text(str(active) + "\n")
+    result = run_cleanup(project_root, home, "--preview", "chrome_code_sign_clones",
+                         processes="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n",
+                         extra_env={"PCH_TEST_TRANSIENT_OPEN_PATHS_FILE": str(open_paths)})
+    protocol = parse_protocol(result.stdout)
+    assert protocol["status"] == "ready"
+    assert protocol["targets"] == [str(idle)]
+    assert protocol["reviewResidue"] == [str(active)]
+    open_paths.write_text(str(active) + "\n" + str(idle) + "\n")
+    result = run_cleanup(project_root, home, "--preview", "chrome_code_sign_clones",
+                         extra_env={"PCH_TEST_TRANSIENT_OPEN_PATHS_FILE": str(open_paths)})
+    assert parse_protocol(result.stdout)["status"] == "blocked"
+
+
+def test_chrome_unknown_usage_never_offers_parent_or_children(project_root, tmp_path):
+    home = tmp_path / "home"
+    clone = home / "VarFoldersRoot/aa/bb/T/com.google.Chrome.code_sign_clone/code_sign_clone.ABC123"
+    executable = clone / "Google Chrome.app.bundle/Contents/MacOS/Google Chrome"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"fixture")
+    result = run_cleanup(project_root, home, "--preview", "chrome_code_sign_clones",
+                         extra_env={"PCH_TEST_TRANSIENT_LSOF_UNKNOWN": "1"})
+    protocol = parse_protocol(result.stdout)
+    assert protocol["status"] == "blocked"
+    assert not protocol.get("targets")
+    assert not protocol.get("approvalToken")
+
+
+def test_chrome_execution_removes_only_approved_idle_clone(project_root, tmp_path):
+    home = tmp_path / "home"
+    root = home / "VarFoldersRoot/aa/bb/X/com.google.Chrome.code_sign_clone"
+    idle = root / "code_sign_clone.ABC123"
+    active = root / "code_sign_clone.DEF456"
+    for clone in (idle, active):
+        executable = clone / "Google Chrome.app.bundle/Contents/MacOS/Google Chrome"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"fixture")
+    open_paths = home / "open-paths.txt"
+    open_paths.write_text(str(active) + "\n")
+    env = {"PCH_TEST_TRANSIENT_OPEN_PATHS_FILE": str(open_paths)}
+    preview = run_cleanup(project_root, home, "--preview", "chrome_code_sign_clones", extra_env=env)
+    token = approval_token(parse_protocol(preview.stdout))
+    # A target becoming active invalidates the approval, even if Chrome was
+    # already running when the plan was prepared.
+    open_paths.write_text(str(active) + "\n" + str(idle) + "\n")
+    rejected = run_cleanup_with_token_file(project_root, home, "chrome_code_sign_clones", token, extra_env=env)
+    assert parse_protocol(rejected.stdout)["status"] != "complete"
+    assert idle.exists() and active.exists()
+    open_paths.write_text(str(active) + "\n")
+    preview = run_cleanup(project_root, home, "--preview", "chrome_code_sign_clones", extra_env=env)
+    executed = run_cleanup_with_token_file(project_root, home, "chrome_code_sign_clones",
+                                           approval_token(parse_protocol(preview.stdout)), extra_env=env)
+    assert parse_protocol(executed.stdout)["status"] == "complete", executed.stdout + executed.stderr
+    assert not idle.exists()
+    assert active.exists() and root.exists()

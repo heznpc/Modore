@@ -35,14 +35,14 @@ final class ModoreRouteTests: XCTestCase {
         }
     }
 
-    func testStorageRecoveryRemeasuresExistingDataWhenIdle() {
+    func testStorageRecoveryUsesExistingCandidatesAndOnlyScansMissingInventory() {
         let route = ModoreRoute.storageRecovery
 
         XCTAssertTrue(route.shouldStartStorageScan(
             hasStorageData: false,
             isBusy: false
         ))
-        XCTAssertTrue(route.shouldStartStorageScan(
+        XCTAssertFalse(route.shouldStartStorageScan(
             hasStorageData: true,
             isBusy: false
         ))

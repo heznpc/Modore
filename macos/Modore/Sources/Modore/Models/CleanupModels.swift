@@ -57,6 +57,23 @@ struct CleanupPreview: Identifiable, Sendable {
         trashRun = payload.trashRun
     }
 
+    /// A failed read is an unavailable row, never an execution capability.
+    static func unavailable(recipeID: String, label: String, reason: String) -> CleanupPreview {
+        func field(_ value: String) -> String {
+            value.replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "\r", with: " ")
+        }
+        return CleanupPreview(protocolText: """
+        version\t1
+        operation\tpreview
+        status\tunavailable
+        recipeId\t\(field(recipeID))
+        label\t\(field(label))
+        estimateMeasured\tfalse
+        blockedReason\t\(field(reason))
+        """)!
+    }
+
     var canExecute: Bool {
         status == "ready"
             && approvalToken.utf8.count == 64
@@ -101,7 +118,8 @@ struct CleanupPreview: Identifiable, Sendable {
     var statusText: String {
         switch status {
         case "ready": return "실행 준비됨"
-        case "blocked": return "먼저 종료할 작업이 있습니다"
+        case "blocked": return runningProcesses.isEmpty ? "이 항목은 확인이 필요합니다" : "사용 중인 대상입니다"
+        case "unavailable": return "이번 확인에서 제외됨"
         case "empty": return "이미 정리되어 있습니다"
         case "complete": return "정리 완료"
         case "partial": return "일부 항목만 정리됨"

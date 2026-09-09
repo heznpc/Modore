@@ -114,7 +114,9 @@ final class ScanLifecycleTests: XCTestCase {
         await settleStartup(model)
         model.cleanupRecoveryPlan = plan
         model.executeRecoveryPlan(plan, observeFreeSpace: { observation })
-        await waitForEntry(scanGate, "checkpoint failure did not schedule rescan")
+        await model.cleanupTask?.value
+        let scanEntered = await scanGate.entered
+        XCTAssertFalse(scanEntered)
         let requests = await probe.requests()
         XCTAssertEqual(requests.execution.count, 1)
         XCTAssertTrue(model.cleanupRecoveryResult?.stoppedAfterFailure == true)
@@ -185,7 +187,9 @@ final class ScanLifecycleTests: XCTestCase {
         await settleStartup(model)
         model.cleanupRecoveryPlan = plan
         model.executeRecoveryPlan(plan, observeFreeSpace: { await readings.next() })
-        await waitForEntry(scanGate, "successful batch did not schedule its rescan")
+        await model.cleanupTask?.value
+        let scanEntered = await scanGate.entered
+        XCTAssertFalse(scanEntered)
         XCTAssertEqual(model.cleanupRecoveryResult?.succeededCount, 1)
         XCTAssertNil(model.cleanupRecoveryResult?.finalFreeBytes)
         XCTAssertNil(model.cleanupRecoveryResult?.actualChangeBytes)
@@ -849,7 +853,7 @@ final class ScanLifecycleTests: XCTestCase {
         XCTAssertNil(model.cleanupTask)
     }
 
-    func testSinglePartialCleanupClosesSafetyGateAndStartsCanonicalRescan() async throws {
+    func testSinglePartialCleanupClosesSafetyGateWithoutAutomaticDeepScan() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         try publishCanonicalScan(in: root)
@@ -891,16 +895,18 @@ final class ScanLifecycleTests: XCTestCase {
         XCTAssertTrue(model.cleanupMutationPending)
         XCTAssertTrue(ScanPublication.cleanupMutationIsPending(in: root))
         await executeGate.release()
-        await waitForEntry(scanGate, "single partial cleanup did not start a rescan")
+        await model.cleanupTask?.value
+        let scanEntered = await scanGate.entered
+        XCTAssertFalse(scanEntered)
 
         XCTAssertFalse(model.cleanupIsExecuting)
         XCTAssertEqual(model.terminationSafetyState, .safe)
-        XCTAssertEqual(model.state, .running)
+        XCTAssertEqual(model.state, .idle)
         XCTAssertTrue(model.cleanupMutationPending)
         XCTAssertTrue(ScanPublication.cleanupMutationIsPending(in: root))
         XCTAssertEqual(model.errorMessage, "일부 항목을 격리한 뒤 중단했습니다.\n격리 보존 경로: \(recoveryPath)")
         XCTAssertTrue(model.logText.contains("격리 보존 경로: \(recoveryPath)"))
-        XCTAssertTrue(model.logText.contains("정리 후 현재 상태를 다시 검사합니다."))
+        XCTAssertFalse(model.logText.contains("정리 후 현재 상태를 다시 검사합니다."))
         model.cancelScan()
         await scanGate.release()
         await waitUntil("single partial cleanup rescan did not drain") {
@@ -1007,7 +1013,7 @@ final class ScanLifecycleTests: XCTestCase {
         XCTAssertTrue(model.errorMessage?.contains("디스크에 기록하지 못해 실행하지 않았습니다") == true)
     }
 
-    func testBatchPartialCleanupClosesSafetyGateAndStartsCanonicalRescan() async throws {
+    func testBatchPartialCleanupClosesSafetyGateWithoutAutomaticDeepScan() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         try publishCanonicalScan(in: root)
@@ -1046,9 +1052,11 @@ final class ScanLifecycleTests: XCTestCase {
         XCTAssertTrue(model.cleanupMutationPending)
         XCTAssertTrue(ScanPublication.cleanupMutationIsPending(in: root))
         await executeGate.release()
-        await waitForEntry(scanGate, "batch partial cleanup did not start a rescan")
+        await model.cleanupTask?.value
+        let scanEntered = await scanGate.entered
+        XCTAssertFalse(scanEntered)
 
-        XCTAssertTrue(model.cleanupRecoveryResult?.rescanScheduled == true)
+        XCTAssertFalse(model.cleanupRecoveryResult?.rescanScheduled ?? true)
         XCTAssertFalse(model.cleanupIsExecuting)
         XCTAssertEqual(model.terminationSafetyState, .safe)
         model.cancelScan()
@@ -1105,7 +1113,7 @@ final class ScanLifecycleTests: XCTestCase {
         XCTAssertTrue(model.errorMessage?.contains("디스크에 기록하지 못해 실행하지 않았습니다") == true)
     }
 
-    func testProjectCleanupPreservesRequestAndStartsCancellableRescanOutsideSafetyGate() async throws {
+    func testProjectCleanupPreservesRequestWithoutAutomaticDeepScan() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let context = try makeCleanupContext(in: root)
@@ -1172,23 +1180,20 @@ final class ScanLifecycleTests: XCTestCase {
         XCTAssertEqual(requests.preview, [expectedRequest])
 
         model.executeCleanup(preview)
-        for _ in 0..<400 {
-            if await scanGate.entered { break }
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await model.cleanupTask?.value
         let postCleanupScanEntered = await scanGate.entered
-        XCTAssertTrue(postCleanupScanEntered)
+        XCTAssertFalse(postCleanupScanEntered)
         requests = await cleanupProbe.requests()
         XCTAssertEqual(requests.execution, [expectedRequest])
         XCTAssertNil(model.cleanupTask)
         XCTAssertFalse(model.cleanupInFlight)
         XCTAssertFalse(model.cleanupIsExecuting)
         XCTAssertEqual(model.terminationSafetyState, .safe)
-        XCTAssertEqual(model.state, .running)
-        XCTAssertNotNil(model.scanTask)
+        XCTAssertEqual(model.state, .idle)
+        XCTAssertNil(model.scanTask)
 
         model.cancelScan()
-        XCTAssertTrue(model.scanTask?.isCancelled == true)
+        XCTAssertNil(model.scanTask)
         await scanGate.release()
         await waitUntil("post-cleanup scan did not release after cancellation") {
             model.state == .idle && model.scanTask == nil

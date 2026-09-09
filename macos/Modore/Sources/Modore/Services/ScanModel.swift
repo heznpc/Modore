@@ -344,6 +344,7 @@ final class ScanModel: ObservableObject {
     /// cleanup but cannot start a fresh scan or subprocess outside the captured
     /// termination wait set.
     var applicationTerminationStarted = false
+    private let automaticScanOverride: Bool?
     private var initialResultsLoaded = false
     private var lastScanAttemptAt: Date?
     var cleanupTask: Task<Void, Never>?
@@ -366,7 +367,7 @@ final class ScanModel: ObservableObject {
     nonisolated static let liveFreeSpaceRefreshInterval: UInt64 = 5_000_000_000
 
     init(
-        automaticallyScansStaleResults: Bool = true,
+        automaticallyScansStaleResults: Bool? = nil,
         projectRoot: URL? = nil,
         scanRunner: @escaping ScanRunner = { projectRoot, onOutput in
             await ScanPipeline.run(projectRoot: projectRoot, onOutput: onOutput)
@@ -389,6 +390,7 @@ final class ScanModel: ObservableObject {
             try RecoveryHistoryStore.save($0, in: $1)
         }
     ) {
+        self.automaticScanOverride = automaticallyScansStaleResults
         self.projectRoot = projectRoot ?? Self.detectProjectRoot()
         self.scanRunner = scanRunner
         self.existingResultsLoader = existingResultsLoader
@@ -408,7 +410,7 @@ final class ScanModel: ObservableObject {
             guard let self else { return }
             await refreshExistingResults()
             initialResultsLoaded = true
-            if automaticallyScansStaleResults {
+            if automaticallyScansStaleResults ?? UserDefaults.standard.bool(forKey: "automaticDeepScan") {
                 runAutomaticScanIfNeeded()
             }
         }
@@ -517,6 +519,10 @@ final class ScanModel: ObservableObject {
         if seconds < 3600 { return "\(Int(seconds / 60))분 전 검사" }
         if seconds < 86_400 { return "\(Int(seconds / 3600))시간 전 검사" }
         return deepScanAt.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    var automaticDeepScanEnabled: Bool {
+        automaticScanOverride ?? UserDefaults.standard.bool(forKey: "automaticDeepScan")
     }
 
     func runScan(preservingUserDiagnostics: Bool = false) {
@@ -658,6 +664,7 @@ final class ScanModel: ObservableObject {
     /// six-hour-old deep snapshot. A newer bounded storage observation can
     /// request reevaluation sooner; the five-second free-space value cannot.
     func runAutomaticScanIfNeeded(at date: Date = Date()) {
+        guard automaticScanOverride ?? UserDefaults.standard.bool(forKey: "automaticDeepScan") else { return }
         guard Self.shouldRunAutomaticScan(
             initialResultsLoaded: initialResultsLoaded,
             isBusy: isBusy,

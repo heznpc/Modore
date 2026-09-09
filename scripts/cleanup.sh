@@ -353,7 +353,7 @@ validate_transient_workspace_contract() {
 # by a running build or browser. Recursively inspect open descriptors under the
 # exact approved child. Failure or timeout is unknown and therefore blocks.
 transient_workspace_is_idle() {
-    local target="$1" output pid attempts=0 status=0
+    local target="$1" output errors pid attempts=0 status=0
     if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
         [[ "${PCH_TEST_TRANSIENT_LSOF_UNKNOWN:-0}" != "1" ]] || return 2
         if [[ -n "${PCH_TEST_TRANSIENT_OPEN_PATHS_FILE:-}" ]]; then
@@ -367,7 +367,11 @@ transient_workspace_is_idle() {
     [[ -x /usr/sbin/lsof ]] || return 2
     output="$(/usr/bin/mktemp "${TMPDIR:-/private/tmp}/modore-transient-lsof.XXXXXX")" \
         || return 2
-    /usr/sbin/lsof -Fn +D "$target" > "$output" 2>/dev/null &
+    errors="$(/usr/bin/mktemp "${TMPDIR:-/private/tmp}/modore-transient-lsof-errors.XXXXXX")" || {
+        /bin/rm -f "$output" "$errors"
+        return 2
+    }
+    /usr/sbin/lsof -Fn +D "$target" > "$output" 2>"$errors" &
     pid=$!
     while /bin/kill -0 "$pid" 2>/dev/null; do
         attempts=$((attempts + 1))
@@ -376,17 +380,21 @@ transient_workspace_is_idle() {
             /bin/sleep 1
             /bin/kill -KILL "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
-            /bin/rm -f "$output"
+            /bin/rm -f "$output" "$errors"
             return 2
         fi
         /bin/sleep 0.1
     done
     wait "$pid" 2>/dev/null || status=$?
     if /usr/bin/grep -E -q '^p[0-9]+$' "$output"; then
-        /bin/rm -f "$output"
+        /bin/rm -f "$output" "$errors"
         return 1
     fi
-    /bin/rm -f "$output"
+    if [[ -s "$errors" ]]; then
+        /bin/rm -f "$output" "$errors"
+        return 2
+    fi
+    /bin/rm -f "$output" "$errors"
     [[ "$status" -eq 0 || "$status" -eq 1 ]] || return 2
     return 0
 }
@@ -1101,7 +1109,7 @@ apply_recipe_guidance() {
             AVOID_WHEN="지금 빌드나 인덱싱이 돌고 있다면 끝난 뒤에 하세요."
             ;;
         chrome_code_sign_clones)
-            DESCRIPTION="Chrome이 업데이트를 검증할 때 임시로 만드는 서명 복제본입니다. 북마크·비밀번호·프로필은 대상이 아닙니다."
+            DESCRIPTION="Chrome이 실행 중 앱 서명을 유지하기 위해 만드는 임시 복제본입니다. 북마크·비밀번호·프로필은 대상이 아닙니다."
             AVOID_WHEN="Chrome이 업데이트를 적용하는 중이라면 끝난 뒤에 하세요."
             ;;
         innorix_ex)
@@ -1354,19 +1362,25 @@ define_recipe() {
             ;;
         chrome_code_sign_clones)
             LABEL="Chrome code-sign clones"
-            # --headless와 remote-debugging-pipe는 이 클론과 인과관계가 없다.
-            # LibreOffice 변환, Edge, Electron 헬퍼까지 잡으면서 정작 클론을
-            # 만드는 주체인 Chrome 업데이터는 놓치고 있었다. 삭제가 실제로
-            # 위험한 순간은 업데이트 적용 중이므로 본체와 업데이터를 남긴다.
-            PROCESS_PATTERN='Google Chrome\.app/Contents/(MacOS|Frameworks)/|com\.google\.Chrome\.code_sign_clone|GoogleSoftwareUpdate|(^|/)ksadmin( |$)'
-            PROCESS_NOTE="Chrome과 브라우저 자동화를 완전히 종료하세요."
-            WARNING="Chrome 임시 code-sign clone만 정리합니다. 브라우저 프로필은 대상이 아닙니다."
+            # Chrome can stay open: select only unused, individual clone children.
+            # lsof matches hard-linked executables by inode as well as bundle files.
+            PROCESS_PATTERN='GoogleSoftwareUpdate|(^|/)ksadmin( |$)'
+            PROCESS_NOTE="Chrome 업데이트가 진행 중입니다. 업데이트가 끝난 뒤 다시 확인하세요."
+            WARNING="사용 중이거나 확인하지 못한 복제본은 보존합니다. APFS 공유 블록 때문에 대상 크기와 실제 확보량은 다를 수 있습니다."
             local candidate
             for candidate in \
-                "$VAR_FOLDERS_ROOT"/*/*/X/com.google.Chrome.code_sign_clone \
-                "$VAR_FOLDERS_ROOT"/*/*/T/com.google.Chrome.code_sign_clone; do
-                add_target_if_present "$candidate"
+                "$VAR_FOLDERS_ROOT"/*/*/X/com.google.Chrome.code_sign_clone/code_sign_clone.* \
+                "$VAR_FOLDERS_ROOT"/*/*/T/com.google.Chrome.code_sign_clone/code_sign_clone.*; do
+                [[ -e "$candidate" || -L "$candidate" ]] || continue
+                if validate_target "$recipe" "$candidate"; then
+                    add_target_if_present "$candidate"
+                else
+                    REVIEW_RESIDUE+=("$candidate")
+                fi
             done
+            if [[ "${#TARGETS[@]}" -eq 0 && "${#REVIEW_RESIDUE[@]}" -gt 0 ]]; then
+                RECIPE_BLOCK_REASON="복제본이 사용 중이거나 사용 여부를 확인하지 못했습니다. 다른 정리 항목은 계속 진행할 수 있습니다."
+            fi
             ;;
         innorix_ex)
             LABEL="INNORIX-EX web transfer module"
@@ -1422,8 +1436,8 @@ allowed_target() {
         ollama_models) [[ "$target" == "$HOME_ROOT/.ollama/models" ]] ;;
         xcode_derived_data) [[ "$target" == "$HOME_ROOT/Library/Developer/Xcode/DerivedData" ]] ;;
         chrome_code_sign_clones)
-            [[ "$target" == "$VAR_FOLDERS_ROOT/"*"/X/com.google.Chrome.code_sign_clone" \
-                || "$target" == "$VAR_FOLDERS_ROOT/"*"/T/com.google.Chrome.code_sign_clone" ]]
+            local relative="${target#"$VAR_FOLDERS_ROOT/"}"
+            [[ "$target" == "$VAR_FOLDERS_ROOT/"* && "$relative" =~ ^[^/]+/[^/]+/[XT]/com\.google\.Chrome\.code_sign_clone/code_sign_clone\.[A-Za-z0-9]{6}$ ]]
             ;;
         innorix_ex)
             [[ "$target" == "$HOME_ROOT/Applications/INNORIX-EX" \
@@ -1466,6 +1480,11 @@ validate_target() {
         return 1
     fi
     [[ "$canonical_target" == "$expected" ]] || return 1
+    if [[ "$recipe" == "chrome_code_sign_clones" ]]; then
+        [[ -d "$target/Google Chrome.app.bundle/Contents/MacOS" \
+            && -f "$target/Google Chrome.app.bundle/Contents/MacOS/Google Chrome" ]] || return 1
+        transient_workspace_is_idle "$target" || return 1
+    fi
     if [[ "$recipe" == "project_residue" ]]; then
         validate_project_residue_contract "$target"
     fi
@@ -2055,6 +2074,10 @@ preview_status() {
 
     if [[ "${#TARGETS[@]}" -eq 0 ]]; then
         PREVIEW_STATUS="empty"
+        if [[ -n "$RECIPE_BLOCK_REASON" ]]; then
+            PREVIEW_STATUS="blocked"
+            BLOCKED_REASON="$RECIPE_BLOCK_REASON"
+        fi
         return 0
     fi
 

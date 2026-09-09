@@ -221,7 +221,7 @@ extension ScanModel {
                 return
             }
             guard persistCleanupMutationIntent() else { return }
-            shouldRescan = true
+            shouldRescan = automaticDeepScanEnabled
             beginDestructiveCleanupTransaction()
             let result = await cleanupExecution.execute(
                 preview,
@@ -287,6 +287,7 @@ extension ScanModel {
     func prepareRecoveryPlan(
         _ items: [StorageItem], requestedGainBytes: Int64,
         targetFreeBytes: Int64? = nil,
+        retainedEntries: [CleanupPlanEntry] = [],
         observeFreeSpace: @escaping @Sendable () async -> Observation<LiveFreeSpace>? = {
             await Task.detached(priority: .utility) { LiveStateService.observeFreeSpace() }.value
         }
@@ -334,37 +335,30 @@ extension ScanModel {
                 return
             }
 
-            var entries: [CleanupPlanEntry] = []
-            for (index, candidate) in candidates.enumerated() {
-                guard !Task.isCancelled, !applicationTerminationStarted else {
-                    appendLog("공간 확보 계획 준비를 취소했습니다.")
-                    return
-                }
-                cleanupRecoveryProgress = CleanupRecoveryProgress(
-                    completedCount: index,
-                    totalCount: candidates.count,
-                    currentLabel: candidate.item.label
+            let results = await CleanupPreviewBatch.run(
+                candidates.map { ($0.item.cleanupID, $0.request) },
+                context: context, client: cleanupExecution
+            ) { [weak self] completed, total in
+                self?.cleanupRecoveryProgress = CleanupRecoveryProgress(
+                    completedCount: completed, totalCount: total,
+                    currentLabel: "확인된 항목부터 계획에 반영합니다 · 30초 기준"
                 )
-                let previewStarted = Date()
-                let result = await cleanupExecution.preview(
-                    candidate.item.cleanupID,
-                    candidate.request,
-                    context
+            }
+            guard !Task.isCancelled, !applicationTerminationStarted else { return }
+            let entries = retainedEntries + candidates.enumerated().map { index, candidate in
+                let result = results[index]
+                let preview = result.flatMap {
+                    CleanupExecutionService.validatedPreview($0, recipeID: candidate.item.cleanupID)
+                } ?? CleanupPreview.unavailable(
+                    recipeID: candidate.item.cleanupID, label: candidate.item.label,
+                    reason: result == nil || result?.endState == .timedOut
+                        ? "제한 시간 안에 확인하지 못했습니다. 다른 항목은 계속 정리할 수 있습니다."
+                        : "이 항목의 확인에 실패했습니다. 다른 항목은 계속 정리할 수 있습니다."
                 )
-                guard !Task.isCancelled, !applicationTerminationStarted else { return }
-                let diagnostic = CleanupExecutionService.previewDiagnostic(result, elapsed: Date().timeIntervalSince(previewStarted))
-                appendLog("미리보기 진단: \(candidate.item.label) · \(diagnostic)")
-                guard let preview = CleanupExecutionService.validatedPreview(result, recipeID: candidate.item.cleanupID) else {
-                    errorMessage = "\(candidate.item.label)의 정리 대상을 안전하게 확인하지 못해 계획을 만들지 않았습니다. \(diagnostic)."
-                    appendLog("공간 확보 계획 중단: \(candidate.item.label) · \(diagnostic) · 유효한 미리보기 없음")
-                    return
+                if let result {
+                    appendLog("계획 확인: \(candidate.item.label) · \(preview.statusText) · 종료 코드 \(result.status) · \(result.endState)")
                 }
-                entries.append(CleanupPlanEntry(
-                    preview: preview,
-                    tier: candidate.tier,
-                    request: candidate.request
-                ))
-                appendLog("계획 측정: \(preview.label) · \(preview.statusText) · \(preview.estimatedText)")
+                return CleanupPlanEntry(preview: preview, tier: candidate.tier, request: candidate.request)
             }
 
             let currentObservation = await observeFreeSpace()
@@ -534,7 +528,7 @@ extension ScanModel {
                     stoppedAfterFailure = true
                     break
                 }
-                shouldRescan = true
+                shouldRescan = automaticDeepScanEnabled
                 beginDestructiveCleanupTransaction()
                 let result = await cleanupExecution.execute(
                     entry.preview,
@@ -663,10 +657,14 @@ extension ScanModel {
         }
     }
 
-    func retryRecoveryPlan(_ plan: CleanupRecoveryPlan) {
+    func retryRecoveryPlan(_ plan: CleanupRecoveryPlan, onlyUnavailable: Bool = false) {
         guard !cleanupInFlight, cleanupRecoveryPlan?.id == plan.id else { return }
         let candidates = storage?.recoveryCandidates ?? []
-        let items = plan.entries.compactMap { entry in
+        let retained = onlyUnavailable ? plan.readyEntries.filter {
+            $0.preview.approvalIsFresh(minimumRemaining: 90)
+        } : []
+        let retainedIDs = Set(retained.map(\.id))
+        let items = plan.entries.filter { !retainedIDs.contains($0.id) }.compactMap { entry in
             candidates.first {
                 $0.cleanupID == entry.preview.recipeID
                     && (entry.request == nil || $0.path == entry.request?.target)
@@ -674,7 +672,7 @@ extension ScanModel {
         }
         prepareRecoveryPlan(
             items, requestedGainBytes: plan.requestedGainBytes,
-            targetFreeBytes: cleanupRecoveryResult == nil ? nil : plan.desiredFreeBytes
+            targetFreeBytes: plan.desiredFreeBytes, retainedEntries: retained
         )
     }
 

@@ -375,6 +375,23 @@ modore/
 └── tests/                    pytest service and safety contracts
 ```
 
+## Local Mac app updates
+
+Run `bash scripts/build_macos_swift_app.sh` to build the native app with two
+compiler jobs. Local builds use an available Developer ID Application identity,
+or the explicit `PCH_SIGNING_IDENTITY` identity. Reusing the identity preserves
+macOS privacy grants across updates; changing from an older ad-hoc build can
+require granting access once to the newly signed app. For an intentionally
+ad-hoc development build, set `PCH_SIGNING_IDENTITY=-` explicitly.
+
+Deep storage scans are manual by default; enable automatic refresh in Settings
+if wanted. Live free-space readings continue independently. Recovery previews
+use two concurrent workers with a 30-second preview budget, retain verified
+candidates when another candidate fails, and allow retrying excluded candidates.
+Chrome clone cleanup checks individual clone directories for open files, keeping
+active or unverified clones while offering unused ones. Displayed clone size is
+not a promise of reclaimed space because APFS blocks can be shared.
+
 ## Landing page
 
 The `docs/` folder is the project landing page, designed for GitHub Pages. It is a static, script-free English page: two HTML/CSS files, no client-side i18n runtime.
