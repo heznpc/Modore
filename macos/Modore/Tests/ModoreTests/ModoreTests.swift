@@ -377,7 +377,7 @@ final class ModoreTests: XCTestCase {
         target\t/Users/test/Library/Caches/me.example.app
         """))
 
-        XCTAssertEqual(preview.statusText, "먼저 종료할 작업이 있습니다")
+        XCTAssertEqual(preview.statusText, "사용 중인 대상입니다")
         XCTAssertEqual(preview.estimatedText, "2.0 GiB")
         XCTAssertEqual(preview.targets.count, 2)
         XCTAssertFalse(preview.canExecute)

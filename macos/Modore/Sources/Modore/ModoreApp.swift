@@ -143,6 +143,7 @@ struct ModoreApp: App {
 }
 
 struct StorageWatchSettingsView: View {
+    @AppStorage("automaticDeepScan") private var automaticDeepScan = false
     @EnvironmentObject private var model: ScanModel
 
     var body: some View {
@@ -171,6 +172,12 @@ struct StorageWatchSettingsView: View {
                 }
             }
 
+            Section("정밀 검사") {
+                Toggle("오래된 정밀 검사 결과 자동 갱신", isOn: $automaticDeepScan)
+                Text("기본은 수동 검사입니다. 실시간 여유 공간 표시는 정밀 검사 없이 계속 갱신됩니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("개인정보") {
                 Label("기록은 이 Mac 안에만 저장합니다.", systemImage: "lock.shield")
                 Text("평소에는 여유 공간과 검사 시각만 기록합니다. 8GB 이상 급감할 때만 고정된 후보 경로·크기·측정 상태를 남기며, 파일 내용은 읽거나 기록하지 않고 자동 삭제도 실행하지 않습니다.")
@@ -179,7 +186,7 @@ struct StorageWatchSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 330)
+        .frame(width: 480, height: 460)
     }
 }
 

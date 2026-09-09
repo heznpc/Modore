@@ -45,7 +45,9 @@ struct CleanupRecoverySheet: View {
                         .font(.title2.weight(.semibold))
                     Text(plan.canExecute
                         ? "실행 준비된 경로를 한 번 승인하면 목표에 도달할 때까지 순서대로 정리합니다."
-                        : "실행할 수 없는 항목이 있어 계획을 다시 확인해야 합니다.")
+                        : (plan.readyEntries.isEmpty
+                            ? "이번에 확인된 실행 가능 항목이 없습니다. 항목별 이유를 확인하고 다시 시도하세요."
+                            : "확인 후 시간이 지나 대상의 현재 상태를 다시 확인해야 합니다."))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -54,7 +56,7 @@ struct CleanupRecoverySheet: View {
                     Text(plan.estimatedText)
                         .font(.title3.weight(.semibold))
                         .monospacedDigit()
-                    Text("재측정한 대상 점유")
+                    Text("대상 크기 · 실제 확보량과 다를 수 있음")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -98,7 +100,7 @@ struct CleanupRecoverySheet: View {
             Divider()
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
                 HStack {
-                    Label("AI 호출 없음 · 서명된 로컬 레시피", systemImage: "lock.shield")
+                    Text("사용 중이거나 미확인인 항목은 건너뜁니다")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -107,7 +109,7 @@ struct CleanupRecoverySheet: View {
                         .keyboardShortcut(.cancelAction)
                     if plan.canExecute(at: timeline.date) {
                         if !plan.blockedEntries.isEmpty {
-                            Button("전체 다시 측정") { model.retryRecoveryPlan(plan) }
+                            Button("제외 항목만 재확인") { model.retryRecoveryPlan(plan, onlyUnavailable: true) }
                                 .disabled(model.cleanupInFlight)
                         }
                         Button(role: .destructive) {
@@ -240,6 +242,9 @@ private struct CleanupPlanEntryView: View {
                 if !entry.preview.warning.isEmpty {
                     Label(entry.preview.warning, systemImage: "arrow.triangle.2.circlepath")
                 }
+                if !entry.preview.reviewResidue.isEmpty {
+                    Text("사용 중이거나 미확인인 경로 \(entry.preview.reviewResidue.count)개는 보존합니다.")
+                }
                 ForEach(entry.preview.targets, id: \.self) { target in
                     Text(target)
                         .font(.caption.monospaced())
@@ -258,7 +263,7 @@ private struct CleanupPlanEntryView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(entry.preview.label)
                         .font(.body.weight(.medium))
-                    Text(entry.tier.title)
+                    Text(entry.preview.blockedReason.isEmpty ? entry.tier.title : entry.preview.blockedReason)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
