@@ -8,6 +8,7 @@ struct CPUProcessCounter: Sendable {
     let started: UInt64
     let name: String
     let nanoseconds: UInt64
+    var residentBytes: UInt64 = 0
 }
 
 struct CPUProcessUsage: Equatable, Sendable {
@@ -46,7 +47,7 @@ struct CPUSample: Sendable {
                 ? URL(fileURLWithPath: String(cString: path)).lastPathComponent : String(cString: name)
             counters.append(CPUProcessCounter(pid: pid, started: usage.ri_proc_start_abstime,
                                              name: label,
-                                             nanoseconds: UInt64(Double(usage.ri_user_time &+ usage.ri_system_time) * nanosecondsPerTick)))
+                                             nanoseconds: UInt64(Double(usage.ri_user_time &+ usage.ri_system_time) * nanosecondsPerTick), residentBytes: usage.ri_resident_size))
         }
         // Continuous time includes sleep, unlike ProcessInfo.systemUptime.
         let continuousSeconds = Double(mach_continuous_time()) * Double(timebase.numer)
@@ -119,19 +120,60 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
     private var task: Task<Void, Never>?
     private var activity: NSObjectProtocol?
     private var previous: CPUSample?
-    private var policy = CPUAlertPolicy()
+    @Published private(set) var snapshot: HealthSnapshot?
+    @Published private(set) var journal = HealthJournal()
+    @Published private(set) var journalError: String?
+    @Published var showHealth = false
+    @Published private(set) var notificationStatus = "알림 권한 확인 중"
+    private var cpuHighSince: TimeInterval?
+    private var canPersist = true
+    private var lastSaved = Date.distantPast
+    private var lastNotice = Date.distantPast
+    private let journalURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Modore/health-context.json")
+
+    func markAction(_ label: String) {
+        journal.markAction(label, snapshot: snapshot)
+        persist()
+    }
+
+    private func persist() {
+        guard canPersist else { return }
+        do {
+            try FileManager.default.createDirectory(at: journalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(journal)
+            try data.write(to: journalURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalURL.path)
+            lastSaved = Date()
+            journalError = nil
+        } catch { journalError = "상황 기록 저장 실패: \(error.localizedDescription)" }
+    }
+
+    func refreshNotificationStatus() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        notificationStatus = settings.authorizationStatus == .authorized ? "macOS 알림 허용됨" : "알림 차단됨 · 시스템 설정에서 Modore 알림 허용 필요"
+    }
 
     override init() {
-        enabled = UserDefaults.standard.bool(forKey: "cpuWatchEnabled")
+        enabled = UserDefaults.standard.object(forKey: "cpuWatchEnabled") as? Bool ?? true
         super.init()
+        if FileManager.default.fileExists(atPath: journalURL.path) {
+            do {
+                let data = try Data(contentsOf: journalURL)
+                guard data.count < 2_000_000 else { throw CocoaError(.fileReadTooLarge) }
+                journal = try JSONDecoder().decode(HealthJournal.self, from: data)
+                journal.resume()
+            } catch { canPersist = false; journalError = "이전 상황 기록을 읽지 못했습니다: \(error.localizedDescription)" }
+        }
     }
 
     func start() {
         UNUserNotificationCenter.current().delegate = self
+        Task { await refreshNotificationStatus() }
         guard enabled, task == nil else { return }
         if activity == nil {
             activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
-                                                             reason: "사용자가 켠 CPU 부하 알림 감시")
+                                                             reason: "사용자가 켠 Mac 상태 감시")
         }
         detail = "CPU 사용량을 관찰하는 중입니다."
         task = Task { [weak self] in
@@ -152,18 +194,15 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         if value {
             do {
                 let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])
-                guard granted else {
-                    detail = "macOS에서 Modore 알림이 차단돼 있습니다. 시스템 설정 → 알림에서 허용해주세요."
-                    return
-                }
+                if !granted { notificationStatus = "알림 차단됨 · 상태 관찰은 계속합니다." }
             } catch {
-                detail = "알림 권한을 확인하지 못했습니다: \(error.localizedDescription)"
-                return
+                notificationStatus = "알림 권한을 확인하지 못했습니다: \(error.localizedDescription)"
             }
         }
         enabled = value
         UserDefaults.standard.set(value, forKey: "cpuWatchEnabled")
-        task?.cancel(); task = nil; previous = nil; policy = CPUAlertPolicy()
+        task?.cancel(); task = nil; previous = nil; cpuHighSince = nil
+        journal.resume(); persist()
         if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
         if value { start() } else { detail = "CPU 감시 꺼짐" }
     }
@@ -181,24 +220,45 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
     private func receive(_ sample: CPUSample) async {
         let prior = previous
         previous = sample
-        guard let prior else { return }
-        let usage = sample.usage(since: prior)
-        let top = Array(usage.prefix(3))
-        guard !top.isEmpty else {
-            _ = policy.evaluate(usage: [], sample: sample)
-            detail = "CPU 관찰값을 다시 확인하는 중입니다."
-            return
-        }
-        detail = top.map { "\($0.name) \(Int($0.percent))%" }.joined(separator: " · ")
-        guard policy.evaluate(usage: usage, sample: sample) else { return }
+        let usage = prior.map { sample.usage(since: $0) } ?? []
+        let high = usage.reduce(0) { $0 + $1.percent } / Double(max(1, sample.cores)) >= 70
+            || (usage.first?.percent ?? 0) >= 150
+            || (sample.thermalPressure >= 1 && (usage.first?.percent ?? 0) >= 20)
+        if prior.map({ sample.uptime - $0.uptime > 30 }) ?? false { cpuHighSince = nil; journal.resume() }
+        if !high { cpuHighSince = nil }
+        else if cpuHighSince == nil { cpuHighSince = sample.uptime }
+        let sustained = cpuHighSince.map { sample.uptime - $0 >= 60 } ?? false
+        let current = await Task.detached(priority: .utility) {
+            HealthSnapshot.capture(sample: sample, usage: usage, cpuElevated: sustained)
+        }.value
+        guard !Task.isCancelled else { return }
+        snapshot = current
+        let changed = journal.observe(current)
+        detail = current.summary
+        if changed || Date().timeIntervalSince(lastSaved) >= 60 { persist() }
+        guard changed || (!current.issues.isEmpty && Date().timeIntervalSince(lastNotice) >= 600) else { return }
+        guard enabled else { return }
         let content = UNMutableNotificationContent()
-        content.title = sample.thermalPressure >= 1 ? "발열 부담이 1분 이상 지속됩니다" : "CPU 부하가 1분 이상 높습니다"
-        content.body = top.map { "\($0.name) (PID \($0.pid)) \(Int($0.percent))%" }.joined(separator: "\n")
-            + "\n10초 간격 관찰 · CPU 100%는 코어 1개 사용량"
+        content.title = current.issues.isEmpty ? "관찰된 부하가 경고 기준 아래로 내려왔습니다" : current.issues.joined(separator: " · ")
+        content.body = current.summary + "\n" + usage.prefix(3).map { "\($0.name) \(Int($0.percent))%" }.joined(separator: " · ") + "\n눌러서 원인·관련 작업·조치 결과 확인"
+        content.userInfo = ["modoreRoute": "health"]
         do {
             try await UNUserNotificationCenter.current().add(UNNotificationRequest(
-                identifier: "modore-cpu-load", content: content, trigger: nil))
-        } catch { detail = "CPU 부하 감지 · 알림 전송 실패: \(error.localizedDescription)" }
+                identifier: "modore-health", content: content, trigger: nil))
+            lastNotice = Date()
+        } catch { notificationStatus = "상황 감지됨 · 알림 전송 실패: \(error.localizedDescription)"; lastNotice = Date() }
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                           didReceive response: UNNotificationResponse,
+                                           withCompletionHandler completionHandler: @escaping () -> Void) {
+        if response.notification.request.content.userInfo["modoreRoute"] as? String == "health" {
+            Task { @MainActor [weak self] in
+                self?.showHealth = true
+                NSWorkspace.shared.open(URL(string: "modore://health")!)
+            }
+        }
+        completionHandler()
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,

@@ -105,7 +105,7 @@ private struct StorageWorkspaceToolbar: View {
     private var summary: String {
         switch section {
         case .cleanup: return "실행 가능한 대상의 점유 추정이며 미리보기에서 다시 측정합니다."
-        case .goal: return "목표 용량을 정하면 가장 큰 항목부터 채워 도달하는 최소 조합을 계산합니다."
+        case .goal: return "정리 후보를 검토하고 실제 여유 공간으로 목표 달성을 확인합니다. 파일 크기는 회수량이 아닙니다."
         case .development: return "빌드 도구와 실행 중인 생성원을 구분해 보여줍니다."
         case .applications: return "앱 본체와 정확히 귀속되는 사용자 데이터만 검토합니다."
         case .simulators: return "기기 데이터, runtime 지원 자산과 공유 캐시를 중복 없이 함께 봅니다."

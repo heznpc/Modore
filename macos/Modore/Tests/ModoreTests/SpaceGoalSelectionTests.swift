@@ -22,6 +22,12 @@ final class SpaceGoalSelectionTests: XCTestCase {
         ])!
     }
 
+    func testReviewDoesNotTreatCloneSizeAsGuaranteedRecovery() {
+        let candidates = [item(label: "clone", sizeGB: 14, cleanupID: "chrome_code_sign_clones"),
+                          item(label: "cache", sizeGB: 2)]
+        XCTAssertEqual(SpaceGoalSelection.reviewCandidates(candidates).count, 2)
+    }
+
     // Labels are deliberately in the opposite order from their sizes: if
     // selection ever fell back to array/alphabetical order instead of
     // sorting by size, this would select 3 small-first items instead of the

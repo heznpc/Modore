@@ -44,7 +44,7 @@ struct CleanupRecoverySheet: View {
                     Text("공간 확보 계획")
                         .font(.title2.weight(.semibold))
                     Text(plan.canExecute
-                        ? "실행 준비된 경로를 한 번 승인하면 목표에 도달할 때까지 순서대로 정리합니다."
+                        ? "승인한 후보를 순서대로 정리하고 실제 여유 공간으로 중단 여부를 판단합니다. 모든 후보를 정리해도 목표에 못 미칠 수 있습니다."
                         : (plan.readyEntries.isEmpty
                             ? "이번에 확인된 실행 가능 항목이 없습니다. 항목별 이유를 확인하고 다시 시도하세요."
                             : "확인 후 시간이 지나 대상의 현재 상태를 다시 확인해야 합니다."))
@@ -53,10 +53,10 @@ struct CleanupRecoverySheet: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 3) {
-                    Text(plan.estimatedText)
+                    Text("실제 회수량 미확정")
                         .font(.title3.weight(.semibold))
                         .monospacedDigit()
-                    Text("대상 크기 · 실제 확보량과 다를 수 있음")
+                    Text("파일 크기 합계 \(plan.estimatedText) · 공유 블록 포함 가능")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -135,7 +135,7 @@ struct CleanupRecoverySheet: View {
                 .font(.system(size: 28, weight: .medium))
                 .foregroundStyle(result.goalMet ? Color.green : Color.secondary)
             VStack(alignment: .leading, spacing: 4) {
-                Text(result.goalMet ? "공간 확보 목표 달성" : "공간 확보 결과")
+                Text(result.goalMet ? "공간 확보 목표 달성" : "목표 미달 · 추가 확보 필요")
                     .font(.title2.weight(.semibold))
                 Text(!result.freeSpaceMeasured
                     ? "실제 여유 공간을 확인하지 못해 목표 달성을 판정하지 않았습니다."

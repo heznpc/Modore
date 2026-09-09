@@ -2,6 +2,7 @@ import ModoreDomain
 import SwiftUI
 
 enum AppDestination: String, CaseIterable, Identifiable, Hashable {
+    case health
     case status
     case storage
     case security
@@ -12,6 +13,7 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
+        case .health: return "지금 이 Mac"
         case .status: return "진단"
         case .storage: return "저장공간"
         case .security: return "보안"
@@ -26,6 +28,7 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
     var symbol: String {
         switch self {
+        case .health: return "heart.text.clipboard"
         case .status: return "waveform.path.ecg"
         case .storage: return "internaldrive"
         case .security: return "lock.shield"
@@ -37,7 +40,8 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
 struct ModernRootView: View {
     @EnvironmentObject private var model: ScanModel
-    @State private var selection: AppDestination = .status
+    @EnvironmentObject private var monitor: CPUWatchService
+    @State private var selection: AppDestination = .health
     @State private var storageSection: StorageWorkspaceSection = .cleanup
 
     var body: some View {
@@ -80,6 +84,9 @@ struct ModernRootView: View {
         .navigationSplitViewStyle(.balanced)
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         .onOpenURL(perform: openURL)
+        .onChange(of: monitor.showHealth) { value in
+            if value { selection = .health; monitor.showHealth = false }
+        }
         .alert(
             "Modore",
             isPresented: Binding(
@@ -113,6 +120,8 @@ struct ModernRootView: View {
 
     private func apply(_ route: ModoreRoute) {
         switch route {
+        case .health:
+            selection = .health
         case .storageRecovery:
             openStorage(.goal)
             if route.shouldStartStorageScan(
@@ -384,6 +393,8 @@ struct ModernDetailView: View {
 
     var body: some View {
         switch destination {
+        case .health:
+            HealthContextView(openRecovery: { onOpenStorage(.goal) }, openWork: { onNavigate(.work) })
         case .status:
             StatusPage(
                 onOpenStorage: onOpenStorage,

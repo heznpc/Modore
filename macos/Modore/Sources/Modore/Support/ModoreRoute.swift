@@ -1,9 +1,14 @@
 import Foundation
 
 enum ModoreRoute: Equatable, Sendable {
+    case health
     case storageRecovery
 
     init?(url: URL) {
+        if url.absoluteString.lowercased() == "modore://health" {
+            self = .health
+            return
+        }
         guard let components = URLComponents(
             url: url,
             resolvingAgainstBaseURL: false
@@ -24,6 +29,7 @@ enum ModoreRoute: Equatable, Sendable {
 
     func shouldStartStorageScan(hasStorageData: Bool, isBusy: Bool) -> Bool {
         switch self {
+        case .health: return false
         case .storageRecovery:
             // Existing candidates go straight to bounded, per-target previews.
             // A full scan is needed only when there is no inventory to review.
