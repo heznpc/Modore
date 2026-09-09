@@ -30,7 +30,7 @@ def test_only_the_read_only_judgment_tools_are_exposed():
                                            "agent_session_search", "agent_state_report",
                                            "mcp_hygiene", "model_residue_report",
                                            "operator_friction_report", "system_scan_summary",
-                                           "uninstall_residue_report"]
+                                           "uninstall_residue_report", "work_resource_status"]
 
 
 def test_every_tool_is_annotated_read_only_and_non_destructive():
@@ -81,7 +81,7 @@ def test_no_tool_can_run_anything_but_the_judgment_scripts(monkeypatch, tmp_path
     for argv in spawned:
         script = Path(argv[3]).name
         assert script in ("scree.py", "friction.py", "moraine.py", "hfscan.py",
-                          "mcpaudit.py", "fileaccess.py"), argv
+                          "mcpaudit.py", "fileaccess.py", "work_resources.py"), argv
         joined = " ".join(argv)
         for forbidden in ("cleanup", "scanner", "storage_watch", "schedule",
                           "preserve", "--raw"):
@@ -732,7 +732,7 @@ def test_tools_list_declares_closed_input_schemas():
                                           "agent_session_search", "operator_friction_report",
                                           "model_residue_report", "mcp_hygiene",
                                           "agent_file_access", "system_scan_summary",
-                                          "uninstall_residue_report"]
+                                          "uninstall_residue_report", "work_resource_status"]
     for tool in tools:
         assert tool["inputSchema"]["additionalProperties"] is False
         assert tool["description"] and tool["title"]
@@ -784,7 +784,7 @@ def test_cli_tools_dump_is_the_registered_surface(capsys):
                                                       "agent_session_search", "operator_friction_report",
                                                       "model_residue_report", "mcp_hygiene",
                                                       "agent_file_access", "system_scan_summary",
-                                                      "uninstall_residue_report"]
+                                                      "uninstall_residue_report", "work_resource_status"]
     assert dumped["rejected"] == []
 
 
@@ -918,3 +918,10 @@ def test_file_access_preserves_incomplete_content_coverage(monkeypatch):
 
     assert payload["paths"] == []
     assert payload["content_scan"] == content_scan
+
+
+def test_resource_inventory_is_fixed_read_only_status(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mcp_server, "_run_json", lambda script, arguments, timeout: calls.append((script.name, arguments)) or {})
+    _payload(_call("work_resource_status", {}))
+    assert calls == [("work_resources.py", ["status"])]

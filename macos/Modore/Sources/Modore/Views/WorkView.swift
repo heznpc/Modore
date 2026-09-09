@@ -14,15 +14,25 @@ import MothballCore
 /// conversations on the left, the selected conversation on the right.
 /// Reaching a conversation is a project click and a title click.
 struct WorkPage: View {
+    @State private var resources = false
     @EnvironmentObject private var model: ScanModel
 
     var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("작업 환경").font(.headline)
+                Spacer()
+                Button("시뮬레이터·SSD 제어 ⌘⇧K") { resources = true }
+                    .keyboardShortcut("k", modifiers: [.command, .shift])
+            }.padding(12)
         HSplitView {
             WorkListPane()
                 .frame(minWidth: 340, idealWidth: 420)
             WorkDetailPane()
                 .frame(minWidth: 320)
         }
+        }
+        .sheet(isPresented: $resources) { WorkResourceView() }
         // The git judgment needs the workspace list the audit produces, so
         // a cold start waits until that lands. A boolean only changes on the
         // first report; a revision also restarts binding after a successful

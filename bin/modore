@@ -28,6 +28,7 @@ usage() {
         '  modore sessions [--limit N]' \
         '  modore sessions current' \
         '  modore search [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
+        '  modore resources status|acquire|claim|heartbeat|release [options]' \
         '  modore storage status' \
         '  modore storage recovery' \
         '  modore cleanup list' \
@@ -85,6 +86,9 @@ COMMAND="${1:-help}"
 case "$COMMAND" in
     help|-h|--help)
         usage
+        ;;
+    resources)
+        exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/work_resources.py" "$@"
         ;;
     sessions)
         if [[ "${1:-}" == "current" ]]; then
