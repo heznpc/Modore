@@ -204,8 +204,8 @@ struct WorkProjectRow: View {
             // project can hold seventy of them, and an action on the
             // project does not belong at the bottom of a list of its
             // contents.
-            if expanded, project.candidate != nil {
-                Button("은퇴 검토") {
+            if expanded {
+                Button("아카이브·로컬 정리") {
                     model.retirementReview = RetirementReviewTarget(id: project.id)
                 }
                     .buttonStyle(.link)
