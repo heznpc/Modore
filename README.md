@@ -392,6 +392,15 @@ Chrome clone cleanup checks individual clone directories for open files, keeping
 active or unverified clones while offering unused ones. Displayed clone size is
 not a promise of reclaimed space because APFS blocks can be shared.
 
+CPU load alerts can be enabled in Modore Settings. While the app is running
+(including in the background), native process CPU counters are sampled every
+10 seconds, supplemented by the system process reader for protected processes
+such as WindowServer. A minute of sustained high CPU usage or macOS thermal pressure
+produces a notification with the top three process names, PIDs, and recent CPU
+percentages. Bursts are ignored and notifications are at least ten minutes
+apart. The monitor allows system sleep, resets sustained-load evidence after
+long sampling gaps (including sleep), stores no process history, and stops when Modore quits.
+
 ## Landing page
 
 The `docs/` folder is the project landing page, designed for GitHub Pages. It is a static, script-free English page: two HTML/CSS files, no client-side i18n runtime.

@@ -48,6 +48,7 @@ struct ModoreApp: App {
     @NSApplicationDelegateAdaptor(PCHealthCheckApplicationDelegate.self)
     private var applicationDelegate
     @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var cpuWatch = CPUWatchService()
     @StateObject private var model: ScanModel
     /// Retaining the descriptor is what retains singleton ownership. The lock
     /// is released automatically after normal or deferred app termination.
@@ -94,6 +95,7 @@ struct ModoreApp: App {
                 .environmentObject(model)
                 .frame(minWidth: 900, minHeight: 640)
                 .onAppear {
+                    cpuWatch.start()
                     applicationDelegate.bind(to: model)
                     model.setApplicationActive(scenePhase == .active)
                 }
@@ -137,12 +139,14 @@ struct ModoreApp: App {
 
         Settings {
             StorageWatchSettingsView()
+                .environmentObject(cpuWatch)
                 .environmentObject(model)
         }
     }
 }
 
 struct StorageWatchSettingsView: View {
+    @EnvironmentObject private var cpuWatch: CPUWatchService
     @AppStorage("automaticDeepScan") private var automaticDeepScan = false
     @EnvironmentObject private var model: ScanModel
 
@@ -172,6 +176,20 @@ struct StorageWatchSettingsView: View {
                 }
             }
 
+            Section("CPU 부하 알림") {
+                Toggle("지속적인 CPU 부하와 상위 프로세스 알림", isOn: Binding(
+                    get: { cpuWatch.enabled }, set: { value in Task { await cpuWatch.setEnabled(value) } }
+                ))
+                .disabled(cpuWatch.configuring)
+                Text("Modore가 실행 중이면 다른 앱을 사용하는 동안에도 10초마다 확인합니다. 높은 부하가 1분 지속되면 상위 3개 프로세스를 알리고, 알림 간격은 최소 10분입니다. 앱을 완전히 종료하면 감시도 멈춥니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("기준: 전체 코어 평균 70% 이상, 프로세스 하나가 150% 이상, 또는 macOS 열압력과 CPU 부하가 함께 감지될 때. CPU 100%는 코어 1개입니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(cpuWatch.detail).font(.caption).textSelection(.enabled)
+                Button("테스트 알림 보내기") { Task { await cpuWatch.sendTestNotification() } }
+                    .disabled(!cpuWatch.enabled || cpuWatch.configuring)
+            }
+
             Section("정밀 검사") {
                 Toggle("오래된 정밀 검사 결과 자동 갱신", isOn: $automaticDeepScan)
                 Text("기본은 수동 검사입니다. 실시간 여유 공간 표시는 정밀 검사 없이 계속 갱신됩니다.")
@@ -186,7 +204,7 @@ struct StorageWatchSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 460)
+        .frame(width: 540, height: 700)
     }
 }
 
