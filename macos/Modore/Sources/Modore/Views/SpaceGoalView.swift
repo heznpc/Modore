@@ -5,6 +5,12 @@ import SwiftUI
 /// takes the largest entries in each tier. Individual-only choices such as app
 /// removal, models and simulators never enter a one-approval recovery plan.
 enum SpaceGoalSelection {
+    // Directory sizes can count shared APFS blocks repeatedly. They rank
+    // review candidates but cannot establish that a free-space goal is met.
+    static func reviewCandidates(_ candidates: [StorageItem]) -> [StorageItem] {
+        select(from: candidates, targetBytes: Int64.max)
+    }
+
     /// Sizes arrive rounded to a tenth of a GB, and a tenth is not exact in
     /// binary: four items truly summing to 3.0 add up to 2.9999999999999996,
     /// so a bare `>=` walked past the exact-match set and appended one more
@@ -108,7 +114,7 @@ struct SpaceGoalWorkspaceList: View {
     private var supportsGoalSlider: Bool { achievableGB >= 1 }
 
     private var selection: [StorageItem] {
-        SpaceGoalSelection.select(from: storage.recoveryCandidates, targetBytes: targetBytes)
+        SpaceGoalSelection.reviewCandidates(storage.recoveryCandidates)
     }
 
     private var selectedTotalGB: Double {
@@ -127,7 +133,6 @@ struct SpaceGoalWorkspaceList: View {
         selection.filter { $0.measureStatus == "timed_out" }
     }
 
-    private var metGoal: Bool { selectedTotalBytes >= max(0, targetBytes - 1_074) }
 
     var body: some View {
         ScrollView {
@@ -157,32 +162,30 @@ struct SpaceGoalWorkspaceList: View {
     private var goalSummary: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
-                Image(systemName: metGoal ? "checkmark.circle.fill" : "target")
+                Image(systemName: "target")
                     .font(.title2)
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(metGoal ? Color.green : Color.accentColor)
+                    .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(metGoal ? "계획상 추가 확보 목표를 충족합니다" : "계획상 추가 확보량이 부족합니다")
+                    Text("실제 확보량은 정리 후 확인합니다")
                         .font(.title3.weight(.semibold))
-                    Text("캐시를 먼저 쓰고, 부족할 때만 다시 만들 수 있는 항목을 더합니다.")
+                    Text("공유 블록이 포함된 파일 크기는 실제 회수량이 아닙니다. 후보 크기로 목표 달성을 예측하지 않습니다.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(metGoal ? "계획상 충족" : goalShortfallText)
+                Text("회수량 미확정")
                     .font(.callout.weight(.semibold))
-                    .foregroundStyle(metGoal ? Color.green : Color.secondary)
+                    .foregroundStyle(Color.secondary)
                     .monospacedDigit()
             }
 
             HStack(spacing: 10) {
                 SpaceGoalMetric(title: "추가 확보 목표", value: StorageBytes.text(targetBytes))
-                SpaceGoalMetric(title: "후보 점유", value: StorageBytes.text(selectedTotalBytes))
+                SpaceGoalMetric(title: "실제 회수 예상", value: "미확정")
                 SpaceGoalMetric(title: "재측정", value: "\(pendingSelection.count)개")
             }
 
-            ProgressView(value: goalProgress)
-                .progressViewStyle(.linear)
 
             goalPicker
             Text("권장 최종 여유: 20 GiB · 이 권장값은 선택한 추가 확보량을 바꾸지 않습니다. 후보 점유가 실제 여유 증가량을 보장하지는 않습니다.")
@@ -195,7 +198,7 @@ struct SpaceGoalWorkspaceList: View {
     private var selectedPlan: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(metGoal ? "선택된 조합" : "현재 확인된 후보")
+                Text("현재 확인된 후보")
                     .font(.headline)
                 Text(planSubtitle)
                     .font(.callout)
@@ -315,23 +318,8 @@ struct SpaceGoalWorkspaceList: View {
         }
     }
 
-    private var goalProgress: Double {
-        guard targetGB > 0 else { return 0 }
-        return min(max(selectedTotalGB / targetGB, 0), 1)
-    }
-
-    private var goalShortfallText: String {
-        "\(StorageBytes.text(max(targetBytes - selectedTotalBytes, 0))) 부족"
-    }
-
     private var planSubtitle: String {
-        if metGoal {
-            return "큰 항목부터 고른 \(measuredSelection.count)개로 목표를 충족합니다."
-        }
-        if pendingSelection.isEmpty {
-            return "현재 확인된 항목을 모두 더해도 목표에 미치지 못합니다."
-        }
-        return "확인된 용량을 먼저 보여주고, 크기를 모르는 후보는 아래에 접어 두었습니다."
+        "파일 크기는 후보 정렬에만 사용합니다. 공유 블록 때문에 실제 확보량은 더 작을 수 있습니다."
     }
 
     private static func achievableGB(_ storage: StorageSnapshot) -> Double {

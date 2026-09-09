@@ -525,3 +525,28 @@ This project depends on — but does not redistribute — Microsoft Sysinternals
 ---
 
 <sub>Version 0.3 · 2026</sub>
+
+### Currently implemented — local health context
+
+The **지금 이 Mac** home screen observes disk availability, macOS memory
+pressure, swap, CPU and thermal pressure every ten seconds while Modore runs.
+It records up to 40 local incidents, links notifications back to the screen,
+and compares observations before and after an action. Recovery requires a
+complete minute below the warning thresholds; restarting or a monitoring gap
+never implies recovery. Notification permission does not gate observation.
+Process working directories connect to matching session metadata as candidates,
+not proof that a session owns a process. Conversation bodies are opened only
+through explicit session selection or search. The screen also exposes cleanup
+receipts and copying the current diagnostic context.
+
+Cleanup previews report **actual recovery unknown**. Summed directory sizes
+may include shared APFS blocks and never establish goal completion. Candidate
+review includes remaining eligible recipes rather than stopping when their
+sizes add up to the requested gain. Execution still stops based on measured
+filesystem availability. A shortfall is explicitly reported after execution.
+
+**Design intent:** preserve evidence from detection through action and observed
+outcome without making the user reconstruct it in a prompt.
+
+**Non-goals:** automatic process termination, automatic deletion, inference of
+session ownership from an app name, or guaranteed recovery from directory size.

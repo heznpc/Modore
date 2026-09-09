@@ -92,6 +92,7 @@ struct ModoreApp: App {
     var body: some Scene {
         Window("Modore", id: "main") {
             ContentView()
+                .environmentObject(cpuWatch)
                 .environmentObject(model)
                 .frame(minWidth: 900, minHeight: 640)
                 .onAppear {
@@ -176,12 +177,12 @@ struct StorageWatchSettingsView: View {
                 }
             }
 
-            Section("CPU 부하 알림") {
-                Toggle("지속적인 CPU 부하와 상위 프로세스 알림", isOn: Binding(
+            Section("Mac 상태 감시") {
+                Toggle("공간·RAM·스왑·CPU 감시와 알림", isOn: Binding(
                     get: { cpuWatch.enabled }, set: { value in Task { await cpuWatch.setEnabled(value) } }
                 ))
                 .disabled(cpuWatch.configuring)
-                Text("Modore가 실행 중이면 다른 앱을 사용하는 동안에도 10초마다 확인합니다. 높은 부하가 1분 지속되면 상위 3개 프로세스를 알리고, 알림 간격은 최소 10분입니다. 앱을 완전히 종료하면 감시도 멈춥니다.")
+                Text("Modore 실행 중 10초마다 관찰합니다. 공간 부족과 RAM 압박, 1분 지속된 CPU 부하를 알립니다. 같은 상태는 10분 간격, 새 경고와 회복은 상태가 바뀔 때 알립니다. 알림을 누르면 상황과 조치 기록을 엽니다. 앱 종료 시 감시도 멈춥니다.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("기준: 전체 코어 평균 70% 이상, 프로세스 하나가 150% 이상, 또는 macOS 열압력과 CPU 부하가 함께 감지될 때. CPU 100%는 코어 1개입니다.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -198,7 +199,7 @@ struct StorageWatchSettingsView: View {
 
             Section("개인정보") {
                 Label("기록은 이 Mac 안에만 저장합니다.", systemImage: "lock.shield")
-                Text("평소에는 여유 공간과 검사 시각만 기록합니다. 8GB 이상 급감할 때만 고정된 후보 경로·크기·측정 상태를 남기며, 파일 내용은 읽거나 기록하지 않고 자동 삭제도 실행하지 않습니다.")
+                Text("Mac 상태 감시에서는 공간·스왑·RAM 압박·CPU 상위 프로세스와 작업 경로를 이 Mac에 최대 40건 기록합니다. 대화 내용은 자동 수집하지 않습니다. 저장공간 시간별 감시는 여유 공간과 검사 시각을 기록합니다. 8GB 이상 급감할 때만 고정된 후보 경로·크기·측정 상태를 남기며, 파일 내용은 읽거나 기록하지 않고 자동 삭제도 실행하지 않습니다.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
