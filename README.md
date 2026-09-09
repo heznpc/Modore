@@ -22,6 +22,7 @@ Today, the Mac app focuses on AI work continuity and storage recovery. The Windo
 | **iPhone preview** | Shows device capacity and, after explicit Photo Library permission, counts videos and screen recordings from public metadata. iOS does not expose other apps' caches or System Data, and this preview does not delete media. |
 | **AI work protection** | Joins Claude, Codex, Gemini, and supported IDE sessions to repositories and worktrees; flags retention risk, missing workspaces, and unpushed sole copies. |
 | **Verified backups** | Creates and verifies original Claude and Codex session archives, then restores them only into a new safe directory. |
+| **Asset retirement** | Select GitHub archive and local repository cleanup independently; preserve ignored data, override risk warnings, retry partial operations, and inspect separate mutation/verification/free-space results. [Workflow](./docs/ASSET_RETIREMENT.md). |
 | **Storage recovery** | Explains caches, developer runtimes, apps, models, Simulator data, and project residue; safe batches require an exact preview and stop when the free-space goal is met. |
 | **Local audits** | Reviews uninstall residue and trust roots, unused model caches, broken MCP registrations, session file access, and user corrections of AI agents. |
 | **Read-only MCP** | Makes selected judgments available during an agent session without exposing cleanup, deletion, or scan execution. |

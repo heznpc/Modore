@@ -50,10 +50,8 @@ struct WorkProject: Identifiable {
         return nil
     }
 
-    /// The same assessment, when it says the repo may be retired at all.
-    /// `[은퇴 검토]` is offered from this, never from `assessment`: a repo
-    /// with uncommitted work has a git state worth showing and no
-    /// retirement to review.
+    /// Legacy eligibility summary. The asset-retirement action is available
+    /// independently of this assessment; risk warnings are user-overridable.
     var candidate: ArchiveCandidate? {
         guard let assessment, assessment.isRetirementEligible else { return nil }
         return assessment

@@ -23,9 +23,14 @@ enum StorageWorkspaceSection: String, CaseIterable, Identifiable {
 struct StorageWorkspacePage: View {
     @EnvironmentObject private var model: ScanModel
     @Binding var section: StorageWorkspaceSection
+    @State private var retirementOpen = false
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
+            HStack {
+                Button("레포 아카이브·로컬 정리") { retirementOpen = true }
+                Spacer()
+            }.padding(.horizontal, 20).padding(.vertical, 8)
             if let storage = model.storage {
                 VStack(spacing: 0) {
                     StorageWorkspaceToolbar(section: $section, storage: storage)
@@ -50,6 +55,7 @@ struct StorageWorkspacePage: View {
                 }
             }
         }
+        .sheet(isPresented: $retirementOpen) { AssetRetirementView() }
     }
 
     @ViewBuilder
