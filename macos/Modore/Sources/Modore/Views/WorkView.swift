@@ -22,7 +22,7 @@ struct WorkPage: View {
             HStack {
                 Text("작업 환경").font(.headline)
                 Spacer()
-                Button("시뮬레이터·SSD 제어 ⌘⇧K") { resources = true }
+                Button("작업 환경 보기") { resources = true }
                     .keyboardShortcut("k", modifiers: [.command, .shift])
             }.padding(12)
         HSplitView {

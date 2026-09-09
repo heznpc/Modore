@@ -6,7 +6,7 @@ leases, actions and receipts. Taxi is not required.
 
 ## Entry points
 
-- 작업 → 시뮬레이터·SSD 제어, or Command-Shift-K while in 작업.
+- 작업 → 작업 환경 보기, or Command-Shift-K while in 작업.
 - `modore resources status`: live devices, runtime IDs, duplicate groups, external
   volume UUIDs, open-file users, registered sessions, and stale connections.
 - MCP `work_resource_status` exposes that inventory to sessions.
@@ -20,9 +20,13 @@ The ops skill tells subsequent sessions to discover/reuse/register before
 starting simulator work and to specify the returned UDID in every tool action.
 Tools outside Modore cannot be forced to register. Names and historic session
 workspace metadata do not prove ownership of a currently running simulator.
-The UI explicitly separates registered connections, expired registrations, and
-observed process cwd/open-file connections. It refreshes every ten seconds while
-open. Project filtering provides an environment layer, with simulator/SSD tabs.
+The UI opens on active resources: a compact summary, device cards, and a project
+sidebar. Idle simulators are collapsed. Registered project/session connections
+and observed process usage are distinguished; process lists, paths, identifiers,
+and expired registrations live in a separate detail sheet. Connecting a project
+opens a searchable recent-session picker. The view refreshes every ten seconds
+while open. Active-lease warnings are confirmed at the affected action, not with
+a global override checkbox.
 
 ## Actions
 
