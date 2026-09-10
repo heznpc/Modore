@@ -19,11 +19,14 @@ struct HealthSnapshot: Codable, Equatable, Sendable {
     let processes: [HealthProcess]
     let cpuElevated: Bool
     var cpuAvailable = true
+    var cpuBurst: Bool?
+    var peakCPU: Double { processes.map(\.cpu).max() ?? 0 }
 
     var issues: [String] {
         var result: [String] = []
         if let freeBytes, freeBytes < 20 * 1_073_741_824 { result.append(freeBytes < 5 * 1_073_741_824 ? "저장공간 임계" : "저장공간 부족") }
         if let memoryPressure, memoryPressure >= 2 { result.append("RAM 압박") }
+        if cpuBurst == true && !cpuElevated { result.append("CPU 순간 부하") }
         if cpuElevated { result.append(thermalPressure >= 1 ? "발열·CPU 부하" : "CPU 부하") }
         return result
     }
@@ -55,7 +58,7 @@ struct HealthSnapshot: Codable, Equatable, Sendable {
         return complete ? "관찰 범위에서 현재 경고 기준 아래입니다." : "일부 관찰값이 없어 정상 여부를 확정하지 못했습니다."
     }
 
-    static func capture(sample: CPUSample, usage: [CPUProcessUsage], cpuElevated: Bool) -> Self {
+    static func capture(sample: CPUSample, usage: [CPUProcessUsage], cpuElevated: Bool, cpuBurst: Bool = false) -> Self {
         var pressure: Int32 = 0
         var pressureSize = MemoryLayout.size(ofValue: pressure)
         let pressureOK = sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &pressureSize, nil, 0) == 0
@@ -75,7 +78,7 @@ struct HealthSnapshot: Codable, Equatable, Sendable {
                     processes: rows.map { row in
                         HealthProcess(pid: row.pid, name: row.name, cpu: row.percent,
                                       residentBytes: counters[row.pid]?.residentBytes, workspace: workspace(pid: row.pid))
-                    }, cpuElevated: cpuElevated, cpuAvailable: !usage.isEmpty)
+                    }, cpuElevated: cpuElevated, cpuAvailable: !usage.isEmpty, cpuBurst: cpuBurst)
     }
     private static func workspace(pid: Int32) -> String? {
         var info = proc_vnodepathinfo()
@@ -97,6 +100,7 @@ struct HealthIncident: Codable, Equatable, Identifiable, Sendable {
     var action: String?
     var actionBaseline: HealthSnapshot?
     var issues: [String]
+    var cpuPeak: HealthSnapshot?
 }
 
 struct HealthJournal: Codable, Sendable {
@@ -115,10 +119,13 @@ struct HealthJournal: Codable, Sendable {
             if let active {
                 let changed = !Set(snapshot.issues).isSubset(of: Set(incidents[active].issues))
                 incidents[active].issues = Array(Set(incidents[active].issues + snapshot.issues)).sorted()
+                if snapshot.cpuBurst == true || snapshot.cpuElevated {
+                    if snapshot.peakCPU > (incidents[active].cpuPeak?.peakCPU ?? -1) { incidents[active].cpuPeak = snapshot }
+                }
                 incidents[active].latest = snapshot
                 return changed
             }
-            incidents.insert(HealthIncident(id: UUID(), first: snapshot, latest: snapshot, issues: snapshot.issues), at: 0)
+            incidents.insert(HealthIncident(id: UUID(), first: snapshot, latest: snapshot, issues: snapshot.issues, cpuPeak: (snapshot.cpuBurst == true || snapshot.cpuElevated) ? snapshot : nil), at: 0)
             incidents = Array(incidents.prefix(40))
             return true
         }

@@ -60,6 +60,11 @@ struct HealthContextView: View {
                     HealthActionTile(title:"프로젝트·대화",subtitle:"작업 찾아 이어가기",icon:"folder",action:openWork)
                     HealthActionTile(title:"조치 기록",subtitle:"실행 결과 · 전후 변화",icon:"clock.arrow.circlepath") { showHistory=true }
                 }
+                if let peak=monitor.journal.incidents.compactMap(\.cpuPeak).first {
+                    Button { showProcesses=true } label: {
+                        HStack { Label("최근 CPU 부하",systemImage:"waveform.path"); Text(peak.date.formatted(date:.omitted,time:.standard)); Text(peak.processes.max(by:{$0.cpu < $1.cpu}).map { "\($0.name) \(Int($0.cpu))%" } ?? ""); Spacer(); Image(systemName:"arrow.right") }.font(.callout).foregroundStyle(.orange)
+                    }.buttonStyle(.plain)
+                }
                 Spacer(minLength:0)
             }.padding(24)
         }
@@ -68,6 +73,10 @@ struct HealthContextView: View {
             ScrollView {
                 VStack(alignment:.leading,spacing:20) {
                     HStack { Text("실행 작업").font(.largeTitle.bold());Spacer();Button("서버·가상머신 관리") { environmentRoute=HealthWorkbenchRoute(id:"finish") } }
+                    if let peak=monitor.journal.incidents.compactMap(\.cpuPeak).first {
+                        Text("최근 부하 당시 · " + peak.date.formatted()).font(.headline)
+                        processSection(peak)
+                    }
                     if let snapshot=monitor.snapshot { processSection(snapshot) }
                 }.padding(24)
             }

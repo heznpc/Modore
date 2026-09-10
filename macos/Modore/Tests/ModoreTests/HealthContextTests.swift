@@ -44,6 +44,25 @@ final class HealthContextTests: XCTestCase {
         XCTAssertTrue(after.explanation(from: before).contains("가능성"))
         XCTAssertFalse(before.explanation(from: after).contains("함께 관찰"))
     }
+    func testShortCPUBurstIsRecordedAndPeakSurvivesRecoverySamples() throws {
+        var journal = HealthJournal()
+        journal.observe(sample(0, pressure:2))
+        var burst = HealthSnapshot(date:Date(timeIntervalSince1970:2),freeBytes:30_000_000_000,swapBytes:0,memoryPressure:2,thermalPressure:0,processes:[.init(pid:42,name:"renderer",cpu:430,residentBytes:100,workspace:nil)],cpuElevated:false)
+        burst.cpuBurst=true
+        XCTAssertTrue(burst.issues.contains("CPU 순간 부하"))
+        XCTAssertTrue(journal.observe(burst))
+        journal.observe(sample(4,pressure:2))
+        XCTAssertEqual(journal.incidents.first?.cpuPeak?.processes.first?.pid,42)
+        XCTAssertEqual(journal.incidents.first?.cpuPeak?.peakCPU,430)
+        let restored=try JSONDecoder().decode(HealthJournal.self,from:JSONEncoder().encode(journal))
+        XCTAssertEqual(restored.incidents.first?.cpuPeak?.peakCPU,430)
+    }
+    func testOldSnapshotsDecodeWithoutBurstField() throws {
+        let old=try JSONEncoder().encode(sample(0))
+        let decoded=try JSONDecoder().decode(HealthSnapshot.self,from:old)
+        XCTAssertNil(decoded.cpuBurst)
+        XCTAssertFalse(decoded.issues.contains("CPU 순간 부하"))
+    }
     func testHealthRouteRejectsUntrustedParameters() {
         XCTAssertEqual(ModoreRoute(url: URL(string: "modore://health")!), .health)
         XCTAssertNil(ModoreRoute(url: URL(string: "modore://health?execute=1")!))
