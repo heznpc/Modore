@@ -112,3 +112,10 @@ The health landing page links directly to full storage, environment recovery and
 app restart. PID/path details, session lists and historical incident logs are
 collapsed by default, so a warning leads to a concrete action rather than another
 unbounded log page.
+
+The workbench displays platform counts, editable review-time keep conditions and
+selection-dependent remaining device counts without expanding details. Status,
+linked-work counts and deletion/retention effects appear as labeled icon chips.
+Project headers are full-width buttons with visible running/selected counts;
+individual process choices are revealed by clicking the card, not a tiny triangle.
+Raw paths and verbose evidence remain available from target context menus.
