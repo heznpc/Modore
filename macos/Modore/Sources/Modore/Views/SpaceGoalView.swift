@@ -139,9 +139,9 @@ struct SpaceGoalWorkspaceList: View {
             LazyVStack(alignment: .leading, spacing: 16) {
                 if eligibleCandidates.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("정리 가능한 항목이 없습니다", systemImage: "checkmark.circle")
+                        Label(L10n.text("정리 가능한 항목이 없습니다"), systemImage: "checkmark.circle")
                             .font(.title3.weight(.semibold))
-                        Text("정리 가능한 항목이 없어 목표 모드를 계산할 수 없습니다.")
+                        Text(L10n.text("정리 가능한 항목이 없어 목표 모드를 계산할 수 없습니다."))
                             .foregroundStyle(.secondary)
                     }
                     .spaceGoalSurface()
@@ -156,7 +156,7 @@ struct SpaceGoalWorkspaceList: View {
         }
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity)
-        .accessibilityLabel("공간 확보 목표 모드")
+        .accessibilityLabel(L10n.text("공간 확보 목표 모드"))
     }
 
     private var goalSummary: some View {
@@ -167,28 +167,28 @@ struct SpaceGoalWorkspaceList: View {
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("실제 확보량은 정리 후 확인합니다")
+                    Text(L10n.text("실제 확보량은 정리 후 확인합니다"))
                         .font(.title3.weight(.semibold))
-                    Text("공유 블록이 포함된 파일 크기는 실제 회수량이 아닙니다. 후보 크기로 목표 달성을 예측하지 않습니다.")
+                    Text(L10n.text("공유 블록이 포함된 파일 크기는 실제 회수량이 아닙니다. 후보 크기로 목표 달성을 예측하지 않습니다."))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("회수량 미확정")
+                Text(L10n.text("회수량 미확정"))
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(Color.secondary)
                     .monospacedDigit()
             }
 
             HStack(spacing: 10) {
-                SpaceGoalMetric(title: "추가 확보 목표", value: StorageBytes.text(targetBytes))
-                SpaceGoalMetric(title: "실제 회수 예상", value: "미확정")
-                SpaceGoalMetric(title: "재측정", value: "\(pendingSelection.count)개")
+                SpaceGoalMetric(title: L10n.text("추가 확보 목표"), value: StorageBytes.text(targetBytes))
+                SpaceGoalMetric(title: L10n.text("실제 회수 예상"), value: L10n.text("미확정"))
+                SpaceGoalMetric(title: L10n.text("재측정"), value: L10n.format("%@개", String(describing: pendingSelection.count)))
             }
 
 
             goalPicker
-            Text("권장 최종 여유: 20 GiB · 이 권장값은 선택한 추가 확보량을 바꾸지 않습니다. 후보 점유가 실제 여유 증가량을 보장하지는 않습니다.")
+            Text(L10n.text("권장 최종 여유: 20 GiB · 이 권장값은 선택한 추가 확보량을 바꾸지 않습니다. 후보 점유가 실제 여유 증가량을 보장하지는 않습니다."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -198,7 +198,7 @@ struct SpaceGoalWorkspaceList: View {
     private var selectedPlan: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("현재 확인된 후보")
+                Text(L10n.text("현재 확인된 후보"))
                     .font(.headline)
                 Text(planSubtitle)
                     .font(.callout)
@@ -207,7 +207,7 @@ struct SpaceGoalWorkspaceList: View {
             .padding(.bottom, 10)
 
             if measuredSelection.isEmpty {
-                Label("크기가 확인된 후보가 아직 없습니다", systemImage: "ruler")
+                Label(L10n.text("크기가 확인된 후보가 아직 없습니다"), systemImage: "ruler")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 12)
@@ -226,9 +226,9 @@ struct SpaceGoalWorkspaceList: View {
                             .symbolRenderingMode(.hierarchical)
                             .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("재측정이 필요한 항목 \(pendingSelection.count)개")
+                            Text(L10n.format("재측정이 필요한 항목 %@개", String(describing: pendingSelection.count)))
                                 .font(.callout.weight(.semibold))
-                            Text("미리보기에서 크기와 사용 여부를 다시 확인합니다.")
+                            Text(L10n.text("미리보기에서 크기와 사용 여부를 다시 확인합니다."))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -254,7 +254,7 @@ struct SpaceGoalWorkspaceList: View {
                     }
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    Text("상단의 ‘미리보기 취소’로 삭제 없이 중단할 수 있습니다.")
+                    Text(L10n.text("상단의 ‘미리보기 취소’로 삭제 없이 중단할 수 있습니다."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -264,9 +264,9 @@ struct SpaceGoalWorkspaceList: View {
                 model.prepareRecoveryPlan(selection, requestedGainBytes: targetBytes)
             } label: {
                 HStack {
-                    Label("확보 계획 검토", systemImage: "checklist")
+                    Label(L10n.text("확보 계획 검토"), systemImage: "checklist")
                     Spacer()
-                    Text("\(selection.count)개 · 후보 점유 \(StorageBytes.text(selectedTotalBytes))")
+                    Text(L10n.format("%@개 · 후보 점유 %@", String(describing: selection.count), String(describing: StorageBytes.text(selectedTotalBytes))))
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -276,7 +276,7 @@ struct SpaceGoalWorkspaceList: View {
             .controlSize(.large)
             .disabled(model.isBusy || selection.isEmpty)
 
-            Text("경로와 크기를 다시 측정한 뒤 별도 승인 화면을 엽니다. 앱·모델·Simulator·서비스는 이 계획에서 제외합니다.")
+            Text(L10n.text("경로와 크기를 다시 측정한 뒤 별도 승인 화면을 엽니다. 앱·모델·Simulator·서비스는 이 계획에서 제외합니다."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -301,10 +301,10 @@ struct SpaceGoalWorkspaceList: View {
                     get: { targetGB },
                     set: { if let bytes = StorageBytes.fromLegacyGiB($0) { targetBytes = bytes } }
                 ), in: 1...goalUpperBoundGB, step: 1)
-                    .accessibilityLabel("추가 확보 목표")
+                    .accessibilityLabel(L10n.text("추가 확보 목표"))
                     .accessibilityValue("\(Int(targetGB)) GiB")
             } else {
-                Text("확인된 용량이 1 GiB 미만이라 목표 조절은 재측정 후 사용할 수 있습니다.")
+                Text(L10n.text("확인된 용량이 1 GiB 미만이라 목표 조절은 재측정 후 사용할 수 있습니다."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -319,7 +319,7 @@ struct SpaceGoalWorkspaceList: View {
     }
 
     private var planSubtitle: String {
-        "파일 크기는 후보 정렬에만 사용합니다. 공유 블록 때문에 실제 확보량은 더 작을 수 있습니다."
+        L10n.text("파일 크기는 후보 정렬에만 사용합니다. 공유 블록 때문에 실제 확보량은 더 작을 수 있습니다.")
     }
 
     private static func achievableGB(_ storage: StorageSnapshot) -> Double {
@@ -375,7 +375,7 @@ private struct SpaceGoalCandidateRow: View {
             fallbackSymbol: tier == .safe ? "folder.badge.gearshape" : "arrow.triangle.2.circlepath",
             detail: detail,
             sizeTextOverride: item.measureStatus == "timed_out"
-                ? "미확인" : StorageBytes.text(StorageBytes.fromLegacyGiB(item.sizeGB)),
+                ? L10n.text("미확인") : StorageBytes.text(StorageBytes.fromLegacyGiB(item.sizeGB)),
             status: tier.shortTitle
         )
         .contextMenu { StorageItemContextMenu(item: item) }
@@ -383,10 +383,10 @@ private struct SpaceGoalCandidateRow: View {
 
     private var detail: String {
         if item.measureStatus == "timed_out" {
-            return "크기와 사용 여부를 다시 측정합니다."
+            return L10n.text("크기와 사용 여부를 다시 측정합니다.")
         }
         if item.cleanupID == "transient_workspace" {
-            return "정리 전에 경로·소유권·사용 여부를 다시 확인합니다."
+            return L10n.text("정리 전에 경로·소유권·사용 여부를 다시 확인합니다.")
         }
         return item.note.isEmpty ? item.action : item.note
     }

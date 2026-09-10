@@ -240,7 +240,7 @@ extension ScanModel {
                     token: token,
                     state: Task.isCancelled
                         ? nil
-                        : .failed("서명된 실행 런타임을 확인하지 못했습니다.")
+                        : .failed(L10n.text("서명된 실행 런타임을 확인하지 못했습니다."))
                 )
                 return
             }
@@ -271,10 +271,10 @@ extension ScanModel {
             guard let execution = await Task.detached(priority: .userInitiated, operation: {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
             }).value else {
-                return .failure(.init(message: "서명된 실행 런타임을 확인하지 못했습니다."))
+                return .failure(.init(message: L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")))
             }
             guard !Task.isCancelled else {
-                return .failure(.init(message: "세션 목록 읽기를 취소했습니다."))
+                return .failure(.init(message: L10n.text("세션 목록 읽기를 취소했습니다.")))
             }
             return await ScreeService.sessions(execution: execution)
         }
@@ -449,7 +449,7 @@ extension ScanModel {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
             }).value else {
                 if generation == contentSearchGeneration {
-                    contentSearchError = "서명된 실행 런타임을 확인하지 못했습니다."
+                    contentSearchError = L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")
                 }
                 return
             }
@@ -568,7 +568,7 @@ extension ScanModel {
                     token: token,
                     state: Task.isCancelled
                         ? nil
-                        : .failed("서명된 실행 런타임을 확인하지 못했습니다.")
+                        : .failed(L10n.text("서명된 실행 런타임을 확인하지 못했습니다."))
                 )
                 return
             }
@@ -690,7 +690,7 @@ extension ScanModel {
 
     func refreshArchiveCandidates() {
         guard let report = screeReport else {
-            archiveError = "작업 감사를 먼저 실행해야 저장소를 판정할 수 있습니다."
+            archiveError = L10n.text("작업 감사를 먼저 실행해야 저장소를 판정할 수 있습니다.")
             return
         }
         let root = projectRoot

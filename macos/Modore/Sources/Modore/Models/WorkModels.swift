@@ -67,7 +67,7 @@ struct WorkProject: Identifiable {
     var isUnassigned: Bool { path == WorkProjectBuilder.unassignedID }
 
     var name: String {
-        isUnassigned ? "연결되지 않은 대화" : URL(fileURLWithPath: path).lastPathComponent
+        isUnassigned ? L10n.text("연결되지 않은 대화") : URL(fileURLWithPath: path).lastPathComponent
     }
 
     /// Sessions that hold a readable conversation, newest first.
@@ -83,7 +83,7 @@ struct WorkProject: Identifiable {
 
     var sizeText: String {
         let measured = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
-        return hasIncompleteSessionSizes ? "최소 \(measured)" : measured
+        return hasIncompleteSessionSizes ? L10n.format("최소 %@", String(describing: measured)) : measured
     }
 
     /// Which agents worked here, in a stable order.
@@ -107,11 +107,11 @@ struct WorkProject: Identifiable {
         guard let verdict = assessment?.verdict else { return [] }
         return verdict.reasons.compactMap { reason in
             switch reason {
-            case .dirtyWorkingTree: return "커밋 안 된 변경"
-            case .unpushedCommits(let count): return "미푸시 \(count)개"
-            case .noRemoteConfigured: return "원격 없음"
-            case .noUpstreamConfigured: return "업스트림 미설정"
-            case .noCommitsYet: return "커밋 없음"
+            case .dirtyWorkingTree: return L10n.text("커밋 안 된 변경")
+            case .unpushedCommits(let count): return L10n.format("미푸시 %@개", String(describing: count))
+            case .noRemoteConfigured: return L10n.text("원격 없음")
+            case .noUpstreamConfigured: return L10n.text("업스트림 미설정")
+            case .noCommitsYet: return L10n.text("커밋 없음")
             case .dormant, .recentActivity, .fullyPushed: return nil
             }
         }
@@ -122,9 +122,9 @@ struct WorkProject: Identifiable {
         guard let verdict = assessment?.verdict else { return [] }
         return verdict.reasons.compactMap { reason in
             switch reason {
-            case .dormant(let days): return "\(days)일간 미사용"
-            case .recentActivity(let days): return "최근 활동 \(days)일 전"
-            case .fullyPushed: return "원격에 모두 반영됨"
+            case .dormant(let days): return L10n.format("%@일간 미사용", String(describing: days))
+            case .recentActivity(let days): return L10n.format("최근 활동 %@일 전", String(describing: days))
+            case .fullyPushed: return L10n.text("원격에 모두 반영됨")
             default: return nil
             }
         }
@@ -213,8 +213,8 @@ enum GitAssessmentState: Equatable {
     var unknownReason: String? {
         switch self {
         case .assessed, .notApplicable: return nil
-        case .notScanned: return "Git 상태 미확인 · 이번 검사 범위 밖"
-        case .failed: return "Git 상태 미확인 · 저장소를 읽지 못했습니다"
+        case .notScanned: return L10n.text("Git 상태 미확인 · 이번 검사 범위 밖")
+        case .failed: return L10n.text("Git 상태 미확인 · 저장소를 읽지 못했습니다")
         }
     }
 }

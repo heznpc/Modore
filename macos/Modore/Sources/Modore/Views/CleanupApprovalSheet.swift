@@ -22,7 +22,7 @@ struct CleanupApprovalSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 8)
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel("정리 세부 정보")
+                .accessibilityLabel(L10n.text("정리 세부 정보"))
                 .accessibilityValue(accessibilityDetailText)
             }
             Divider()
@@ -54,21 +54,21 @@ struct CleanupApprovalSheet: View {
     private var accessibilityDetailText: String {
         var parts: [String] = []
         if !preview.summary.isEmpty { parts.append(preview.summary) }
-        if !preview.avoidWhen.isEmpty { parts.append("미뤄야 할 때: " + preview.avoidWhen) }
+        if !preview.avoidWhen.isEmpty { parts.append(L10n.text("미뤄야 할 때: ") + preview.avoidWhen) }
         if let sizeChangeNotice { parts.append(sizeChangeNotice) }
         if !preview.blockedReason.isEmpty { parts.append(preview.blockedReason) }
         if !runningProcesses.isEmpty {
-            parts.append("실행 중인 항목: " + runningProcesses.map(\.name).joined(separator: ", "))
+            parts.append(L10n.text("실행 중인 항목: ") + runningProcesses.map(\.name).joined(separator: ", "))
         }
         if !preview.targets.isEmpty {
-            parts.append("정리 대상: " + preview.targets.joined(separator: ", "))
+            parts.append(L10n.text("정리 대상: ") + preview.targets.joined(separator: ", "))
         }
         if !preview.warning.isEmpty { parts.append(preview.warning) }
         if !preview.sharedResidue.isEmpty {
-            parts.append("공유 가능성이 있어 제거하지 않는 항목: " + preview.sharedResidue.joined(separator: ", "))
+            parts.append(L10n.text("공유 가능성이 있어 제거하지 않는 항목: ") + preview.sharedResidue.joined(separator: ", "))
         }
         if !preview.reviewResidue.isEmpty {
-            parts.append("이름으로만 추정해 제거하지 않는 항목: " + preview.reviewResidue.joined(separator: ", "))
+            parts.append(L10n.text("이름으로만 추정해 제거하지 않는 항목: ") + preview.reviewResidue.joined(separator: ", "))
         }
         parts.append(contentsOf: preview.recoveryPathMessages)
         return parts.joined(separator: ". ")
@@ -81,7 +81,7 @@ private struct CleanupRecoveryPaths: View {
     var body: some View {
         if !preview.recoveryPathMessages.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                Text("복구 및 확인 경로")
+                Text(L10n.text("복구 및 확인 경로"))
                     .font(.headline)
                 ForEach(preview.recoveryPathMessages, id: \.self) { message in
                     Text(message)
@@ -91,7 +91,7 @@ private struct CleanupRecoveryPaths: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("복구 및 확인 경로")
+            .accessibilityLabel(L10n.text("복구 및 확인 경로"))
             .accessibilityValue(preview.recoveryPathMessages.joined(separator: ". "))
         }
     }
@@ -115,7 +115,7 @@ private struct CleanupApprovalHeader: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
-                Text("현재 대상 점유 추정")
+                Text(L10n.text("현재 대상 점유 추정"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(preview.estimatedText)
@@ -143,18 +143,18 @@ private struct CleanupApprovalNotices: View {
         }
         if !runningProcesses.isEmpty {
             VStack(alignment: .leading, spacing: 5) {
-                Text("감지된 실행 항목")
+                Text(L10n.text("감지된 실행 항목"))
                     .font(.headline)
                 ForEach(Array(runningProcesses.enumerated()), id: \.offset) { _, process in
                     Label(process.name, systemImage: "app")
                         .font(.callout)
                         .lineLimit(2)
-                        .accessibilityLabel("실행 중인 항목: \(process.name)")
+                        .accessibilityLabel(L10n.format("실행 중인 항목: %@", String(describing: process.name)))
                 }
                 // 차단 상태에서는 실행 버튼이 없고 '다시 확인'만 남는다. 왜 계속
                 // 차단되는지 알려주지 않으면 사용자는 같은 버튼을 반복해서 누르게 된다.
                 if preview.status == "blocked" {
-                    Text("위 항목이 실행 중인 동안에는 계속 차단됩니다. 해당 작업을 종료한 뒤 ‘다시 확인’을 누르세요.")
+                    Text(L10n.text("위 항목이 실행 중인 동안에는 계속 차단됩니다. 해당 작업을 종료한 뒤 ‘다시 확인’을 누르세요."))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -173,27 +173,27 @@ private struct CleanupRetainedResidue: View {
     var body: some View {
         if !preview.sharedResidue.isEmpty || !preview.reviewResidue.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                Text("발견했지만 제거하지 않음")
+                Text(L10n.text("발견했지만 제거하지 않음"))
                     .font(.headline)
                 if !preview.sharedResidue.isEmpty {
                     residueGroup(
-                        title: "다른 앱과 공유될 수 있는 데이터",
-                        detail: "이 앱만 사용한다고 증명하지 못했습니다. 함께 지우면 남은 앱의 데이터도 사라집니다.",
+                        title: L10n.text("다른 앱과 공유될 수 있는 데이터"),
+                        detail: L10n.text("이 앱만 사용한다고 증명하지 못했습니다. 함께 지우면 남은 앱의 데이터도 사라집니다."),
                         symbol: "person.2",
                         paths: preview.sharedResidue
                     )
                 }
                 if !preview.reviewResidue.isEmpty {
                     residueGroup(
-                        title: "이름으로만 추정한 항목",
-                        detail: "앱 이름과 같은 폴더입니다. 번들 ID로 귀속을 확인할 수 없어 직접 검토가 필요합니다.",
+                        title: L10n.text("이름으로만 추정한 항목"),
+                        detail: L10n.text("앱 이름과 같은 폴더입니다. 번들 ID로 귀속을 확인할 수 없어 직접 검토가 필요합니다."),
                         symbol: "questionmark.folder",
                         paths: preview.reviewResidue
                     )
                 }
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("제거하지 않는 잔여물 목록")
+            .accessibilityLabel(L10n.text("제거하지 않는 잔여물 목록"))
         }
     }
 
@@ -216,7 +216,7 @@ private struct CleanupRetainedResidue: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("제거하지 않는 경로: \(path)")
+                    .accessibilityLabel(L10n.format("제거하지 않는 경로: %@", String(describing: path)))
             }
         }
     }
@@ -227,18 +227,18 @@ private struct CleanupTargets: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("정리 대상")
+            Text(L10n.text("정리 대상"))
                 .font(.headline)
             ForEach(preview.targets, id: \.self) { target in
                 Text(target)
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("정리 대상 경로: \(target)")
+                    .accessibilityLabel(L10n.format("정리 대상 경로: %@", String(describing: target)))
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("정리 대상 경로 목록")
+        .accessibilityLabel(L10n.text("정리 대상 경로 목록"))
     }
 }
 
@@ -275,13 +275,13 @@ private struct CleanupExplanation: View {
     private var rows: [Row] {
         var result: [Row] = []
         if !preview.summary.isEmpty {
-            result.append(Row(title: "이 항목은", icon: "info.circle", detail: preview.summary))
+            result.append(Row(title: L10n.text("이 항목은"), icon: "info.circle", detail: preview.summary))
         }
         if !preview.warning.isEmpty {
-            result.append(Row(title: "정리하면", icon: "arrow.triangle.2.circlepath", detail: preview.warning))
+            result.append(Row(title: L10n.text("정리하면"), icon: "arrow.triangle.2.circlepath", detail: preview.warning))
         }
         if !preview.avoidWhen.isEmpty {
-            result.append(Row(title: "미뤄야 할 때", icon: "hand.raised", detail: preview.avoidWhen))
+            result.append(Row(title: L10n.text("미뤄야 할 때"), icon: "hand.raised", detail: preview.avoidWhen))
         }
         return result
     }
@@ -293,11 +293,11 @@ private struct CleanupApprovalActions: View {
 
     var body: some View {
         HStack {
-            Label("AI 호출 없음 · 고정된 로컬 레시피", systemImage: "lock.shield")
+            Label(L10n.text("AI 호출 없음 · 고정된 로컬 레시피"), systemImage: "lock.shield")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            Button("취소", role: .cancel) { model.dismissCleanupPreview() }
+            Button(L10n.text("취소"), role: .cancel) { model.dismissCleanupPreview() }
                 .disabled(model.cleanupInFlight)
                 .keyboardShortcut(.cancelAction)
             retryButton
@@ -314,7 +314,7 @@ private struct CleanupApprovalActions: View {
                 if model.cleanupInFlight {
                     ProgressView().controlSize(.small)
                 } else {
-                    Label("다시 확인", systemImage: "arrow.clockwise")
+                    Label(L10n.text("다시 확인"), systemImage: "arrow.clockwise")
                 }
             }
             .disabled(model.cleanupInFlight)
@@ -340,9 +340,9 @@ private struct CleanupApprovalActions: View {
 
     private var executeLabel: String {
         switch preview.actionMode {
-        case "trash": return "\(preview.estimatedText) 휴지통으로 이동"
-        case "simulator": return "\(preview.estimatedText) Simulator 삭제"
-        default: return "\(preview.estimatedText) 정리"
+        case "trash": return L10n.format("%@ 휴지통으로 이동", String(describing: preview.estimatedText))
+        case "simulator": return L10n.format("%@ Simulator 삭제", String(describing: preview.estimatedText))
+        default: return L10n.format("%@ 정리", String(describing: preview.estimatedText))
         }
     }
 }

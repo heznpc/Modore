@@ -7,15 +7,15 @@ struct RetirementIntentRail: View {
 
     var body: some View {
         VStack(alignment:.leading,spacing:12) {
-            Text("지금 할 일").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.bottom,8)
-            destination("space", "공간 비우기", "기기 · OS · 캐시", "sparkles")
-            destination("finish", "작업 마치기", "서버 · 가상머신", "moon")
-            destination("eject", "SSD 가져가기", "연결 해제 준비", "externaldrive")
-            destination("apps", "앱 중복 정리", "복사본 · 남은 등록", "square.on.square")
+            Text(L10n.text("지금 할 일")).font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.bottom,8)
+            destination("space", L10n.text("공간 비우기"), L10n.text("기기 · OS · 캐시"), "sparkles")
+            destination("finish", L10n.text("작업 마치기"), L10n.text("서버 · 가상머신"), "moon")
+            destination("eject", L10n.text("SSD 가져가기"), L10n.text("연결 해제 준비"), "externaldrive")
+            destination("apps", L10n.text("앱 중복 정리"), L10n.text("복사본 · 남은 등록"), "square.on.square")
             Spacer()
             VStack(alignment:.leading,spacing:5) {
-                Text("이 Mac의 여유 공간").font(.caption).foregroundStyle(.secondary)
-                Text(freeBytes.map { ByteCountFormatter.string(fromByteCount:$0,countStyle:.file) } ?? "측정 중")
+                Text(L10n.text("이 Mac의 여유 공간")).font(.caption).foregroundStyle(.secondary)
+                Text(freeBytes.map { ByteCountFormatter.string(fromByteCount:$0,countStyle:.file) } ?? L10n.text("측정 중"))
                     .font(.system(size:25,weight:.semibold,design:.rounded)).monospacedDigit()
             }.padding(.bottom,8)
         }.padding(22).frame(width:210).frame(maxHeight:.infinity)

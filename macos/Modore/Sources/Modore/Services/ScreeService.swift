@@ -42,22 +42,22 @@ struct SessionBackupReceipt: Decodable {
 
     var summary: String {
         let size = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
-        return "\(provider) · \(fileCount)개 파일 · 원본 \(size) · SHA-256 일치"
+        return L10n.format("%@ · %@개 파일 · 원본 %@ · SHA-256 일치", String(describing: provider), String(describing: fileCount), String(describing: size))
     }
 
     var includedDescription: String {
         let labels = [
-            "metadata": "세션 메타데이터",
-            "transcript": "대화 원본",
-            "audit": "감사 기록",
-            "subagents": "서브에이전트",
-            "queue": "작업 큐",
-            "outputs": "작업 산출물",
-            "tool-results": "도구 결과",
-            "file-history": "파일 스냅샷",
-            "image-cache": "이미지",
-            "uploads": "첨부 파일",
-            "sidecar": "보조 파일",
+            "metadata": L10n.text("세션 메타데이터"),
+            "transcript": L10n.text("대화 원본"),
+            "audit": L10n.text("감사 기록"),
+            "subagents": L10n.text("서브에이전트"),
+            "queue": L10n.text("작업 큐"),
+            "outputs": L10n.text("작업 산출물"),
+            "tool-results": L10n.text("도구 결과"),
+            "file-history": L10n.text("파일 스냅샷"),
+            "image-cache": L10n.text("이미지"),
+            "uploads": L10n.text("첨부 파일"),
+            "sidecar": L10n.text("보조 파일"),
         ]
         return categories.compactMap { labels[$0] }.joined(separator: " · ")
     }
@@ -92,7 +92,7 @@ enum ScreeService {
         guard let execution = await Task.detached(priority: .userInitiated, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
         }).value else {
-            return .failure(.init(message: "서명된 실행 런타임을 확인하지 못했습니다."))
+            return .failure(.init(message: L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")))
         }
         return await sessionBackup(execution: execution, operation: operation)
     }
@@ -118,7 +118,7 @@ enum ScreeService {
             waitForCleanupOnStop: true
         ) {
         case .timedOut:
-            return .failure(.init(message: "5분 안에 검증을 마치지 못했습니다. 백업·복원 성공으로 표시하지 않습니다."))
+            return .failure(.init(message: L10n.text("5분 안에 검증을 마치지 못했습니다. 백업·복원 성공으로 표시하지 않습니다.")))
         case .failure(let message):
             return .failure(.init(message: message))
         case .success(let output):
@@ -126,7 +126,7 @@ enum ScreeService {
                   let receipt = try? JSONDecoder().decode(SessionBackupReceipt.self, from: data),
                   receipt.schemaVersion == 1, receipt.status == operation.expectedStatus,
                   receipt.fileCount > 0 else {
-                return .failure(.init(message: "백업 검증 결과를 해석하지 못했습니다."))
+                return .failure(.init(message: L10n.text("백업 검증 결과를 해석하지 못했습니다.")))
             }
             return .success(receipt)
         }
@@ -141,16 +141,16 @@ enum ScreeService {
         case .failure(let message):
             return .failure(message)
         case .timedOut:
-            return .failure("작업 감사가 30초 안에 끝나지 않아 중단했습니다. 읽기 제한 경로는 결과 없음으로 단정하지 않습니다.")
+            return .failure(L10n.text("작업 감사가 30초 안에 끝나지 않아 중단했습니다. 읽기 제한 경로는 결과 없음으로 단정하지 않습니다."))
         case .success(let output):
             guard let start = output.firstIndex(of: "{") else {
-                return .failure("scree 출력에서 JSON을 찾지 못했습니다.")
+                return .failure(L10n.text("scree 출력에서 JSON을 찾지 못했습니다."))
             }
             let jsonSlice = output[start...]
             guard let data = jsonSlice.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let report = ScreeReport(json: object) else {
-                return .failure("scree 출력을 해석하지 못했습니다.")
+                return .failure(L10n.text("scree 출력을 해석하지 못했습니다."))
             }
             return .success(report)
         }
@@ -165,7 +165,7 @@ enum ScreeService {
         guard let execution = await Task.detached(priority: .userInitiated, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
         }).value else {
-            return .failure("서명된 실행 런타임을 확인하지 못해 scree를 실행하지 않았습니다.")
+            return .failure(L10n.text("서명된 실행 런타임을 확인하지 못해 scree를 실행하지 않았습니다."))
         }
         let destination = execution.outputRoot
             .appendingPathComponent("scree-preserve")
@@ -178,13 +178,13 @@ enum ScreeService {
         case .failure(let message):
             return .failure(message)
         case .timedOut:
-            return .failure("대화 내보내기가 1분 안에 끝나지 않았습니다.")
+            return .failure(L10n.text("대화 내보내기가 1분 안에 끝나지 않았습니다."))
         case .success(let output):
             guard let actual = validatedPreserveOutput(
                 output,
                 expectedParent: destination.deletingLastPathComponent()
             ) else {
-                return .failure("대화 내보내기 결과 경로를 안전하게 확인하지 못했습니다.")
+                return .failure(L10n.text("대화 내보내기 결과 경로를 안전하게 확인하지 못했습니다."))
             }
             return .success(actual)
         }
@@ -281,7 +281,7 @@ extension ScreeService {
         guard let execution = await Task.detached(priority: .userInitiated, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
         }).value else {
-            return .failed("서명된 실행 런타임을 확인하지 못해 세션 바인더를 실행하지 않았습니다.")
+            return .failed(L10n.text("서명된 실행 런타임을 확인하지 못해 세션 바인더를 실행하지 않았습니다."))
         }
         return await bind(execution: execution, workspace: workspace,
                           repoURL: repoURL, deep: deep)
@@ -314,11 +314,11 @@ extension ScreeService {
         case .failure(let message):
             return .failed(message)
         case .timedOut:
-            return .failed("세션 바인딩이 2분 안에 끝나지 않았습니다.")
+            return .failed(L10n.text("세션 바인딩이 2분 안에 끝나지 않았습니다."))
         case .success(let output):
             guard let start = output.firstIndex(of: "{"),
                   let data = output[start...].data(using: .utf8) else {
-                return .failed("세션 바인더 출력에서 JSON을 찾지 못했습니다.")
+                return .failed(L10n.text("세션 바인더 출력에서 JSON을 찾지 못했습니다."))
             }
             let assessment = ContinuityAssessment.fromBindReport(data)
 
@@ -339,7 +339,7 @@ extension ScreeService {
                     // JSON this build could not read as a completed
                     // assessment -- schema drift between the two
                     // languages, not a repo with unknown sessions.
-                    return .failed("세션 바인더 출력을 해석하지 못했습니다.")
+                    return .failed(L10n.text("세션 바인더 출력을 해석하지 못했습니다."))
                 }
                 // Already the deepest pass available and it still stopped
                 // short. Saying which gap remains beats reporting a parse
@@ -357,11 +357,11 @@ extension ScreeService {
     static func incompleteScanReason(_ data: Data) -> String {
         guard let report = try? BindReport.decoder().decode(BindReport.self, from: data),
               let detail = report.coverageDetail else {
-            return "세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다."
+            return L10n.text("세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다.")
         }
         if let unbound = detail.unboundStores, !unbound.isEmpty {
-            return "\(unbound.joined(separator: "·")) 세션 저장소는 아직 검사하지 않습니다. "
-                + "이 저장소에 연결된 대화가 없다고 단정할 수 없습니다."
+            return L10n.format("%@ 세션 저장소는 아직 검사하지 않습니다. ", String(describing: unbound.joined(separator: "·")))
+                + L10n.text("이 저장소에 연결된 대화가 없다고 단정할 수 없습니다.")
         }
         let stalled = [
             ("Claude Code", detail.claude),
@@ -371,9 +371,9 @@ extension ScreeService {
             .filter { $0.1 != nil && $0.1 != "complete" }
             .map(\.0)
         if !stalled.isEmpty {
-            return "\(stalled.joined(separator: "·")) 세션 일부를 읽지 못해 연결 여부를 확정하지 못했습니다."
+            return L10n.format("%@ 세션 일부를 읽지 못해 연결 여부를 확정하지 못했습니다.", String(describing: stalled.joined(separator: "·")))
         }
-        return "세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다."
+        return L10n.text("세션 검사가 끝까지 진행되지 않아 연결 여부를 확정하지 못했습니다.")
     }
 
     /// True when the binder produced a payload this build understands as
@@ -402,7 +402,7 @@ extension ScreeService {
         homeOverride: URL? = nil
     ) async -> SessionPresentation? {
         var arguments = ["title", binding.source.path,
-                         "--label", binding.provider.displayName + " 작업"]
+                         "--label", binding.provider.displayName + L10n.text(" 작업")]
         if let homeOverride { arguments += ["--home", homeOverride.path] }
         guard case .success(let output) = await invoke(
             execution: execution, arguments: arguments, timeout: 30
@@ -450,7 +450,7 @@ extension ScreeService {
         let listing = scratch.targets
         guard let input = try? JSONSerialization.data(withJSONObject: payload),
               (try? input.write(to: listing, options: [.atomic])) != nil else {
-            return failAll(targets, "바인딩 대상 목록을 기록하지 못했습니다.")
+            return failAll(targets, L10n.text("바인딩 대상 목록을 기록하지 못했습니다."))
         }
         defer { try? FileManager.default.removeItem(at: listing) }
 
@@ -473,17 +473,17 @@ extension ScreeService {
         case .failure(let message):
             return failAll(targets, message)
         case .timedOut:
-            return failAll(targets, "세션 바인딩이 15분 안에 끝나지 않았습니다.")
+            return failAll(targets, L10n.text("세션 바인딩이 15분 안에 끝나지 않았습니다."))
         case .success:
             guard let data = try? Data(contentsOf: resultFile),
                   let decoded = try? BindReport.decoder().decode(BatchPayload.self, from: data) else {
-                return failAll(targets, "세션 바인더 출력을 해석하지 못했습니다.")
+                return failAll(targets, L10n.text("세션 바인더 출력을 해석하지 못했습니다."))
             }
             var out: [String: ScreeBindOutcome] = [:]
             for target in targets {
                 guard let report = decoded.results[target.workspace.path],
                       let encoded = try? JSONEncoder().encode(report) else {
-                    out[target.workspace.path] = .failed("이 저장소에 대한 바인딩 결과가 없습니다.")
+                    out[target.workspace.path] = .failed(L10n.text("이 저장소에 대한 바인딩 결과가 없습니다."))
                     continue
                 }
                 let assessment = ContinuityAssessment.fromBindReport(encoded)
@@ -577,7 +577,7 @@ extension ScreeService {
         let output: String
         switch outcome {
         case .success(let value): output = value
-        case .timedOut: return .failure(.init(message: "대화를 읽는 데 시간이 너무 걸려 중단했습니다."))
+        case .timedOut: return .failure(.init(message: L10n.text("대화를 읽는 데 시간이 너무 걸려 중단했습니다.")))
         case .failure(let message): return .failure(.init(message: message))
         }
         guard let start = output.firstIndex(of: "{"),
@@ -585,7 +585,7 @@ extension ScreeService {
               let conversation = try? JSONDecoder().decode(
                 SessionConversation.self, from: data
               ) else {
-            return .failure(.init(message: "scree가 돌려준 대화 형식을 읽지 못했습니다."))
+            return .failure(.init(message: L10n.text("scree가 돌려준 대화 형식을 읽지 못했습니다.")))
         }
         return .success(conversation)
     }
@@ -600,7 +600,7 @@ extension ScreeService {
         homeOverride: URL? = nil
     ) async -> Result<SessionConversation, ScreeInspectionError> {
         guard !sources.isEmpty else {
-            return .failure(.init(message: "표시할 대화 기록이 없습니다."))
+            return .failure(.init(message: L10n.text("표시할 대화 기록이 없습니다.")))
         }
         if sources.count == 1 {
             return await inspect(
@@ -610,12 +610,12 @@ extension ScreeService {
         guard sources.count <= 64,
               let payload = try? JSONSerialization.data(
                 withJSONObject: sources.map(\.path)) else {
-            return .failure(.init(message: "대화 기록 조각이 너무 많습니다."))
+            return .failure(.init(message: L10n.text("대화 기록 조각이 너무 많습니다.")))
         }
         let listing = execution.outputRoot
             .appending(path: "scree-inspect-sources-\(UUID().uuidString).json")
         guard (try? payload.write(to: listing, options: [.atomic])) != nil else {
-            return .failure(.init(message: "대화 기록 목록을 준비하지 못했습니다."))
+            return .failure(.init(message: L10n.text("대화 기록 목록을 준비하지 못했습니다.")))
         }
         defer { try? FileManager.default.removeItem(at: listing) }
 
@@ -630,7 +630,7 @@ extension ScreeService {
         switch outcome {
         case .success(let value): output = value
         case .timedOut:
-            return .failure(.init(message: "대화를 읽는 데 시간이 너무 걸려 중단했습니다."))
+            return .failure(.init(message: L10n.text("대화를 읽는 데 시간이 너무 걸려 중단했습니다.")))
         case .failure(let message):
             return .failure(.init(message: message))
         }
@@ -638,7 +638,7 @@ extension ScreeService {
               let data = output[start...].data(using: .utf8),
               let conversation = try? JSONDecoder().decode(
                 SessionConversation.self, from: data) else {
-            return .failure(.init(message: "scree가 돌려준 대화 형식을 읽지 못했습니다."))
+            return .failure(.init(message: L10n.text("scree가 돌려준 대화 형식을 읽지 못했습니다.")))
         }
         return .success(conversation)
     }
@@ -668,13 +668,13 @@ extension ScreeService {
         if let homeOverride { arguments += ["--home", homeOverride.path] }
         switch await invoke(execution: execution, arguments: arguments, timeout: 180) {
         case .timedOut:
-            return .failure(.init(message: "세션 목록을 읽는 데 시간이 너무 걸려 중단했습니다."))
+            return .failure(.init(message: L10n.text("세션 목록을 읽는 데 시간이 너무 걸려 중단했습니다.")))
         case .failure(let message):
             return .failure(.init(message: message))
         case .success:
             guard let data = try? Data(contentsOf: resultFile),
                   let index = try? JSONDecoder().decode(SessionIndex.self, from: data) else {
-                return .failure(.init(message: "scree가 돌려준 세션 목록 형식을 읽지 못했습니다."))
+                return .failure(.init(message: L10n.text("scree가 돌려준 세션 목록 형식을 읽지 못했습니다.")))
             }
             return .success(index)
         }
@@ -697,7 +697,7 @@ extension ScreeService {
         let queryFile = execution.outputRoot
             .appending(path: "scree-query-\(UUID().uuidString).txt")
         guard writePrivateQuery(query, to: queryFile) else {
-            return .failure(.init(message: "검색어를 전달하지 못했습니다."))
+            return .failure(.init(message: L10n.text("검색어를 전달하지 못했습니다.")))
         }
         defer { try? FileManager.default.removeItem(at: queryFile) }
 
@@ -708,14 +708,14 @@ extension ScreeService {
         // would outlive a force quit that skips every `defer`.
         switch await invoke(execution: execution, arguments: arguments, timeout: 180) {
         case .timedOut:
-            return .failure(.init(message: "검색이 시간 안에 끝나지 않았습니다."))
+            return .failure(.init(message: L10n.text("검색이 시간 안에 끝나지 않았습니다.")))
         case .failure(let message):
             return .failure(.init(message: message))
         case .success(let output):
             guard let start = output.firstIndex(of: "{"),
                   let data = output[start...].data(using: .utf8),
                   let decoded = try? JSONDecoder().decode(SessionSearchResult.self, from: data) else {
-                return .failure(.init(message: "검색 결과를 해석하지 못했습니다."))
+                return .failure(.init(message: L10n.text("검색 결과를 해석하지 못했습니다.")))
             }
             return .success(decoded)
         }
@@ -736,7 +736,7 @@ extension ScreeService {
         let queryFile = execution.outputRoot
             .appending(path: "scree-evidence-query-\(UUID().uuidString).txt")
         guard writePrivateQuery(query, to: queryFile) else {
-            return .failure(.init(message: "질문을 전달하지 못했습니다."))
+            return .failure(.init(message: L10n.text("질문을 전달하지 못했습니다.")))
         }
         defer { try? FileManager.default.removeItem(at: queryFile) }
 
@@ -747,7 +747,7 @@ extension ScreeService {
         if let homeOverride { arguments += ["--home", homeOverride.path] }
         switch await invoke(execution: execution, arguments: arguments, timeout: 240) {
         case .timedOut:
-            return .failure(.init(message: "이전 기록 확인이 4분 안에 끝나지 않았습니다."))
+            return .failure(.init(message: L10n.text("이전 기록 확인이 4분 안에 끝나지 않았습니다.")))
         case .failure(let message):
             return .failure(.init(message: message))
         case .success(let output):
@@ -756,7 +756,7 @@ extension ScreeService {
                   let decoded = try? JSONDecoder().decode(
                     ScreeEvidenceResult.self, from: data
                   ) else {
-                return .failure(.init(message: "이전 기록 결과를 해석하지 못했습니다."))
+                return .failure(.init(message: L10n.text("이전 기록 결과를 해석하지 못했습니다.")))
             }
             return .success(decoded)
         }
@@ -1077,7 +1077,7 @@ extension ScreeService {
         guard let execution = await Task.detached(priority: .userInitiated, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
         }).value else {
-            return .failure("서명된 실행 런타임을 확인하지 못해 scree를 실행하지 않았습니다.")
+            return .failure(L10n.text("서명된 실행 런타임을 확인하지 못해 scree를 실행하지 않았습니다."))
         }
         return await invoke(execution: execution, arguments: arguments, timeout: timeout)
     }
@@ -1098,12 +1098,12 @@ extension ScreeService {
             relativePath: "scripts/scree.py",
             name: "scree"
         ) else {
-            return .failure("봉인한 scree 스크립트를 확인하지 못해 실행하지 않았습니다.")
+            return .failure(L10n.text("봉인한 scree 스크립트를 확인하지 못해 실행하지 않았습니다."))
         }
         guard let python3 = Self.python3Path(
             signedBundleURL: execution.signedBundleURL
         ) else {
-            return .failure("봉인된 로컬 대화 엔진을 찾지 못해 scree를 실행하지 않았습니다.")
+            return .failure(L10n.text("봉인된 로컬 대화 엔진을 찾지 못해 scree를 실행하지 않았습니다."))
         }
 
         // `invocation.argument` is a pinned-file placeholder that LocalProcessRunner
@@ -1145,9 +1145,9 @@ extension ScreeService {
                let data = result.output.data(using: .utf8),
                let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let message = payload["error"] as? String {
-                return .failure("백업 작업을 중단했습니다: \(message)")
+                return .failure(L10n.format("백업 작업을 중단했습니다: %@", String(describing: message)))
             }
-            return .failure("scree 실행이 실패했습니다 (status \(result.status)).")
+            return .failure(L10n.format("scree 실행이 실패했습니다 (status %@).", String(describing: result.status)))
         }
         return .success(result.output)
     }
@@ -1209,11 +1209,11 @@ extension ScanModel {
         completion: @escaping (ScreePreserveOutcome) -> Void
     ) {
         guard !applicationTerminationStarted else {
-            completion(.failure("앱이 종료 중이어서 새 내보내기를 시작하지 않았습니다."))
+            completion(.failure(L10n.text("앱이 종료 중이어서 새 내보내기를 시작하지 않았습니다.")))
             return
         }
         guard sessionExportTask == nil else {
-            completion(.failure("다른 대화 내보내기가 진행 중입니다."))
+            completion(.failure(L10n.text("다른 대화 내보내기가 진행 중입니다.")))
             return
         }
         sessionExportGeneration += 1
@@ -1247,11 +1247,11 @@ extension ScanModel {
         completion: @escaping (Result<SessionBackupReceipt, ScreeInspectionError>) -> Void
     ) {
         guard !applicationTerminationStarted else {
-            completion(.failure(.init(message: "앱이 종료 중이어서 새 백업·복원 작업을 시작하지 않았습니다.")))
+            completion(.failure(.init(message: L10n.text("앱이 종료 중이어서 새 백업·복원 작업을 시작하지 않았습니다."))))
             return
         }
         guard sessionBackupTask == nil else {
-            completion(.failure(.init(message: "다른 세션 백업·복원 작업이 진행 중입니다.")))
+            completion(.failure(.init(message: L10n.text("다른 세션 백업·복원 작업이 진행 중입니다."))))
             return
         }
         sessionBackupGeneration += 1
@@ -1398,8 +1398,8 @@ extension ScanModel {
             switch outcome {
             case .success(let url):
                 NSWorkspace.shared.activateFileViewerSelecting([url])
-                appendLog("대화 텍스트 내보내기: \(url.lastPathComponent)")
-                AccessibilityAnnouncer.announce("대화 텍스트를 내보냈습니다")
+                appendLog(L10n.format("대화 텍스트 내보내기: %@", String(describing: url.lastPathComponent)))
+                AccessibilityAnnouncer.announce(L10n.text("대화 텍스트를 내보냈습니다"))
             case .failure(let message):
                 errorMessage = message
             }
@@ -1427,7 +1427,7 @@ extension ScanModel {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
             }).value else {
                 if generation == storageEvidenceGeneration {
-                    storageEvidenceError = "서명된 실행 런타임을 확인하지 못했습니다."
+                    storageEvidenceError = L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")
                 }
                 return
             }
@@ -1479,8 +1479,8 @@ extension ScanModel {
             switch outcome {
             case .success(let url):
                 NSWorkspace.shared.activateFileViewerSelecting([url])
-                appendLog("대화 텍스트 내보내기: \(url.lastPathComponent)")
-                AccessibilityAnnouncer.announce("대화 텍스트를 내보냈습니다")
+                appendLog(L10n.format("대화 텍스트 내보내기: %@", String(describing: url.lastPathComponent)))
+                AccessibilityAnnouncer.announce(L10n.text("대화 텍스트를 내보냈습니다"))
             case .failure(let message):
                 errorMessage = message
             }

@@ -14,7 +14,7 @@ struct DevelopmentWorkspaceList: View {
             DevelopmentAssetsSection(storage: storage)
         }
         .listStyle(.inset)
-        .accessibilityLabel("개발 환경 항목")
+        .accessibilityLabel(L10n.text("개발 환경 항목"))
     }
 
     private var generalRuntimeSignals: [RuntimeSignal] {
@@ -33,9 +33,9 @@ private struct DevelopmentRuntimeSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "현재 실행 신호",
-                subtitle: "정리 뒤 공간을 다시 채울 수 있는 작업입니다.",
-                value: "\(signals.count)종"
+                title: L10n.text("현재 실행 신호"),
+                subtitle: L10n.text("정리 뒤 공간을 다시 채울 수 있는 작업입니다."),
+                value: L10n.format("%@종", String(describing: signals.count))
             )
         }
     }
@@ -53,8 +53,8 @@ private struct BrowserAutomationSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "브라우저 자동화",
-                subtitle: "일반 Chrome과의 충돌·메모리를 확인하며 자동 종료하지 않습니다.",
+                title: L10n.text("브라우저 자동화"),
+                subtitle: L10n.text("일반 Chrome과의 충돌·메모리를 확인하며 자동 종료하지 않습니다."),
                 value: summaryValue
             )
         }
@@ -66,10 +66,10 @@ private struct BrowserAutomationSection: View {
 
     private var summaryValue: String {
         switch storage.browserAutomation.verdict {
-        case "orphaned": return "잔류 \(storage.browserAutomation.orphanedRootCount)개"
-        case "conflict_possible": return "충돌 가능"
-        case "isolated_active": return "격리 실행 중"
-        default: return "현재 신호 없음"
+        case "orphaned": return L10n.format("잔류 %@개", String(describing: storage.browserAutomation.orphanedRootCount))
+        case "conflict_possible": return L10n.text("충돌 가능")
+        case "isolated_active": return L10n.text("격리 실행 중")
+        default: return L10n.text("현재 신호 없음")
         }
     }
 }
@@ -86,7 +86,7 @@ private struct BrowserAutomationSummaryRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.body.weight(.medium))
-                Text(status.note)
+                Text(L10n.message(status.note))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -102,10 +102,10 @@ private struct BrowserAutomationSummaryRow: View {
 
     private var title: String {
         switch status.verdict {
-        case "orphaned": return "소유 작업을 찾지 못한 오래된 자동화가 있습니다"
-        case "conflict_possible": return "기본 Chrome을 사용하는 자동화가 있습니다"
-        case "isolated_active": return "격리 브라우저에서 자동화 중입니다"
-        default: return "현재 자동화 충돌 신호가 없습니다"
+        case "orphaned": return L10n.text("소유 작업을 찾지 못한 오래된 자동화가 있습니다")
+        case "conflict_possible": return L10n.text("기본 Chrome을 사용하는 자동화가 있습니다")
+        case "isolated_active": return L10n.text("격리 브라우저에서 자동화 중입니다")
+        default: return L10n.text("현재 자동화 충돌 신호가 없습니다")
         }
     }
 
@@ -119,10 +119,10 @@ private struct BrowserAutomationSummaryRow: View {
     }
 
     private var value: String {
-        guard status.rootCount > 0 else { return "확인됨" }
+        guard status.rootCount > 0 else { return L10n.text("확인됨") }
         return status.treeMemoryKB > 0
-            ? "\(status.rootCount)개 · RSS≈\(status.treeMemoryText)"
-            : "\(status.rootCount)개 루트"
+            ? L10n.format("%@개 · RSS≈%@", String(describing: status.rootCount), String(describing: status.treeMemoryText))
+            : L10n.format("%@개 루트", String(describing: status.rootCount))
     }
 }
 
@@ -136,14 +136,14 @@ private struct BrowserIsolationConfigurationRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 32)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Playwright 전역 격리 설정")
+                Text(L10n.text("Playwright 전역 격리 설정"))
                     .font(.body.weight(.medium))
                 Text(configurationDetail)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text(status.globalIsolationConfigured ? "격리됨" : "미설정")
+            Text(status.globalIsolationConfigured ? L10n.text("격리됨") : L10n.text("미설정"))
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.secondary)
         }
@@ -152,12 +152,12 @@ private struct BrowserIsolationConfigurationRow: View {
 
     private var configurationDetail: String {
         if status.globalIsolationConfigured {
-            return "\(status.configLocation)에서 Chromium 격리를 확인했습니다."
+            return L10n.format("%@에서 Chromium 격리를 확인했습니다.", String(describing: status.configLocation))
         }
         if status.globalConfigPresent {
-            return "설정 파일은 있지만 Chromium 격리가 강제되지 않습니다."
+            return L10n.text("설정 파일은 있지만 Chromium 격리가 강제되지 않습니다.")
         }
-        return "전역 설정 파일이 없습니다. 자동화 도구의 기본 채널 선택을 확인하세요."
+        return L10n.text("전역 설정 파일이 없습니다. 자동화 도구의 기본 채널 선택을 확인하세요.")
     }
 }
 
@@ -172,13 +172,13 @@ private struct BrowserAutomationRootRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 32)
             VStack(alignment: .leading, spacing: 3) {
-                Text(signal.label)
+                Text(L10n.message(signal.label))
                     .font(.body.weight(.medium))
                 Text(metadata)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                Text(signal.action)
+                Text(L10n.message(signal.action))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -188,7 +188,7 @@ private struct BrowserAutomationRootRow: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                 if canRequestStop {
-                    Button("종료 검토") {
+                    Button(L10n.text("종료 검토")) {
                         model.prepareBrowserAutomationStop(signal: signal)
                     }
                     .buttonStyle(.bordered)
@@ -213,19 +213,19 @@ private struct BrowserAutomationRootRow: View {
 
     private var statusText: String {
         if signal.channel == "system" && signal.profile == "default" {
-            return "기본 프로필 보호"
+            return L10n.text("기본 프로필 보호")
         }
-        return isOrphanCandidate ? "잔류 후보" : "실행 중"
+        return isOrphanCandidate ? L10n.text("잔류 후보") : L10n.text("실행 중")
     }
 
     private var metadata: String {
-        var parts = ["PID \(signal.pid)", "부모 \(signal.parentPid)"]
-        if !signal.elapsed.isEmpty { parts.append("실행 \(signal.elapsed)") }
+        var parts = ["PID \(signal.pid)", L10n.format("부모 %@", String(describing: signal.parentPid))]
+        if !signal.elapsed.isEmpty { parts.append(L10n.format("실행 %@", String(describing: signal.elapsed))) }
         if !signal.channel.isEmpty { parts.append(signal.channel) }
         if !signal.profile.isEmpty { parts.append("\(signal.profile) profile") }
         if !signal.controller.isEmpty { parts.append(signal.controller) }
         if signal.treeMemoryKB > 0 {
-            let count = signal.treeProcessCount > 0 ? " · \(signal.treeProcessCount)개" : ""
+            let count = signal.treeProcessCount > 0 ? L10n.format(" · %@개", String(describing: signal.treeProcessCount)) : ""
             parts.append("RSS≈\(signal.treeMemoryText)\(count)")
         }
         return parts.joined(separator: " · ")
@@ -238,7 +238,7 @@ private struct DevelopmentAssetsSection: View {
     var body: some View {
         Section {
             if developerAssets.isEmpty {
-                Label("별도 개발 자산이 없습니다", systemImage: "checkmark.circle")
+                Label(L10n.text("별도 개발 자산이 없습니다"), systemImage: "checkmark.circle")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(developerAssets) { item in
@@ -247,8 +247,8 @@ private struct DevelopmentAssetsSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "설치된 개발 자산",
-                subtitle: "프로젝트 빌드 산출물은 재생성 근거를 다시 검증한 뒤 확보 계획에 넣을 수 있습니다.",
+                title: L10n.text("설치된 개발 자산"),
+                subtitle: L10n.text("프로젝트 빌드 산출물은 재생성 근거를 다시 검증한 뒤 확보 계획에 넣을 수 있습니다."),
                 value: storage.developerText
             )
         }
@@ -269,8 +269,8 @@ private struct DevelopmentAssetRow: View {
             fallbackSymbol: developmentSymbol,
             status: item.measureStatus == "timed_out"
                 ? nil
-                : (item.cleanupTier == .rebuild ? "확보 계획 가능" : "개별 판단"),
-            actionTitle: item.measureStatus == "timed_out" ? "다시 측정" : nil
+                : (item.cleanupTier == .rebuild ? L10n.text("확보 계획 가능") : L10n.text("개별 판단")),
+            actionTitle: item.measureStatus == "timed_out" ? L10n.text("다시 측정") : nil
         ) {
             model.runScan()
         }
@@ -296,9 +296,9 @@ private struct WorkspaceRuntimeRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 32)
             VStack(alignment: .leading, spacing: 3) {
-                Text(signal.label)
+                Text(L10n.message(signal.label))
                     .font(.body.weight(.medium))
-                Text(signal.note.isEmpty ? signal.action : signal.note)
+                Text(L10n.message(signal.note.isEmpty ? signal.action : signal.note))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -309,7 +309,7 @@ private struct WorkspaceRuntimeRow: View {
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
                 .frame(minWidth: 72, alignment: .trailing)
-            Text(signal.risk == "warning" ? "실행 중" : "확인됨")
+            Text(signal.risk == "warning" ? L10n.text("실행 중") : L10n.text("확인됨"))
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 116, alignment: .trailing)

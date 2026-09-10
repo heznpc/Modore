@@ -20,10 +20,10 @@ struct StorageWatchPathSnapshot: Identifiable, Equatable, Sendable {
         }
         if sizeGB > 0 {
             return sizeGB >= 0.1
-                ? String(format: "최소 %.1fGB", sizeGB)
-                : String(format: "최소 %.1fMB", sizeGB * 1_024)
+                ? String(format: L10n.text("최소 %.1fGB"), sizeGB)
+                : String(format: L10n.text("최소 %.1fMB"), sizeGB * 1_024)
         }
-        return status == "timed_out" ? "시간 제한" : "측정 실패"
+        return status == "timed_out" ? L10n.text("시간 제한") : L10n.text("측정 실패")
     }
 }
 

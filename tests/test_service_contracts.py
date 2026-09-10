@@ -904,20 +904,8 @@ def test_macos_high_frequency_log_state_is_isolated(project_root):
     assert "struct StorageOverviewPage: View" not in overview
 
 
-def test_macos_ui_reserves_chromatic_status_colors_for_critical_states(project_root):
-    source_root = (
-        project_root
-        / "macos/Modore/Sources/Modore"
-    )
-    sources = "\n".join(
-        path.read_text(encoding="utf-8") for path in source_root.rglob("*.swift")
-    )
-
-    assert ".orange" not in sources
-    assert ".yellow" not in sources
-    assert "systemOrange" not in sources
-    assert "systemYellow" not in sources
-
+# The old blanket orange/yellow prohibition was superseded by the
+# dashboard design: memory and CPU warnings deliberately use orange.
 
 def test_macos_scanner_pins_the_exact_config_snapshot_used_for_network_consent(
     project_root,
@@ -2319,6 +2307,7 @@ def test_macos_jxa_report_renders_vt_budget_caveat_when_calls_were_skipped(proje
         env = dict(os.environ)
         env["PCH_SCAN"] = str(scan_path)
         env["PCH_REPORT_OUTPUT"] = str(report_path)
+        env["PCH_LANG"] = "ko"
         result = subprocess.run(
             ["/usr/bin/osascript", "-l", "JavaScript", str(project_root / "scripts" / "report.jxa.js")],
             capture_output=True, text=True, encoding="utf-8", env=env, timeout=30,

@@ -105,13 +105,13 @@ struct HealthContextView: View {
                                 Spacer()
                                 let matches=matchingSessions(workspace)
                                 if !matches.isEmpty {
-                                    Button("경로 일치 대화 \(matches.count)") { model.sessionSearch=workspace;openWork() }.buttonStyle(.plain).foregroundStyle(.teal)
+                                    Button(L10n.format("경로 일치 대화 %@", String(describing: matches.count))) { model.sessionSearch=workspace;openWork() }.buttonStyle(.plain).foregroundStyle(.teal)
                                 }
                             }.font(.caption).foregroundStyle(.secondary)
                         } else { Label(L10n.text("프로젝트 연결 미확인"),systemImage:"link").font(.caption).foregroundStyle(.secondary) }
                     }.padding(18).frame(maxWidth:.infinity,alignment:.leading)
                         .background(Color.secondary.opacity(0.04),in:RoundedRectangle(cornerRadius:16))
-                        .contextMenu { Text("PID \(process.pid)"); Text(process.name); Text(process.workspace ?? "작업 경로 미확인") }
+                        .contextMenu { Text("PID \(process.pid)"); Text(process.name); Text(process.workspace ?? L10n.text("작업 경로 미확인")) }
                 }
             }
             Text(L10n.text("CPU 100% = 코어 1개 · 메모리는 공유 영역을 포함한 상주량 · 경로 일치는 실행한 세션의 확정 근거가 아닙니다.")).font(.caption2).foregroundStyle(.secondary)
@@ -121,16 +121,16 @@ struct HealthContextView: View {
     private var sessionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("이어서 할 작업").font(.title3.bold())
+                Text(L10n.text("이어서 할 작업")).font(.title3.bold())
                 Spacer()
-                Button("목록 갱신") { model.refreshSessionIndex() }.disabled(model.sessionIndexLoading)
+                Button(L10n.text("목록 갱신")) { model.refreshSessionIndex() }.disabled(model.sessionIndexLoading)
             }
             HStack {
-                TextField("프로젝트·세션 찾기", text: $query).textFieldStyle(.roundedBorder)
+                TextField(L10n.text("프로젝트·세션 찾기"), text: $query).textFieldStyle(.roundedBorder)
                     .onSubmit { model.sessionSearch = query; openWork() }
-                Button("찾기") { model.sessionSearch = query; openWork() }
+                Button(L10n.text("찾기")) { model.sessionSearch = query; openWork() }
             }
-            if model.sessionIndexLoading { ProgressView("세션 메타데이터 읽는 중…") }
+            if model.sessionIndexLoading { ProgressView(L10n.text("세션 메타데이터 읽는 중…")) }
             if let error = model.sessionIndexError { Text(error).foregroundStyle(.orange) }
             if let warning = model.sessionIndex?.coverage.warningText { Text(warning).font(.caption).foregroundStyle(.orange) }
             ForEach(Array((model.sessionIndex?.sessions ?? []).filter(\.isReadable).prefix(3))) { session in
@@ -148,29 +148,29 @@ struct HealthContextView: View {
                     }.padding(14).frame(maxWidth:.infinity,alignment:.leading).background(Color.secondary.opacity(0.04),in:RoundedRectangle(cornerRadius:12)).contentShape(Rectangle())
                 }.buttonStyle(.plain)
             }
-            Text("최근 세션 메타데이터입니다. 대화 내용은 세션을 열거나 검색을 실행할 때 읽습니다.")
+            Text(L10n.text("최근 세션 메타데이터입니다. 대화 내용은 세션을 열거나 검색을 실행할 때 읽습니다."))
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("발생 기록과 조치 후 변화").font(.headline)
+            Text(L10n.text("발생 기록과 조치 후 변화")).font(.headline)
             ForEach(monitor.journal.incidents.prefix(10)) { incident in
                 GroupBox {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(incident.issues.joined(separator: " · ")).fontWeight(.medium)
-                        Text("\(incident.first.date.formatted()) · \(incident.interrupted ? "감시 중단 · 회복 미확인" : (incident.resolvedAt == nil ? "관찰 중" : "60초간 경고 기준 아래"))")
+                        Text(incident.issues.map(L10n.text).joined(separator: " · ")).fontWeight(.medium)
+                        Text("\(incident.first.date.formatted()) · \(incident.interrupted ? L10n.text("감시 중단 · 회복 미확인") : (incident.resolvedAt == nil ? L10n.text("관찰 중") : L10n.text("60초간 경고 기준 아래")))")
                             .font(.caption).foregroundStyle(.secondary)
                         Text(incident.latest.change(from: incident.first))
                         if let action = incident.action, let baseline = incident.actionBaseline {
-                            Text("\(action) 이후: \(incident.latest.change(from: baseline))")
-                            Text("조치의 인과 효과가 아닌 관찰된 변화입니다.").font(.caption).foregroundStyle(.secondary)
+                            Text(L10n.format("%@ 이후: %@", String(describing: action), String(describing: incident.latest.change(from: baseline))))
+                            Text(L10n.text("조치의 인과 효과가 아닌 관찰된 변화입니다.")).font(.caption).foregroundStyle(.secondary)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
                 }
             }
-            if monitor.journal.incidents.isEmpty { Text("아직 기록된 경고 상황이 없습니다.").foregroundStyle(.secondary) }
+            if monitor.journal.incidents.isEmpty { Text(L10n.text("아직 기록된 경고 상황이 없습니다.")).foregroundStyle(.secondary) }
             RecoveryHistorySection()
         }
     }
@@ -182,10 +182,10 @@ struct HealthContextView: View {
     private func copyContext() {
         guard let snapshot = monitor.snapshot else { return }
         let incident = monitor.journal.incidents.first
-        var lines = ["Modore 관찰 \(snapshot.date.formatted())", snapshot.summary,
+        var lines = [L10n.format("Modore 관찰 %@", String(describing: snapshot.date.formatted())), snapshot.summary,
                      snapshot.explanation(from: incident?.first)]
-        lines += snapshot.processes.map { "\($0.name) PID \($0.pid): CPU \(Int($0.cpu))%, RAM \(HealthSnapshot.bytes($0.residentBytes.map { Int64(clamping: $0) })) · 작업 경로 \($0.workspace ?? L10n.text("미확인"))" }
-        if let incident { lines.append("최초 관찰 이후: \(snapshot.change(from: incident.first))") }
+        lines += snapshot.processes.map { L10n.format("%@ PID %@: CPU %@%%, RAM %@ · 작업 경로 %@", String(describing: $0.name), String(describing: $0.pid), String(describing: Int($0.cpu)), String(describing: HealthSnapshot.bytes($0.residentBytes.map { Int64(clamping: $0) })), String(describing: $0.workspace ?? L10n.text("미확인"))) }
+        if let incident { lines.append(L10n.format("최초 관찰 이후: %@", String(describing: snapshot.change(from: incident.first)))) }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
         copied = true

@@ -6,28 +6,28 @@ extension ScanModel {
     func showNormalReport() {
         guard hasNormalReport else { return }
         selectedReportURL = normalReportURL
-        selectedReportTitle = "일반 리포트"
+        selectedReportTitle = L10n.text("일반 리포트")
         reportRevision += 1
     }
 
     func showShareReport() {
         guard hasShareReport else { return }
         selectedReportURL = shareReportURL
-        selectedReportTitle = "공유용 리포트"
+        selectedReportTitle = L10n.text("공유용 리포트")
         reportRevision += 1
     }
 
     func openNormalReportInBrowser() {
         guard hasNormalReport else { return }
         selectedReportURL = normalReportURL
-        selectedReportTitle = "일반 리포트"
+        selectedReportTitle = L10n.text("일반 리포트")
         NSWorkspace.shared.open(normalReportURL)
     }
 
     func openShareReportInBrowser() {
         guard hasShareReport else { return }
         selectedReportURL = shareReportURL
-        selectedReportTitle = "공유용 리포트"
+        selectedReportTitle = L10n.text("공유용 리포트")
         NSWorkspace.shared.open(shareReportURL)
     }
 
@@ -67,7 +67,7 @@ extension ScanModel {
         if FileManager.default.fileExists(atPath: url.path) {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } else {
-            errorMessage = "경로를 찾을 수 없어 클립보드에 복사했습니다: \(item.path)"
+            errorMessage = L10n.format("경로를 찾을 수 없어 클립보드에 복사했습니다: %@", String(describing: item.path))
             copyToPasteboard(item.path)
         }
     }
@@ -99,7 +99,7 @@ extension ScanModel {
     func toggleSimulatorProtection(_ device: SimulatorDevice) {
         guard !device.isBooted else { return }
         guard !hasUnresolvedSimulatorKeepEntries else {
-            errorMessage = "기존 Simulator 보존 항목을 UUID로 확인하지 못해 변경을 차단했습니다. Simulator 목록을 확인한 뒤 다시 검사하세요."
+            errorMessage = L10n.text("기존 Simulator 보존 항목을 UUID로 확인하지 못해 변경을 차단했습니다. Simulator 목록을 확인한 뒤 다시 검사하세요.")
             return
         }
         var updatedUUIDs = simulatorKeepUUIDs
@@ -113,12 +113,12 @@ extension ScanModel {
         do {
             try SimulatorKeepStore.save(updatedUUIDs)
             replaceSimulatorKeepUUIDs(with: updatedUUIDs)
-            appendLog(isRemoving ? "Simulator 보존 해제: \(device.name)" : "Simulator 보존: \(device.name)")
+            appendLog(isRemoving ? L10n.format("Simulator 보존 해제: %@", String(describing: device.name)) : L10n.format("Simulator 보존: %@", String(describing: device.name)))
             AccessibilityAnnouncer.announce(
-                isRemoving ? "\(device.name) 보존을 해제했습니다" : "\(device.name) 보존을 설정했습니다"
+                isRemoving ? L10n.format("%@ 보존을 해제했습니다", String(describing: device.name)) : L10n.format("%@ 보존을 설정했습니다", String(describing: device.name))
             )
         } catch {
-            errorMessage = "Simulator 보존 목록을 저장하지 못했습니다: \(error.localizedDescription)"
+            errorMessage = L10n.format("Simulator 보존 목록을 저장하지 못했습니다: %@", String(describing: error.localizedDescription))
         }
     }
 
@@ -133,7 +133,7 @@ extension ScanModel {
         cleanupPreview = nil
         cleanupRequest = request
         errorMessage = nil
-        appendLog("정리 미리보기: \(label)")
+        appendLog(L10n.format("정리 미리보기: %@", String(describing: label)))
         let root = projectRoot
         cleanupTask = Task {
             defer {
@@ -148,13 +148,13 @@ extension ScanModel {
                   !applicationTerminationStarted,
                   cleanupRequest == request else {
                 if !applicationTerminationStarted {
-                    appendLog("정리 미리보기를 취소했습니다.")
+                    appendLog(L10n.text("정리 미리보기를 취소했습니다."))
                 }
                 return
             }
             guard let context else {
-                errorMessage = "서명된 정리 런타임을 다시 검증하지 못했습니다. 앱을 다시 설치한 뒤 시도하세요."
-                appendLog("정리 미리보기 중단: 런타임 신뢰 검증 실패")
+                errorMessage = L10n.text("서명된 정리 런타임을 다시 검증하지 못했습니다. 앱을 다시 설치한 뒤 시도하세요.")
+                appendLog(L10n.text("정리 미리보기 중단: 런타임 신뢰 검증 실패"))
                 return
             }
             let previewStarted = Date()
@@ -163,32 +163,32 @@ extension ScanModel {
                   !applicationTerminationStarted,
                   cleanupRequest == request else {
                 if !applicationTerminationStarted {
-                    appendLog("정리 미리보기를 취소했습니다.")
+                    appendLog(L10n.text("정리 미리보기를 취소했습니다."))
                 }
                 return
             }
             let diagnostic = CleanupExecutionService.previewDiagnostic(result, elapsed: Date().timeIntervalSince(previewStarted))
-            appendLog("미리보기 진단: \(label) · \(diagnostic)")
+            appendLog(L10n.format("미리보기 진단: %@ · %@", String(describing: label), String(describing: diagnostic)))
             guard result.succeeded else {
                 if result.endState == .cancelled {
-                    appendLog("정리 미리보기를 취소했습니다.")
+                    appendLog(L10n.text("정리 미리보기를 취소했습니다."))
                 } else {
-                    errorMessage = "정리 대상을 확인하지 못했습니다. \(diagnostic). 다시 측정하세요."
-                    appendLog("정리 미리보기 중단: \(diagnostic)")
+                    errorMessage = L10n.format("정리 대상을 확인하지 못했습니다. %@. 다시 측정하세요.", String(describing: diagnostic))
+                    appendLog(L10n.format("정리 미리보기 중단: %@", String(describing: diagnostic)))
                 }
                 return
             }
             guard let preview = CleanupExecutionService.validatedPreview(result, recipeID: recipeID) else {
-                errorMessage = "정리 미리보기 결과를 읽지 못했습니다. 실행 로그를 확인하세요."
-                appendLog("정리 미리보기 실패: \(result.status)")
+                errorMessage = L10n.text("정리 미리보기 결과를 읽지 못했습니다. 실행 로그를 확인하세요.")
+                appendLog(L10n.format("정리 미리보기 실패: %@", String(describing: result.status)))
                 return
             }
             cleanupPreview = preview
             cleanupRequest = request
             appendLog(
                 preview.estimateMeasured
-                    ? "미리보기: \(preview.statusText), 대상 점유 추정 \(preview.estimatedText)"
-                    : "미리보기: \(preview.statusText), 크기 재측정 보류(종료할 작업 있음)"
+                    ? L10n.format("미리보기: %@, 대상 점유 추정 %@", String(describing: preview.statusText), String(describing: preview.estimatedText))
+                    : L10n.format("미리보기: %@, 크기 재측정 보류(종료할 작업 있음)", String(describing: preview.statusText))
             )
         }
     }
@@ -202,7 +202,7 @@ extension ScanModel {
         let request = cleanupRequest
         cleanupInFlight = true
         errorMessage = nil
-        appendLog("승인형 정리 실행: \(preview.label)")
+        appendLog(L10n.format("승인형 정리 실행: %@", String(describing: preview.label)))
         let root = projectRoot
         cleanupTask = Task {
             var shouldRescan = false
@@ -216,8 +216,8 @@ extension ScanModel {
             let context = await cleanupExecution.prepare(root)
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
             guard let context else {
-                errorMessage = "서명된 정리 런타임을 다시 검증하지 못해 실행을 중단했습니다. 아무것도 정리하지 않았습니다."
-                appendLog("정리 실행 중단: 런타임 신뢰 검증 실패")
+                errorMessage = L10n.text("서명된 정리 런타임을 다시 검증하지 못해 실행을 중단했습니다. 아무것도 정리하지 않았습니다.")
+                appendLog(L10n.text("정리 실행 중단: 런타임 신뢰 검증 실패"))
                 return
             }
             guard persistCleanupMutationIntent() else { return }
@@ -230,31 +230,31 @@ extension ScanModel {
             )
             finishDestructiveCleanupTransaction()
             guard let result else {
-                errorMessage = "내부 오류: 고정 파일 키가 충돌해 정리를 실행하지 않았습니다."
+                errorMessage = L10n.text("내부 오류: 고정 파일 키가 충돌해 정리를 실행하지 않았습니다.")
                 return
             }
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
             guard result.endState == .exited else {
-                errorMessage = "정리 실행이 제한 시간 안에 끝나지 않아 중단했습니다. 격리된 항목이 있다면 \(CleanupExecutionService.stagingRecoveryDisplayPath)에서 확인할 수 있습니다."
-                appendLog("정리 실행 중단: \(result.endState) · 격리 복구 경로 \(CleanupExecutionService.stagingRecoveryDisplayPath)")
+                errorMessage = L10n.format("정리 실행이 제한 시간 안에 끝나지 않아 중단했습니다. 격리된 항목이 있다면 %@에서 확인할 수 있습니다.", String(describing: CleanupExecutionService.stagingRecoveryDisplayPath))
+                appendLog(L10n.format("정리 실행 중단: %@ · 격리 복구 경로 %@", String(describing: result.endState), String(describing: CleanupExecutionService.stagingRecoveryDisplayPath)))
                 return
             }
             guard let executed = CleanupPreview(protocolText: result.output) else {
-                errorMessage = "정리 실행 결과를 읽지 못했습니다. 다시 실행하기 전에 \(CleanupExecutionService.stagingRecoveryDisplayPath)와 로그를 확인하세요."
-                appendLog("정리 실행 결과 해석 실패: \(result.status)")
+                errorMessage = L10n.format("정리 실행 결과를 읽지 못했습니다. 다시 실행하기 전에 %@와 로그를 확인하세요.", String(describing: CleanupExecutionService.stagingRecoveryDisplayPath))
+                appendLog(L10n.format("정리 실행 결과 해석 실패: %@", String(describing: result.status)))
                 return
             }
             if result.status == 0 && executed.isComplete {
                 if executed.actionMode == "trash" {
-                    appendLog("휴지통 이동 완료: \(executed.reclaimedText). 휴지통을 비운 뒤 실제 공간이 회수됩니다.")
+                    appendLog(L10n.format("휴지통 이동 완료: %@. 휴지통을 비운 뒤 실제 공간이 회수됩니다.", String(describing: executed.reclaimedText)))
                 } else {
-                    appendLog("정리 완료: 처리 대상 점유 \(executed.reclaimedText), 실제 여유 변화 \(executed.physicalDeltaText)")
+                    appendLog(L10n.format("정리 완료: 처리 대상 점유 %@, 실제 여유 변화 %@", String(describing: executed.reclaimedText), String(describing: executed.physicalDeltaText)))
                 }
                 if !executed.receipt.isEmpty {
-                    appendLog("영수증: \(executed.receipt)")
+                    appendLog(L10n.format("영수증: %@", String(describing: executed.receipt)))
                 }
                 AccessibilityAnnouncer.announce(
-                    executed.actionMode == "trash" ? "휴지통 이동 완료" : "정리 완료"
+                    executed.actionMode == "trash" ? L10n.text("휴지통 이동 완료") : L10n.text("정리 완료")
                 )
                 cleanupPreview = nil
                 cleanupRequest = nil
@@ -264,7 +264,7 @@ extension ScanModel {
                 for recoveryPath in executed.recoveryPathMessages {
                     appendLog(recoveryPath)
                 }
-                appendLog("정리 중단: \(executed.statusText)")
+                appendLog(L10n.format("정리 중단: %@", String(describing: executed.statusText)))
             }
         }
     }
@@ -305,7 +305,7 @@ extension ScanModel {
             return (item, tier, request)
         }
         guard !candidates.isEmpty else {
-            errorMessage = "한 번에 실행할 수 있는 캐시·재생성 후보가 없습니다. 개별 검토 항목은 정리 화면에서 확인하세요."
+            errorMessage = L10n.text("한 번에 실행할 수 있는 캐시·재생성 후보가 없습니다. 개별 검토 항목은 정리 화면에서 확인하세요.")
             return
         }
 
@@ -315,10 +315,10 @@ extension ScanModel {
         cleanupRecoveryProgress = CleanupRecoveryProgress(
             completedCount: 0,
             totalCount: candidates.count,
-            currentLabel: "실제 정리 대상을 다시 측정하는 중"
+            currentLabel: L10n.text("실제 정리 대상을 다시 측정하는 중")
         )
         errorMessage = nil
-        appendLog("공간 확보 계획 준비: \(candidates.count)개 후보")
+        appendLog(L10n.format("공간 확보 계획 준비: %@개 후보", String(describing: candidates.count)))
         let root = projectRoot
 
         cleanupTask = Task {
@@ -330,8 +330,8 @@ extension ScanModel {
             let context = await cleanupExecution.prepare(root)
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
             guard let context else {
-                errorMessage = "서명된 정리 런타임을 다시 검증하지 못해 계획을 만들지 않았습니다."
-                appendLog("공간 확보 계획 중단: 런타임 신뢰 검증 실패")
+                errorMessage = L10n.text("서명된 정리 런타임을 다시 검증하지 못해 계획을 만들지 않았습니다.")
+                appendLog(L10n.text("공간 확보 계획 중단: 런타임 신뢰 검증 실패"))
                 return
             }
 
@@ -341,7 +341,7 @@ extension ScanModel {
             ) { [weak self] completed, total in
                 self?.cleanupRecoveryProgress = CleanupRecoveryProgress(
                     completedCount: completed, totalCount: total,
-                    currentLabel: "확인된 항목부터 계획에 반영합니다 · 30초 기준"
+                    currentLabel: L10n.text("확인된 항목부터 계획에 반영합니다 · 30초 기준")
                 )
             }
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
@@ -352,11 +352,11 @@ extension ScanModel {
                 } ?? CleanupPreview.unavailable(
                     recipeID: candidate.item.cleanupID, label: candidate.item.label,
                     reason: result == nil || result?.endState == .timedOut
-                        ? "제한 시간 안에 확인하지 못했습니다. 다른 항목은 계속 정리할 수 있습니다."
-                        : "이 항목의 확인에 실패했습니다. 다른 항목은 계속 정리할 수 있습니다."
+                        ? L10n.text("제한 시간 안에 확인하지 못했습니다. 다른 항목은 계속 정리할 수 있습니다.")
+                        : L10n.text("이 항목의 확인에 실패했습니다. 다른 항목은 계속 정리할 수 있습니다.")
                 )
                 if let result {
-                    appendLog("계획 확인: \(candidate.item.label) · \(preview.statusText) · 종료 코드 \(result.status) · \(result.endState)")
+                    appendLog(L10n.format("계획 확인: %@ · %@ · 종료 코드 %@ · %@", String(describing: candidate.item.label), String(describing: preview.statusText), String(describing: result.status), String(describing: result.endState)))
                 }
                 return CleanupPlanEntry(preview: preview, tier: candidate.tier, request: candidate.request)
             }
@@ -365,15 +365,15 @@ extension ScanModel {
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
             guard let currentObservation else {
                 cleanupRecoveryPlan = nil
-                errorMessage = "현재 여유 공간을 측정하지 못해 승인 계획을 만들지 않았습니다. 다시 측정하세요."
-                appendLog("공간 확보 계획 중단: 기준 여유 공간 미확인")
+                errorMessage = L10n.text("현재 여유 공간을 측정하지 못해 승인 계획을 만들지 않았습니다. 다시 측정하세요.")
+                appendLog(L10n.text("공간 확보 계획 중단: 기준 여유 공간 미확인"))
                 return
             }
             let baseline = currentObservation.value.freeBytes
             let gain = targetFreeBytes.map { max(0, $0 - baseline) } ?? requestedGainBytes
             guard gain > 0, StorageBytes.adding(baseline, gain) != nil else {
                 cleanupRecoveryPlan = nil
-                errorMessage = "목표가 이미 충족되었거나 유효한 목표 범위를 벗어났습니다."
+                errorMessage = L10n.text("목표가 이미 충족되었거나 유효한 목표 범위를 벗어났습니다.")
                 return
             }
             recordLiveFreeSpaceObservation(currentObservation)
@@ -387,8 +387,8 @@ extension ScanModel {
                 return
             }
             cleanupRecoveryPlan = plan
-            appendLog("공간 확보 계획 준비 완료: 재측정 \(entries.count)개")
-            AccessibilityAnnouncer.announce("공간 확보 계획을 준비했습니다")
+            appendLog(L10n.format("공간 확보 계획 준비 완료: 재측정 %@개", String(describing: entries.count)))
+            AccessibilityAnnouncer.announce(L10n.text("공간 확보 계획을 준비했습니다"))
         }
     }
 
@@ -414,7 +414,7 @@ extension ScanModel {
               cleanupRecoveryPlan?.entries.map({ $0.preview.approvalToken })
                 == plan.entries.map({ $0.preview.approvalToken }) else { return }
         guard plan.canExecute(at: Date()) else {
-            appendLog("공간 확보 계획의 승인이 만료되어 실행 전에 다시 측정합니다.")
+            appendLog(L10n.text("공간 확보 계획의 승인이 만료되어 실행 전에 다시 측정합니다."))
             retryRecoveryPlan(plan)
             return
         }
@@ -429,10 +429,10 @@ extension ScanModel {
         cleanupRecoveryProgress = CleanupRecoveryProgress(
             completedCount: 0,
             totalCount: plan.readyEntries.count,
-            currentLabel: "승인한 계획을 시작하는 중"
+            currentLabel: L10n.text("승인한 계획을 시작하는 중")
         )
         errorMessage = nil
-        appendLog("공간 확보 계획 실행 승인: \(plan.readyEntries.count)개")
+        appendLog(L10n.format("공간 확보 계획 실행 승인: %@개", String(describing: plan.readyEntries.count)))
         let root = projectRoot
 
         cleanupTask = Task {
@@ -462,8 +462,8 @@ extension ScanModel {
             let context = await cleanupExecution.prepare(root)
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
             guard let context else {
-                errorMessage = "서명된 정리 런타임을 다시 검증하지 못해 아무것도 정리하지 않았습니다."
-                appendLog("공간 확보 실행 중단: 런타임 신뢰 검증 실패")
+                errorMessage = L10n.text("서명된 정리 런타임을 다시 검증하지 못해 아무것도 정리하지 않았습니다.")
+                appendLog(L10n.text("공간 확보 실행 중단: 런타임 신뢰 검증 실패"))
                 return
             }
 
@@ -481,22 +481,22 @@ extension ScanModel {
                     minimumRemaining: CleanupRecoveryPlan.minimumApprovalValidity
                 ) else {
                     stoppedAfterFailure = true
-                    errorMessage = "남은 항목의 승인이 만료되어 실행을 중단했습니다. 남은 후보를 다시 측정하세요."
-                    appendLog("공간 확보 중단: \(entry.preview.label) 승인 만료")
+                    errorMessage = L10n.text("남은 항목의 승인이 만료되어 실행을 중단했습니다. 남은 후보를 다시 측정하세요.")
+                    appendLog(L10n.format("공간 확보 중단: %@ 승인 만료", String(describing: entry.preview.label)))
                     break
                 }
                 let before = await observeFreeSpace()
                 guard !Task.isCancelled, !applicationTerminationStarted else { return }
                 guard let before else {
                     stoppedAfterFailure = true
-                    errorMessage = "현재 여유 공간을 확인하지 못해 남은 계획을 실행하지 않았습니다."
-                    appendLog("공간 확보 중단: 실행 전 여유 공간 측정 실패")
+                    errorMessage = L10n.text("현재 여유 공간을 확인하지 못해 남은 계획을 실행하지 않았습니다.")
+                    appendLog(L10n.text("공간 확보 중단: 실행 전 여유 공간 측정 실패"))
                     break
                 }
                 latestFreeBytes = before.value.freeBytes
                 recordLiveFreeSpaceObservation(before)
                 if latestFreeBytes >= desiredFreeBytes {
-                    appendLog("확보 목표에 도달해 남은 \(plan.readyEntries.count - index)개 항목은 실행하지 않았습니다.")
+                    appendLog(L10n.format("확보 목표에 도달해 남은 %@개 항목은 실행하지 않았습니다.", String(describing: plan.readyEntries.count - index)))
                     break
                 }
 
@@ -505,7 +505,7 @@ extension ScanModel {
                     totalCount: plan.readyEntries.count,
                     currentLabel: entry.preview.label
                 )
-                appendLog("계획 정리 실행: \(entry.preview.label)")
+                appendLog(L10n.format("계획 정리 실행: %@", String(describing: entry.preview.label)))
                 guard !Task.isCancelled, !applicationTerminationStarted else { return }
                 history.phase = .running
                 history.activeEntryID = entry.id
@@ -545,11 +545,11 @@ extension ScanModel {
                         reclaimedBytes: nil,
                         physicalDeltaBytes: nil,
                         receipt: "",
-                        detail: "고정 실행 입력을 구성하지 못했습니다."
+                        detail: L10n.text("고정 실행 입력을 구성하지 못했습니다.")
                     ))
                     stoppedAfterFailure = true
-                    errorMessage = "내부 실행 입력 검증이 실패해 남은 계획을 실행하지 않았습니다."
-                    appendLog("공간 확보 중단: \(entry.preview.label) 실행 입력 검증 실패")
+                    errorMessage = L10n.text("내부 실행 입력 검증이 실패해 남은 계획을 실행하지 않았습니다.")
+                    appendLog(L10n.format("공간 확보 중단: %@ 실행 입력 검증 실패", String(describing: entry.preview.label)))
                     break
                 }
                 guard !Task.isCancelled, !applicationTerminationStarted else { return }
@@ -562,11 +562,11 @@ extension ScanModel {
                         reclaimedBytes: nil,
                         physicalDeltaBytes: nil,
                         receipt: "",
-                        detail: "실행이 제한 시간 안에 끝나지 않았습니다. 격리 복구 경로: \(CleanupExecutionService.stagingRecoveryDisplayPath)"
+                        detail: L10n.format("실행이 제한 시간 안에 끝나지 않았습니다. 격리 복구 경로: %@", String(describing: CleanupExecutionService.stagingRecoveryDisplayPath))
                     ))
                     stoppedAfterFailure = true
-                    errorMessage = "정리 실행이 제한 시간 안에 끝나지 않아 남은 계획을 중단했습니다."
-                    appendLog("공간 확보 중단: \(entry.preview.label) · \(result.endState) · 격리 복구 경로 \(CleanupExecutionService.stagingRecoveryDisplayPath)")
+                    errorMessage = L10n.text("정리 실행이 제한 시간 안에 끝나지 않아 남은 계획을 중단했습니다.")
+                    appendLog(L10n.format("공간 확보 중단: %@ · %@ · 격리 복구 경로 %@", String(describing: entry.preview.label), String(describing: result.endState), String(describing: CleanupExecutionService.stagingRecoveryDisplayPath)))
                     break
                 }
                 guard
@@ -579,11 +579,11 @@ extension ScanModel {
                         reclaimedBytes: nil,
                         physicalDeltaBytes: nil,
                         receipt: "",
-                        detail: "정리 실행 결과를 안전하게 읽지 못했습니다."
+                        detail: L10n.text("정리 실행 결과를 안전하게 읽지 못했습니다.")
                     ))
                     stoppedAfterFailure = true
-                    errorMessage = "정리 실행 결과를 확인하지 못했습니다. 남은 계획은 실행하지 않았습니다."
-                    appendLog("공간 확보 중단: \(entry.preview.label) 결과 해석 실패")
+                    errorMessage = L10n.text("정리 실행 결과를 확인하지 못했습니다. 남은 계획은 실행하지 않았습니다.")
+                    appendLog(L10n.format("공간 확보 중단: %@ 결과 해석 실패", String(describing: entry.preview.label)))
                     break
                 }
 
@@ -599,11 +599,11 @@ extension ScanModel {
                     detail: succeeded ? "" : executed.failureMessage
                 ))
                 if succeeded {
-                    appendLog("계획 정리 완료: \(executed.label) · 실제 여유 변화 \(executed.physicalDeltaText)")
+                    appendLog(L10n.format("계획 정리 완료: %@ · 실제 여유 변화 %@", String(describing: executed.label), String(describing: executed.physicalDeltaText)))
                 } else {
                     stoppedAfterFailure = true
                     errorMessage = executed.failureMessage
-                    appendLog("공간 확보 중단: \(executed.label) · \(executed.statusText)")
+                    appendLog(L10n.format("공간 확보 중단: %@ · %@", String(describing: executed.label), String(describing: executed.statusText)))
                     break
                 }
 
@@ -611,8 +611,8 @@ extension ScanModel {
                 guard !Task.isCancelled, !applicationTerminationStarted else { return }
                 guard let after else {
                     stoppedAfterFailure = true
-                    errorMessage = "정리 후 실제 여유 공간을 확인하지 못해 남은 계획을 실행하지 않았습니다."
-                    appendLog("공간 확보 중단: 정리 후 여유 공간 측정 실패")
+                    errorMessage = L10n.text("정리 후 실제 여유 공간을 확인하지 못해 남은 계획을 실행하지 않았습니다.")
+                    appendLog(L10n.text("공간 확보 중단: 정리 후 여유 공간 측정 실패"))
                     break
                 }
                 latestFreeBytes = after.value.freeBytes
@@ -620,7 +620,7 @@ extension ScanModel {
                 cleanupRecoveryProgress = CleanupRecoveryProgress(
                     completedCount: index + 1,
                     totalCount: plan.readyEntries.count,
-                    currentLabel: "실제 여유 공간 확인 중"
+                    currentLabel: L10n.text("실제 여유 공간 확인 중")
                 )
             }
 
@@ -645,14 +645,14 @@ extension ScanModel {
             )
             if freeSpaceMeasured {
                 let change = latestFreeBytes - plan.baselineFreeBytes
-                appendLog("공간 확보 확인: 여유 공간 순변화 \(StorageBytes.changeText(change)) · 현재 \(StorageBytes.text(latestFreeBytes))")
+                appendLog(L10n.format("공간 확보 확인: 여유 공간 순변화 %@ · 현재 %@", String(describing: StorageBytes.changeText(change)), String(describing: StorageBytes.text(latestFreeBytes))))
             } else {
-                appendLog("공간 확보 결과의 실제 여유 공간을 확인하지 못했습니다.")
+                appendLog(L10n.text("공간 확보 결과의 실제 여유 공간을 확인하지 못했습니다."))
             }
             AccessibilityAnnouncer.announce(
                 freeSpaceMeasured && latestFreeBytes >= desiredFreeBytes
-                    ? "공간 확보 목표를 달성했습니다"
-                    : "공간 확보 실행을 마쳤습니다"
+                    ? L10n.text("공간 확보 목표를 달성했습니다")
+                    : L10n.text("공간 확보 실행을 마쳤습니다")
             )
         }
     }
@@ -715,20 +715,20 @@ extension ScanModel {
                 RuntimeWorkspace.prepareExecution(projectRoot: root)
             }.value
             guard let execution else {
-                errorMessage = "서명된 감시 런타임을 확인하지 못해 설정을 변경하지 않았습니다."
+                errorMessage = L10n.text("서명된 감시 런타임을 확인하지 못해 설정을 변경하지 않았습니다.")
                 return
             }
             guard let invocation = execution.pinnedInvocation(
                 relativePath: "scripts/schedule.sh",
                 name: "schedule"
             ), let supportModule = execution.pinnedSupportDirectoryModule() else {
-                errorMessage = "봉인한 감시 설정 프로그램을 확인하지 못해 변경하지 않았습니다."
+                errorMessage = L10n.text("봉인한 감시 설정 프로그램을 확인하지 못해 변경하지 않았습니다.")
                 return
             }
             guard let watcherHash = execution.sealedSHA256(
                 relativePath: "scripts/storage_watch.sh"
             ) else {
-                errorMessage = "봉인한 저장공간 감시 프로그램을 확인하지 못해 변경하지 않았습니다."
+                errorMessage = L10n.text("봉인한 저장공간 감시 프로그램을 확인하지 못해 변경하지 않았습니다.")
                 return
             }
             let result = await LocalProcessRunner.capture(
@@ -757,20 +757,20 @@ extension ScanModel {
             if result.status == 0, let value = values["enabled"], stateMatchesRequest {
                 storageWatchEnabled = value == "true"
                 storageWatchDetail = storageWatchEnabled
-                    ? "매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림"
-                    : "꺼짐 · 자동 삭제 없음"
-                appendLog(storageWatchEnabled ? "저장공간 급감 감시를 켰습니다." : "저장공간 급감 감시를 껐습니다.")
+                    ? L10n.text("매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림")
+                    : L10n.text("꺼짐 · 자동 삭제 없음")
+                appendLog(storageWatchEnabled ? L10n.text("저장공간 급감 감시를 켰습니다.") : L10n.text("저장공간 급감 감시를 껐습니다."))
                 AccessibilityAnnouncer.announce(
-                    storageWatchEnabled ? "저장공간 감시를 켰습니다" : "저장공간 감시를 껐습니다"
+                    storageWatchEnabled ? L10n.text("저장공간 감시를 켰습니다") : L10n.text("저장공간 감시를 껐습니다")
                 )
             } else {
                 storageWatchEnabled = false
                 storageWatchDetail = runtimeState == .stale
-                    ? "안전하지 않은 감시 plist가 남아 있습니다. 제거 후 다시 시도하세요."
-                    : "꺼짐 · 자동 삭제 없음"
+                    ? L10n.text("안전하지 않은 감시 plist가 남아 있습니다. 제거 후 다시 시도하세요.")
+                    : L10n.text("꺼짐 · 자동 삭제 없음")
                 errorMessage = runtimeState == .stale
-                    ? "감시 LaunchAgent가 현재 서명된 앱 경로를 가리키지 않거나 안전하지 않아 작업을 완료하지 않았습니다."
-                    : "저장공간 감시 설정을 변경하지 못했습니다. 실행 로그를 확인하세요."
+                    ? L10n.text("감시 LaunchAgent가 현재 서명된 앱 경로를 가리키지 않거나 안전하지 않아 작업을 완료하지 않았습니다.")
+                    : L10n.text("저장공간 감시 설정을 변경하지 못했습니다. 실행 로그를 확인하세요.")
             }
         }
     }
@@ -779,33 +779,12 @@ extension ScanModel {
         guard let storage else { return }
         let candidates = (storage.cleanupCandidates + storage.reviewCandidates + storage.developerToolchains).prefix(16)
         let lines = candidates.map { cleanupGuide(for: $0) }
-        let text = """
-        Modore 정리 가이드
-
-        원칙:
-        - 삭제는 자동 실행하지 않으며, 앱의 고정 레시피도 미리보기와 개별 승인을 거칩니다.
-        - Finder에서 위치를 확인하고, 실행 중인 앱/Xcode/Simulator/브라우저를 먼저 종료하세요.
-        - Android SDK, Simulator runtime, 언어 toolchain은 프로젝트 요구 버전을 확인하기 전 통째 삭제하지 마세요.
-
-        \(lines.joined(separator: "\n\n"))
-        """
+        let text = [L10n.text("Modore 정리 가이드"), "", L10n.text("원칙:"), L10n.text("- 삭제는 자동 실행하지 않으며, 앱의 고정 레시피도 미리보기와 개별 승인을 거칩니다."), L10n.text("- Finder에서 위치를 확인하고, 실행 중인 앱/Xcode/Simulator/브라우저를 먼저 종료하세요."), L10n.text("- Android SDK, Simulator runtime, 언어 toolchain은 프로젝트 요구 버전을 확인하기 전 통째 삭제하지 마세요."), ""].joined(separator: "\n") + "\n" + lines.joined(separator: "\n\n")
         copyToPasteboard(text)
     }
 
     func copyFullDiskAccessGuide() {
-        let text = """
-        Modore - Full Disk Access 안내
-
-        macOS는 Mail, Messages, Safari, 앱 컨테이너 같은 일부 영역을 개인정보 보호 설정으로 숨길 수 있습니다.
-        리포트가 비어 보이거나 일부 앱 데이터가 빠진다면:
-
-        1. 시스템 설정을 엽니다.
-        2. 개인정보 보호 및 보안 > 전체 디스크 접근 권한으로 이동합니다.
-        3. Modore 앱 또는 Terminal을 허용합니다.
-        4. 앱을 다시 실행한 뒤 검사를 다시 돌립니다.
-
-        이 권한은 읽기 범위를 넓히기 위한 것이며, Modore는 삭제를 자동 실행하지 않습니다.
-        """
+        let text = [L10n.text("Modore - Full Disk Access 안내"), "", L10n.text("macOS는 Mail, Messages, Safari, 앱 컨테이너 같은 일부 영역을 개인정보 보호 설정으로 숨길 수 있습니다."), L10n.text("리포트가 비어 보이거나 일부 앱 데이터가 빠진다면:"), "", L10n.text("1. 시스템 설정을 엽니다."), L10n.text("2. 개인정보 보호 및 보안 > 전체 디스크 접근 권한으로 이동합니다."), L10n.text("3. Modore 앱 또는 Terminal을 허용합니다."), L10n.text("4. 앱을 다시 실행한 뒤 검사를 다시 돌립니다."), "", L10n.text("이 권한은 읽기 범위를 넓히기 위한 것이며, Modore는 삭제를 자동 실행하지 않습니다.")].joined(separator: "\n")
         copyToPasteboard(text)
     }
 
@@ -814,19 +793,17 @@ extension ScanModel {
     }
 
     private func cleanupGuide(for item: StorageItem) -> String {
-        """
-        \(item.label) (\(item.sizeText))
-        경로: \(item.path)
-        분류: \(item.kind)
-        권장 확인: \(item.action)
-        설명: \(item.note)
-        """
+        ["\(item.label) (\(item.sizeText))",
+         L10n.format("경로: %@", item.path),
+         L10n.format("분류: %@", L10n.message(item.kind)),
+         L10n.format("권장 확인: %@", L10n.message(item.action)),
+         L10n.format("설명: %@", L10n.message(item.note))].joined(separator: "\n")
     }
 
     private func copyToPasteboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        appendLog("클립보드에 복사했습니다.")
+        appendLog(L10n.text("클립보드에 복사했습니다."))
     }
 
 }

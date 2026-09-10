@@ -38,11 +38,11 @@ struct ReportState: Equatable {
     var failureText: String? {
         switch (normal, share) {
         case (.failed, .failed):
-            return "정밀 검사는 완료됐지만 일반·공유용 리포트를 생성하지 못했습니다."
+            return L10n.text("정밀 검사는 완료됐지만 일반·공유용 리포트를 생성하지 못했습니다.")
         case (.failed, _):
-            return "정밀 검사는 완료됐지만 일반 리포트를 생성하지 못했습니다."
+            return L10n.text("정밀 검사는 완료됐지만 일반 리포트를 생성하지 못했습니다.")
         case (_, .failed):
-            return "정밀 검사는 완료됐지만 공유용 리포트를 생성하지 못했습니다."
+            return L10n.text("정밀 검사는 완료됐지만 공유용 리포트를 생성하지 못했습니다.")
         default:
             return nil
         }

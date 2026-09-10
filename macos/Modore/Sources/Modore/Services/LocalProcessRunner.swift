@@ -219,7 +219,7 @@ enum LocalProcessRunner {
         NSError(
             domain: NSPOSIXErrorDomain,
             code: Int(EINVAL),
-            userInfo: [NSLocalizedDescriptionKey: "안전한 프로세스 환경을 구성하지 못했습니다."]
+            userInfo: [NSLocalizedDescriptionKey: L10n.text("안전한 프로세스 환경을 구성하지 못했습니다.")]
         )
     }
 }
@@ -321,7 +321,7 @@ private final class ManagedProcessSession: @unchecked Sendable {
                     drainAndFinish(fileDescriptor: spawned.outputFileDescriptor)
                 }
             } catch {
-                emitIfStreaming("실행 실패: \(error.localizedDescription)")
+                emitIfStreaming(L10n.format("실행 실패: %@", String(describing: error.localizedDescription)))
                 finish(
                     status: -1,
                     output: error.localizedDescription,
@@ -642,10 +642,10 @@ private final class ManagedProcessSession: @unchecked Sendable {
     private func diagnostic(for state: ProcessEndState) -> String {
         switch state {
         case .exited: return ""
-        case .timedOut: return "실행 시간이 제한을 초과해 중단했습니다."
-        case .cancelled: return "요청이 취소되어 실행을 중단했습니다."
-        case .outputLimit: return "출력 크기가 안전 상한을 초과해 실행을 중단했습니다."
-        case .launchFailed: return "프로세스를 시작하지 못했습니다."
+        case .timedOut: return L10n.text("실행 시간이 제한을 초과해 중단했습니다.")
+        case .cancelled: return L10n.text("요청이 취소되어 실행을 중단했습니다.")
+        case .outputLimit: return L10n.text("출력 크기가 안전 상한을 초과해 실행을 중단했습니다.")
+        case .launchFailed: return L10n.text("프로세스를 시작하지 못했습니다.")
         }
     }
 
@@ -944,7 +944,7 @@ private enum PosixProcessSpawner {
             throw NSError(
                 domain: NSPOSIXErrorDomain,
                 code: Int(EINVAL),
-                userInfo: [NSLocalizedDescriptionKey: "프로세스 실행 인수가 올바르지 않습니다."]
+                userInfo: [NSLocalizedDescriptionKey: L10n.text("프로세스 실행 인수가 올바르지 않습니다.")]
             )
         }
         let validPinnedName = try! NSRegularExpression(pattern: "^[A-Za-z0-9_]{1,48}$")

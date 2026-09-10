@@ -51,9 +51,9 @@ struct ArchiveCandidate: Identifiable {
 
     var tierLabel: String {
         switch verdict.tier {
-        case .safe: return "보관 추천"
-        case .caution: return "주의 필요"
-        case .unsafe: return "보관 불가"
+        case .safe: return L10n.text("보관 추천")
+        case .caution: return L10n.text("주의 필요")
+        case .unsafe: return L10n.text("보관 불가")
         }
     }
 
@@ -72,17 +72,17 @@ struct ArchiveCandidate: Identifiable {
     var continuityText: String {
         switch continuity {
         case .notAssessed:
-            return continuityDiagnostic.map { "AI 세션 확인 실패 · \($0)" } ?? "AI 세션 확인 안 됨"
+            return continuityDiagnostic.map { L10n.format("AI 세션 확인 실패 · %@", String(describing: $0)) } ?? L10n.text("AI 세션 확인 안 됨")
         case .assessedNoSessions:
-            return "연결된 AI 세션 없음"
+            return L10n.text("연결된 AI 세션 없음")
         case .bindings(let bindings, _):
             let bytes = ByteCountFormatter.string(
                 fromByteCount: bindings.reduce(0) { $0 + $1.sizeBytes },
                 countStyle: .file
             )
-            return "연결된 AI 세션 \(bindings.count)개 · \(bytes)"
+            return L10n.format("연결된 AI 세션 %@개 · %@", String(describing: bindings.count), String(describing: bytes))
         case .sealed(let bundle, _):
-            return "AI 세션 \(bundle.sessions.count)개 봉인됨"
+            return L10n.format("AI 세션 %@개 봉인됨", String(describing: bundle.sessions.count))
         }
     }
 
@@ -105,7 +105,7 @@ struct ArchiveCandidate: Identifiable {
     /// the value that varies between rows and the one the decision turns
     /// on.
     var trailingLabel: String {
-        boundSessions.isEmpty ? tierLabel : "대화 \(boundSessions.count)개"
+        boundSessions.isEmpty ? tierLabel : L10n.format("대화 %@개", String(describing: boundSessions.count))
     }
 
     /// The bindings worth putting a title on, most recently touched
@@ -148,14 +148,14 @@ struct ArchiveCandidate: Identifiable {
 
     private static func describe(_ reason: SafetyReason) -> String {
         switch reason {
-        case .recentActivity(let daysAgo): return "최근 활동 \(daysAgo)일 전"
-        case .dirtyWorkingTree: return "커밋 안 된 변경 있음"
-        case .unpushedCommits(let count): return "미푸시 커밋 \(count)개"
-        case .noRemoteConfigured: return "원격 저장소 없음"
-        case .noUpstreamConfigured: return "업스트림 미설정"
-        case .noCommitsYet: return "커밋 없음"
-        case .dormant(let daysAgo): return "\(daysAgo)일간 미사용"
-        case .fullyPushed: return "원격에 모두 반영됨"
+        case .recentActivity(let daysAgo): return L10n.format("최근 활동 %@일 전", String(describing: daysAgo))
+        case .dirtyWorkingTree: return L10n.text("커밋 안 된 변경 있음")
+        case .unpushedCommits(let count): return L10n.format("미푸시 커밋 %@개", String(describing: count))
+        case .noRemoteConfigured: return L10n.text("원격 저장소 없음")
+        case .noUpstreamConfigured: return L10n.text("업스트림 미설정")
+        case .noCommitsYet: return L10n.text("커밋 없음")
+        case .dormant(let daysAgo): return L10n.format("%@일간 미사용", String(describing: daysAgo))
+        case .fullyPushed: return L10n.text("원격에 모두 반영됨")
         }
     }
 }
@@ -184,7 +184,7 @@ struct SessionConversation: Decodable, Equatable {
         var isUser: Bool {
             ["user", "human", "user_message"].contains(role.lowercased())
         }
-        var speakerLabel: String { isUser ? "나" : "에이전트" }
+        var speakerLabel: String { isUser ? L10n.text("나") : L10n.text("에이전트") }
     }
 
     /// Whether the transcript could be read at all, and if not, why.
@@ -209,9 +209,9 @@ struct SessionConversation: Decodable, Equatable {
         var failureText: String? {
             switch self {
             case .ok: return nil
-            case .missing: return "이 대화 파일은 더 이상 존재하지 않습니다. 제공자가 정리했을 수 있습니다."
-            case .unreadable: return "이 대화 파일을 읽을 권한이 없습니다."
-            case .unrecognized: return "이 대화 파일의 형식을 읽지 못했습니다."
+            case .missing: return L10n.text("이 대화 파일은 더 이상 존재하지 않습니다. 제공자가 정리했을 수 있습니다.")
+            case .unreadable: return L10n.text("이 대화 파일을 읽을 권한이 없습니다.")
+            case .unrecognized: return L10n.text("이 대화 파일의 형식을 읽지 못했습니다.")
             }
         }
     }

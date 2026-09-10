@@ -40,7 +40,7 @@ private struct StorageWatchActivitySection: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.storageWatchEnabled ? "저장공간 감시 켜짐" : "저장공간 감시 꺼짐")
+                    Text(model.storageWatchEnabled ? L10n.text("저장공간 감시 켜짐") : L10n.text("저장공간 감시 꺼짐"))
                         .font(.body.weight(.medium))
                     Text(model.storageWatchDetail)
                         .font(.subheadline)
@@ -53,15 +53,15 @@ private struct StorageWatchActivitySection: View {
                 FreeSpaceTrendView(samples: Array(model.freeSpaceSamples.suffix(48)))
                     .frame(height: 120)
             } else {
-                Text("시간별 표본이 아직 없습니다.")
+                Text(L10n.text("시간별 표본이 아직 없습니다."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         } header: {
             NativeSectionHeader(
-                title: "저장공간 변화",
-                subtitle: "평소에는 여유 공간만 기록하고, 부족 진입·급감 시 제한된 경로와 실제로 확보된 시스템 신호를 남깁니다.",
-                value: "\(model.freeSpaceSamples.count)개 표본"
+                title: L10n.text("저장공간 변화"),
+                subtitle: L10n.text("평소에는 여유 공간만 기록하고, 부족 진입·급감 시 제한된 경로와 실제로 확보된 시스템 신호를 남깁니다."),
+                value: L10n.format("%@개 표본", String(describing: model.freeSpaceSamples.count))
             )
         }
     }
@@ -90,11 +90,11 @@ private struct ContinuousObservationSection: View {
     var body: some View {
         Section {
             HStack {
-                Picker("관찰 시간", selection: $windowSeconds) {
-                    Text("30초").tag(30)
-                    Text("1분").tag(60)
-                    Text("2분").tag(120)
-                    Text("5분").tag(300)
+                Picker(L10n.text("관찰 시간"), selection: $windowSeconds) {
+                    Text(L10n.text("30초")).tag(30)
+                    Text(L10n.text("1분")).tag(60)
+                    Text(L10n.text("2분")).tag(120)
+                    Text(L10n.text("5분")).tag(300)
                 }
                 .labelsHidden()
                 .frame(maxWidth: 140)
@@ -102,7 +102,7 @@ private struct ContinuousObservationSection: View {
                 // to a window the run in progress is not actually using.
                 .disabled(model.observationInFlight)
                 Spacer()
-                Button(model.observationInFlight ? "관찰 중…" : "지금 관찰하기") {
+                Button(model.observationInFlight ? L10n.text("관찰 중…") : L10n.text("지금 관찰하기")) {
                     runningWindowSeconds = windowSeconds
                     model.observeNow(windowSeconds: windowSeconds)
                 }
@@ -114,7 +114,7 @@ private struct ContinuousObservationSection: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("\(runningWindowSeconds)초 동안 CPU와 네트워크를 관찰하는 중입니다…")
+                    Text(L10n.format("%@초 동안 CPU와 네트워크를 관찰하는 중입니다…", String(describing: runningWindowSeconds)))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -125,15 +125,15 @@ private struct ContinuousObservationSection: View {
             } else if let result = model.observationResult {
                 ObservationResultRows(result: result)
             } else {
-                Text("기본 검사는 순간 스냅샷만 봅니다. 관찰을 시작하면 지정한 시간 동안 실제 CPU 사용과 새로 나타난 네트워크 연결만 골라 보여줍니다.")
+                Text(L10n.text("기본 검사는 순간 스냅샷만 봅니다. 관찰을 시작하면 지정한 시간 동안 실제 CPU 사용과 새로 나타난 네트워크 연결만 골라 보여줍니다."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         } header: {
             NativeSectionHeader(
-                title: "CPU·네트워크 관찰",
-                subtitle: "지정한 시간 동안 두 시점을 비교해 실제 점유와 새 연결만 보고합니다. 예약 실행이 아니라 누를 때만 동작합니다.",
-                value: model.observationResult.map { "\($0.windowSeconds)초 관찰됨" } ?? "미실행"
+                title: L10n.text("CPU·네트워크 관찰"),
+                subtitle: L10n.text("지정한 시간 동안 두 시점을 비교해 실제 점유와 새 연결만 보고합니다. 예약 실행이 아니라 누를 때만 동작합니다."),
+                value: model.observationResult.map { L10n.format("%@초 관찰됨", String(describing: $0.windowSeconds)) } ?? L10n.text("미실행")
             )
         }
     }
@@ -144,7 +144,7 @@ private struct ObservationResultRows: View {
 
     var body: some View {
         if result.processRows.isEmpty {
-            Text("관찰 구간 동안 뚜렷한 CPU 사용이 없었습니다.")
+            Text(L10n.text("관찰 구간 동안 뚜렷한 CPU 사용이 없었습니다."))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         } else {
@@ -153,7 +153,7 @@ private struct ObservationResultRows: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(row.name)
                             .font(.body.weight(.medium))
-                        Text(row.isDetachedFromAnApp ? "\(row.ownerName)에서 시작된 셸 작업" : row.ownerName)
+                        Text(row.isDetachedFromAnApp ? L10n.format("%@에서 시작된 셸 작업", String(describing: row.ownerName)) : row.ownerName)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -166,11 +166,11 @@ private struct ObservationResultRows: View {
         }
 
         if result.networkUnavailable {
-            Text("lsof를 사용할 수 없어 네트워크는 관찰하지 못했습니다.")
+            Text(L10n.text("lsof를 사용할 수 없어 네트워크는 관찰하지 못했습니다."))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         } else if result.newConnectionRows.isEmpty {
-            Text("관찰 구간 동안 새로 나타난 연결이나 포트가 없었습니다.")
+            Text(L10n.text("관찰 구간 동안 새로 나타난 연결이나 포트가 없었습니다."))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         } else {
@@ -181,7 +181,7 @@ private struct ObservationResultRows: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(row.process)
                             .font(.body.weight(.medium))
-                        Text(row.isListening ? "새 수신 포트" : "새 연결")
+                        Text(row.isListening ? L10n.text("새 수신 포트") : L10n.text("새 연결"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -232,7 +232,7 @@ private struct StorageWatchEvidenceSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "최근 부족 시점의 증거",
+                title: L10n.text("최근 부족 시점의 증거"),
                 subtitle: evidenceSummary,
                 value: evidence.capturedAt.formatted(date: .abbreviated, time: .shortened)
             )
@@ -240,20 +240,20 @@ private struct StorageWatchEvidenceSection: View {
     }
 
     private var evidenceSummary: String {
-        let swap = evidence.signalEvent?.collectionSummary(for: .swap, label: "스왑")
-            ?? "스왑 신호 없음"
-        let rss = evidence.signalEvent?.collectionSummary(for: .processRSS, label: "상위 RAM")
-            ?? "상위 RAM 신호 없음"
-        return "같은 점검: \(swap) · \(rss) · \(pathCollectionSummary). 큰 값만으로 원인을 확정하지 않습니다."
+        let swap = evidence.signalEvent?.collectionSummary(for: .swap, label: L10n.text("스왑"))
+            ?? L10n.text("스왑 신호 없음")
+        let rss = evidence.signalEvent?.collectionSummary(for: .processRSS, label: L10n.text("상위 RAM"))
+            ?? L10n.text("상위 RAM 신호 없음")
+        return L10n.format("같은 점검: %@ · %@ · %@. 큰 값만으로 원인을 확정하지 않습니다.", String(describing: swap), String(describing: rss), String(describing: pathCollectionSummary))
     }
 
     private var pathCollectionSummary: String {
         guard let rows = evidence.pathEvent?.rows, !rows.isEmpty else {
-            return "경로 신호 없음"
+            return L10n.text("경로 신호 없음")
         }
-        if rows.allSatisfy(\.measured) { return "제한된 경로 측정 완료" }
-        if rows.contains(where: \.measured) { return "제한된 경로 일부만 측정" }
-        return "제한된 경로 측정 미완료"
+        if rows.allSatisfy(\.measured) { return L10n.text("제한된 경로 측정 완료") }
+        if rows.contains(where: \.measured) { return L10n.text("제한된 경로 일부만 측정") }
+        return L10n.text("제한된 경로 측정 미완료")
     }
 
 }
@@ -271,9 +271,9 @@ private struct ScanHistorySection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "사고 및 검사 이력",
-                subtitle: "검사 당시의 주요 판단, 수집 완전성과 저장공간 변화를 함께 남깁니다.",
-                value: "\(entries.count)회"
+                title: L10n.text("사고 및 검사 이력"),
+                subtitle: L10n.text("검사 당시의 주요 판단, 수집 완전성과 저장공간 변화를 함께 남깁니다."),
+                value: L10n.format("%@회", String(describing: entries.count))
             )
         }
     }
@@ -283,11 +283,11 @@ private struct StorageWatchSettingsButton: View {
     var body: some View {
         if #available(macOS 14.0, *) {
             SettingsLink {
-                Label("감시 설정…", systemImage: "gear")
+                Label(L10n.text("감시 설정…"), systemImage: "gear")
             }
             .buttonStyle(.bordered)
         } else {
-            Text("⌘, 에서 설정")
+            Text(L10n.text("⌘, 에서 설정"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -301,7 +301,7 @@ struct ScanLogSection: View {
     var body: some View {
         Section {
             ScrollView {
-                Text(store.isEmpty ? "아직 실행 로그가 없습니다." : store.text)
+                Text(store.isEmpty ? L10n.text("아직 실행 로그가 없습니다.") : store.text)
                     .font(.caption.monospaced())
                     .foregroundStyle(store.isEmpty ? .secondary : .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -313,14 +313,14 @@ struct ScanLogSection: View {
         } header: {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("실행 로그")
-                    Text("검사와 승인형 정리의 로컬 출력입니다.")
+                    Text(L10n.text("실행 로그"))
+                    Text(L10n.text("검사와 승인형 정리의 로컬 출력입니다."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textCase(nil)
                 }
                 Spacer()
-                Button("로그 지우기", systemImage: "trash", action: clearAction)
+                Button(L10n.text("로그 지우기"), systemImage: "trash", action: clearAction)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .disabled(store.isEmpty)
@@ -364,7 +364,7 @@ struct RecentScanHistoryRow: View {
                             .font(.callout.weight(.medium))
                             .foregroundStyle(.primary)
                             .monospacedDigit()
-                        Text(entry.incidentValue == nil ? "사용 가능" : "당시 판단")
+                        Text(entry.incidentValue == nil ? L10n.text("사용 가능") : L10n.text("당시 판단"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -382,22 +382,22 @@ struct RecentScanHistoryRow: View {
             .padding(.vertical, 4)
         }
         .buttonStyle(.plain)
-        .help(isExpanded ? "접으려면 클릭" : historyDetail)
+        .help(isExpanded ? L10n.text("접으려면 클릭") : historyDetail)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary)
-        .accessibilityHint(isExpanded ? "당시 요약을 접습니다." : "당시 증거 요약을 펼칩니다.")
+        .accessibilityHint(isExpanded ? L10n.text("당시 요약을 접습니다.") : L10n.text("당시 증거 요약을 펼칩니다."))
     }
 
     private var expandedFacts: some View {
         VStack(alignment: .leading, spacing: 3) {
             historyFactRow(
-                "검사 시각",
+                L10n.text("검사 시각"),
                 entry.capturedAt.formatted(date: .long, time: .standard)
             )
             historyFactRow(
-                "저장공간",
+                L10n.text("저장공간"),
                 String(
-                    format: "사용 가능 %.1fGB · 사용 중 %.1fGB · 전체 %.1fGB",
+                    format: L10n.text("사용 가능 %.1fGB · 사용 중 %.1fGB · 전체 %.1fGB"),
                     entry.freeGB,
                     entry.usedGB,
                     entry.totalGB
@@ -405,19 +405,19 @@ struct RecentScanHistoryRow: View {
             )
             if let complete = entry.collectionComplete {
                 historyFactRow(
-                    "수집 완전성",
+                    L10n.text("수집 완전성"),
                     complete
-                        ? "필수 수집기가 모두 응답한 검사였습니다."
-                        : "필수 수집기 일부가 완료되지 않아 당시 판단이 보류 기준이었습니다."
+                        ? L10n.text("필수 수집기가 모두 응답한 검사였습니다.")
+                        : L10n.text("필수 수집기 일부가 완료되지 않아 당시 판단이 보류 기준이었습니다.")
                 )
             }
             if let verdict = entry.browserVerdict {
-                historyFactRow("브라우저 자동화", browserVerdictText(verdict))
+                historyFactRow(L10n.text("브라우저 자동화"), browserVerdictText(verdict))
             }
             if let evidence = entry.evidence {
                 historyFactRow(
-                    "수집된 증거",
-                    "프로세스 \(evidence.processCount)개 · 외부 연결 \(evidence.networkConnectionCount)개 · 수신 포트 \(evidence.listeningPortCount)개 · 확인 항목 \(evidence.attentionFindingCount)건"
+                    L10n.text("수집된 증거"),
+                    L10n.format("프로세스 %@개 · 외부 연결 %@개 · 수신 포트 %@개 · 확인 항목 %@건", String(describing: evidence.processCount), String(describing: evidence.networkConnectionCount), String(describing: evidence.listeningPortCount), String(describing: evidence.attentionFindingCount))
                 )
             }
         }
@@ -441,10 +441,10 @@ struct RecentScanHistoryRow: View {
         // conflict_possible / isolated_active / clear; matching the wrong token
         // ("conflict") let real verdicts fall through to the raw protocol string.
         switch verdict {
-        case "orphaned": return "소유 작업을 찾지 못한 자동화가 있었습니다."
-        case "conflict_possible": return "기본 Chrome과 자동화 충돌 가능성이 있었습니다."
-        case "isolated_active": return "격리된 자동화 브라우저가 실행 중이었습니다."
-        case "clear": return "자동화 충돌 신호가 없었습니다."
+        case "orphaned": return L10n.text("소유 작업을 찾지 못한 자동화가 있었습니다.")
+        case "conflict_possible": return L10n.text("기본 Chrome과 자동화 충돌 가능성이 있었습니다.")
+        case "isolated_active": return L10n.text("격리된 자동화 브라우저가 실행 중이었습니다.")
+        case "clear": return L10n.text("자동화 충돌 신호가 없었습니다.")
         default: return verdict
         }
     }
@@ -461,58 +461,58 @@ struct RecentScanHistoryRow: View {
     }
 
     private var changeDescription: String {
-        guard let change else { return "첫 비교 기준점" }
+        guard let change else { return L10n.text("첫 비교 기준점") }
         guard abs(change.freeDeltaGB) >= 0.05 else {
             if let largest = change.largestChanges.first {
-                return "사용 가능 거의 같음 · \(historyEvidence(largest))"
+                return L10n.format("사용 가능 거의 같음 · %@", String(describing: historyEvidence(largest)))
             }
-            return "추적 경로와 여유 공간 변화 없음"
+            return L10n.text("추적 경로와 여유 공간 변화 없음")
         }
 
-        var parts = [String(format: "사용 가능 %+.1fGB", change.freeDeltaGB)]
+        var parts = [String(format: L10n.text("사용 가능 %+.1fGB"), change.freeDeltaGB)]
         if let primary = change.primaryCause {
-            let label = change.consumedGB >= 0.05 ? "감소 후보" : "회복 후보"
+            let label = change.consumedGB >= 0.05 ? L10n.text("감소 후보") : L10n.text("회복 후보")
             parts.append("\(label) \(historyEvidence(primary))")
         } else {
-            parts.append(change.consumedGB >= 0.05 ? "감소 원인 미포착" : "회복 원인 미포착")
+            parts.append(change.consumedGB >= 0.05 ? L10n.text("감소 원인 미포착") : L10n.text("회복 원인 미포착"))
         }
 
         if let opposite = change.oppositeDirectionChanges.first {
-            let label = change.consumedGB >= 0.05 ? "동시 감소" : "동시 증가"
+            let label = change.consumedGB >= 0.05 ? L10n.text("동시 감소") : L10n.text("동시 증가")
             parts.append("\(label) \(historyEvidence(opposite))")
         }
 
         if !change.causeNotCaptured, change.unattributedConsumedGB >= 0.1 {
-            parts.append(String(format: "추적 밖 사용 %.1fGB", change.unattributedConsumedGB))
+            parts.append(String(format: L10n.text("추적 밖 사용 %.1fGB"), change.unattributedConsumedGB))
         } else if !change.causeNotCaptured, change.unattributedRecoveredGB >= 0.1 {
-            parts.append(String(format: "추적 밖 회복 %.1fGB", change.unattributedRecoveredGB))
+            parts.append(String(format: L10n.text("추적 밖 회복 %.1fGB"), change.unattributedRecoveredGB))
         }
         if change.causeNotCaptured {
-            parts.append("현재 수집 범위 밖")
+            parts.append(L10n.text("현재 수집 범위 밖"))
         }
         if parts.count > 1 {
             return parts.joined(separator: " · ")
         }
-        return "추적 경로 변화 없음"
+        return L10n.text("추적 경로 변화 없음")
     }
 
     private var historyDetail: String {
         guard entry.incidentTitle != nil else { return changeDescription }
         let timestamp = entry.capturedAt.formatted(date: .abbreviated, time: .shortened)
-        return "\(timestamp) · \(changeDescription) · 사용 가능 \(String(format: "%.1fGB", entry.freeGB))"
+        return L10n.format("%@ · %@ · 사용 가능 %@", String(describing: timestamp), String(describing: changeDescription), String(describing: String(format: "%.1fGB", entry.freeGB)))
     }
 
     private func historyEvidence(_ item: StorageItemChange) -> String {
         if item.appearedInTrackedList {
             return String(
-                format: "%@ 현재 %.1fGB(목록에 새로 나타남)",
+                format: L10n.text("%@ 현재 %.1fGB(목록에 새로 나타남)"),
                 item.label,
                 item.afterGB
             )
         }
         if item.disappearedFromTrackedList {
             return String(
-                format: "%@ 직전 %.1fGB(현재 목록에서 사라짐)",
+                format: L10n.text("%@ 직전 %.1fGB(현재 목록에서 사라짐)"),
                 item.label,
                 item.beforeGB
             )
@@ -560,7 +560,7 @@ struct FreeSpaceTrendView: View {
                         .fontWeight(.semibold)
                 }
                 Spacer()
-                Text("최근 \(samples.count)회")
+                Text(L10n.format("최근 %@회", String(describing: samples.count)))
                     .foregroundStyle(.secondary)
             }
             .font(.caption)
@@ -582,18 +582,18 @@ struct FreeSpaceSparkline: View {
                 )
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("여유 공간 추세 그래프")
+        .accessibilityLabel(L10n.text("여유 공간 추세 그래프"))
         .accessibilityValue(accessibilitySummary)
     }
 
     private var accessibilitySummary: String {
         guard let first = values.first, let last = values.last else {
-            return "표본 없음"
+            return L10n.text("표본 없음")
         }
         let minimum = values.min() ?? last
         let maximum = values.max() ?? last
         return String(
-            format: "최근 %d회, 처음 %.1fGB, 현재 %.1fGB, 최저 %.1fGB, 최고 %.1fGB",
+            format: L10n.text("최근 %d회, 처음 %.1fGB, 현재 %.1fGB, 최저 %.1fGB, 최고 %.1fGB"),
             values.count,
             first,
             last,

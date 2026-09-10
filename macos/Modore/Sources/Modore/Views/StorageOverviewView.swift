@@ -24,13 +24,13 @@ struct StatusPage: View {
                         StatusIncidentSummary(
                             assessment: assessment,
                             evidenceTimingNote: model.isDeepScanSnapshotStale(at: date)
-                                ? "\(model.deepScanSnapshotAgeText) 결과 기준 판단입니다. 새 검사 전에는 현재 상태로 단정하지 않습니다."
+                                ? L10n.format("%@ 결과 기준 판단입니다. 새 검사 전에는 현재 상태로 단정하지 않습니다.", String(describing: model.deepScanSnapshotAgeText))
                                 : nil
                         )
                     } header: {
                         NativeSectionHeader(
-                            title: "최근 정밀 검사 판단",
-                            subtitle: "한 시점에 함께 수집한 증거와 범위를 기준으로 한 판단입니다.",
+                            title: L10n.text("최근 정밀 검사 판단"),
+                            subtitle: L10n.text("한 시점에 함께 수집한 증거와 범위를 기준으로 한 판단입니다."),
                             value: assessment.value
                         )
                     }
@@ -47,11 +47,11 @@ struct StatusPage: View {
                         onOpenActivity: onOpenActivity
                     )
 
-                    Section("예상 영향") {
+                    Section(L10n.text("예상 영향")) {
                         StatusNoticeRow(
                             symbol: "arrow.triangle.branch",
                             title: assessment.impact,
-                            detail: "원인을 확정하지 않은 상태에서 프로세스 종료나 파일 삭제를 자동으로 실행하지 않습니다.",
+                            detail: L10n.text("원인을 확정하지 않은 상태에서 프로세스 종료나 파일 삭제를 자동으로 실행하지 않습니다."),
                             tint: assessment.kind == .securityDanger ? .red : .secondary
                         )
                     }
@@ -64,8 +64,8 @@ struct StatusPage: View {
                         )
                     } header: {
                         NativeSectionHeader(
-                            title: "정밀 검사 당시 자원 상태",
-                            subtitle: "현재 값과 섞지 않은 정밀 검사 스냅샷입니다.",
+                            title: L10n.text("정밀 검사 당시 자원 상태"),
+                            subtitle: L10n.text("현재 값과 섞지 않은 정밀 검사 스냅샷입니다."),
                             value: model.deepScanSnapshotAgeText
                         )
                     }
@@ -90,12 +90,12 @@ struct StatusPage: View {
                     )
 
                     if let newer = model.newerStorageHistoryEntry {
-                        Section("결과 시점") {
+                        Section(L10n.text("결과 시점")) {
                             StatusNoticeRow(
                                 symbol: "clock.badge.exclamationmark",
-                                title: "이 화면보다 최신 기록이 있습니다",
+                                title: L10n.text("이 화면보다 최신 기록이 있습니다"),
                                 detail: String(
-                                    format: "활동에 %@의 여유 공간 기록(%.1fGB)이 있습니다. 전체 검사를 다시 실행하기 전에는 서로 다른 시점의 결과를 섞지 않습니다.",
+                                    format: L10n.text("활동에 %@의 여유 공간 기록(%.1fGB)이 있습니다. 전체 검사를 다시 실행하기 전에는 서로 다른 시점의 결과를 섞지 않습니다."),
                                     newer.capturedAt.formatted(date: .abbreviated, time: .shortened),
                                     newer.freeGB
                                 ),
@@ -103,11 +103,11 @@ struct StatusPage: View {
                             )
                         }
                     } else if model.isDeepScanSnapshotStale(at: date) {
-                        Section("결과 시점") {
+                        Section(L10n.text("결과 시점")) {
                             StatusNoticeRow(
                                 symbol: "clock",
-                                title: "현재 결과가 오래되었습니다",
-                                detail: "\(model.deepScanSnapshotAgeText) 결과입니다. 새 검사 전에는 현재 상태로 단정하지 않습니다.",
+                                title: L10n.text("현재 결과가 오래되었습니다"),
+                                detail: L10n.format("%@ 결과입니다. 새 검사 전에는 현재 상태로 단정하지 않습니다.", String(describing: model.deepScanSnapshotAgeText)),
                                 tint: .secondary
                             )
                         }
@@ -123,32 +123,32 @@ struct StatusPage: View {
                         StatusIncidentSummary(assessment: assessment)
                     } header: {
                         NativeSectionHeader(
-                            title: "최근 정밀 검사 판단",
-                            subtitle: "저장공간 수집 여부와 별개로 완료된 정밀 검사 결과입니다.",
+                            title: L10n.text("최근 정밀 검사 판단"),
+                            subtitle: L10n.text("저장공간 수집 여부와 별개로 완료된 정밀 검사 결과입니다."),
                             value: assessment.value
                         )
                     }
 
                     ReportGenerationFailureSection()
 
-                    Section("관찰 근거") {
+                    Section(L10n.text("관찰 근거")) {
                         StatusNavigationRow(
                             symbol: model.collectionCoverage?.complete == true
                                 ? "checkmark.shield" : "questionmark.shield",
-                            title: "검사 범위",
+                            title: L10n.text("검사 범위"),
                             detail: model.collectionCoverage?.complete == true
-                                ? "필수 수집기가 모두 응답했습니다."
-                                : "완료하지 못한 수집기가 있어 결과를 정상으로 확정하지 않습니다.",
-                            value: model.collectionCoverage?.coverageText ?? "기록 없음",
+                                ? L10n.text("필수 수집기가 모두 응답했습니다.")
+                                : L10n.text("완료하지 못한 수집기가 있어 결과를 정상으로 확정하지 않습니다."),
+                            value: model.collectionCoverage?.coverageText ?? L10n.text("기록 없음"),
                             action: onOpenSecurity
                         )
                     }
 
-                    Section("예상 영향") {
+                    Section(L10n.text("예상 영향")) {
                         StatusNoticeRow(
                             symbol: "arrow.triangle.branch",
                             title: assessment.impact,
-                            detail: "수집되지 않은 값을 0으로 대체하거나 자동 조치를 실행하지 않습니다.",
+                            detail: L10n.text("수집되지 않은 값을 0으로 대체하거나 자동 조치를 실행하지 않습니다."),
                             tint: assessment.kind == .securityDanger ? .red : .secondary
                         )
                     }
@@ -168,11 +168,11 @@ struct StatusPage: View {
                 Form {
                     StatusLiveStateSection()
                     DeepScanFailureSection()
-                    Section("최근 정밀 검사") {
+                    Section(L10n.text("최근 정밀 검사")) {
                         StatusNoticeRow(
                             symbol: "clock.badge.questionmark",
-                            title: "아직 정밀 검사 결과가 없습니다",
-                            detail: "현재 여유 공간은 위에서 계속 갱신합니다. 캐시·보안·자동 실행 분석은 정밀 검사가 끝난 뒤 별도 시각과 함께 표시합니다.",
+                            title: L10n.text("아직 정밀 검사 결과가 없습니다"),
+                            detail: L10n.text("현재 여유 공간은 위에서 계속 갱신합니다. 캐시·보안·자동 실행 분석은 정밀 검사가 끝난 뒤 별도 시각과 함께 표시합니다."),
                             tint: .secondary
                         )
                     }
@@ -195,11 +195,11 @@ private struct DeepScanFailureSection: View {
 
     var body: some View {
         if let failure = model.deepScanFailure {
-            Section("최근 정밀 검사") {
+            Section(L10n.text("최근 정밀 검사")) {
                 StatusNoticeRow(
                     symbol: "exclamationmark.circle",
-                    title: "정밀 검사를 완료하지 못했습니다",
-                    detail: "\(failure.failedAt.formatted(date: .abbreviated, time: .shortened)) 실패. \(failure.detail)",
+                    title: L10n.text("정밀 검사를 완료하지 못했습니다"),
+                    detail: L10n.format("%@ 실패. %@", String(describing: failure.failedAt.formatted(date: .abbreviated, time: .shortened)), String(describing: failure.detail)),
                     tint: .secondary
                 )
             }
@@ -216,22 +216,22 @@ private struct StatusLiveStateSection: View {
                 if let observation = model.liveState.freeSpace {
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("\(observation.value.freeGB, specifier: "%.1f")GB 사용 가능")
+                            Text(L10n.format("%@GB 사용 가능", String(format: "%.1f", locale: Locale.current, observation.value.freeGB)))
                                 .font(.system(size: 30, weight: .semibold))
                                 .monospacedDigit()
-                            Text("파일 시스템 사용률 약 \(observation.value.usedPercent, specifier: "%.0f")%")
+                            Text(L10n.format("파일 시스템 사용률 약 %@%%", String(format: "%.0f", locale: Locale.current, observation.value.usedPercent)))
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 20)
                         VStack(alignment: .trailing, spacing: 3) {
-                            Text("시동 볼륨")
+                            Text(L10n.text("시동 볼륨"))
                                 .font(.headline)
                             Text(observation.ageText(at: context.date))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             if case .failed = model.liveState.freeSpaceStatus {
-                                Text("최근 갱신 실패")
+                                Text(L10n.text("최근 갱신 실패"))
                                     .font(.caption)
                                     .fontWeight(.semibold)
                                     .foregroundStyle(.secondary)
@@ -243,11 +243,11 @@ private struct StatusLiveStateSection: View {
                     HStack(spacing: 10) {
                         if case .failed = model.liveState.freeSpaceStatus {
                             Image(systemName: "exclamationmark.circle")
-                            Text("현재 사용 가능 공간을 확인하지 못했습니다. 5초 후 다시 시도합니다.")
+                            Text(L10n.text("현재 사용 가능 공간을 확인하지 못했습니다. 5초 후 다시 시도합니다."))
                         } else {
                             ProgressView()
                                 .controlSize(.small)
-                            Text("현재 사용 가능 공간을 확인하고 있습니다.")
+                            Text(L10n.text("현재 사용 가능 공간을 확인하고 있습니다."))
                         }
                     }
                     .foregroundStyle(.secondary)
@@ -255,8 +255,8 @@ private struct StatusLiveStateSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "현재",
-                subtitle: "앱이 활성화된 동안 가벼운 시스템 관찰값을 정밀 검사와 분리해 갱신합니다.",
+                title: L10n.text("현재"),
+                subtitle: L10n.text("앱이 활성화된 동안 가벼운 시스템 관찰값을 정밀 검사와 분리해 갱신합니다."),
                 value: statusText
             )
         }
@@ -264,9 +264,9 @@ private struct StatusLiveStateSection: View {
 
     private var statusText: String {
         switch model.liveState.freeSpaceStatus {
-        case .observing: return "확인 중"
-        case .healthy: return "실시간"
-        case .failed: return "갱신 실패"
+        case .observing: return L10n.text("확인 중")
+        case .healthy: return L10n.text("실시간")
+        case .failed: return L10n.text("갱신 실패")
         }
     }
 }
@@ -276,11 +276,11 @@ private struct ReportGenerationFailureSection: View {
 
     var body: some View {
         if let failureText = model.reportState.failureText {
-            Section("리포트") {
+            Section(L10n.text("리포트")) {
                 StatusNoticeRow(
                     symbol: "doc.badge.ellipsis",
                     title: failureText,
-                    detail: "정밀 검사 결과는 이미 반영했습니다. 기록 화면에서 리포트 생성 실패 단계를 확인할 수 있습니다.",
+                    detail: L10n.text("정밀 검사 결과는 이미 반영했습니다. 기록 화면에서 리포트 생성 실패 단계를 확인할 수 있습니다."),
                     tint: .secondary
                 )
             }
@@ -341,17 +341,17 @@ private struct StatusIncidentEvidenceSection: View {
         Section {
             StatusNavigationRow(
                 symbol: coverage?.complete == true ? "checkmark.shield" : "questionmark.shield",
-                title: "검사 범위",
+                title: L10n.text("검사 범위"),
                 detail: coverageDetail,
-                value: coverage?.coverageText ?? "기록 없음",
+                value: coverage?.coverageText ?? L10n.text("기록 없음"),
                 action: onOpenSecurity
             )
 
             if let recentGrowth {
                 StatusNavigationRow(
                     symbol: "chart.line.uptrend.xyaxis",
-                    title: "최근 함께 증가한 \(pathDisplayName(recentGrowth.path))",
-                    detail: "두 감시 시점에서 모두 측정된 동일 경로입니다. 함께 증가한 사실만 확인되며 생성 원인과 주체는 확정하지 않습니다. \(recentGrowth.path)",
+                    title: L10n.format("최근 함께 증가한 %@", String(describing: pathDisplayName(recentGrowth.path))),
+                    detail: L10n.format("두 감시 시점에서 모두 측정된 동일 경로입니다. 함께 증가한 사실만 확인되며 생성 원인과 주체는 확정하지 않습니다. %@", String(describing: recentGrowth.path)),
                     value: growthText(recentGrowth.deltaGB),
                     action: onOpenActivity
                 )
@@ -360,9 +360,9 @@ private struct StatusIncidentEvidenceSection: View {
             if shouldShowSimulatorEvidence {
                 StatusNavigationRow(
                     symbol: "iphone",
-                    title: "Simulator 관련 \(simulatorFootprintText) 보기",
+                    title: L10n.format("Simulator 관련 %@ 보기", String(describing: simulatorFootprintText)),
                     detail: simulatorEvidenceDetail,
-                    value: storage.simulatorFootprintMeasurementIncomplete ? "최소값" : "합계"
+                    value: storage.simulatorFootprintMeasurementIncomplete ? L10n.text("최소값") : L10n.text("합계")
                 ) {
                     onOpenStorage(.simulators)
                 }
@@ -372,9 +372,9 @@ private struct StatusIncidentEvidenceSection: View {
                storage.browserAutomation.verdict != "clear" {
                 StatusNavigationRow(
                     symbol: "rectangle.on.rectangle",
-                    title: "브라우저 자동화",
+                    title: L10n.text("브라우저 자동화"),
                     detail: storage.browserAutomation.note,
-                    value: "\(storage.browserAutomation.rootCount)개 루트"
+                    value: L10n.format("%@개 루트", String(describing: storage.browserAutomation.rootCount))
                 ) {
                     onOpenStorage(.development)
                 }
@@ -383,7 +383,7 @@ private struct StatusIncidentEvidenceSection: View {
             if let change {
                 StatusNavigationRow(
                     symbol: change.freeDeltaGB < -0.05 ? "arrow.down.right" : "arrow.up.right",
-                    title: "직전 검사 이후 변화",
+                    title: L10n.text("직전 검사 이후 변화"),
                     detail: changeDetail(change),
                     value: String(format: "%+.1fGB", change.freeDeltaGB),
                     action: onOpenActivity
@@ -395,38 +395,38 @@ private struct StatusIncidentEvidenceSection: View {
                     symbol: securityFinding.level == "danger" ? "exclamationmark.shield" : "info.circle",
                     title: securityFinding.title,
                     detail: securityFinding.detail,
-                    value: securityFinding.level == "danger" ? "위험" : "확인 필요",
+                    value: securityFinding.level == "danger" ? L10n.text("위험") : L10n.text("확인 필요"),
                     action: onOpenSecurity
                 )
             }
         } header: {
             NativeSectionHeader(
-                title: "관찰 근거",
-                subtitle: "판단에 사용한 실제 수집 범위와 변화 신호입니다.",
-                value: "자동 추론 아님"
+                title: L10n.text("관찰 근거"),
+                subtitle: L10n.text("판단에 사용한 실제 수집 범위와 변화 신호입니다."),
+                value: L10n.text("자동 추론 아님")
             )
         }
     }
 
     private var coverageDetail: String {
         guard let coverage else {
-            return "이전 형식의 결과에는 수집 성공 여부가 없습니다. 새 검사가 필요합니다."
+            return L10n.text("이전 형식의 결과에는 수집 성공 여부가 없습니다. 새 검사가 필요합니다.")
         }
         if coverage.complete {
-            return "필수 수집기 \(coverage.completedRequiredCount)/\(coverage.requiredCount)개가 응답했습니다."
+            return L10n.format("필수 수집기 %@/%@개가 응답했습니다.", String(describing: coverage.completedRequiredCount), String(describing: coverage.requiredCount))
         }
         let labels = coverage.requiredIssues.prefix(2).map(\.label).joined(separator: ", ")
-        return "완료하지 못한 필수 수집기: \(labels.isEmpty ? "확인 불가" : labels)"
+        return L10n.format("완료하지 못한 필수 수집기: %@", String(describing: labels.isEmpty ? L10n.text("확인 불가") : labels))
     }
 
     private func changeDetail(_ change: StorageChangeSummary) -> String {
         if let cause = change.primaryCause {
-            return "\(cause.label)이 함께 \(cause.deltaGB >= 0 ? "증가" : "감소")했습니다. 인과관계는 확정하지 않습니다."
+            return L10n.format("%@이 함께 %@했습니다. 인과관계는 확정하지 않습니다.", String(describing: cause.label), String(describing: cause.deltaGB >= 0 ? L10n.text("증가") : L10n.text("감소")))
         }
         if change.causeNotCaptured {
-            return "여유 공간은 변했지만 현재 추적 범위에서 함께 변한 경로를 찾지 못했습니다."
+            return L10n.text("여유 공간은 변했지만 현재 추적 범위에서 함께 변한 경로를 찾지 못했습니다.")
         }
-        return "여유 공간과 추적 경로의 변화를 비교했습니다."
+        return L10n.text("여유 공간과 추적 경로의 변화를 비교했습니다.")
     }
 
     private var recentGrowth: StorageWatchPathChange? {
@@ -446,20 +446,20 @@ private struct StatusIncidentEvidenceSection: View {
         guard storage.simulatorFootprintMeasurementIncomplete else {
             return storage.simulatorFootprintText
         }
-        guard storage.simulatorFootprintGB > 0 else { return "측정 보류" }
-        return String(format: "최소 %.1fGB", storage.simulatorFootprintGB)
+        guard storage.simulatorFootprintGB > 0 else { return L10n.text("측정 보류") }
+        return String(format: L10n.text("최소 %.1fGB"), storage.simulatorFootprintGB)
     }
 
     private var simulatorEvidenceDetail: String {
         if let growth = model.latestStorageWatchPathChange?.growing.first(where: {
             isSimulatorPath($0.path)
         }) {
-            return "감시 사이 Simulator 경로가 \(growthText(growth.deltaGB)) 함께 증가했습니다. 생성 원인과 주체는 확정하지 않습니다."
+            return L10n.format("감시 사이 Simulator 경로가 %@ 함께 증가했습니다. 생성 원인과 주체는 확정하지 않습니다.", String(describing: growthText(growth.deltaGB)))
         }
         if storage.simulatorFootprintMeasurementIncomplete {
-            return "기기 데이터·runtime 지원 자산·dyld/cache 중 일부 측정이 끝나지 않아 확인된 최소량만 표시합니다."
+            return L10n.text("기기 데이터·runtime 지원 자산·dyld/cache 중 일부 측정이 끝나지 않아 확인된 최소량만 표시합니다.")
         }
-        return "기기 데이터·runtime 지원 자산·dyld/cache를 경로 중복 없이 합산한 정밀 검사 결과입니다."
+        return L10n.text("기기 데이터·runtime 지원 자산·dyld/cache를 경로 중복 없이 합산한 정밀 검사 결과입니다.")
     }
 
     private func isSimulatorPath(_ path: String) -> Bool {
@@ -471,7 +471,7 @@ private struct StatusIncidentEvidenceSection: View {
 
     private func pathDisplayName(_ path: String) -> String {
         let name = URL(fileURLWithPath: path).lastPathComponent
-        return name.isEmpty ? "경로" : name
+        return name.isEmpty ? L10n.text("경로") : name
     }
 
     private func growthText(_ deltaGB: Double) -> String {
@@ -531,24 +531,24 @@ private struct StatusWatchGapSection: View {
         if !model.storageWatchEnabled {
             Section {
                 if model.storageWatchInFlight {
-                    ProgressView("감시 설정 적용 중")
+                    ProgressView(L10n.text("감시 설정 적용 중"))
                         .controlSize(.small)
                 } else {
                     StatusActionRow(
                         symbol: "bell.slash",
                         title: title,
-                        detail: "매시간 여유 공간만 확인해, 20GB 미만이거나 한 시간에 8GB 이상 줄면 알립니다. 삭제는 실행하지 않습니다.",
-                        value: storage.map { String(format: "%.1fGB 남음", $0.freeGB) } ?? "",
-                        actionTitle: "감시 켜기",
+                        detail: L10n.text("매시간 여유 공간만 확인해, 20GB 미만이거나 한 시간에 8GB 이상 줄면 알립니다. 삭제는 실행하지 않습니다."),
+                        value: storage.map { String(format: L10n.text("%.1fGB 남음"), $0.freeGB) } ?? "",
+                        actionTitle: L10n.text("감시 켜기"),
                         action: { model.setStorageWatchEnabled(true) }
                     )
                     .disabled(model.isBusy)
                 }
             } header: {
                 NativeSectionHeader(
-                    title: "앱을 닫은 동안",
-                    subtitle: "앱이 열려 있으면 여유 공간을 계속 갱신합니다. 정밀 검사는 직접 실행하며, 자동 검사는 설정에서 켤 수 있습니다.",
-                    value: "감시 꺼짐"
+                    title: L10n.text("앱을 닫은 동안"),
+                    subtitle: L10n.text("앱이 열려 있으면 여유 공간을 계속 갱신합니다. 정밀 검사는 직접 실행하며, 자동 검사는 설정에서 켤 수 있습니다."),
+                    value: L10n.text("감시 꺼짐")
                 )
             }
         }
@@ -557,9 +557,9 @@ private struct StatusWatchGapSection: View {
     /// 이미 여유가 위험 구간이면, 감시 부재는 예방이 아니라 지금 당장의 사각지대다.
     private var title: String {
         guard let storage, storage.risk == "danger" || storage.risk == "warning" else {
-            return "지금은 여유 공간을 감시하는 기능이 꺼져 있습니다"
+            return L10n.text("지금은 여유 공간을 감시하는 기능이 꺼져 있습니다")
         }
-        return "여유가 이미 줄어든 상태인데 감시가 꺼져 있습니다"
+        return L10n.text("여유가 이미 줄어든 상태인데 감시가 꺼져 있습니다")
     }
 }
 
@@ -573,7 +573,7 @@ private struct StatusRecoverySection: View {
     let onOpenActivity: () -> Void
 
     var body: some View {
-        Section("복구 및 다음 행동") {
+        Section(L10n.text("복구 및 다음 행동")) {
             StatusActionRow(
                 symbol: actionSymbol,
                 title: actionTitle,
@@ -599,55 +599,55 @@ private struct StatusRecoverySection: View {
 
     private var actionTitle: String {
         switch assessment.kind {
-        case .securityDanger, .securityAttention: return "증거를 먼저 확인하세요"
-        case .sustainedCPU: return "지속 점유 프로세스를 확인하세요"
-        case .storageCritical: return "승인 가능한 정리 후보를 검토하세요"
-        case .collectionIncomplete, .noResult: return "검사 범위를 다시 수집하세요"
-        case .browserAutomation: return "자동화 소유자와 격리 설정을 확인하세요"
-        case .runtimeAttention: return "끝난 개발 작업만 정상 종료하세요"
-        case .storageDrop: return "감소 시점과 함께 변한 경로를 확인하세요"
-        case .clear: return "변화 기록을 유지하세요"
+        case .securityDanger, .securityAttention: return L10n.text("증거를 먼저 확인하세요")
+        case .sustainedCPU: return L10n.text("지속 점유 프로세스를 확인하세요")
+        case .storageCritical: return L10n.text("승인 가능한 정리 후보를 검토하세요")
+        case .collectionIncomplete, .noResult: return L10n.text("검사 범위를 다시 수집하세요")
+        case .browserAutomation: return L10n.text("자동화 소유자와 격리 설정을 확인하세요")
+        case .runtimeAttention: return L10n.text("끝난 개발 작업만 정상 종료하세요")
+        case .storageDrop: return L10n.text("감소 시점과 함께 변한 경로를 확인하세요")
+        case .clear: return L10n.text("변화 기록을 유지하세요")
         }
     }
 
     private var actionDetail: String {
         switch assessment.kind {
         case .collectionIncomplete, .noResult:
-            return "새 검사는 기존 기록을 지우지 않고 현재 수집 성공 여부를 함께 남깁니다."
+            return L10n.text("새 검사는 기존 기록을 지우지 않고 현재 수집 성공 여부를 함께 남깁니다.")
         case .browserAutomation:
-            return "기본 Chrome 자동화와 잔류 프로세스를 구분하며 자동 종료하지 않습니다."
+            return L10n.text("기본 Chrome 자동화와 잔류 프로세스를 구분하며 자동 종료하지 않습니다.")
         case .storageCritical:
-            return "세션 기록과 개발 필수 자산은 자동 정리 대상에서 제외합니다."
+            return L10n.text("세션 기록과 개발 필수 자산은 자동 정리 대상에서 제외합니다.")
         case .securityDanger, .securityAttention:
-            return "경로, 실행 맥락과 수집 범위를 확인한 뒤 별도 제거 여부를 판단합니다."
+            return L10n.text("경로, 실행 맥락과 수집 범위를 확인한 뒤 별도 제거 여부를 판단합니다.")
         case .sustainedCPU:
-            return "자동 종료하지 않습니다. 프로세스와 실행 경로를 확인한 뒤 의도한 작업인지 판단하세요."
+            return L10n.text("자동 종료하지 않습니다. 프로세스와 실행 경로를 확인한 뒤 의도한 작업인지 판단하세요.")
         case .runtimeAttention:
-            return "Codex·Claude 세션 데이터는 보존하고 실행 중인 작업만 구분합니다."
+            return L10n.text("Codex·Claude 세션 데이터는 보존하고 실행 중인 작업만 구분합니다.")
         case .storageDrop:
-            return "크기가 함께 변한 사실과 실제 원인을 구분해서 보여줍니다."
+            return L10n.text("크기가 함께 변한 사실과 실제 원인을 구분해서 보여줍니다.")
         case .clear:
-            return "급격한 변화가 생기면 제한된 후보 경로 스냅샷을 남길 수 있습니다."
+            return L10n.text("급격한 변화가 생기면 제한된 후보 경로 스냅샷을 남길 수 있습니다.")
         }
     }
 
     private var actionValue: String {
         switch assessment.kind {
-        case .storageCritical: return storage?.reclaimableText ?? "측정 불가"
-        case .browserAutomation: return "자동 종료 없음"
-        case .collectionIncomplete, .noResult: return "로컬 검사"
+        case .storageCritical: return storage?.reclaimableText ?? L10n.text("측정 불가")
+        case .browserAutomation: return L10n.text("자동 종료 없음")
+        case .collectionIncomplete, .noResult: return L10n.text("로컬 검사")
         default: return assessment.value
         }
     }
 
     private var buttonTitle: String {
         switch assessment.kind {
-        case .collectionIncomplete, .noResult: return "정밀 검사"
-        case .securityDanger, .securityAttention: return "보안 보기"
-        case .sustainedCPU: return "활동 보기"
-        case .storageCritical: return "확보 계획"
-        case .browserAutomation, .runtimeAttention: return "개발 보기"
-        case .storageDrop, .clear: return "기록 보기"
+        case .collectionIncomplete, .noResult: return L10n.text("정밀 검사")
+        case .securityDanger, .securityAttention: return L10n.text("보안 보기")
+        case .sustainedCPU: return L10n.text("활동 보기")
+        case .storageCritical: return L10n.text("확보 계획")
+        case .browserAutomation, .runtimeAttention: return L10n.text("개발 보기")
+        case .storageDrop, .clear: return L10n.text("기록 보기")
         }
     }
 
@@ -680,14 +680,14 @@ private struct StatusStorageSummary: View {
     }
 
     private var changeDescription: String {
-        guard let change else { return "이 검사부터 변화 비교를 시작합니다." }
+        guard let change else { return L10n.text("이 검사부터 변화 비교를 시작합니다.") }
         if change.consumedGB >= 0.05 {
-            return String(format: "직전 검사보다 %.1fGB 줄었습니다.", change.consumedGB)
+            return String(format: L10n.text("직전 검사보다 %.1fGB 줄었습니다."), change.consumedGB)
         }
         if change.recoveredGB >= 0.05 {
-            return String(format: "직전 검사보다 %.1fGB 늘었습니다.", change.recoveredGB)
+            return String(format: L10n.text("직전 검사보다 %.1fGB 늘었습니다."), change.recoveredGB)
         }
-        return "직전 검사와 거의 같습니다."
+        return L10n.text("직전 검사와 거의 같습니다.")
     }
 
 }
@@ -709,7 +709,7 @@ private struct StatusStorageHeader: View {
             }
             Spacer(minLength: 20)
             VStack(alignment: .trailing, spacing: 3) {
-                Text("시동 볼륨")
+                Text(L10n.text("시동 볼륨"))
                     .font(.headline)
                 TimelineView(.periodic(from: .now, by: 60)) { _ in
                     Text(model.deepScanSnapshotAgeText)
@@ -722,7 +722,7 @@ private struct StatusStorageHeader: View {
 
     private var freeSpaceTitle: String {
         let value = String(format: "%.1fGB", freeGB)
-        return "정밀 검사 당시 \(value) 사용 가능"
+        return L10n.format("정밀 검사 당시 %@ 사용 가능", String(describing: value))
     }
 }
 
@@ -736,16 +736,16 @@ private struct StatusStorageMeter: View {
             .tint(storage.risk == "danger" ? .red : .secondary)
         HStack {
             Text(snapshotNeedsRefresh
-                ? "검사 당시 파일 시스템 사용률 \(storage.usePercent, specifier: "%.0f")%"
-                : "파일 시스템 사용률 \(storage.usePercent, specifier: "%.0f")%")
+                ? L10n.format("검사 당시 파일 시스템 사용률 %@%%", String(format: "%.0f", locale: Locale.current, storage.usePercent))
+                : L10n.format("파일 시스템 사용률 %@%%", String(format: "%.0f", locale: Locale.current, storage.usePercent)))
             Spacer()
-            Text("사용 중 \(storage.usedGB, specifier: "%.1f")GB")
+            Text(L10n.format("사용 중 %@GB", String(format: "%.1f", locale: Locale.current, storage.usedGB)))
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .monospacedDigit()
 
-        Text("볼륨 크기 \(storage.totalGB, specifier: "%.1f")GB. APFS 공유 공간·스냅샷·예약 영역 때문에 ‘사용 중’과 ‘사용 가능’의 합은 볼륨 크기와 다를 수 있습니다.")
+        Text(L10n.format("볼륨 크기 %@GB. APFS 공유 공간·스냅샷·예약 영역 때문에 ‘사용 중’과 ‘사용 가능’의 합은 볼륨 크기와 다를 수 있습니다.", String(format: "%.1f", locale: Locale.current, storage.totalGB)))
         .font(.caption2)
         .foregroundStyle(.tertiary)
         .fixedSize(horizontal: false, vertical: true)

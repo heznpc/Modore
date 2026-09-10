@@ -36,10 +36,10 @@ struct WorkResourceView: View {
     }
     private var title: String {
         switch filter {
-        case "active": return "사용 중인 환경"
-        case "all": return "모든 환경"
-        case "simulator": return "시뮬레이터"
-        case "volume": return "외장 드라이브"
+        case "active": return L10n.text("사용 중인 환경")
+        case "all": return L10n.text("모든 환경")
+        case "simulator": return L10n.text("시뮬레이터")
+        case "volume": return L10n.text("외장 드라이브")
         default: return URL(fileURLWithPath: filter).lastPathComponent
         }
     }
@@ -47,16 +47,16 @@ struct WorkResourceView: View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Image(systemName: "square.stack.3d.up").font(.title2).foregroundStyle(.blue)
-                Text("작업 환경").font(.title2.weight(.semibold))
+                Text(L10n.text("작업 환경")).font(.title2.weight(.semibold))
                 Spacer()
                 if service.busy { ProgressView().controlSize(.small) }
                 if let snap = service.snapshot {
                     Text(Date(timeIntervalSince1970: snap.observedAt), style: .time).font(.caption).foregroundStyle(.secondary)
                 }
                 Button { Task { await service.refresh(root: model.projectRoot) } } label: { Image(systemName: "arrow.clockwise") }
-                    .help("상태 새로고침").disabled(service.busy)
-                Button("저장공간·서버 정리") { environmentRetirement = true }
-                Button("닫기") { dismiss() }.keyboardShortcut(.cancelAction)
+                    .help(L10n.text("상태 새로고침")).disabled(service.busy)
+                Button(L10n.text("저장공간·서버 정리")) { environmentRetirement = true }
+                Button(L10n.text("닫기")) { dismiss() }.keyboardShortcut(.cancelAction)
             }.padding(20)
             Divider()
             HStack(spacing: 0) {
@@ -82,34 +82,34 @@ struct WorkResourceView: View {
                 act(r, "claim", project: project, session: session)
             }
         }
-        .alert(pendingAction == "delete-duplicate" ? "중복 기기를 삭제할까요?" : "연결된 작업에 영향을 줍니다", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
-            Button("취소", role: .cancel) { pending = nil }
-            Button(pendingAction == "delete-duplicate" ? "영구 삭제" : "계속 실행", role: .destructive) {
+        .alert(pendingAction == "delete-duplicate" ? L10n.text("중복 기기를 삭제할까요?") : L10n.text("연결된 작업에 영향을 줍니다"), isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
+            Button(L10n.text("취소"), role: .cancel) { pending = nil }
+            Button(pendingAction == "delete-duplicate" ? L10n.text("영구 삭제") : L10n.text("계속 실행"), role: .destructive) {
                 if let r = pending { act(r, pendingAction, override: true) }; pending = nil
             }
         } message: {
-            Text(pendingAction == "delete-duplicate" ? "\(pending?.name ?? "")의 내부 앱과 데이터가 삭제됩니다. 같은 OS·기종의 다른 기기는 남습니다." : "\(pending?.name ?? "")에 연결된 세션 \(pending?.leases.count ?? 0)개가 있습니다. 확인 후 계속할 수 있습니다.")
+            Text(pendingAction == "delete-duplicate" ? L10n.format("%@의 내부 앱과 데이터가 삭제됩니다. 같은 OS·기종의 다른 기기는 남습니다.", String(describing: pending?.name ?? "")) : L10n.format("%@에 연결된 세션 %@개가 있습니다. 확인 후 계속할 수 있습니다.", String(describing: pending?.name ?? ""), String(describing: pending?.leases.count ?? 0)))
         }
     }
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 6) {
-            nav("사용 중", icon: "bolt.circle", key: "active", count: resources.filter(\.isRunning).count)
-            nav("전체", icon: "square.grid.2x2", key: "all", count: resources.count)
+            nav(L10n.text("사용 중"), icon: "bolt.circle", key: "active", count: resources.filter(\.isRunning).count)
+            nav(L10n.text("전체"), icon: "square.grid.2x2", key: "all", count: resources.count)
             Divider().padding(.vertical, 10)
-            Text("기기").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 10)
-            nav("시뮬레이터", icon: "iphone", key: "simulator", count: resources.filter { $0.kind == "simulator" }.count)
-            nav("외장 드라이브", icon: "externaldrive", key: "volume", count: resources.filter { $0.kind == "volume" }.count)
+            Text(L10n.text("기기")).font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 10)
+            nav(L10n.text("시뮬레이터"), icon: "iphone", key: "simulator", count: resources.filter { $0.kind == "simulator" }.count)
+            nav(L10n.text("외장 드라이브"), icon: "externaldrive", key: "volume", count: resources.filter { $0.kind == "volume" }.count)
             Divider().padding(.vertical, 10)
-            Text("연결된 프로젝트").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 10)
+            Text(L10n.text("연결된 프로젝트")).font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 10)
             ScrollView {
                 VStack(spacing: 5) {
                     ForEach(projects, id: \.self) { p in
                         nav(URL(fileURLWithPath: p).lastPathComponent, icon: "folder", key: p, count: resources.filter { projectsFor($0).contains(p) }.count)
                     }
-                    if projects.isEmpty { Text("연결을 확인하면\n프로젝트가 여기에 표시됩니다.").font(.caption).foregroundStyle(.secondary).padding(10) }
+                    if projects.isEmpty { Text(L10n.text("연결을 확인하면\n프로젝트가 여기에 표시됩니다.")).font(.caption).foregroundStyle(.secondary).padding(10) }
                 }
             }
-            Text("10초마다 자동 갱신").font(.caption).foregroundStyle(.secondary).padding(10)
+            Text(L10n.text("10초마다 자동 갱신")).font(.caption).foregroundStyle(.secondary).padding(10)
         }.padding(12).frame(maxHeight: .infinity, alignment: .top).background(.regularMaterial)
     }
     private func nav(_ label: String, icon: String, key: String, count: Int) -> some View {
@@ -129,23 +129,23 @@ struct WorkResourceView: View {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(title).font(.system(size: 25, weight: .semibold))
-                    Text("기기 상태와 연결된 작업을 확인하고 관리하세요.").foregroundStyle(.secondary)
+                    Text(L10n.text("기기 상태와 연결된 작업을 확인하고 관리하세요.")).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 12) {
-                    ResourceSummaryTile(title: "실행 중", value: resources.filter { $0.kind == "simulator" && $0.isRunning }.count, icon: "iphone", color: .green)
-                    ResourceSummaryTile(title: "연결된 드라이브", value: resources.filter { $0.kind == "volume" }.count, icon: "externaldrive", color: .blue)
-                    ResourceSummaryTile(title: "대기 중인 기기", value: resources.filter { !$0.isRunning }.count, icon: "moon", color: .secondary)
+                    ResourceSummaryTile(title: L10n.text("실행 중"), value: resources.filter { $0.kind == "simulator" && $0.isRunning }.count, icon: "iphone", color: .green)
+                    ResourceSummaryTile(title: L10n.text("연결된 드라이브"), value: resources.filter { $0.kind == "volume" }.count, icon: "externaldrive", color: .blue)
+                    ResourceSummaryTile(title: L10n.text("대기 중인 기기"), value: resources.filter { !$0.isRunning }.count, icon: "moon", color: .secondary)
                 }
                 if service.snapshot == nil {
                     HStack {
                         if service.busy { ProgressView() }
-                        Text(service.busy ? "연결된 환경을 확인하고 있습니다…" : "환경을 불러오지 못했습니다. 새로고침으로 다시 확인하세요.").foregroundStyle(.secondary)
+                        Text(service.busy ? L10n.text("연결된 환경을 확인하고 있습니다…") : L10n.text("환경을 불러오지 못했습니다. 새로고침으로 다시 확인하세요.")).foregroundStyle(.secondary)
                     }.padding(.vertical, 35)
                 } else if selected.isEmpty {
                     VStack(spacing: 10) {
                         Image(systemName: "checkmark.circle").font(.largeTitle).foregroundStyle(.secondary)
-                        Text("표시할 환경이 없습니다").font(.headline)
-                        Text("왼쪽에서 전체 기기를 확인할 수 있습니다.").foregroundStyle(.secondary)
+                        Text(L10n.text("표시할 환경이 없습니다")).font(.headline)
+                        Text(L10n.text("왼쪽에서 전체 기기를 확인할 수 있습니다.")).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity).padding(.vertical, 40)
                 } else {
                     VStack(spacing: 12) {
@@ -153,17 +153,17 @@ struct WorkResourceView: View {
                     }
                 }
                 if filter == "active", resources.contains(where: { !$0.isRunning }) {
-                    DisclosureGroup("대기 중인 시뮬레이터 \(resources.filter { !$0.isRunning }.count)대", isExpanded: $showIdle) {
+                    DisclosureGroup(L10n.format("대기 중인 시뮬레이터 %@대", String(describing: resources.filter { !$0.isRunning }.count)), isExpanded: $showIdle) {
                         VStack(spacing: 12) { ForEach(resources.filter { !$0.isRunning }) { r in resourceCard(r) } }.padding(.top, 12)
                     }.foregroundStyle(.secondary)
                 }
                 if let snap = service.snapshot, !snap.warnings.isEmpty {
-                    Label("일부 상태를 확인하지 못했습니다", systemImage: "exclamationmark.circle").foregroundStyle(.orange)
-                    DisclosureGroup("확인할 내용") { ForEach(snap.warnings, id: \.self) { Text($0).font(.caption).textSelection(.enabled) } }
+                    Label(L10n.text("일부 상태를 확인하지 못했습니다"), systemImage: "exclamationmark.circle").foregroundStyle(.orange)
+                    DisclosureGroup(L10n.text("확인할 내용")) { ForEach(snap.warnings, id: \.self) { Text(L10n.message($0)).font(.caption).textSelection(.enabled) } }
                 }
                 if !service.message.isEmpty {
-                    DisclosureGroup(service.message.hasPrefix("succeeded") ? "요청을 처리했습니다" : "최근 실행 결과", isExpanded: $showReceipt) {
-                        Text(service.message).font(.callout).textSelection(.enabled).padding(.top, 8)
+                    DisclosureGroup(service.message.hasPrefix("succeeded") ? L10n.text("요청을 처리했습니다") : L10n.text("최근 실행 결과"), isExpanded: $showReceipt) {
+                        Text(L10n.message(service.message)).font(.callout).textSelection(.enabled).padding(.top, 8)
                     }.padding(14).background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
                 }
             }.padding(26)
@@ -177,20 +177,20 @@ struct WorkResourceView: View {
                     .frame(width: 48, height: 48).background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 5) {
                     Text(r.name).font(.system(size: 16, weight: .semibold)).lineLimit(2)
-                    Text(r.kind == "volume" ? "외장 드라이브" : r.runtimeLabel).font(.callout).foregroundStyle(.secondary)
+                    Text(r.kind == "volume" ? L10n.text("외장 드라이브") : r.runtimeLabel).font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Text(r.statusLabel).font(.caption.weight(.medium)).padding(.horizontal, 9).padding(.vertical, 5)
                     .background((r.isRunning ? Color.green : Color.secondary).opacity(0.1), in: Capsule())
                     .foregroundStyle(r.isRunning ? Color.green : Color.secondary)
                 Menu {
-                    Button("프로젝트에 연결…") { connecting = r }
-                    Button("상세 정보…") { detail = r }
+                    Button(L10n.text("프로젝트에 연결…")) { connecting = r }
+                    Button(L10n.text("상세 정보…")) { detail = r }
                     if r.kind == "simulator" {
-                        Button("공용 기기로 지정") { act(r, "prefer") }
-                        if !r.duplicates.isEmpty { Button("중복 기기 삭제…", role: .destructive) { pendingAction = "delete-duplicate"; pending = r }.disabled(r.state != "Shutdown") }
+                        Button(L10n.text("공용 기기로 지정")) { act(r, "prefer") }
+                        if !r.duplicates.isEmpty { Button(L10n.text("중복 기기 삭제…"), role: .destructive) { pendingAction = "delete-duplicate"; pending = r }.disabled(r.state != "Shutdown") }
                     }
-                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().help("기기 관리")
+                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().help(L10n.text("기기 관리"))
             }
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
@@ -198,18 +198,18 @@ struct WorkResourceView: View {
                     if !paths.isEmpty {
                         Label(paths.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: " · "), systemImage: "folder")
                             .font(.callout).lineLimit(2)
-                        Text(r.leases.isEmpty ? "프로젝트의 프로세스가 사용 중" : "연결된 세션 \(r.leases.count)개").font(.caption).foregroundStyle(.secondary)
+                        Text(r.leases.isEmpty ? L10n.text("프로젝트의 프로세스가 사용 중") : L10n.format("연결된 세션 %@개", String(describing: r.leases.count))).font(.caption).foregroundStyle(.secondary)
                     } else {
-                        Text(r.preferred ? "공용으로 재사용하는 기기" : "연결된 프로젝트 미확인").font(.callout).foregroundStyle(.secondary)
+                        Text(r.preferred ? L10n.text("공용으로 재사용하는 기기") : L10n.text("연결된 프로젝트 미확인")).font(.callout).foregroundStyle(.secondary)
                     }
                     if r.kind == "volume", !r.processes.isEmpty {
-                        Text("\(r.processes.count)개 프로세스가 사용 중").font(.caption).foregroundStyle(.secondary)
+                        Text(L10n.format("%@개 프로세스가 사용 중", String(describing: r.processes.count))).font(.caption).foregroundStyle(.secondary)
                     }
-                    if !r.duplicates.isEmpty { Text("같은 OS·기종의 기기가 \(r.duplicates.count + 1)대 있습니다").font(.caption).foregroundStyle(.orange) }
+                    if !r.duplicates.isEmpty { Text(L10n.format("같은 OS·기종의 기기가 %@대 있습니다", String(describing: r.duplicates.count + 1))).font(.caption).foregroundStyle(.orange) }
                 }
                 Spacer()
-                Button("상세 보기") { detail = r }.buttonStyle(.borderless)
-                Button(r.kind == "volume" ? "추출" : (r.isRunning ? "종료" : "시작")) {
+                Button(L10n.text("상세 보기")) { detail = r }.buttonStyle(.borderless)
+                Button(r.kind == "volume" ? L10n.text("추출") : (r.isRunning ? L10n.text("종료") : L10n.text("시작"))) {
                     let action = r.kind == "volume" ? "eject" : (r.isRunning ? "shutdown" : "boot")
                     if !r.leases.isEmpty && action != "boot" { pendingAction = action; pending = r }
                     else { act(r, action) }

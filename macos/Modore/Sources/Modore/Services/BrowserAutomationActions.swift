@@ -9,7 +9,7 @@ extension ScanModel {
               browserAutomationStopPreview == nil else { return }
         browserAutomationStopInFlight = true
         errorMessage = nil
-        appendLog("자동화 브라우저 종료 근거 재확인: PID \(signal.pid)")
+        appendLog(L10n.format("자동화 브라우저 종료 근거 재확인: PID %@", String(describing: signal.pid)))
         browserAutomationStopTask = Task {
             do {
                 let preview = try await BrowserAutomationControl.preview(signal: signal)
@@ -20,11 +20,11 @@ extension ScanModel {
                 }
                 browserAutomationStopPreview = preview
                 appendLog(
-                    "종료 미리보기: PID \(preview.pid), \(preview.processCount)개 프로세스, 메모리 \(preview.treeMemoryText)"
+                    L10n.format("종료 미리보기: PID %@, %@개 프로세스, 메모리 %@", String(describing: preview.pid), String(describing: preview.processCount), String(describing: preview.treeMemoryText))
                 )
             } catch {
                 errorMessage = error.localizedDescription
-                appendLog("자동화 브라우저 보호: \(error.localizedDescription)")
+                appendLog(L10n.format("자동화 브라우저 보호: %@", String(describing: error.localizedDescription)))
             }
             browserAutomationStopInFlight = false
             browserAutomationStopTask = nil
@@ -38,20 +38,20 @@ extension ScanModel {
         browserAutomationStopInFlight = true
         browserAutomationStopIsExecuting = true
         errorMessage = nil
-        appendLog("승인형 정상 종료 요청: 자동화 브라우저 PID \(preview.pid)")
+        appendLog(L10n.format("승인형 정상 종료 요청: 자동화 브라우저 PID %@", String(describing: preview.pid)))
         browserAutomationStopTask = Task {
             do {
                 try await BrowserAutomationControl.stop(preview)
-                appendLog("자동화 브라우저 정상 종료 확인: PID \(preview.pid)")
+                appendLog(L10n.format("자동화 브라우저 정상 종료 확인: PID %@", String(describing: preview.pid)))
                 browserAutomationStopPreview = nil
                 browserAutomationStopInFlight = false
                 browserAutomationStopIsExecuting = false
                 browserAutomationStopTask = nil
-                AccessibilityAnnouncer.announce("자동화 브라우저를 정상 종료했습니다")
+                AccessibilityAnnouncer.announce(L10n.text("자동화 브라우저를 정상 종료했습니다"))
                 runScan()
             } catch {
                 errorMessage = error.localizedDescription
-                appendLog("자동화 브라우저 종료 중단: \(error.localizedDescription)")
+                appendLog(L10n.format("자동화 브라우저 종료 중단: %@", String(describing: error.localizedDescription)))
                 // stop() revalidates the target identity and only throws when the
                 // previewed evidence (PID/identity) no longer describes a live
                 // process. Clear it so the approval sheet cannot keep offering a

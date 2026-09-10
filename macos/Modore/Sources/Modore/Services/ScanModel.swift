@@ -10,7 +10,7 @@ struct ScanOutputBatch: Equatable, Sendable {
         var output = lines
         if omittedLineCount > 0 {
             output.insert(
-                "[검사 출력 \(omittedLineCount)줄의 일부 또는 전부를 버퍼 상한으로 생략했습니다.]",
+                L10n.format("[검사 출력 %@줄의 일부 또는 전부를 버퍼 상한으로 생략했습니다.]", String(describing: omittedLineCount)),
                 at: 0
             )
         }
@@ -155,7 +155,7 @@ final class ScanModel: ObservableObject {
     @Published var state: ScanState = .idle
     @Published private(set) var deepScanSnapshot = DeepScanSnapshot.empty
     @Published var selectedReportURL: URL?
-    @Published var selectedReportTitle = "리포트"
+    @Published var selectedReportTitle = L10n.text("리포트")
     @Published var errorMessage: String?
     @Published var reportRevision = 0
     @Published var virusTotalEnabled = false
@@ -179,7 +179,7 @@ final class ScanModel: ObservableObject {
     @Published private(set) var simulatorKeepUUIDs: Set<String> = []
     @Published private(set) var simulatorLegacyKeepEntries: Set<String> = []
     @Published var storageWatchEnabled = false
-    @Published var storageWatchDetail = "상태 확인 중"
+    @Published var storageWatchDetail = L10n.text("상태 확인 중")
     @Published var storageWatchHealthState: StorageWatchHealthState = .neverAttempted
     @Published var storageWatchInFlight = false
     @Published private(set) var storageWatchCommittedEvidenceAt: Date?
@@ -511,13 +511,13 @@ final class ScanModel: ObservableObject {
             || hasNewerStorageHistory
     }
     var deepScanSnapshotAgeText: String {
-        guard let deepScanAt else { return "검사 기록 없음" }
+        guard let deepScanAt else { return L10n.text("검사 기록 없음") }
         let raw = Date().timeIntervalSince(deepScanAt)
-        if raw < -60 { return "검사 시각 확인 필요" }
+        if raw < -60 { return L10n.text("검사 시각 확인 필요") }
         let seconds = max(0, raw)
-        if seconds < 60 { return "방금 검사" }
-        if seconds < 3600 { return "\(Int(seconds / 60))분 전 검사" }
-        if seconds < 86_400 { return "\(Int(seconds / 3600))시간 전 검사" }
+        if seconds < 60 { return L10n.text("방금 검사") }
+        if seconds < 3600 { return L10n.format("%@분 전 검사", String(describing: Int(seconds / 60))) }
+        if seconds < 86_400 { return L10n.format("%@시간 전 검사", String(describing: Int(seconds / 3600))) }
         return deepScanAt.formatted(date: .abbreviated, time: .shortened)
     }
 
@@ -587,10 +587,10 @@ final class ScanModel: ObservableObject {
         reportState = .unknown
         appendLog(
             preservingUserDiagnostics
-                ? "정리 후 현재 상태를 다시 검사합니다."
-                : "Modore 시작"
+                ? L10n.text("정리 후 현재 상태를 다시 검사합니다.")
+                : L10n.text("Modore 시작")
         )
-        appendLog("프로젝트: \(projectRoot.path)")
+        appendLog(L10n.format("프로젝트: %@", String(describing: projectRoot.path)))
 
         let root = projectRoot
         scanTask = Task {
@@ -653,8 +653,8 @@ final class ScanModel: ObservableObject {
     private func finishCancelledScan() {
         if !applicationTerminationStarted {
             state = .idle
-            appendLog("검사를 취소했습니다.")
-            AccessibilityAnnouncer.announce("검사를 취소했습니다")
+            appendLog(L10n.text("검사를 취소했습니다."))
+            AccessibilityAnnouncer.announce(L10n.text("검사를 취소했습니다"))
         }
         scanTask = nil
     }
@@ -677,7 +677,7 @@ final class ScanModel: ObservableObject {
 
         startScan(at: date)
         guard isRunning else { return }
-        appendLog("정밀 검사 결과가 없거나 6시간 이상 지났거나 새 저장공간 변화가 있어 자동 검사를 시작했습니다.")
+        appendLog(L10n.text("정밀 검사 결과가 없거나 6시간 이상 지났거나 새 저장공간 변화가 있어 자동 검사를 시작했습니다."))
     }
 
     nonisolated static func shouldRunAutomaticScan(
@@ -865,7 +865,7 @@ final class ScanModel: ObservableObject {
                 reportRevision += 1
             }
             if result.reportsSucceeded {
-                appendLog("완료: 정밀 검사와 일반·공유용 리포트를 생성했습니다.")
+                appendLog(L10n.text("완료: 정밀 검사와 일반·공유용 리포트를 생성했습니다."))
             } else if let failureText = reportState.failureText {
                 appendLog(failureText)
                 markFailedReportAsPrevious(result)
@@ -873,15 +873,15 @@ final class ScanModel: ObservableObject {
             let verdict = IncidentAssessment.make(
                 content: content, storageChange: storageChange
             ).value
-            AccessibilityAnnouncer.announce("정밀 검사 완료: \(verdict)")
+            AccessibilityAnnouncer.announce(L10n.format("정밀 검사 완료: %@", String(describing: verdict)))
         } else {
             state = .failed
             if selectedReportURL != nil {
-                selectedReportTitle = "이전 리포트 (이번 검사 아님)"
+                selectedReportTitle = L10n.text("이전 리포트 (이번 검사 아님)")
             }
             deepScanFailure = DeepScanFailure(
                 failedAt: Date(),
-                detail: "표시된 이전 정밀 검사 결과를 현재 상태로 해석하지 마세요. 기록 화면에서 실패 단계를 확인할 수 있습니다."
+                detail: L10n.text("표시된 이전 정밀 검사 결과를 현재 상태로 해석하지 마세요. 기록 화면에서 실패 단계를 확인할 수 있습니다.")
             )
         }
         return true
@@ -895,8 +895,8 @@ final class ScanModel: ObservableObject {
             return true
         }
         guard cleanupMutationRecorder(projectRoot) else {
-            errorMessage = "정리 전 재검사 필요 상태를 디스크에 기록하지 못해 실행하지 않았습니다. 먼저 여유 공간을 확보한 뒤 다시 시도하세요."
-            appendLog("정리 실행 중단: 재검사 필요 상태를 디스크에 기록하지 못함")
+            errorMessage = L10n.text("정리 전 재검사 필요 상태를 디스크에 기록하지 못해 실행하지 않았습니다. 먼저 여유 공간을 확보한 뒤 다시 시도하세요.")
+            appendLog(L10n.text("정리 실행 중단: 재검사 필요 상태를 디스크에 기록하지 못함"))
             return false
         }
         cleanupMutationPending = true
@@ -908,10 +908,10 @@ final class ScanModel: ObservableObject {
         guard let selectedReportURL else { return }
         if result.normalReport == .failed,
            selectedReportURL.standardizedFileURL == normalReportURL.standardizedFileURL {
-            selectedReportTitle = "이전 일반 리포트 (이번 검사 아님)"
+            selectedReportTitle = L10n.text("이전 일반 리포트 (이번 검사 아님)")
         } else if result.shareReport == .failed,
                   selectedReportURL.standardizedFileURL == shareReportURL.standardizedFileURL {
-            selectedReportTitle = "이전 공유용 리포트 (이번 검사 아님)"
+            selectedReportTitle = L10n.text("이전 공유용 리포트 (이번 검사 아님)")
         }
     }
 
@@ -948,10 +948,10 @@ final class ScanModel: ObservableObject {
         }
         if hasNormalReport {
             selectedReportURL = normalReportURL
-            selectedReportTitle = "일반 리포트"
+            selectedReportTitle = L10n.text("일반 리포트")
         } else if hasShareReport {
             selectedReportURL = shareReportURL
-            selectedReportTitle = "공유용 리포트"
+            selectedReportTitle = L10n.text("공유용 리포트")
         }
         return true
     }
@@ -1000,16 +1000,16 @@ final class ScanModel: ObservableObject {
 
         guard migration.unresolvedEntries.isEmpty else {
             simulatorLegacyKeepEntries = migration.unresolvedEntries
-            appendLog("기존 Simulator 보존 항목 \(migration.unresolvedEntries.count)개를 UUID로 확인하지 못해 모든 기기 삭제를 차단했습니다.")
+            appendLog(L10n.format("기존 Simulator 보존 항목 %@개를 UUID로 확인하지 못해 모든 기기 삭제를 차단했습니다.", String(describing: migration.unresolvedEntries.count)))
             return
         }
 
         do {
             try SimulatorKeepStore.save(migration.uuids)
             simulatorLegacyKeepEntries = []
-            appendLog("기존 Simulator 이름 보존 목록을 UUID 기준으로 안전하게 전환했습니다.")
+            appendLog(L10n.text("기존 Simulator 이름 보존 목록을 UUID 기준으로 안전하게 전환했습니다."))
         } catch {
-            appendLog("기존 Simulator 보존 목록을 전환하지 못해 모든 기기 삭제를 차단했습니다: \(error.localizedDescription)")
+            appendLog(L10n.format("기존 Simulator 보존 목록을 전환하지 못해 모든 기기 삭제를 차단했습니다: %@", String(describing: error.localizedDescription)))
         }
     }
 

@@ -17,14 +17,14 @@ enum RetirementPresentation {
         }
         parts.append(ByteCountFormatter.string(fromByteCount: session.sizeBytes, countStyle: .file))
         if session.titleSource.isWeak {
-            parts.append("제목 추정")
+            parts.append(L10n.text("제목 추정"))
         }
         return parts.joined(separator: " · ")
     }
 
     nonisolated private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "M월 d일"
+        f.setLocalizedDateFormatFromTemplate("MMMd")
         return f
     }()
 
@@ -48,8 +48,8 @@ enum RetirementPresentation {
         let withSessions = candidates.filter { !$0.boundSessions.isEmpty }
         guard !withSessions.isEmpty else {
             return unassessed.isEmpty
-                ? "연결된 AI 대화가 있는 저장소는 없습니다."
-                : "AI 대화 연결을 확인하는 중입니다. 아직 아무것도 확정하지 않았습니다."
+                ? L10n.text("연결된 AI 대화가 있는 저장소는 없습니다.")
+                : L10n.text("AI 대화 연결을 확인하는 중입니다. 아직 아무것도 확정하지 않았습니다.")
         }
         // Deduplicate across candidates. A repo and its own worktrees are
         // separate rows, and binding matches by path prefix, so every
@@ -67,7 +67,7 @@ enum RetirementPresentation {
         }
         let sessions = seen.count
         let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-        return "\(withSessions.count)개 저장소에 AI 대화 \(sessions)개(\(size))가 묶여 있습니다. 지우면 함께 끊깁니다."
+        return L10n.format("%@개 저장소에 AI 대화 %@개(%@)가 묶여 있습니다. 지우면 함께 끊깁니다.", String(describing: withSessions.count), String(describing: sessions), String(describing: size))
     }
 
     /// Long enough to browse, short enough that a 120-session repo does
@@ -82,18 +82,18 @@ enum RetirementPresentation {
 
     nonisolated private static func evidenceLabel(_ evidence: BindingEvidence) -> String {
         switch evidence {
-        case .remoteURL: return "원격 URL 기록됨"
-        case .workingDirectory: return "작업 디렉터리 일치"
-        case .selectedFolder: return "사용자 선택 폴더 일치"
-        case .fileAccess: return "파일 접근 기록"
+        case .remoteURL: return L10n.text("원격 URL 기록됨")
+        case .workingDirectory: return L10n.text("작업 디렉터리 일치")
+        case .selectedFolder: return L10n.text("사용자 선택 폴더 일치")
+        case .fileAccess: return L10n.text("파일 접근 기록")
         }
     }
 
     nonisolated private static func confidenceLabel(_ confidence: BindingConfidence) -> String {
         switch confidence {
-        case .high: return "확실"
-        case .medium: return "보통"
-        case .low: return "약함"
+        case .high: return L10n.text("확실")
+        case .medium: return L10n.text("보통")
+        case .low: return L10n.text("약함")
         }
     }
 }

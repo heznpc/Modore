@@ -8,7 +8,7 @@ enum AssetRetirementService {
         guard let execution = await Task.detached(priority: .userInitiated, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: root)
         }).value else {
-            throw RetirementError("실행 런타임을 준비하지 못했습니다.")
+            throw RetirementError(L10n.text("실행 런타임을 준비하지 못했습니다."))
         }
         return try await invoke(execution: execution, request: request)
     }
@@ -17,7 +17,7 @@ enum AssetRetirementService {
         let payload = try JSONSerialization.data(withJSONObject: request)
         guard let invocation = execution.pinnedInvocation(relativePath: "scripts/asset_retirement.py", name: "retirement"),
               let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
-            throw RetirementError("레포 정리 실행 파일을 확인하지 못했습니다.")
+            throw RetirementError(L10n.text("레포 정리 실행 파일을 확인하지 못했습니다."))
         }
         var pinned = invocation.files
         pinned["retirement_request"] = payload
@@ -43,7 +43,7 @@ enum AssetRetirementService {
             throw RetirementError(failure.error)
         }
         guard result.status == 0, !result.outputTruncated else {
-            throw RetirementError("실행 응답을 확인하지 못했습니다. 이전 거래 불러오기로 결과를 확인하세요. (\(result.status))")
+            throw RetirementError(L10n.format("실행 응답을 확인하지 못했습니다. 이전 거래 불러오기로 결과를 확인하세요. (%@)", String(describing: result.status)))
         }
         return try JSONDecoder().decode(AssetRetirementPlan.self, from: data)
     }

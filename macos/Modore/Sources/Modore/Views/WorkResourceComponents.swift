@@ -3,8 +3,8 @@ import SwiftUI
 extension WorkResource {
     var isRunning: Bool { state == "Booted" || state == "Booting" || state == "Mounted" }
     var statusLabel: String {
-        if !available { return "사용 불가" }
-        switch state { case "Booted": return "실행 중"; case "Booting": return "시작 중"; case "Mounted": return "연결됨"; case "Shutdown": return "대기"; default: return state }
+        if !available { return L10n.text("사용 불가") }
+        switch state { case "Booted": return L10n.text("실행 중"); case "Booting": return L10n.text("시작 중"); case "Mounted": return L10n.text("연결됨"); case "Shutdown": return L10n.text("대기"); default: return state }
     }
     var runtimeLabel: String {
         runtime.replacingOccurrences(of: "com.apple.CoreSimulator.SimRuntime.", with: "")
@@ -46,12 +46,12 @@ struct ResourceDetailSheet: View {
                     Text(resource.name).font(.title2.weight(.semibold))
                     Text(resource.statusLabel).foregroundStyle(.secondary)
                 }
-                Spacer(); Button("닫기") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer(); Button(L10n.text("닫기")) { dismiss() }.keyboardShortcut(.cancelAction)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if !resource.leases.isEmpty {
-                        Text("연결된 작업").font(.headline)
+                        Text(L10n.text("연결된 작업")).font(.headline)
                         ForEach(resource.leases) { lease in
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(URL(fileURLWithPath: lease.project).lastPathComponent).font(.headline)
@@ -61,8 +61,8 @@ struct ResourceDetailSheet: View {
                         }
                     }
                     if !resource.processes.isEmpty {
-                        Text("사용 중인 프로세스 · \(resource.processes.count)").font(.headline)
-                        Text("열린 파일을 기준으로 확인했습니다. 프로젝트 경로가 같아도 특정 세션의 소유로 단정하지 않습니다.").font(.callout).foregroundStyle(.secondary)
+                        Text(L10n.format("사용 중인 프로세스 · %@", String(describing: resource.processes.count))).font(.headline)
+                        Text(L10n.text("열린 파일을 기준으로 확인했습니다. 프로젝트 경로가 같아도 특정 세션의 소유로 단정하지 않습니다.")).font(.callout).foregroundStyle(.secondary)
                         ForEach(resource.processes) { p in
                             HStack(alignment: .top) {
                                 VStack(alignment: .leading, spacing: 3) {
@@ -74,7 +74,7 @@ struct ResourceDetailSheet: View {
                             Divider()
                         }
                     }
-                    DisclosureGroup("기기 식별 정보") {
+                    DisclosureGroup(L10n.text("기기 식별 정보")) {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(resource.id).textSelection(.enabled)
                             Text(resource.path).textSelection(.enabled)
@@ -82,7 +82,7 @@ struct ResourceDetailSheet: View {
                         }.font(.caption.monospaced()).padding(.top, 8)
                     }
                     if !resource.expiredLeases.isEmpty {
-                        DisclosureGroup("갱신이 끊긴 연결 \(resource.expiredLeases.count)개") {
+                        DisclosureGroup(L10n.format("갱신이 끊긴 연결 %@개", String(describing: resource.expiredLeases.count))) {
                             ForEach(resource.expiredLeases) { lease in Text("\(lease.project) · \(lease.session)").font(.caption).textSelection(.enabled) }
                         }
                     }
@@ -104,9 +104,9 @@ struct ResourceConnectionSheet: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("프로젝트에 연결").font(.title2.weight(.semibold))
-            Text("\(resource.name)을 사용하는 작업을 선택하세요.").foregroundStyle(.secondary)
-            TextField("프로젝트 검색", text: $search).textFieldStyle(.roundedBorder)
+            Text(L10n.text("프로젝트에 연결")).font(.title2.weight(.semibold))
+            Text(L10n.format("%@을 사용하는 작업을 선택하세요.", String(describing: resource.name))).foregroundStyle(.secondary)
+            TextField(L10n.text("프로젝트 검색"), text: $search).textFieldStyle(.roundedBorder)
             List(candidates, selection: $selected) { entry in
                 HStack {
                     Image(systemName: "folder").foregroundStyle(.secondary)
@@ -117,10 +117,10 @@ struct ResourceConnectionSheet: View {
                 }.padding(.vertical, 5).tag(entry.id)
             }
             HStack {
-                Text("최근 세션 중 최대 60개 표시").font(.caption).foregroundStyle(.secondary)
+                Text(L10n.text("최근 세션 중 최대 60개 표시")).font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("취소") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("연결") {
+                Button(L10n.text("취소")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(L10n.text("연결")) {
                     if let entry = candidates.first(where: { $0.id == selected }) { connect(entry.workspace, entry.id); dismiss() }
                 }.buttonStyle(.borderedProminent).disabled(selected == nil)
             }

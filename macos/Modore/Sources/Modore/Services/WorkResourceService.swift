@@ -10,7 +10,7 @@ final class WorkResourceService: ObservableObject {
         }).value,
         let invocation = execution.pinnedInvocation(relativePath: "scripts/work_resources.py", name: "resources"),
         let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
-            throw RetirementError("작업 자원 런타임을 준비하지 못했습니다.")
+            throw RetirementError(L10n.text("작업 자원 런타임을 준비하지 못했습니다."))
         }
         var pinned = invocation.files
         pinned["request"] = try JSONSerialization.data(withJSONObject: request)
@@ -23,7 +23,7 @@ final class WorkResourceService: ObservableObject {
         let data = Data(result.output.utf8)
         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         if let error = object?["error"] as? String { throw RetirementError(error) }
-        guard result.succeeded else { throw RetirementError("자원 조회·실행 응답 미확인: \(result.status) · \(result.output.prefix(500))") }
+        guard result.succeeded else { throw RetirementError(L10n.format("자원 조회·실행 응답 미확인: %@ · %@", String(describing: result.status), String(describing: result.output.prefix(500)))) }
         return data
     }
     func refresh(root: URL) async {
@@ -40,8 +40,8 @@ final class WorkResourceService: ObservableObject {
         do {
             let data = try await invoke(root: model.projectRoot, request: request)
             let object = (try JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            message = (object?["message"] as? String ?? "사용 연결 등록됨") + (object?["receipt"].map { "\n\($0)" } ?? "")
-            model.appendLog("작업 자원: \(message)")
+            message = (object?["message"] as? String ?? L10n.text("사용 연결 등록됨")) + (object?["receipt"].map { "\n\($0)" } ?? "")
+            model.appendLog(L10n.format("작업 자원: %@", String(describing: message)))
             snapshot = try JSONDecoder().decode(WorkResourceSnapshot.self, from: await invoke(root: model.projectRoot, request: ["action": "status"]))
         } catch { message = error.localizedDescription }
     }

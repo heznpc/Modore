@@ -37,7 +37,7 @@ struct WorkspaceStorageItemRow: View {
             .buttonStyle(.plain)
             .disabled(model.isBusy)
             .accessibilityLabel(accessibilityText(actionTitle: actionTitle))
-            .accessibilityHint("실행 전에 현재 경로와 크기를 다시 확인합니다.")
+            .accessibilityHint(L10n.text("실행 전에 현재 경로와 크기를 다시 확인합니다."))
         } else {
             rowContent
                 .accessibilityElement(children: .combine)
@@ -68,7 +68,7 @@ struct WorkspaceStorageItemRow: View {
     }
 
     private var detailText: String {
-        detail ?? (item.note.isEmpty ? item.action : item.note)
+        L10n.message(detail ?? (item.note.isEmpty ? item.action : item.note))
     }
 
     private func accessibilityText(actionTitle: String?) -> String {
@@ -90,7 +90,7 @@ private struct WorkspaceItemIdentity: View {
             Text(item.label)
                 .font(.body.weight(.medium))
                 .lineLimit(1)
-            Text(detail)
+            Text(L10n.message(detail))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)

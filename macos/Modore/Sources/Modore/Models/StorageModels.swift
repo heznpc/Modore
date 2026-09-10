@@ -126,7 +126,7 @@ struct StorageSnapshot {
         if cleanupCandidates.contains(where: {
             $0.hasSupportedCleanupRecipe && $0.measureStatus == "timed_out"
         }) {
-            return reclaimableGB > 0 ? Self.gbText(reclaimableGB) + "+" : "측정 보류"
+            return reclaimableGB > 0 ? Self.gbText(reclaimableGB) + "+" : L10n.text("측정 보류")
         }
         return Self.gbText(reclaimableGB)
     }
@@ -135,7 +135,7 @@ struct StorageSnapshot {
         if recoveryCandidates.contains(where: {
             $0.hasSupportedCleanupRecipe && $0.measureStatus == "timed_out"
         }) {
-            return recoveryGB > 0 ? Self.gbText(recoveryGB) + "+" : "측정 보류"
+            return recoveryGB > 0 ? Self.gbText(recoveryGB) + "+" : L10n.text("측정 보류")
         }
         return Self.gbText(recoveryGB)
     }
@@ -147,7 +147,7 @@ struct StorageSnapshot {
     var developerText: String {
         let counted = developerToolchains.filter { !$0.kind.hasPrefix("simulator_") }
         if counted.contains(where: { $0.measureStatus == "timed_out" }) {
-            return developerGB > 0 ? Self.gbText(developerGB) + "+" : "측정 보류"
+            return developerGB > 0 ? Self.gbText(developerGB) + "+" : L10n.text("측정 보류")
         }
         return Self.gbText(developerGB)
     }
@@ -169,7 +169,7 @@ struct StorageSnapshot {
         if simulatorFootprintMeasurementIncomplete {
             return simulatorFootprintGB > 0
                 ? Self.gbText(simulatorFootprintGB) + "+"
-                : "측정 보류"
+                : L10n.text("측정 보류")
         }
         return Self.gbText(simulatorFootprintGB)
     }
@@ -178,7 +178,7 @@ struct StorageSnapshot {
         if let deviceStatus = simulatorBreakdown.first(where: {
             $0.kind == "simulator_devices"
         })?.measureStatus, deviceStatus != "ok" {
-            return inventoryGB > 0 ? Self.gbText(inventoryGB) + "+" : "측정 보류"
+            return inventoryGB > 0 ? Self.gbText(inventoryGB) + "+" : L10n.text("측정 보류")
         }
         return Self.gbText(inventoryGB)
     }
@@ -249,11 +249,11 @@ struct SimulatorDevice: Identifiable {
 
     var sizeText: String {
         if measureStatus == "timed_out" {
-            guard sizeGB > 0 else { return "측정 보류" }
+            guard sizeGB > 0 else { return L10n.text("측정 보류") }
             if sizeGB >= 0.1 {
-                return String(format: "최소 %.1fGB", sizeGB)
+                return String(format: L10n.text("최소 %.1fGB"), sizeGB)
             }
-            return String(format: "최소 %.1fMB", sizeGB * 1024)
+            return String(format: L10n.text("최소 %.1fMB"), sizeGB * 1024)
         }
         if sizeGB >= 0.1 {
             return String(format: "%.1fGB", sizeGB)
@@ -272,7 +272,7 @@ struct SimulatorFootprintBreakdown: Identifiable, Equatable {
     var sizeText: String {
         let measured = sizeGB <= 0 ? "0GB" : String(format: "%.1fGB", sizeGB)
         guard measureStatus != "ok" else { return measured }
-        return sizeGB > 0 ? measured + "+" : "측정 보류"
+        return sizeGB > 0 ? measured + "+" : L10n.text("측정 보류")
     }
 }
 
@@ -293,7 +293,7 @@ struct SimulatorCreationBurst: Identifiable, Equatable {
     let measureStatus: String
 
     var count: Int { deviceUUIDs.count }
-    var creatorText: String { creator ?? "생성 주체 미확정" }
+    var creatorText: String { creator ?? L10n.text("생성 주체 미확정") }
 
     /// Groups devices only when all timestamps fit in one bounded window.
     /// Unknown/zero timestamps and runtimes are excluded instead of being
@@ -386,15 +386,15 @@ struct StorageItem: Identifiable {
         }
         sizeGB = rawSize.isFinite ? rawSize : 0
         path = json["path"] as? String ?? ""
-        action = json["action"] as? String ?? "확인 필요"
-        note = json["note"] as? String ?? ""
+        action = json["action"] as? String ?? L10n.text("확인 필요")
+        note = L10n.message(json["note"] as? String ?? "")
         measureStatus = json["measureStatus"] as? String ?? "ok"
         cleanupID = json["cleanupId"] as? String ?? ""
     }
 
     var sizeText: String {
         if measureStatus == "timed_out" {
-            return "측정 보류"
+            return L10n.text("측정 보류")
         }
         if sizeGB >= 0.1 {
             return String(format: "%.1fGB", sizeGB)
@@ -437,10 +437,10 @@ struct StorageAccessIssue: Identifiable {
     let note: String
 
     init?(json: [String: Any]) {
-        label = json["label"] as? String ?? "읽기 제한 영역"
+        label = json["label"] as? String ?? L10n.text("읽기 제한 영역")
         path = json["path"] as? String ?? ""
         status = json["status"] as? String ?? "blocked"
-        note = json["note"] as? String ?? "읽기 권한이 부족할 수 있습니다."
+        note = json["note"] as? String ?? L10n.text("읽기 권한이 부족할 수 있습니다.")
     }
 }
 
@@ -465,11 +465,11 @@ struct RuntimeSignal: Identifiable {
 
     init?(json: [String: Any]) {
         kind = JsonRead.string(json, "kind", "process_count")
-        label = JsonRead.string(json, "label", "실행 신호")
+        label = JsonRead.string(json, "label", L10n.text("실행 신호"))
         count = JsonRead.int(json, "count")
         risk = JsonRead.string(json, "risk", "info")
-        action = JsonRead.string(json, "action", "확인 필요")
-        note = JsonRead.string(json, "note")
+        action = JsonRead.string(json, "action", L10n.text("확인 필요"))
+        note = L10n.message(JsonRead.string(json, "note"))
         pid = JsonRead.int(json, "pid")
         parentPid = JsonRead.int(json, "parentPid")
         elapsed = JsonRead.string(json, "elapsed")
@@ -486,7 +486,7 @@ struct RuntimeSignal: Identifiable {
         if kind == "booted_simulator" {
             return "Booted"
         }
-        return "\(count)개"
+        return L10n.format("%@개", String(describing: count))
     }
 
     var memoryText: String {
@@ -535,7 +535,7 @@ struct BrowserAutomationStatus {
             "configLocation",
             "~/.playwright/cli.config.json"
         )
-        note = JsonRead.string(json, "note", "브라우저 자동화 상태를 확인하지 못했습니다.")
+        note = JsonRead.string(json, "note", L10n.text("브라우저 자동화 상태를 확인하지 못했습니다."))
     }
 
     var needsAttention: Bool {
