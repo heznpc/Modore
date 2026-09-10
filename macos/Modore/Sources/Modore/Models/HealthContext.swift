@@ -32,30 +32,30 @@ struct HealthSnapshot: Codable, Equatable, Sendable {
     }
     var complete: Bool { freeBytes != nil && swapBytes != nil && memoryPressure != nil && !processes.isEmpty && cpuAvailable }
     var summary: String {
-        "여유 공간 \(Self.bytes(freeBytes)) · 스왑 \(swapBytes.map { Self.bytes(Int64(clamping: $0)) } ?? "미확인") · RAM \(memoryPressure.map { $0 >= 4 ? "위험" : ($0 >= 2 ? "주의" : "정상") } ?? "미확인")"
+        L10n.format("여유 공간 %@ · 스왑 %@ · RAM %@", String(describing: Self.bytes(freeBytes)), String(describing: swapBytes.map { Self.bytes(Int64(clamping: $0)) } ?? L10n.text("미확인")), String(describing: memoryPressure.map { $0 >= 4 ? L10n.text("위험") : ($0 >= 2 ? L10n.text("주의") : L10n.text("정상")) } ?? L10n.text("미확인")))
     }
     static func bytes(_ value: Int64?) -> String {
-        value.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .binary) } ?? "미확인"
+        value.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .binary) } ?? L10n.text("미확인")
     }
     func change(from before: Self) -> String {
         var parts: [String] = []
         if let now = freeBytes, let old = before.freeBytes {
-            parts.append("여유 공간 \(now >= old ? "+" : "−")\(Self.bytes(abs(now - old)))")
+            parts.append(L10n.format("여유 공간 %@%@", String(describing: now >= old ? "+" : "−"), String(describing: Self.bytes(abs(now - old)))))
         }
         if let now = swapBytes, let old = before.swapBytes {
-            parts.append("스왑 \(now >= old ? "+" : "−")\(Self.bytes(Int64(clamping: now >= old ? now - old : old - now)))")
+            parts.append(L10n.format("스왑 %@%@", String(describing: now >= old ? "+" : "−"), String(describing: Self.bytes(Int64(clamping: now >= old ? now - old : old - now)))))
         }
         return parts.joined(separator: " · ")
     }
     func explanation(from before: Self?) -> String {
         if let before, let free = freeBytes, let oldFree = before.freeBytes,
            let swap = swapBytes, let oldSwap = before.swapBytes, free < oldFree, swap > oldSwap + 268_435_456 {
-            return "여유 공간 감소와 스왑 증가가 함께 관찰됐습니다. RAM 압박이 디스크 사용에 기여했을 가능성이 있습니다. 개별 프로세스가 만든 파일의 원인까지 확정한 것은 아닙니다."
+            return L10n.text("여유 공간 감소와 스왑 증가가 함께 관찰됐습니다. RAM 압박이 디스크 사용에 기여했을 가능성이 있습니다. 개별 프로세스가 만든 파일의 원인까지 확정한 것은 아닙니다.")
         }
-        if (memoryPressure ?? 0) >= 2 { return "macOS가 RAM 압박을 보고했습니다. 아래 메모리 사용량이 큰 앱의 작업을 먼저 확인하세요. 스왑 공간은 캐시 정리와 별개로 다시 늘 수 있습니다." }
-        if let freeBytes, freeBytes < 20 * 1_073_741_824 { return "빌드와 스왑에 쓸 디스크 여유가 부족합니다. 공간 확보에서 실제 회수 가능한 항목을 확인하세요. 프로세스 순위만으로 디스크를 채운 원인을 단정하지 않습니다." }
-        if cpuElevated { return "CPU 부하가 지속됐습니다. 상위 프로세스와 연결된 작업을 확인하세요. CPU 100%는 코어 하나이며 온도 자체를 측정한 값은 아닙니다." }
-        return complete ? "관찰 범위에서 현재 경고 기준 아래입니다." : "일부 관찰값이 없어 정상 여부를 확정하지 못했습니다."
+        if (memoryPressure ?? 0) >= 2 { return L10n.text("macOS가 RAM 압박을 보고했습니다. 아래 메모리 사용량이 큰 앱의 작업을 먼저 확인하세요. 스왑 공간은 캐시 정리와 별개로 다시 늘 수 있습니다.") }
+        if let freeBytes, freeBytes < 20 * 1_073_741_824 { return L10n.text("빌드와 스왑에 쓸 디스크 여유가 부족합니다. 공간 확보에서 실제 회수 가능한 항목을 확인하세요. 프로세스 순위만으로 디스크를 채운 원인을 단정하지 않습니다.") }
+        if cpuElevated { return L10n.text("CPU 부하가 지속됐습니다. 상위 프로세스와 연결된 작업을 확인하세요. CPU 100%는 코어 하나이며 온도 자체를 측정한 값은 아닙니다.") }
+        return complete ? L10n.text("관찰 범위에서 현재 경고 기준 아래입니다.") : L10n.text("일부 관찰값이 없어 정상 여부를 확정하지 못했습니다.")
     }
 
     static func capture(sample: CPUSample, usage: [CPUProcessUsage], cpuElevated: Bool, cpuBurst: Bool = false) -> Self {

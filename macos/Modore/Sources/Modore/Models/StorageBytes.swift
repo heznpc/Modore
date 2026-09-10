@@ -24,7 +24,7 @@ enum StorageBytes {
     }
 
     static func text(_ bytes: Int64?) -> String {
-        guard let bytes else { return "미확인" }
+        guard let bytes else { return L10n.text("미확인") }
         let magnitude = abs(Double(bytes))
         if magnitude >= Double(perGiB) { return String(format: "%.1f GiB", Double(bytes) / Double(perGiB)) }
         if magnitude >= 1_048_576 { return String(format: "%.1f MiB", Double(bytes) / 1_048_576) }
@@ -33,7 +33,7 @@ enum StorageBytes {
     }
 
     static func changeText(_ bytes: Int64?) -> String {
-        guard let bytes else { return "미확인" }
+        guard let bytes else { return L10n.text("미확인") }
         return (bytes > 0 ? "+" : "") + text(bytes)
     }
 }

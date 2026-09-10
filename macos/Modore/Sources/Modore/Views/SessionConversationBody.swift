@@ -19,13 +19,13 @@ struct SessionConversationBody: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if conversation.turns.isEmpty {
-                Text("이 대화에는 표시할 내용이 없습니다.")
+                Text(L10n.text("이 대화에는 표시할 내용이 없습니다."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 if let first = conversation.firstUserTurn,
                    conversation.omittedTurns > 0 {
-                    Text("시작: \(first)")
+                    Text(L10n.format("시작: %@", String(describing: first)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Divider()
@@ -42,7 +42,7 @@ struct SessionConversationBody: View {
                     }
                 }
                 if conversation.omittedTurns > 0 {
-                    Text("이전 \(conversation.omittedTurns)개 턴은 생략됨. 대화 내보내기는 텍스트만 포함하며, 도구 기록은 원본 백업이 필요합니다.")
+                    Text(L10n.format("이전 %@개 턴은 생략됨. 대화 내보내기는 텍스트만 포함하며, 도구 기록은 원본 백업이 필요합니다.", String(describing: conversation.omittedTurns)))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

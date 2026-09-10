@@ -96,7 +96,7 @@ struct ModernRootView: View {
                 set: { if !$0 { model.errorMessage = nil } }
             )
         ) {
-            Button("확인", role: .cancel) { model.errorMessage = nil }
+            Button(L10n.text("확인"), role: .cancel) { model.errorMessage = nil }
         } message: {
             Text(model.errorMessage ?? "")
         }
@@ -195,7 +195,7 @@ private struct StoragePressureBanner: View {
 
             Spacer(minLength: 16)
 
-            Button("확보 계획 열기", action: openRecovery)
+            Button(L10n.text("확보 계획 열기"), action: openRecovery)
                 .buttonStyle(.borderedProminent)
                 .tint(tint)
         }
@@ -206,15 +206,15 @@ private struct StoragePressureBanner: View {
 
     private var title: String {
         switch freeSpace.pressure {
-        case .danger: return "저장공간을 지금 확보해야 합니다"
-        case .warning: return "저장공간 확보를 권장합니다"
-        case .normal: return "저장공간이 충분합니다"
+        case .danger: return L10n.text("저장공간을 지금 확보해야 합니다")
+        case .warning: return L10n.text("저장공간 확보를 권장합니다")
+        case .normal: return L10n.text("저장공간이 충분합니다")
         }
     }
 
     private var detail: String {
         String(
-            format: "현재 %.1fGB 남았습니다. 정리 후보를 검토한 뒤 한 번 승인해 목표 용량을 확보할 수 있습니다.",
+            format: L10n.text("현재 %.1fGB 남았습니다. 정리 후보를 검토한 뒤 한 번 승인해 목표 용량을 확보할 수 있습니다."),
             freeSpace.freeGB
         )
     }
@@ -273,7 +273,7 @@ private struct SidebarDestinationRow: View {
                 } else if destination == .storage,
                           let pressure = model.liveState.storagePressure,
                           pressure.needsRecovery {
-                    Text(pressure == .danger ? "위험" : "부족")
+                    Text(pressure == .danger ? L10n.text("위험") : L10n.text("부족"))
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(storagePressureColor(pressure))
                 }
@@ -326,12 +326,12 @@ private struct SidebarScanStatus: View {
                 Text(statusTitle(at: date))
                     .font(.caption.weight(.semibold))
                 if let liveFreeSpace = model.liveState.freeSpace {
-                    Text(ByteCountFormatter.string(fromByteCount:liveFreeSpace.value.freeBytes,countStyle:.file) + " 사용 가능")
+                    Text(ByteCountFormatter.string(fromByteCount:liveFreeSpace.value.freeBytes,countStyle:.file) + L10n.text(" 사용 가능"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 } else if let storage = model.storage {
-                    Text("검사 당시 \(storage.freeGB, specifier: "%.1f")GB")
+                    Text(L10n.format("검사 당시 %@GB", String(format: "%.1f", locale: Locale.current, storage.freeGB)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
@@ -342,28 +342,28 @@ private struct SidebarScanStatus: View {
     }
 
     private func statusTitle(at date: Date) -> String {
-        if model.isRunning { return "정밀 검사 중" }
+        if model.isRunning { return L10n.text("정밀 검사 중") }
         if model.cleanupIsExecuting {
             return model.cleanupRecoveryProgress.map {
-                "\($0.currentLabel) 정리 중"
+                L10n.format("%@ 정리 중", String(describing: $0.currentLabel))
             } ?? L10n.text("정리 중")
         }
-        if model.cleanupRecoveryProgress != nil { return "공간 확보 계획 준비 중" }
-        if model.cleanupInFlight { return "정리 대상 확인 중" }
-        if model.browserAutomationStopInFlight { return "자동화 브라우저 확인 중" }
-        if model.storageWatchInFlight { return "감시 설정 적용 중" }
-        if model.liveState.storagePressure == .danger { return "저장공간 즉시 확보 필요" }
-        if model.state == .failed { return "정밀 검사 실패" }
+        if model.cleanupRecoveryProgress != nil { return L10n.text("공간 확보 계획 준비 중") }
+        if model.cleanupInFlight { return L10n.text("정리 대상 확인 중") }
+        if model.browserAutomationStopInFlight { return L10n.text("자동화 브라우저 확인 중") }
+        if model.storageWatchInFlight { return L10n.text("감시 설정 적용 중") }
+        if model.liveState.storagePressure == .danger { return L10n.text("저장공간 즉시 확보 필요") }
+        if model.state == .failed { return L10n.text("정밀 검사 실패") }
         if model.securityHasDanger {
             return model.securityAttentionCount > 0
-                ? "위험 신호 \(model.securityAttentionCount)건"
-                : "위험 신호 확인"
+                ? L10n.format("위험 신호 %@건", String(describing: model.securityAttentionCount))
+                : L10n.text("위험 신호 확인")
         }
-        if model.liveState.storagePressure == .warning { return "저장공간 확보 권장" }
-        if model.summary == nil { return "정밀 검사 필요" }
-        if model.collectionIsIncomplete { return "안전 판단 보류" }
-        if model.deepScanSnapshotNeedsRefresh(at: date) { return "정밀 검사 필요" }
-        if model.securityAttentionCount > 0 { return "확인 항목 \(model.securityAttentionCount)건" }
+        if model.liveState.storagePressure == .warning { return L10n.text("저장공간 확보 권장") }
+        if model.summary == nil { return L10n.text("정밀 검사 필요") }
+        if model.collectionIsIncomplete { return L10n.text("안전 판단 보류") }
+        if model.deepScanSnapshotNeedsRefresh(at: date) { return L10n.text("정밀 검사 필요") }
+        if model.securityAttentionCount > 0 { return L10n.format("확인 항목 %@건", String(describing: model.securityAttentionCount)) }
         return model.deepScanSnapshotAgeText
     }
 

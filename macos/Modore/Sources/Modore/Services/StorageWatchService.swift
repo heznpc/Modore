@@ -48,7 +48,7 @@ enum StorageWatchService {
         }).value else {
             return StorageWatchStatus(
                 enabled: false,
-                detail: "서명된 감시 런타임을 확인할 수 없음",
+                detail: L10n.text("서명된 감시 런타임을 확인할 수 없음"),
                 freeSpaceSamples: samples,
                 healthState: health
             )
@@ -59,7 +59,7 @@ enum StorageWatchService {
         ) else {
             return StorageWatchStatus(
                 enabled: false,
-                detail: "봉인한 감시 설정 프로그램을 확인할 수 없음",
+                detail: L10n.text("봉인한 감시 설정 프로그램을 확인할 수 없음"),
                 freeSpaceSamples: samples,
                 healthState: health
             )
@@ -69,7 +69,7 @@ enum StorageWatchService {
         ) else {
             return StorageWatchStatus(
                 enabled: false,
-                detail: "봉인한 저장공간 감시 프로그램을 확인할 수 없음",
+                detail: L10n.text("봉인한 저장공간 감시 프로그램을 확인할 수 없음"),
                 freeSpaceSamples: samples,
                 healthState: health
             )
@@ -97,20 +97,20 @@ enum StorageWatchService {
         let enabled = harnessEnabled && runtimeState == .current
         let detail: String
         if runtimeState == .stale {
-            detail = "안전하지 않은 이전 감시 plist가 남았습니다. 감시를 껐다 다시 켜 제거하세요."
+            detail = L10n.text("안전하지 않은 이전 감시 plist가 남았습니다. 감시를 껐다 다시 켜 제거하세요.")
         } else if enabled {
             switch health {
             case .neverAttempted:
-                detail = "매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림 · 아직 실행 전"
+                detail = L10n.text("매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림 · 아직 실행 전")
             case .attemptedThenFailed:
-                detail = "매시간 확인 · 최근 실행이 완료되지 않았습니다"
+                detail = L10n.text("매시간 확인 · 최근 실행이 완료되지 않았습니다")
             case .recentSuccess:
-                detail = "매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림"
+                detail = L10n.text("매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림")
             case .staleSuccess:
-                detail = "매시간 확인 · 최근 실행 기록이 오래됐습니다"
+                detail = L10n.text("매시간 확인 · 최근 실행 기록이 오래됐습니다")
             }
         } else {
-            detail = "꺼짐 · 자동 삭제 없음"
+            detail = L10n.text("꺼짐 · 자동 삭제 없음")
         }
         return StorageWatchStatus(
             enabled: enabled,

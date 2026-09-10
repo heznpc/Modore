@@ -182,9 +182,9 @@ struct StorageSnapshotTotals {
             }
 
         let labels = [
-            "simulator_devices": "기기 데이터",
-            "simulator_runtime": "런타임",
-            "simulator_cache": "공유 캐시",
+            "simulator_devices": L10n.text("기기 데이터"),
+            "simulator_runtime": L10n.text("런타임"),
+            "simulator_cache": L10n.text("공유 캐시"),
         ]
         return ["simulator_devices", "simulator_runtime", "simulator_cache"].compactMap { kind in
             let matching = unique.filter { $0.kind == kind }

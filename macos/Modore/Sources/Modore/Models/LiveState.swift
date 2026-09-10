@@ -12,11 +12,11 @@ struct Observation<Value: Equatable & Sendable>: Equatable, Sendable {
 
     func ageText(at date: Date = Date()) -> String {
         let rawAge = date.timeIntervalSince(observedAt)
-        guard rawAge >= -60 else { return "관찰 시각 확인 필요" }
+        guard rawAge >= -60 else { return L10n.text("관찰 시각 확인 필요") }
         let age = max(0, rawAge)
-        if age < 10 { return "방금" }
-        if age < 60 { return "\(Int(age))초 전" }
-        return "\(Int(age / 60))분 전"
+        if age < 10 { return L10n.text("방금") }
+        if age < 60 { return L10n.format("%@초 전", String(describing: Int(age))) }
+        return L10n.format("%@분 전", String(describing: Int(age / 60)))
     }
 }
 

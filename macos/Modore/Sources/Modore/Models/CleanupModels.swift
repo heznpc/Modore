@@ -92,37 +92,37 @@ struct CleanupPreview: Identifiable, Sendable {
     }
 
     var recoveryPathMessages: [String] {
-        var messages = stagedRemainders.map { "격리 보존 경로: \($0)" }
+        var messages = stagedRemainders.map { L10n.format("격리 보존 경로: %@", String(describing: $0)) }
         if !trashRun.isEmpty {
-            messages.append("휴지통 경로: \(trashRun)")
+            messages.append(L10n.format("휴지통 경로: %@", String(describing: trashRun)))
         }
         if !receipt.isEmpty {
-            messages.append("영수증: \(receipt)")
+            messages.append(L10n.format("영수증: %@", String(describing: receipt)))
         }
         return messages
     }
 
     var failureMessage: String {
         let summary = blockedReason.isEmpty
-            ? "일부 항목을 정리하지 못했습니다. 복구 경로와 실행 로그를 확인하세요."
+            ? L10n.text("일부 항목을 정리하지 못했습니다. 복구 경로와 실행 로그를 확인하세요.")
             : blockedReason
         return ([summary] + recoveryPathMessages).joined(separator: "\n")
     }
 
     var estimatedText: String {
-        estimateMeasured ? StorageBytes.text(estimatedBytes) : "측정 보류"
+        estimateMeasured ? StorageBytes.text(estimatedBytes) : L10n.text("측정 보류")
     }
     var reclaimedText: String { StorageBytes.text(reclaimedBytes) }
     var physicalDeltaText: String { StorageBytes.changeText(physicalDeltaBytes) }
 
     var statusText: String {
         switch status {
-        case "ready": return "실행 준비됨"
-        case "blocked": return runningProcesses.isEmpty ? "이 항목은 확인이 필요합니다" : "사용 중인 대상입니다"
-        case "unavailable": return "이번 확인에서 제외됨"
-        case "empty": return "이미 정리되어 있습니다"
-        case "complete": return "정리 완료"
-        case "partial": return "일부 항목만 정리됨"
+        case "ready": return L10n.text("실행 준비됨")
+        case "blocked": return runningProcesses.isEmpty ? L10n.text("이 항목은 확인이 필요합니다") : L10n.text("사용 중인 대상입니다")
+        case "unavailable": return L10n.text("이번 확인에서 제외됨")
+        case "empty": return L10n.text("이미 정리되어 있습니다")
+        case "complete": return L10n.text("정리 완료")
+        case "partial": return L10n.text("일부 항목만 정리됨")
         default: return status
         }
     }

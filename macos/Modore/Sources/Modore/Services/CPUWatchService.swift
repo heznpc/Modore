@@ -115,7 +115,7 @@ struct CPUAlertPolicy {
 @MainActor
 final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var enabled: Bool
-    @Published private(set) var detail = "CPU 감시 꺼짐"
+    @Published private(set) var detail = L10n.text("CPU 감시 꺼짐")
     @Published private(set) var configuring = false
     private var task: Task<Void, Never>?
     private var activity: NSObjectProtocol?
@@ -124,7 +124,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
     @Published private(set) var journal = HealthJournal()
     @Published private(set) var journalError: String?
     @Published var showHealth = false
-    @Published private(set) var notificationStatus = "알림 권한 확인 중"
+    @Published private(set) var notificationStatus = L10n.text("알림 권한 확인 중")
     private var cpuHighSince: TimeInterval?
     private var canPersist = true
     private var lastSaved = Date.distantPast
@@ -146,12 +146,12 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalURL.path)
             lastSaved = Date()
             journalError = nil
-        } catch { journalError = "상황 기록 저장 실패: \(error.localizedDescription)" }
+        } catch { journalError = L10n.format("상황 기록 저장 실패: %@", String(describing: error.localizedDescription)) }
     }
 
     func refreshNotificationStatus() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
-        notificationStatus = settings.authorizationStatus == .authorized ? "macOS 알림 허용됨" : "알림 차단됨 · 시스템 설정에서 Modore 알림 허용 필요"
+        notificationStatus = settings.authorizationStatus == .authorized ? L10n.text("macOS 알림 허용됨") : L10n.text("알림 차단됨 · 시스템 설정에서 Modore 알림 허용 필요")
     }
 
     override init() {
@@ -163,7 +163,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
                 guard data.count < 2_000_000 else { throw CocoaError(.fileReadTooLarge) }
                 journal = try JSONDecoder().decode(HealthJournal.self, from: data)
                 journal.resume()
-            } catch { canPersist = false; journalError = "이전 상황 기록을 읽지 못했습니다: \(error.localizedDescription)" }
+            } catch { canPersist = false; journalError = L10n.format("이전 상황 기록을 읽지 못했습니다: %@", String(describing: error.localizedDescription)) }
         }
     }
 
@@ -173,9 +173,9 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         guard enabled, task == nil else { return }
         if activity == nil {
             activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
-                                                             reason: "사용자가 켠 Mac 상태 감시")
+                                                             reason: L10n.text("사용자가 켠 Mac 상태 감시"))
         }
-        detail = "CPU 사용량을 관찰하는 중입니다."
+        detail = L10n.text("CPU 사용량을 관찰하는 중입니다.")
         task = Task { [weak self] in
             while !Task.isCancelled {
                 let sample = await Task.detached(priority: .utility) { await CPUSample.captureWithSystemProcesses() }.value
@@ -194,9 +194,9 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         if value {
             do {
                 let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])
-                if !granted { notificationStatus = "알림 차단됨 · 상태 관찰은 계속합니다." }
+                if !granted { notificationStatus = L10n.text("알림 차단됨 · 상태 관찰은 계속합니다.") }
             } catch {
-                notificationStatus = "알림 권한을 확인하지 못했습니다: \(error.localizedDescription)"
+                notificationStatus = L10n.format("알림 권한을 확인하지 못했습니다: %@", String(describing: error.localizedDescription))
             }
         }
         enabled = value
@@ -204,17 +204,17 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         task?.cancel(); task = nil; previous = nil; cpuHighSince = nil
         journal.resume(); persist()
         if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
-        if value { start() } else { detail = "CPU 감시 꺼짐" }
+        if value { start() } else { detail = L10n.text("CPU 감시 꺼짐") }
     }
 
     func sendTestNotification() async {
         let content = UNMutableNotificationContent()
-        content.title = "Modore CPU 알림 테스트"
-        content.body = "알림이 정상 동작합니다. 실제 CPU 과부하를 의미하는 알림은 아닙니다."
+        content.title = L10n.text("Modore CPU 알림 테스트")
+        content.body = L10n.text("알림이 정상 동작합니다. 실제 CPU 과부하를 의미하는 알림은 아닙니다.")
         do {
             try await UNUserNotificationCenter.current().add(UNNotificationRequest(
                 identifier: "modore-cpu-test", content: content, trigger: nil))
-        } catch { detail = "테스트 알림 전송 실패: \(error.localizedDescription)" }
+        } catch { detail = L10n.format("테스트 알림 전송 실패: %@", String(describing: error.localizedDescription)) }
     }
 
     private func receive(_ sample: CPUSample) async {
@@ -239,14 +239,19 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         guard changed, LocalUserPresence.allowsNotification else { return }
         guard enabled, Date().timeIntervalSince(lastNotice) >= 60 else { return }
         let content = UNMutableNotificationContent()
-        content.title = current.issues.isEmpty ? "관찰된 부하가 경고 기준 아래로 내려왔습니다" : current.issues.joined(separator: " · ")
-        content.body = current.summary + "\n" + usage.prefix(3).map { "\($0.name) \(Int($0.percent))%" }.joined(separator: " · ") + "\n눌러서 원인·관련 작업·조치 결과 확인"
+        content.title = current.issues.isEmpty ? L10n.text("부하가 낮아졌습니다") : (
+            (current.freeBytes ?? Int64.max) < 20 * 1_073_741_824
+                ? L10n.format("공간 부족 · %@ 남음", String(describing: HealthSnapshot.bytes(current.freeBytes)))
+                : ((current.memoryPressure ?? 0) >= 2 ? L10n.text("RAM 사용을 줄여야 합니다") : (current.cpuElevated ? L10n.text("CPU 부하가 계속 높습니다") : L10n.text("CPU 순간 부하 감지"))))
+        let topProcess = usage.first.map { "\(String($0.name.prefix(22))) CPU \(Int($0.percent))%" }
+        let memory = (current.memoryPressure ?? 0) >= 2 ? L10n.text("RAM 주의") : nil
+        content.body = [topProcess, memory].compactMap { $0 }.joined(separator: " · ")
         content.userInfo = ["modoreRoute": "health"]
         do {
             try await UNUserNotificationCenter.current().add(UNNotificationRequest(
                 identifier: "modore-health", content: content, trigger: nil))
             lastNotice = Date()
-        } catch { notificationStatus = "상황 감지됨 · 알림 전송 실패: \(error.localizedDescription)"; lastNotice = Date() }
+        } catch { notificationStatus = L10n.format("상황 감지됨 · 알림 전송 실패: %@", String(describing: error.localizedDescription)); lastNotice = Date() }
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,

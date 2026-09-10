@@ -12,8 +12,8 @@ struct TimeQuotaSection: View {
             if case .invalid = state {
                 ScreeNoticeRow(
                     symbol: "exclamationmark.triangle",
-                    title: "QuotaPie 기록을 읽을 수 없습니다",
-                    detail: "quota.json이 v2 계약과 맞지 않거나 안전하게 읽을 수 없습니다. 사용량 수치는 표시하지 않습니다.",
+                    title: L10n.text("QuotaPie 기록을 읽을 수 없습니다"),
+                    detail: L10n.text("quota.json이 v2 계약과 맞지 않거나 안전하게 읽을 수 없습니다. 사용량 수치는 표시하지 않습니다."),
                     tint: Color.secondary
                 )
             }
@@ -22,8 +22,8 @@ struct TimeQuotaSection: View {
                 if isStale {
                     ScreeNoticeRow(
                         symbol: "clock.badge.questionmark",
-                        title: "QuotaPie 기록이 오래됐습니다",
-                        detail: "\(snapshot.generatedAt.formatted(date: .abbreviated, time: .shortened)) 이후 새 기록이 없습니다. 수집기가 멈췄을 수 있어 사용량 수치는 숨겼습니다.",
+                        title: L10n.text("QuotaPie 기록이 오래됐습니다"),
+                        detail: L10n.format("%@ 이후 새 기록이 없습니다. 수집기가 멈췄을 수 있어 사용량 수치는 숨겼습니다.", String(describing: snapshot.generatedAt.formatted(date: .abbreviated, time: .shortened))),
                         tint: Color.secondary
                     )
                 } else {
@@ -37,8 +37,8 @@ struct TimeQuotaSection: View {
                     } else if !snapshot.collectionHealthy {
                         ScreeNoticeRow(
                             symbol: "exclamationmark.triangle",
-                            title: "QuotaPie 공급자 수집이 실패했습니다",
-                            detail: "경계 파일은 갱신됐지만 표시할 공급자의 최근 수집이 성공하지 않았습니다. 마지막 수치는 숨겼습니다.",
+                            title: L10n.text("QuotaPie 공급자 수집이 실패했습니다"),
+                            detail: L10n.text("경계 파일은 갱신됐지만 표시할 공급자의 최근 수집이 성공하지 않았습니다. 마지막 수치는 숨겼습니다."),
                             tint: Color.secondary
                         )
                     }
@@ -53,13 +53,13 @@ struct TimeQuotaSection: View {
                                 Text(Self.windowTitle(window: window, headline: snapshot.headline))
                                     .font(.body.weight(.medium))
                                 if let resetsAt = window.resetsAt {
-                                    Text("리셋 \(resetsAt.formatted(date: .abbreviated, time: .shortened))")
+                                    Text(L10n.format("리셋 %@", String(describing: resetsAt.formatted(date: .abbreviated, time: .shortened))))
                                         .font(.subheadline)
                                         .foregroundStyle(.secondary)
                                 }
                             }
                             Spacer()
-                            Text(window.usedPercent.map(TimeQuotaCardPresentation.percentText) ?? "확인 중")
+                            Text(window.usedPercent.map(TimeQuotaCardPresentation.percentText) ?? L10n.text("확인 중"))
                                 .font(.callout.weight(.semibold))
                                 .monospacedDigit()
                         }
@@ -79,7 +79,7 @@ struct TimeQuotaSection: View {
                                     .font(.body.weight(.medium))
                                     .lineLimit(1)
                                 if let lastActiveAt = row.lastActiveAt {
-                                    Text("마지막 활동 \(lastActiveAt.formatted(date: .abbreviated, time: .shortened))")
+                                    Text(L10n.format("마지막 활동 %@", String(describing: lastActiveAt.formatted(date: .abbreviated, time: .shortened))))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -109,8 +109,8 @@ struct TimeQuotaSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "AI 사용량 (QuotaPie)",
-                subtitle: "QuotaPie가 로컬에 기록한 quota.json을 읽기만 합니다. 자격증명과 네트워크 수집은 QuotaPie에 남습니다.",
+                title: L10n.text("AI 사용량 (QuotaPie)"),
+                subtitle: L10n.text("QuotaPie가 로컬에 기록한 quota.json을 읽기만 합니다. 자격증명과 네트워크 수집은 QuotaPie에 남습니다."),
                 value: TimeQuotaCardPresentation.headerValue(for: state)
             )
         }
@@ -136,15 +136,15 @@ struct TimeQuotaSection: View {
     ) -> String {
         let kind: String
         switch headline?.windowKind {
-        case .fiveHour: kind = "5시간"
-        case .weekly: kind = "주간"
-        case .monthly: kind = "월간"
+        case .fiveHour: kind = L10n.text("5시간")
+        case .weekly: kind = L10n.text("주간")
+        case .monthly: kind = L10n.text("월간")
         case .other: kind = ""
         case nil: kind = ""
         }
         return kind.isEmpty
-            ? "\(TimeQuotaCardPresentation.providerName(window.provider)) 사용량"
-            : "\(TimeQuotaCardPresentation.providerName(window.provider)) \(kind) 사용량"
+            ? L10n.format("%@ 사용량", String(describing: TimeQuotaCardPresentation.providerName(window.provider)))
+            : L10n.format("%@ %@ 사용량", String(describing: TimeQuotaCardPresentation.providerName(window.provider)), String(describing: kind))
     }
 }
 
@@ -181,7 +181,7 @@ struct ScreeStoresSection: View {
     var body: some View {
         Section {
             if stores.isEmpty {
-                Text("인식된 세션 저장소가 없습니다.")
+                Text(L10n.text("인식된 세션 저장소가 없습니다."))
                     .foregroundStyle(.secondary)
             } else {
                 DisclosureGroup {
@@ -191,7 +191,7 @@ struct ScreeStoresSection: View {
                                 .foregroundStyle(Color.secondary)
                             Text(store.store)
                             Spacer()
-                            Text("\(store.count)개 세션")
+                            Text(L10n.format("%@개 세션", String(describing: store.count)))
                                 .foregroundStyle(.secondary)
                                 .font(.callout)
                                 .monospacedDigit()
@@ -205,8 +205,8 @@ struct ScreeStoresSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "검사 범위",
-                subtitle: "위 판정이 근거한 저장소들입니다.",
+                title: L10n.text("검사 범위"),
+                subtitle: L10n.text("위 판정이 근거한 저장소들입니다."),
                 value: ""
             )
         }
@@ -216,7 +216,7 @@ struct ScreeStoresSection: View {
         let read = stores.filter { $0.status == "ok" }
         let total = read.reduce(0) { $0 + $1.count }
         let names = read.map(\.store).joined(separator: " · ")
-        return "\(names) — \(read.count)개 저장소 · \(total)개 기록 확인"
+        return L10n.format("%@ — %@개 저장소 · %@개 기록 확인", String(describing: names), String(describing: read.count), String(describing: total))
     }
 }
 
@@ -228,7 +228,7 @@ struct ScreeExpiringSection: View {
     var body: some View {
         Section {
             if expiring.isEmpty {
-                Text("곧 만료되는 세션이 없습니다.")
+                Text(L10n.text("곧 만료되는 세션이 없습니다."))
                     .foregroundStyle(.secondary)
             }
             ForEach(expiring.prefix(20)) { session in
@@ -241,7 +241,7 @@ struct ScreeExpiringSection: View {
                         Text(session.workspaceLastComponent)
                             .font(.body.weight(.medium))
                         Text(session.ownerDeleted
-                             ? "\(session.tool) · 앱에서 삭제됨 · 트랜스크립트 잔존"
+                             ? L10n.format("%@ · 앱에서 삭제됨 · 트랜스크립트 잔존", String(describing: session.tool))
                              : "\(session.tool) · \(session.workspaceStateText)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -258,16 +258,16 @@ struct ScreeExpiringSection: View {
                         }
                         .buttonStyle(.borderless)
                         .disabled(preserveInFlightSource != nil)
-                        .help("대화 텍스트만 마스킹하여 Markdown으로 내보내기 — 원본 백업은 작업의 대화 상세에서")
-                        .accessibilityLabel("대화 내보내기")
+                        .help(L10n.text("대화 텍스트만 마스킹하여 Markdown으로 내보내기 — 원본 백업은 작업의 대화 상세에서"))
+                        .accessibilityLabel(L10n.text("대화 내보내기"))
                     }
                 }
             }
         } header: {
             NativeSectionHeader(
-                title: "곧 만료되는 세션",
-                subtitle: "파일 나이로 추정한 보존 기한입니다. 아이콘은 대화 텍스트 내보내기이며, 도구 기록을 포함한 원본 백업은 대화 상세에서 실행합니다.",
-                value: expiring.isEmpty ? "" : "\(expiring.count)건"
+                title: L10n.text("곧 만료되는 세션"),
+                subtitle: L10n.text("파일 나이로 추정한 보존 기한입니다. 아이콘은 대화 텍스트 내보내기이며, 도구 기록을 포함한 원본 백업은 대화 상세에서 실행합니다."),
+                value: expiring.isEmpty ? "" : L10n.format("%@건", String(describing: expiring.count))
             )
         }
     }
@@ -311,12 +311,12 @@ struct ScreeWorktreeSection: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(missing.displayLabel)
                             .font(.body.weight(.medium))
-                        Text("git 등록 기록은 남았지만 작업 경로가 사라졌습니다.")
+                        Text(L10n.text("git 등록 기록은 남았지만 작업 경로가 사라졌습니다."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text("경로 소멸")
+                    Text(L10n.text("경로 소멸"))
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
@@ -324,13 +324,13 @@ struct ScreeWorktreeSection: View {
         } header: {
             let missingText = registeredMissing.isEmpty
                 ? ""
-                : " · 경로 소멸 \(registeredMissing.count)"
+                : L10n.format(" · 경로 소멸 %@", String(describing: registeredMissing.count))
             NativeSectionHeader(
-                title: "에이전트 워크트리",
-                subtitle: "git 증거(dirty·미푸시 커밋)만으로 판정한 미리보기 등급입니다. \(discovery.coverageText)",
+                title: L10n.text("에이전트 워크트리"),
+                subtitle: L10n.format("git 증거(dirty·미푸시 커밋)만으로 판정한 미리보기 등급입니다. %@", String(describing: discovery.coverageText)),
                 value: items.isEmpty && registeredMissing.isEmpty
                     ? ""
-                    : "보호 \(protectedCount)/\(items.count)\(missingText)"
+                    : L10n.format("보호 %@/%@%@", String(describing: protectedCount), String(describing: items.count), String(describing: missingText))
             )
         }
     }
@@ -342,17 +342,17 @@ struct ScreeLineageSection: View {
 
     var body: some View {
         Section {
-            LabeledContent("현존 + git", value: "\(summary.aliveGit)")
-            LabeledContent("현존 + 비git", value: "\(summary.alivePlain)")
-            LabeledContent("소멸", value: "\(summary.vanished)")
-            LabeledContent("확인 못함", value: "\(summary.unknown)")
-            LabeledContent("케이스 유령", value: "\(summary.caseGhosts)")
-            LabeledContent("고아 세션", value: "\(unresolvedSessions)")
+            LabeledContent(L10n.text("현존 + git"), value: "\(summary.aliveGit)")
+            LabeledContent(L10n.text("현존 + 비git"), value: "\(summary.alivePlain)")
+            LabeledContent(L10n.text("소멸"), value: "\(summary.vanished)")
+            LabeledContent(L10n.text("확인 못함"), value: "\(summary.unknown)")
+            LabeledContent(L10n.text("케이스 유령"), value: "\(summary.caseGhosts)")
+            LabeledContent(L10n.text("고아 세션"), value: "\(unresolvedSessions)")
         } header: {
             NativeSectionHeader(
-                title: "작업 경로 계보",
-                subtitle: "세션 기록이 기억하는 모든 작업 경로를 현존·소멸·확인 못함으로 분류한 집계입니다.",
-                value: "\(summary.total)곳"
+                title: L10n.text("작업 경로 계보"),
+                subtitle: L10n.text("세션 기록이 기억하는 모든 작업 경로를 현존·소멸·확인 못함으로 분류한 집계입니다."),
+                value: L10n.format("%@곳", String(describing: summary.total))
             )
         }
     }

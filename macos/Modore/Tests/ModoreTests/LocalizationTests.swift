@@ -16,3 +16,28 @@ final class LocalizationTests: XCTestCase {
         }
     }
 }
+
+extension LocalizationTests {
+    func testLanguageNegotiationAndEnglishFallback() {
+        for tag in ["fr-FR", "ar", "he-IL", "zh-Hant-TW", "", "../../ko", "zz-ZZ"] {
+            XCTAssertEqual(L10n.language(for: [tag]), "en")
+            XCTAssertEqual(L10n.text("메모리", preferences: [tag]), "Memory")
+        }
+        XCTAssertEqual(L10n.language(for: ["JA_jp"]), "ja")
+        XCTAssertEqual(L10n.language(for: ["ko-KR"]), "ko")
+        XCTAssertEqual(L10n.language(for: ["fr-FR", "ja-JP"]), "ja")
+        XCTAssertEqual(L10n.text("/Volumes/자료/Project.swift", preferences: ["en"]), "/Volumes/자료/Project.swift")
+    }
+
+    func testEveryCatalogEntryResolvesInAllLocales() throws {
+        let path = try XCTUnwrap(L10n.bundle.path(forResource: "en", ofType: "lproj"))
+        let data = try Data(contentsOf: URL(fileURLWithPath: path).appendingPathComponent("Localizable.strings"))
+        let table = try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: String])
+        for (key, english) in table {
+            XCTAssertEqual(L10n.text(key, preferences: ["ar-SA"]), english, key)
+            for lang in ["ko", "ja", "en"] {
+                XCTAssertFalse(L10n.text(key, preferences: [lang]).isEmpty, key)
+            }
+        }
+    }
+}

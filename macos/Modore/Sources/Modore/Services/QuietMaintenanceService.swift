@@ -33,7 +33,7 @@ final class QuietMaintenanceService: ObservableObject {
                     model.cleanupInFlight = true
                     model.beginDestructiveCleanupTransaction()
                     do { _ = try await EnvironmentRetirementService.invoke(root:model.projectRoot,request:["action":"tick"]) }
-                    catch { model.appendLog("예약 환경 정리 확인 실패: \(error.localizedDescription)") }
+                    catch { model.appendLog(L10n.format("예약 환경 정리 확인 실패: %@", String(describing: error.localizedDescription))) }
                     model.cleanupInFlight = false
                     model.finishDestructiveCleanupTransaction()
                 }

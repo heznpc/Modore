@@ -15,7 +15,7 @@ final class EnvironmentRetirementService: ObservableObject {
         let invocation = execution.pinnedInvocation(relativePath: "scripts/environment_retirement.py", name: "environment"),
         let registrations = execution.pinnedInvocation(relativePath:"scripts/app_registrations.py",name:"registrations"),
         let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
-            throw RetirementError("환경 정리 실행 파일을 준비하지 못했습니다.")
+            throw RetirementError(L10n.text("환경 정리 실행 파일을 준비하지 못했습니다."))
         }
         var pinned = invocation.files
         pinned.merge(registrations.files) { _,new in new }
@@ -30,7 +30,7 @@ final class EnvironmentRetirementService: ObservableObject {
         if let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let error = object["error"] as? String {
             throw RetirementError(error)
         }
-        guard result.succeeded, !result.outputTruncated else { throw RetirementError("응답 미확인 · 이전 기록을 불러와 이어서 확인하세요.") }
+        guard result.succeeded, !result.outputTruncated else { throw RetirementError(L10n.text("응답 미확인 · 이전 기록을 불러와 이어서 확인하세요.")) }
         return data
     }
     func perform(_ request: [String: Any], model: ScanModel, mutation: Bool = false) async {

@@ -15,7 +15,7 @@ struct CleanupWorkspaceList: View {
             }
         }
         .listStyle(.inset)
-        .accessibilityLabel("저장공간 정리 항목")
+        .accessibilityLabel(L10n.text("저장공간 정리 항목"))
         .task { await model.refreshStorageWatchEvidence() }
         .onDisappear { model.cancelStorageEvidenceSearch() }
     }
@@ -56,7 +56,7 @@ private struct StorageIncidentCauseSection: View {
                     .padding(.vertical, 4)
                 }
             } else if evidence?.signalEvent == nil {
-                Text("부족 경고 당시의 제한된 원인 스냅샷을 아직 확인하지 못했습니다.")
+                Text(L10n.text("부족 경고 당시의 제한된 원인 스냅샷을 아직 확인하지 못했습니다."))
                     .foregroundStyle(.secondary)
             }
 
@@ -67,31 +67,31 @@ private struct StorageIncidentCauseSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "최근 부족 시점에 무엇이 컸나",
-                subtitle: "부족 진입·급감 때 같은 점검에서 실제로 확보한 항목을 함께 봅니다.",
-                value: evidence?.capturedAt.formatted(date: .abbreviated, time: .shortened) ?? "확인 안 됨"
+                title: L10n.text("최근 부족 시점에 무엇이 컸나"),
+                subtitle: L10n.text("부족 진입·급감 때 같은 점검에서 실제로 확보한 항목을 함께 봅니다."),
+                value: evidence?.capturedAt.formatted(date: .abbreviated, time: .shortened) ?? L10n.text("확인 안 됨")
             )
         }
     }
 
     private var evidenceSummary: String {
         guard evidence != nil else {
-            return "표시할 원인 스냅샷이 없습니다. 큰 값만으로 원인을 확정하지 않습니다."
+            return L10n.text("표시할 원인 스냅샷이 없습니다. 큰 값만으로 원인을 확정하지 않습니다.")
         }
-        let swap = evidence?.signalEvent?.collectionSummary(for: .swap, label: "스왑")
-            ?? "스왑 신호 없음"
-        let rss = evidence?.signalEvent?.collectionSummary(for: .processRSS, label: "상위 RAM")
-            ?? "상위 RAM 신호 없음"
-        return "같은 점검: \(swap) · \(rss) · \(pathCollectionSummary). 큰 값만으로 원인을 확정하지 않습니다."
+        let swap = evidence?.signalEvent?.collectionSummary(for: .swap, label: L10n.text("스왑"))
+            ?? L10n.text("스왑 신호 없음")
+        let rss = evidence?.signalEvent?.collectionSummary(for: .processRSS, label: L10n.text("상위 RAM"))
+            ?? L10n.text("상위 RAM 신호 없음")
+        return L10n.format("같은 점검: %@ · %@ · %@. 큰 값만으로 원인을 확정하지 않습니다.", String(describing: swap), String(describing: rss), String(describing: pathCollectionSummary))
     }
 
     private var pathCollectionSummary: String {
         guard let rows = evidence?.pathEvent?.rows, !rows.isEmpty else {
-            return "경로 신호 없음"
+            return L10n.text("경로 신호 없음")
         }
-        if rows.allSatisfy(\.measured) { return "제한된 경로 측정 완료" }
-        if rows.contains(where: \.measured) { return "제한된 경로 일부만 측정" }
-        return "제한된 경로 측정 미완료"
+        if rows.allSatisfy(\.measured) { return L10n.text("제한된 경로 측정 완료") }
+        if rows.contains(where: \.measured) { return L10n.text("제한된 경로 일부만 측정") }
+        return L10n.text("제한된 경로 측정 미완료")
     }
 
 }
@@ -102,10 +102,10 @@ private struct StorageIncidentTimelineSection: View {
     var body: some View {
         Section {
             HStack(spacing: 8) {
-                TextField("예: DerivedData, npm cache clean", text: $model.storageEvidenceQuery)
+                TextField(L10n.text("예: DerivedData, npm cache clean"), text: $model.storageEvidenceQuery)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { model.runStorageEvidenceSearch() }
-                Button(model.storageEvidenceRunning ? "확인 중…" : "이전 기록 확인") {
+                Button(model.storageEvidenceRunning ? L10n.text("확인 중…") : L10n.text("이전 기록 확인")) {
                     model.runStorageEvidenceSearch()
                 }
                 .buttonStyle(.bordered)
@@ -120,13 +120,13 @@ private struct StorageIncidentTimelineSection: View {
             if model.storageEvidenceRunning {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("대화와 로컬 기록을 확인하는 중…")
+                    Text(L10n.text("대화와 로컬 기록을 확인하는 중…"))
                         .foregroundStyle(.secondary)
                 }
             } else if let error = model.storageEvidenceError {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(error).foregroundStyle(.secondary)
-                    Button("다시 시도") { model.runStorageEvidenceSearch() }
+                    Button(L10n.text("다시 시도")) { model.runStorageEvidenceSearch() }
                         .buttonStyle(.link)
                 }
             } else if let result = model.storageEvidence {
@@ -142,13 +142,13 @@ private struct StorageIncidentTimelineSection: View {
                     StorageEvidenceTimelineRow(item: item)
                 }
             } else {
-                Text("위의 큰 항목이나 기억나는 정리 명령을 입력하면 과거 언급과 provider 도구 기록을 구분해 확인합니다.")
+                Text(L10n.text("위의 큰 항목이나 기억나는 정리 명령을 입력하면 과거 언급과 provider 도구 기록을 구분해 확인합니다."))
                     .foregroundStyle(.secondary)
             }
         } header: {
             NativeSectionHeader(
-                title: "이전에 비슷한 문제를 어떻게 해결했나요?",
-                subtitle: "검색은 Return 또는 버튼을 눌렀을 때만 시작하며 질문은 프로세스 인자에 남기지 않습니다."
+                title: L10n.text("이전에 비슷한 문제를 어떻게 해결했나요?"),
+                subtitle: L10n.text("검색은 Return 또는 버튼을 눌렀을 때만 시작하며 질문은 프로세스 인자에 남기지 않습니다.")
             )
         }
     }
@@ -163,13 +163,13 @@ private struct StorageIncidentContextSection: View {
                 ForEach(StorageEvidenceTimelineItem.contextItems(from: result)) { item in
                     StorageEvidenceTimelineRow(item: item)
                 }
-                Text("검색어와 직접 일치한 기록이 아닙니다. 시각 순서로 함께 놓았을 뿐이며, 같은 시간대의 앞뒤 순서가 원인을 증명하지 않습니다.")
+                Text(L10n.text("검색어와 직접 일치한 기록이 아닙니다. 시각 순서로 함께 놓았을 뿐이며, 같은 시간대의 앞뒤 순서가 원인을 증명하지 않습니다."))
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
             } header: {
                 NativeSectionHeader(
-                    title: "주변 로컬 기록",
-                    subtitle: "최근 Modore 조치 영수증과 저장공간 관찰입니다. 검색 결과와 별도로 봅니다."
+                    title: L10n.text("주변 로컬 기록"),
+                    subtitle: L10n.text("최근 Modore 조치 영수증과 저장공간 관찰입니다. 검색 결과와 별도로 봅니다.")
                 )
             }
         }
@@ -190,7 +190,7 @@ private struct StorageEvidenceTimelineRow: View {
                     .font(.body.weight(.medium))
                     .textSelection(.enabled)
                 if !item.detail.isEmpty {
-                    Text(item.detail)
+                    Text(L10n.message(item.detail))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -214,7 +214,7 @@ struct StorageEvidenceTimelineItem: Identifiable {
     let detail: String
 
     var displayTime: String {
-        guard let occurredAt else { return "시각 확인 안 됨" }
+        guard let occurredAt else { return L10n.text("시각 확인 안 됨") }
         // Date's formatted representation uses the person's current locale
         // and timezone. In particular, a UTC storage-watch timestamp must not
         // be shown as wall-clock local time merely by stripping its trailing Z.
@@ -229,7 +229,7 @@ struct StorageEvidenceTimelineItem: Identifiable {
                 evidenceLabel: ScreeEvidenceKind.conversationMention.label,
                 symbol: "text.bubble",
                 title: mention.snippet,
-                detail: [mention.tool, location(mention.workspace), mention.isUser ? "나" : "에이전트"]
+                detail: [mention.tool, location(mention.workspace), mention.isUser ? L10n.text("나") : L10n.text("에이전트")]
                     .filter { !$0.isEmpty }.joined(separator: " · ")
             )
         }
@@ -260,9 +260,9 @@ struct StorageEvidenceTimelineItem: Identifiable {
                 title: receipt.label.isEmpty ? receipt.recipeId : receipt.label,
                 detail: [
                     cleanupStatusText(receipt.status),
-                    "대상 점유 감소 \(reclaimed)",
-                    "여유 공간 순변화 \(physicalDelta)",
-                    "사전 추정 \(estimate)",
+                    L10n.format("대상 점유 감소 %@", String(describing: reclaimed)),
+                    L10n.format("여유 공간 순변화 %@", String(describing: physicalDelta)),
+                    L10n.format("사전 추정 %@", String(describing: estimate)),
                 ]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
             )
@@ -270,14 +270,14 @@ struct StorageEvidenceTimelineItem: Identifiable {
         let observations = result.filesystemObservations.enumerated().map { index, observation in
             let free = sizeText(kilobytes: observation.freeKB)
             let drop = observation.dropKB > 0
-                ? "직전 표본보다 \(sizeText(kilobytes: observation.dropKB)) 감소"
-                : statusText(observation.status) ?? "상태 확인 안 됨"
+                ? L10n.format("직전 표본보다 %@ 감소", String(describing: sizeText(kilobytes: observation.dropKB)))
+                : statusText(observation.status) ?? L10n.text("상태 확인 안 됨")
             return Self(
                 id: "observation|\(observation.at)|\(index)",
                 occurredAt: isoDate(observation.at),
                 evidenceLabel: ScreeEvidenceKind.filesystemObservation.label,
                 symbol: "internaldrive",
-                title: "사용 가능 \(free)",
+                title: L10n.format("사용 가능 %@", String(describing: free)),
                 detail: drop
             )
         }
@@ -315,28 +315,28 @@ struct StorageEvidenceTimelineItem: Identifiable {
 
     private static func cleanupStatusText(_ status: String) -> String? {
         switch status {
-        case "complete": return "실행 완료"
-        case "partial": return "부분 실행"
-        case "blocked": return "실행 차단"
+        case "complete": return L10n.text("실행 완료")
+        case "partial": return L10n.text("부분 실행")
+        case "blocked": return L10n.text("실행 차단")
         default: return statusText(status)
         }
     }
 
     private static func providerStatusLabel(_ status: String) -> String {
         switch status {
-        case "completed": return "실행 완료 기록"
-        case "failed": return "실행 실패 기록"
-        case "denied": return "실행 차단 기록"
-        case "requested": return "도구 호출 요청됨"
-        default: return "실행 여부 확인 안 됨"
+        case "completed": return L10n.text("실행 완료 기록")
+        case "failed": return L10n.text("실행 실패 기록")
+        case "denied": return L10n.text("실행 차단 기록")
+        case "requested": return L10n.text("도구 호출 요청됨")
+        default: return L10n.text("실행 여부 확인 안 됨")
         }
     }
 
     private static func statusText(_ status: String) -> String? {
         switch status {
-        case "warning": return "부족 상태"
-        case "normal": return "정상 범위"
-        case "failed": return "실패 기록"
+        case "warning": return L10n.text("부족 상태")
+        case "normal": return L10n.text("정상 범위")
+        case "failed": return L10n.text("실패 기록")
         case "": return nil
         default: return status
         }
@@ -353,8 +353,8 @@ private struct CleanupCandidateSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "정리 미리보기 가능",
-                subtitle: "합계는 실행 가능한 대상의 점유 추정이며, 실행 직전에 다시 측정합니다.",
+                title: L10n.text("정리 미리보기 가능"),
+                subtitle: L10n.text("합계는 실행 가능한 대상의 점유 추정이며, 실행 직전에 다시 측정합니다."),
                 value: storage.reclaimableText
             )
         }
@@ -366,9 +366,9 @@ private struct CleanupCandidateSection: View {
                 }
             } header: {
                 NativeSectionHeader(
-                    title: "수동 확인",
-                    subtitle: "실행 recipe가 없는 넓은 경로입니다. Finder에서 개별 항목을 검토하세요.",
-                    value: "\(manualCandidates.count)개"
+                    title: L10n.text("수동 확인"),
+                    subtitle: L10n.text("실행 recipe가 없는 넓은 경로입니다. Finder에서 개별 항목을 검토하세요."),
+                    value: L10n.format("%@개", String(describing: manualCandidates.count))
                 )
             }
         }
@@ -391,7 +391,7 @@ struct CleanupCandidateRow: View {
         WorkspaceStorageItemRow(
             item: item,
             fallbackSymbol: cleanupSymbol,
-            status: item.canCleanup || canRetryMeasurement ? nil : "수동 확인",
+            status: item.canCleanup || canRetryMeasurement ? nil : L10n.text("수동 확인"),
             actionTitle: actionTitle
         ) {
             if item.measureStatus == "timed_out" {
@@ -404,8 +404,8 @@ struct CleanupCandidateRow: View {
     }
 
     private var actionTitle: String? {
-        if canRetryMeasurement { return "다시 측정" }
-        return item.canCleanup ? "정리 검토…" : nil
+        if canRetryMeasurement { return L10n.text("다시 측정") }
+        return item.canCleanup ? L10n.text("정리 검토…") : nil
     }
 
     private var canRetryMeasurement: Bool {
@@ -436,7 +436,7 @@ private struct CleanupProtectedSection: View {
                 WorkspaceStorageItemRow(
                     item: item,
                     fallbackSymbol: "lock.shield",
-                    status: "보호됨"
+                    status: L10n.text("보호됨")
                 )
                 .contextMenu { StorageItemContextMenu(item: item) }
             }
@@ -446,7 +446,7 @@ private struct CleanupProtectedSection: View {
                         WorkspaceStorageItemRow(
                             item: item,
                             fallbackSymbol: "lock.shield",
-                            status: "보호됨"
+                            status: L10n.text("보호됨")
                         )
                         .contextMenu { StorageItemContextMenu(item: item) }
                     }
@@ -456,23 +456,23 @@ private struct CleanupProtectedSection: View {
                             .symbolRenderingMode(.hierarchical)
                             .foregroundStyle(.secondary)
                             .frame(width: 32)
-                        Text("작은 보호 항목")
+                        Text(L10n.text("작은 보호 항목"))
                             .font(.body.weight(.medium))
                         Spacer()
-                        Text("\(groups.small.count)개")
+                        Text(L10n.format("%@개", String(describing: groups.small.count)))
                             .font(.callout.weight(.medium))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
                     .padding(.vertical, 6)
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("작은 보호 항목 \(groups.small.count)개")
+                    .accessibilityLabel(L10n.format("작은 보호 항목 %@개", String(describing: groups.small.count)))
                 }
             }
         } header: {
             NativeSectionHeader(
-                title: "보호 및 확인",
-                subtitle: "Codex·Claude 세션, 작업 기록과 내부 DB는 자동 정리하지 않습니다.",
+                title: L10n.text("보호 및 확인"),
+                subtitle: L10n.text("Codex·Claude 세션, 작업 기록과 내부 DB는 자동 정리하지 않습니다."),
                 value: storage.reviewText
             )
         }
@@ -502,10 +502,10 @@ struct StorageItemContextMenu: View {
 
     var body: some View {
         Button { model.revealStorageItem(item) } label: {
-            Label("Finder에서 보기", systemImage: "folder")
+            Label(L10n.text("Finder에서 보기"), systemImage: "folder")
         }
         Button { model.copyGuide(for: item) } label: {
-            Label("정보 복사", systemImage: "doc.on.clipboard")
+            Label(L10n.text("정보 복사"), systemImage: "doc.on.clipboard")
         }
     }
 }
