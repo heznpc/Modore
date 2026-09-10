@@ -324,7 +324,7 @@ private struct SidebarScanStatus: View {
                 Text(statusTitle(at: date))
                     .font(.caption.weight(.semibold))
                 if let liveFreeSpace = model.liveState.freeSpace {
-                    Text("\(liveFreeSpace.value.freeGB, specifier: "%.1f")GB 사용 가능")
+                    Text(ByteCountFormatter.string(fromByteCount:liveFreeSpace.value.freeBytes,countStyle:.file) + " 사용 가능")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
