@@ -9,7 +9,11 @@ available in their tabs. Denied traversal reports a lower bound; timeouts report
 unknown. Cached measurements show their timestamp and can be refreshed.
 
 **시뮬레이터·실행 환경 정리** (also available from 작업 환경) opens a measured
-review. No device is silently selected for deletion. Separate tabs cover:
+review. No device is silently selected for deletion. The workbench groups targets by
+intent: **공간 비우기**, **작업 마치기**, and **SSD 가져가기**. Selections persist
+across these views for a single review. Maintenance policy and access settings are
+in the overflow menu; unreadable targets also offer folder access in context.
+Empty measured caches collapse instead of dominating the first screen. Targets cover:
 
 - Device data: real allocated directory size and permanent-data-loss warning.
 - OS runtimes: installed image size, affected devices, redownload warning.
