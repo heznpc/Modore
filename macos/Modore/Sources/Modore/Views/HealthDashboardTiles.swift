@@ -9,7 +9,7 @@ struct HealthDashboardTiles: View {
         HStack(spacing:16) {
             tile("저장공간", "internaldrive", value:bytes(snapshot.freeBytes), detail:"사용 가능한 공간", status:snapshot.freeBytes.map { $0 < 20 * 1_073_741_824 ? "부족" : "여유 있음" } ?? "미확인", warning:snapshot.freeBytes.map { $0 < 20 * 1_073_741_824 } ?? false, action:"전체 구성 보기", run:storage)
             tile("메모리", "memorychip", value:snapshot.memoryPressure.map { $0 >= 4 ? "위험" : ($0 >= 2 ? "주의" : "안정") } ?? "미확인", detail:"스왑 " + bytes(snapshot.swapBytes.map { Int64(clamping:$0) }), status:snapshot.memoryPressure == nil ? "미확인" : "macOS 메모리 압력", warning:(snapshot.memoryPressure ?? 0) >= 2, action:"앱 재시작", run:memory)
-            tile("CPU", "cpu", value:snapshot.cpuAvailable ? (snapshot.cpuElevated ? "부하 지속" : "안정") : "측정 중", detail:snapshot.thermalPressure < 0 ? "열 압력 미확인" : (snapshot.thermalPressure > 0 ? "열 압력 감지" : "열 압력 정상"), status:snapshot.cpuAvailable ? "지속 부하 기준" : "표본 수집 중", warning:snapshot.cpuElevated, action:"실행 작업 보기", run:cpu)
+            tile("CPU", "cpu", value:snapshot.cpuAvailable ? (snapshot.cpuElevated ? "부하 지속" : (snapshot.cpuBurst == true ? "순간 부하" : "안정")) : "측정 중", detail:snapshot.thermalPressure < 0 ? "열 압력 미확인" : (snapshot.thermalPressure > 0 ? "열 압력 감지" : "열 압력 정상"), status:snapshot.cpuAvailable ? (snapshot.processes.max(by:{$0.cpu < $1.cpu}).map { "\($0.name) \(Int($0.cpu))%" } ?? "측정 중") : "표본 수집 중", warning:snapshot.cpuElevated || snapshot.cpuBurst == true, action:"실행 작업 보기", run:cpu)
         }
     }
     private func bytes(_ n:Int64?) -> String { n.map { ByteCountFormatter.string(fromByteCount:$0,countStyle:.file) } ?? "미확인" }

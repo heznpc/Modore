@@ -181,7 +181,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
                 let sample = await Task.detached(priority: .utility) { await CPUSample.captureWithSystemProcesses() }.value
                 guard !Task.isCancelled else { return }
                 await self?.receive(sample)
-                do { try await Task.sleep(nanoseconds: 10_000_000_000) }
+                do { try await Task.sleep(nanoseconds: 2_000_000_000) }
                 catch { return }
             }
         }
@@ -229,7 +229,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         else if cpuHighSince == nil { cpuHighSince = sample.uptime }
         let sustained = cpuHighSince.map { sample.uptime - $0 >= 60 } ?? false
         let current = await Task.detached(priority: .utility) {
-            HealthSnapshot.capture(sample: sample, usage: usage, cpuElevated: sustained)
+            HealthSnapshot.capture(sample: sample, usage: usage, cpuElevated: sustained, cpuBurst: high)
         }.value
         guard !Task.isCancelled else { return }
         snapshot = current
@@ -237,7 +237,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         detail = current.summary
         if changed || Date().timeIntervalSince(lastSaved) >= 60 { persist() }
         guard changed, LocalUserPresence.allowsNotification else { return }
-        guard enabled else { return }
+        guard enabled, Date().timeIntervalSince(lastNotice) >= 60 else { return }
         let content = UNMutableNotificationContent()
         content.title = current.issues.isEmpty ? "관찰된 부하가 경고 기준 아래로 내려왔습니다" : current.issues.joined(separator: " · ")
         content.body = current.summary + "\n" + usage.prefix(3).map { "\($0.name) \(Int($0.percent))%" }.joined(separator: " · ") + "\n눌러서 원인·관련 작업·조치 결과 확인"
