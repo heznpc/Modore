@@ -13,14 +13,16 @@ final class EnvironmentRetirementService: ObservableObject {
             RuntimeWorkspace.prepareExecution(projectRoot: root)
         }).value,
         let invocation = execution.pinnedInvocation(relativePath: "scripts/environment_retirement.py", name: "environment"),
+        let registrations = execution.pinnedInvocation(relativePath:"scripts/app_registrations.py",name:"registrations"),
         let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
             throw RetirementError("환경 정리 실행 파일을 준비하지 못했습니다.")
         }
         var pinned = invocation.files
+        pinned.merge(registrations.files) { _,new in new }
         pinned["request"] = try JSONSerialization.data(withJSONObject: request)
-        let wrapper = "import sys; source=open(sys.argv[1],'rb').read(); sys.argv=['environment_retirement.py']+sys.argv[2:]; exec(compile(source,'environment_retirement.py','exec'),{'__name__':'__main__'})"
+        let wrapper = "import sys,types; helper=types.ModuleType('app_registrations'); exec(compile(open(sys.argv[2],'rb').read(),'app_registrations.py','exec'),helper.__dict__); sys.modules['app_registrations']=helper; source=open(sys.argv[1],'rb').read(); sys.argv=['environment_retirement.py']+sys.argv[3:]; exec(compile(source,'environment_retirement.py','exec'),{'__name__':'__main__'})"
         let result = await LocalProcessRunner.capture(executable: python,
-            arguments: ["-I", "-B", "-c", wrapper, invocation.argument, "--request-file", "@pch-pinned:request"],
+            arguments: ["-I", "-B", "-c", wrapper, invocation.argument, registrations.argument, "--request-file", "@pch-pinned:request"],
             currentDirectory: execution.runtimeRoot, expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
             expectedSignedBundleURL: execution.signedBundleURL, pinnedFiles: pinned, timeout: 3600,
             maxOutputBytes: 8_000_000, waitForCleanupOnStop: true)

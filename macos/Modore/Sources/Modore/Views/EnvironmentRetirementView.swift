@@ -6,8 +6,10 @@ struct EnvironmentRetirementView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var service = EnvironmentRetirementService()
     @State private var selected: Set<String> = []
+    @State private var appQuery = ""
     @State private var expandedProjects: Set<String> = []
     @State private var tab = "space"
+    var initialTab: String = "space"
     @State private var confirm = false
     @State private var platforms: Set<String> = ["iOS", "iPadOS", "watchOS"]
     @State private var schedule = false
@@ -73,8 +75,10 @@ struct EnvironmentRetirementView: View {
                         if tab == "space" {
                             EnvironmentConditionBoard(items:items,selected:selected,required:$platforms) { simulatorSetup=true }
                         }
+                        if tab == "apps" { Text("실제 복사본과 파일 없는 등록을 구분합니다. 선택한 항목은 등록만 해제하며, 메뉴 막대 항목 제거 여부는 별도 확인이 필요합니다.").font(.callout).foregroundStyle(.secondary) }
+                        if tab == "apps" { TextField("앱 이름·번들 ID·경로 검색",text:$appQuery).textFieldStyle(.roundedBorder) }
                         ForEach(visibleKinds,id: \.self) { kind in
-                            let group = items.filter { $0.kind == kind }
+                            let group = items.filter { $0.kind == kind && (kind != "registration" || appQuery.isEmpty || ($0.name + $0.path + $0.target).localizedCaseInsensitiveContains(appQuery)) }
                             if kind == "cache", plan.cacheBytes == 0 {
                                 Label("캐시는 이미 비어 있습니다",systemImage:"checkmark.circle").font(.callout).foregroundStyle(.secondary)
                             } else if !group.isEmpty {
@@ -82,10 +86,10 @@ struct EnvironmentRetirementView: View {
                                     HStack {
                                         Text(groupTitle(kind)).font(.headline)
                                         Spacer()
-                                        Text("\(kind == "process" ? Set(group.map(\.project)).count : group.count)개").foregroundStyle(.secondary)
+                                        Text("\(["process","registration"].contains(kind) ? Set(group.map(\.project)).count : group.count)개").foregroundStyle(.secondary)
                                     }
                                     if kind == "cache" { Text("공유 캐시 \(size(plan.cacheBytes)) · 다시 만들어지는 자료").font(.caption).foregroundStyle(.secondary) }
-                                    if kind == "process" { projectGroups(group) }
+                                    if kind == "process" || kind == "registration" { projectGroups(group) }
                                     else { ForEach(group) { item in itemCard(item) } }
                                 }
                             }
@@ -160,7 +164,7 @@ struct EnvironmentRetirementView: View {
         .sheet(isPresented:$simulatorSetup) { SimulatorSetupView() }
         .sheet(isPresented:$appRecovery) { AppRecoveryView() }
         .interactiveDismissDisabled(service.executing)
-        .task { preview() }
+        .task { tab=initialTab;preview() }
         .onChange(of: service.plan?.id) { _ in loadPolicy() }
         .confirmationDialog("선택한 항목을 실행합니다", isPresented: $confirm, titleVisibility:.visible) {
             Button("경고 확인 · 선택한 \(chosen.count)개 실행", role:.destructive) {
@@ -169,23 +173,23 @@ struct EnvironmentRetirementView: View {
             }
             Button("취소", role:.cancel) {}
         } message: {
-            Text((chosen.map { "\($0.name) · \(["process","vm"].contains($0.kind) ? "정상 종료" : ($0.kind == "volume" ? "추출" : "삭제"))" } + selectionWarnings).joined(separator:"\n"))
+            Text((chosen.map { "\($0.name) · \($0.actionLabel)" } + selectionWarnings).joined(separator:"\n"))
         }
     }
     private var visibleKinds: [String] {
-        tab == "space" ? ["cache","device","runtime"] : (tab == "finish" ? ["process","vm"] : ["volume","process","vm"])
+        tab == "apps" ? ["registration"] : tab == "space" ? ["cache","device","runtime"] : (tab == "finish" ? ["process","vm"] : ["volume","process","vm"])
     }
-    private var intentTitle: String { tab == "space" ? "가볍게 만들기" : (tab == "finish" ? "오늘 작업 마치기" : "SSD 가져가기") }
+    private var intentTitle: String { tab == "apps" ? "앱 중복 정리" : tab == "space" ? "가볍게 만들기" : (tab == "finish" ? "오늘 작업 마치기" : "SSD 가져가기") }
     private var intentDetail: String {
         tab == "space" ? "다시 만들 수 있는 자료부터 살펴보세요. 기기와 OS는 필요한 만큼 남깁니다." :
         (tab == "finish" ? "프로젝트 서버와 가상머신을 정상 종료합니다. 작업 파일은 그대로 남습니다." : "드라이브와 연결된 작업을 살펴보고, 종료할 작업과 추출할 SSD를 함께 선택하세요.")
     }
     private func groupTitle(_ kind:String) -> String {
-        ["cache":"다시 만들어지는 자료", "device":"내 테스트 기기", "runtime":"기기가 사용하는 OS", "process":"실행 중인 프로젝트", "vm":"가상머신", "volume":"연결된 드라이브"][kind] ?? kind
+        ["cache":"다시 만들어지는 자료", "device":"내 테스트 기기", "runtime":"기기가 사용하는 OS", "process":"실행 중인 프로젝트", "vm":"가상머신", "volume":"연결된 드라이브", "registration":"중복 이름으로 등록된 앱"][kind] ?? kind
     }
     private func projectGroups(_ group:[EnvironmentItem]) -> some View {
         let paths = Array(Set(group.map(\.project))).sorted()
-        return VStack(spacing:12) {
+        return LazyVGrid(columns:group.first?.kind == "registration" && expandedProjects.isEmpty ? [GridItem(.flexible()),GridItem(.flexible())] : [GridItem(.flexible())],spacing:12) {
             ForEach(paths,id: \.self) { path in
                 let members = group.filter { $0.project == path }
                 VStack(alignment:.leading,spacing:12) {
@@ -195,8 +199,8 @@ struct EnvironmentRetirementView: View {
                         HStack(spacing:12) {
                             Image(systemName:"folder").font(.title2).foregroundStyle(.teal)
                             VStack(alignment:.leading,spacing:6) {
-                                Text(path.isEmpty ? "연결 프로젝트 미확인" : URL(fileURLWithPath:path).lastPathComponent).font(.headline)
-                                HStack { Label("실행 \(members.count)",systemImage:"play.fill").foregroundStyle(.teal); Label("선택 \(members.filter { selected.contains($0.id) }.count)",systemImage:"checkmark.circle"); Label("파일 유지",systemImage:"doc") }.font(.caption)
+                                Text(members.first?.kind == "registration" ? (members.first?.name ?? path) : (path.isEmpty ? "연결 프로젝트 미확인" : URL(fileURLWithPath:path).lastPathComponent)).font(.headline)
+                                HStack { Label("\(members.first?.kind == "registration" ? "등록" : "실행") \(members.count)",systemImage:"square.stack").foregroundStyle(.teal); Label("선택 \(members.filter { selected.contains($0.id) }.count)",systemImage:"checkmark.circle"); Label("파일 유지",systemImage:"doc") }.font(.caption)
                             }
                             Spacer()
                             Text(expandedProjects.contains(path) ? "작업 접기" : "작업 보기").font(.callout).foregroundStyle(.teal)
@@ -213,12 +217,13 @@ struct EnvironmentRetirementView: View {
                 Toggle(isOn:Binding(get:{ selected.contains(item.id) },set:{ if $0 { selected.insert(item.id) } else { selected.remove(item.id) } })) {
                     HStack(spacing:14) {
                         Image(systemName:item.icon).font(.system(size:26)).foregroundStyle(.teal).frame(width:38,height:44)
-                        VStack(alignment:.leading,spacing:5) { Text(item.name).font(.headline) }
+                        VStack(alignment:.leading,spacing:5) { Text(item.displayName).font(.headline).lineLimit(2) }
                     }
                 }.disabled(item.finished || item.changed || !item.invariant.isEmpty)
                 Spacer()
                 Text(item.bytes.map { size($0) } ?? (item.kind == "cache" ? "공유 캐시" : "")).monospacedDigit().foregroundStyle(.secondary)
             }
+            if item.kind == "registration" { VStack(alignment:.leading,spacing:4) { Text(item.platform + " · " + item.runtime); Text(item.path).foregroundStyle(.secondary).textSelection(.enabled) }.font(.caption) }
             EnvironmentConditionChips(item:item,selected:selected.contains(item.id),required:platforms.contains(item.platform) && item.kind == "device")
             if !item.invariant.isEmpty {
                 HStack { Label(item.invariant,systemImage:"exclamationmark.circle").font(.callout).foregroundStyle(.orange); Spacer(); Button("폴더 연결") { folderAccess=true } }
