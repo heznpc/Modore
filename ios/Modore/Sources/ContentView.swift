@@ -3,13 +3,25 @@ import UIKit
 
 struct ContentView: View {
     @StateObject private var model = ModoreViewModel()
+    @StateObject private var history = CleanupHistory()
+    @State private var cleanupDestination: CleanupDestination?
+    @Environment(\.scenePhase) private var scenePhase
+
+    private enum CleanupDestination: String, Identifiable {
+        case media, files
+        var id: Self { self }
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     storageSection
+                    cleanupSection
                     mediaSection
+                    if !history.receipts.isEmpty || history.errorMessage != nil {
+                        CleanupHistoryView(history: history).sectionCard()
+                    }
                     boundariesSection
                 }
                 .padding()
@@ -26,7 +38,37 @@ struct ContentView: View {
                 }
             }
             .task { await model.refreshForViewLifetime() }
+            .sheet(item: $cleanupDestination, onDismiss: { model.refresh() }) { destination in
+                switch destination {
+                case .media: PhotoCleanupView(history: history)
+                case .files: FileCleanupView(history: history)
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active && cleanupDestination == nil { model.refresh() }
+            }
         }
+    }
+
+    private var cleanupSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Free up space", systemImage: "trash").font(.headline)
+            Text("Review your selection before anything is deleted.")
+                .font(.subheadline).foregroundStyle(.secondary)
+            if model.authorization == .authorized || model.authorization == .limited {
+                Button("Clean up photos & videos") { cleanupDestination = .media }
+                    .buttonStyle(.borderedProminent)
+            } else if model.authorization == .notDetermined {
+                Button("Allow photo access") { model.requestPhotoAccess() }
+                    .buttonStyle(.borderedProminent).disabled(model.isScanning)
+            } else {
+                Text(model.authorization.label).font(.caption)
+                Link("Open Settings", destination: URL(string: UIApplication.openSettingsURLString)!)
+            }
+            Button("Clean up files") { cleanupDestination = .files }
+                .buttonStyle(.bordered)
+        }
+        .sectionCard()
     }
 
     @ViewBuilder
@@ -133,7 +175,7 @@ struct ContentView: View {
                 .font(.headline)
             Text("Modore can see the device storage summary and metadata for photo-library videos you allow.")
             Text("It cannot inspect other apps' caches, iOS System Data, or app sandboxes.")
-            Text("This preview does not delete media. Use the Photos app when you decide to remove an item.")
+            Text("Only selected items are deleted after confirmation. Photos keeps deleted media in Recently Deleted for up to 30 days.")
         }
         .font(.footnote)
         .foregroundStyle(.secondary)

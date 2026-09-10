@@ -19,7 +19,7 @@ Today, the Mac app focuses on AI work continuity and storage recovery. The Windo
 | Surface | What it provides |
 |---|---|
 | **Mac app** | Native SwiftUI views for storage, AI work, system evidence, activity history, settings, and approval-gated recovery. |
-| **iPhone preview** | Shows device capacity and, after explicit Photo Library permission, counts videos and screen recordings from public metadata. iOS does not expose other apps' caches or System Data, and this preview does not delete media. |
+| **iPhone preview** | Shows device capacity, reviews photos and videos after Photo Library permission, and deletes only confirmed selections. Files cleanup is limited to files explicitly chosen through the document picker. Records before/after capacity locally; iOS does not expose other apps' caches or System Data. |
 | **AI work protection** | Joins Claude, Codex, Gemini, and supported IDE sessions to repositories and worktrees; flags retention risk, missing workspaces, and unpushed sole copies. |
 | **Verified backups** | Creates and verifies original Claude and Codex session archives, then restores them only into a new safe directory. |
 | **Asset retirement** | Select GitHub archive and local repository cleanup independently; preserve ignored data, override risk warnings, retry partial operations, and inspect separate mutation/verification/free-space results. [Workflow](./docs/ASSET_RETIREMENT.md). |
@@ -76,6 +76,8 @@ open Modore.xcodeproj
 ```
 
 Requires iOS 17 or later. The generated project is committed, so XcodeGen is needed only after changing `project.yml`. Storage thresholds and capacity arithmetic come from `shared/ModoreDomain`, the same Swift package used by the Mac app.
+
+See [iPhone cleanup](./docs/IPHONE_CLEANUP.md) for selection, confirmation, receipt behavior and validation limits.
 
 <details>
 <summary><strong>Technical and CLI reference</strong></summary>
@@ -194,7 +196,7 @@ Modore is the brand. The OS editions are separate products under that brand, not
 | Edition | Artifact | Focus | Validation rule |
 |---|---|---|---|
 | Mac Edition | `modore-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | The scree AI-agent session/residue audit, plus macOS security context and decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
-| iPhone preview | Source project in `ios/Modore` | Device capacity plus user-authorized video and screen-recording metadata; no cross-app cache inspection or deletion | Public iOS APIs only; Simulator tests and real-device validation before distribution |
+| iPhone preview | Source project in `ios/Modore` | Device capacity, confirmed photo/video and user-picked file deletion, and local cleanup receipts; no cross-app cache inspection | Public iOS APIs only; Simulator tests and real-device validation before distribution |
 | Windows Edition | `modore-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
 
 Shared rules, whitelist data, i18n strings, and report vocabulary can be reused where they genuinely match. OS-specific collectors stay separate.
