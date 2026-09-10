@@ -13,16 +13,16 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
-        case .health: return "대시보드"
-        case .status: return "문제 점검"
-        case .storage: return "저장공간"
-        case .security: return "권한·자동 실행 점검"
+        case .health: return L10n.text("대시보드")
+        case .status: return L10n.text("문제 점검")
+        case .storage: return L10n.text("저장공간")
+        case .security: return L10n.text("권한·자동 실행 점검")
         // Not "AI 세션": the object here is a project, and sessions are
         // one of the things it has. The old name also stopped being true
         // -- worktrees, git state and lineage arrived first on that
         // screen long before any session did.
-        case .work: return "프로젝트·대화 찾기"
-        case .activity: return "조치 기록"
+        case .work: return L10n.text("프로젝트·대화 찾기")
+        case .activity: return L10n.text("조치 기록")
         }
     }
 
@@ -66,10 +66,10 @@ struct ModernRootView: View {
             .navigationTitle(selection.title)
             .toolbar {
                 ToolbarItem(placement:.navigation) {
-                    Button { navigate(to:.health) } label: { Label("대시보드",systemImage:"square.grid.2x2") }.disabled(selection == .health)
+                    Button { navigate(to:.health) } label: { Label(L10n.text("대시보드"),systemImage:"square.grid.2x2") }.disabled(selection == .health)
                 }
                 ToolbarItem(placement:.automatic) {
-                    Menu("다른 작업") { ForEach(AppDestination.allCases.filter { $0 != .health }) { destination in Button(destination.title) { navigate(to:destination) } } }
+                    Menu(L10n.text("다른 작업")) { ForEach(AppDestination.allCases.filter { $0 != .health }) { destination in Button(destination.title) { navigate(to:destination) } } }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -146,11 +146,11 @@ struct ModernRootView: View {
     }
 
     private var primaryActionTitle: String {
-        if model.cleanupIsExecuting { return "정리 중" }
-        if model.cleanupInFlight { return "미리보기 취소" }
-        if model.isRunning { return "정밀 검사 취소" }
-        if model.storageWatchInFlight { return "설정 적용 중" }
-        return "정밀 검사"
+        if model.cleanupIsExecuting { return L10n.text("정리 중") }
+        if model.cleanupInFlight { return L10n.text("미리보기 취소") }
+        if model.isRunning { return L10n.text("정밀 검사 취소") }
+        if model.storageWatchInFlight { return L10n.text("설정 적용 중") }
+        return L10n.text("정밀 검사")
     }
 
     private var primaryActionSymbol: String {
@@ -164,11 +164,11 @@ struct ModernRootView: View {
     }
 
     private var primaryActionHelp: String {
-        if model.cleanupIsExecuting { return "승인한 정리가 끝날 때까지 중단하지 않습니다" }
-        if model.cleanupInFlight { return "삭제 없이 정리 대상 확인을 취소합니다" }
-        if model.isRunning { return "현재 정밀 검사를 안전하게 중단합니다" }
-        if model.storageWatchInFlight { return "감시 설정을 적용하고 있습니다" }
-        return "캐시·보안·자동 실행을 한 시점의 증거로 다시 평가합니다"
+        if model.cleanupIsExecuting { return L10n.text("승인한 정리가 끝날 때까지 중단하지 않습니다") }
+        if model.cleanupInFlight { return L10n.text("삭제 없이 정리 대상 확인을 취소합니다") }
+        if model.isRunning { return L10n.text("현재 정밀 검사를 안전하게 중단합니다") }
+        if model.storageWatchInFlight { return L10n.text("감시 설정을 적용하고 있습니다") }
+        return L10n.text("캐시·보안·자동 실행을 한 시점의 증거로 다시 평가합니다")
     }
 }
 
@@ -346,7 +346,7 @@ private struct SidebarScanStatus: View {
         if model.cleanupIsExecuting {
             return model.cleanupRecoveryProgress.map {
                 "\($0.currentLabel) 정리 중"
-            } ?? "정리 중"
+            } ?? L10n.text("정리 중")
         }
         if model.cleanupRecoveryProgress != nil { return "공간 확보 계획 준비 중" }
         if model.cleanupInFlight { return "정리 대상 확인 중" }

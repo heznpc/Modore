@@ -452,6 +452,9 @@ for architecture in "${architectures[@]}"; do
 done
 
 /bin/mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+for localization in "$PACKAGE_DIR/Sources/Modore/Resources/"*.lproj; do
+    /bin/cp -R "$localization" "$APP_DIR/Contents/Resources/"
+done
 bundled_executable="$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
 if [[ "${#architectures[@]}" -eq 1 ]]; then
     /bin/cp "$binary_staging/$EXECUTABLE_NAME-${architectures[0]}" "$bundled_executable"
