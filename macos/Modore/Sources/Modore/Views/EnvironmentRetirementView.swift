@@ -6,6 +6,7 @@ struct EnvironmentRetirementView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var service = EnvironmentRetirementService()
     @State private var selected: Set<String> = []
+    @State private var expandedProjects: Set<String> = []
     @State private var tab = "space"
     @State private var confirm = false
     @State private var platforms: Set<String> = ["iOS", "iPadOS", "watchOS"]
@@ -64,28 +65,18 @@ struct EnvironmentRetirementView: View {
                     if let plan = service.plan {
                         VStack(alignment:.leading,spacing:8) {
                             Text(intentTitle).font(.system(size:32,weight:.bold))
-                            Text(intentDetail).font(.callout).foregroundStyle(.secondary)
+                            HStack(spacing:16) { Label("선택",systemImage:"checkmark.circle"); Image(systemName:"chevron.right"); Label("영향 확인",systemImage:"square.stack.3d.up"); Image(systemName:"chevron.right"); Label("실행",systemImage:"play.fill") }.font(.caption).foregroundStyle(.secondary)
                         }.padding(.bottom,8)
                         if tab == "finish" {
                             Button { appRecovery = true } label: { Label("앱만 다시 시작하기",systemImage:"arrow.clockwise.circle") }
                         }
-                        if tab == "space", !plan.missingPlatforms.isEmpty {
-                            HStack(spacing:12) {
-                                Image(systemName:"ipad.and.iphone").font(.title2).foregroundStyle(.teal)
-                                VStack(alignment:.leading,spacing:4) {
-                                    Text("개발 환경 채워두기").font(.headline)
-                                    Text(plan.missingPlatforms.joined(separator:" · ") + " 환경이 없습니다").font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Button("준비하기") { simulatorSetup = true }
-                            }.padding(16).background(Color.teal.opacity(0.07),in:RoundedRectangle(cornerRadius:16))
+                        if tab == "space" {
+                            EnvironmentConditionBoard(items:items,selected:selected,required:$platforms) { simulatorSetup=true }
                         }
                         ForEach(visibleKinds,id: \.self) { kind in
                             let group = items.filter { $0.kind == kind }
                             if kind == "cache", plan.cacheBytes == 0 {
-                                DisclosureGroup("캐시는 이미 비어 있습니다") {
-                                    ForEach(group) { item in itemCard(item) }
-                                }.font(.callout).foregroundStyle(.secondary)
+                                Label("캐시는 이미 비어 있습니다",systemImage:"checkmark.circle").font(.callout).foregroundStyle(.secondary)
                             } else if !group.isEmpty {
                                 VStack(alignment:.leading,spacing:12) {
                                     HStack {
@@ -145,7 +136,7 @@ struct EnvironmentRetirementView: View {
                     Spacer()
                     if service.executing { Button("이후 항목 취소") { service.cancel() } }
                 } else {
-                    Text(chosen.isEmpty ? "대상을 선택하면 여기에 모입니다" : "\(chosen.count)개 선택 · \(size(chosen.compactMap(\.bytes).reduce(0,+)))").font(.headline).foregroundStyle(chosen.isEmpty ? .secondary : .primary)
+                    Text(chosen.isEmpty ? "대상을 선택하면 여기에 모입니다" : "\(chosen.count)개 선택" + (chosen.compactMap(\.bytes).isEmpty ? "" : " · \(size(chosen.compactMap(\.bytes).reduce(0,+)))")).font(.headline).foregroundStyle(chosen.isEmpty ? .secondary : .primary)
                     Spacer()
                     Button("선택 해제") { selected = [] }
                     if let plan = service.plan, chosen.contains(where: { $0.approved && !$0.changed }) {
@@ -197,18 +188,22 @@ struct EnvironmentRetirementView: View {
         return VStack(spacing:12) {
             ForEach(paths,id: \.self) { path in
                 let members = group.filter { $0.project == path }
-                DisclosureGroup {
-                    ForEach(members) { item in itemCard(item) }
-                } label: {
-                    HStack(spacing:12) {
-                        Image(systemName:"folder").font(.title2).foregroundStyle(.teal)
-                        VStack(alignment:.leading,spacing:5) {
-                            Text(path.isEmpty ? "연결 프로젝트 미확인" : URL(fileURLWithPath:path).lastPathComponent).font(.headline)
-                            Text("실행 중인 작업 \(members.count)개 · 선택 \(members.filter { selected.contains($0.id) }.count)개").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }.padding(.vertical,8)
-                }.padding(12).background(Color.secondary.opacity(0.035),in:RoundedRectangle(cornerRadius:16))
+                VStack(alignment:.leading,spacing:12) {
+                    Button {
+                        if expandedProjects.contains(path) { expandedProjects.remove(path) } else { expandedProjects.insert(path) }
+                    } label: {
+                        HStack(spacing:12) {
+                            Image(systemName:"folder").font(.title2).foregroundStyle(.teal)
+                            VStack(alignment:.leading,spacing:6) {
+                                Text(path.isEmpty ? "연결 프로젝트 미확인" : URL(fileURLWithPath:path).lastPathComponent).font(.headline)
+                                HStack { Label("실행 \(members.count)",systemImage:"play.fill").foregroundStyle(.teal); Label("선택 \(members.filter { selected.contains($0.id) }.count)",systemImage:"checkmark.circle"); Label("파일 유지",systemImage:"doc") }.font(.caption)
+                            }
+                            Spacer()
+                            Text(expandedProjects.contains(path) ? "작업 접기" : "작업 보기").font(.callout).foregroundStyle(.teal)
+                        }.padding(16).frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                    if expandedProjects.contains(path) { ForEach(members) { item in itemCard(item) }.padding(.horizontal,12) }
+                }.padding(.bottom,expandedProjects.contains(path) ? 12 : 0).background(Color.secondary.opacity(0.035),in:RoundedRectangle(cornerRadius:16))
             }
         }
     }
@@ -218,25 +213,29 @@ struct EnvironmentRetirementView: View {
                 Toggle(isOn:Binding(get:{ selected.contains(item.id) },set:{ if $0 { selected.insert(item.id) } else { selected.remove(item.id) } })) {
                     HStack(spacing:14) {
                         Image(systemName:item.icon).font(.system(size:26)).foregroundStyle(.teal).frame(width:38,height:44)
-                        VStack(alignment:.leading,spacing:5) { Text(item.name).font(.headline); Text(item.subtitle).font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment:.leading,spacing:5) { Text(item.name).font(.headline) }
                     }
                 }.disabled(item.finished || item.changed || !item.invariant.isEmpty)
                 Spacer()
                 Text(item.bytes.map { size($0) } ?? (item.kind == "cache" ? "공유 캐시" : "")).monospacedDigit().foregroundStyle(.secondary)
             }
+            EnvironmentConditionChips(item:item,selected:selected.contains(item.id),required:platforms.contains(item.platform) && item.kind == "device")
             if !item.invariant.isEmpty {
                 HStack { Label(item.invariant,systemImage:"exclamationmark.circle").font(.callout).foregroundStyle(.orange); Spacer(); Button("폴더 연결") { folderAccess=true } }
             }
-            DisclosureGroup("연결된 작업과 정리 영향") {
-                ForEach(item.warnings,id:\.self) { Text($0).font(.callout) }
-                if !item.path.isEmpty { Text(item.path).font(.caption).textSelection(.enabled) }
-                Text(item.runtime).font(.caption).textSelection(.enabled)
+            ForEach(item.warnings.filter { $0.hasPrefix("연결된 작업:") || $0.hasPrefix("프로젝트 요구:") },id:\.self) { warning in
+                Label(warning,systemImage:"link").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
             if item.mutation != "pending" { Text("실행: \(label(item.mutation)) · 사후 확인: \(label(item.verification))").font(.callout) }
             if !item.error.isEmpty { Text(item.error).foregroundStyle(.orange) }
             if item.changed, let plan=service.plan { Button("이 항목 다시 확인") { perform(["action":"refresh","id":plan.id,"ids":[item.id]]) } }
         }.padding(16).background(selected.contains(item.id) ? Color.teal.opacity(0.08) : Color.secondary.opacity(0.035),in:RoundedRectangle(cornerRadius:16))
             .overlay(RoundedRectangle(cornerRadius:16).stroke(selected.contains(item.id) ? Color.teal.opacity(0.6) : Color.primary.opacity(0.06)))
+            .contextMenu {
+                if !item.path.isEmpty { Text(item.path) }
+                Text(item.runtime)
+                ForEach(item.warnings,id:\.self) { Text($0) }
+            }
     }
     private var policyEditor: some View {
         VStack(alignment:.leading, spacing:12) {
