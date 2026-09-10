@@ -1,15 +1,19 @@
 import AppKit
 import SwiftUI
 
+private struct HealthWorkbenchRoute: Identifiable { let id:String }
+
 struct HealthContextView: View {
     @EnvironmentObject private var monitor: CPUWatchService
     @EnvironmentObject private var model: ScanModel
     let openRecovery: () -> Void
     let openWork: () -> Void
     let openStorageOverview: () -> Void
+    let openDiagnosis: () -> Void
+    let openSecurity: () -> Void
     @State private var copied = false
     @State private var query = ""
-    @State private var environmentRecovery = false
+    @State private var environmentRoute: HealthWorkbenchRoute?
     @State private var appRecovery = false
     @State private var showHistory = false
 
@@ -18,7 +22,7 @@ struct HealthContextView: View {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:8) {
-                        Text("지금 이 Mac").font(.system(size:34,weight:.bold))
+                        Text("내 Mac 작업실").font(.system(size:34,weight:.bold))
                         HStack(spacing:8) {
                             Circle().fill(monitor.enabled ? Color.teal : Color.secondary).frame(width:7,height:7)
                             Text(monitor.enabled ? "실시간 관찰" : "관찰 꺼짐 · 마지막 기록")
@@ -37,13 +41,17 @@ struct HealthContextView: View {
                 }
                 if let error = monitor.journalError { Label(error,systemImage:"exclamationmark.circle").foregroundStyle(.orange) }
                 if let snapshot=monitor.snapshot {
-                    HealthDashboardTiles(snapshot:snapshot,storage:openStorageOverview,memory:{ appRecovery=true },cpu:{ environmentRecovery=true })
+                    HealthDashboardTiles(snapshot:snapshot,storage:openStorageOverview,memory:{ appRecovery=true },cpu:{ environmentRoute=HealthWorkbenchRoute(id:"finish") })
                     if !snapshot.issues.isEmpty {
                         Label(snapshot.issues.joined(separator:" · "),systemImage:"exclamationmark.triangle.fill").font(.headline).foregroundStyle(.orange)
                     }
                     HStack(spacing:16) {
                         HealthActionTile(title:"공간 비우기",subtitle:"전체 측정 · 정리 대상",icon:"sparkles") { monitor.markAction("공간 확보 검토 열기");openRecovery() }
-                        HealthActionTile(title:"작업대",subtitle:"기기 · 프로젝트 · SSD",icon:"square.stack.3d.up") { environmentRecovery=true }
+                        HealthActionTile(title:"작업대",subtitle:"기기 · 프로젝트 · SSD",icon:"square.stack.3d.up") { environmentRoute=HealthWorkbenchRoute(id:"space") }
+                    }
+                    HStack(spacing:16) {
+                        HealthActionTile(title:"문제 점검",subtitle:"오류 · 시작 프로그램 · 상태 진단",icon:"stethoscope",action:openDiagnosis)
+                        HealthActionTile(title:"권한·자동 실행 점검",subtitle:"앱 접근 권한 · 백그라운드 실행",icon:"lock.shield",action:openSecurity)
                     }
                     processSection(snapshot)
                 } else { ProgressView("상태를 읽고 있습니다").frame(maxWidth:.infinity,minHeight:180) }
@@ -53,7 +61,7 @@ struct HealthContextView: View {
                 }.buttonStyle(.plain).background(Color.secondary.opacity(0.04),in:RoundedRectangle(cornerRadius:14))
             }.padding(24)
         }
-        .sheet(isPresented:$environmentRecovery) { EnvironmentRetirementView() }
+        .sheet(item:$environmentRoute) { route in EnvironmentRetirementView(initialTab:route.id) }
         .sheet(isPresented:$appRecovery) { AppRecoveryView() }
         .sheet(isPresented:$showHistory) { VStack { HStack { Text("발생 기록").font(.title2.bold()); Spacer(); Button("닫기") { showHistory=false } }; ScrollView { historySection } }.padding(24).frame(width:800,height:650) }
         .task {

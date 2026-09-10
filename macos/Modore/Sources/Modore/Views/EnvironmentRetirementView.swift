@@ -6,10 +6,11 @@ struct EnvironmentRetirementView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var service = EnvironmentRetirementService()
     @State private var selected: Set<String> = []
+    @State private var focusItem: EnvironmentItem?
     @State private var appQuery = ""
     @State private var expandedProjects: Set<String> = []
     @State private var tab = "space"
-    var initialTab: String = "space"
+    init(initialTab:String = "space") { _tab=State(initialValue:initialTab) }
     @State private var confirm = false
     @State private var platforms: Set<String> = ["iOS", "iPadOS", "watchOS"]
     @State private var schedule = false
@@ -127,12 +128,25 @@ struct EnvironmentRetirementView: View {
                             }.padding(16).frame(maxWidth:.infinity, alignment:.leading).background(Color.blue.opacity(0.05), in:RoundedRectangle(cornerRadius:12))
                         }
                     } else {
-                        Text(service.busy ? "기기·런타임·캐시와 프로젝트 서버를 측정하고 있습니다…" : "환경을 측정해 정리할 항목을 선택하세요.").padding(.vertical,40)
+                        VStack(alignment:.leading,spacing:22) {
+                            Text(intentTitle).font(.system(size:32,weight:.bold))
+                            Label(service.busy ? "기기·OS·서버·앱 등록 확인 중" : "환경을 다시 측정하세요",systemImage:service.busy ? "clock" : "arrow.clockwise").foregroundStyle(.secondary)
+                            ForEach(0..<3,id:\.self) { _ in
+                                HStack(spacing:16) {
+                                    RoundedRectangle(cornerRadius:10).fill(Color.teal.opacity(0.09)).frame(width:44,height:44)
+                                    VStack(alignment:.leading,spacing:12) {
+                                        RoundedRectangle(cornerRadius:4).fill(Color.secondary.opacity(0.09)).frame(width:180,height:13)
+                                        RoundedRectangle(cornerRadius:4).fill(Color.secondary.opacity(0.06)).frame(width:120,height:10)
+                                    }
+                                    Spacer()
+                                }.padding(18).frame(maxWidth:.infinity,alignment:.leading).background(Color.secondary.opacity(0.035),in:RoundedRectangle(cornerRadius:16))
+                            }.accessibilityHidden(true)
+                        }.frame(maxWidth:.infinity,alignment:.topLeading).padding(.vertical,4)
                     }
                     if !service.error.isEmpty { Text(service.error).foregroundStyle(.red).textSelection(.enabled) }
-                }.padding(28)
-                }
-            }
+                }.frame(maxWidth:.infinity,alignment:.leading).padding(28)
+                }.frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+            }.frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
             Divider()
             HStack {
                 if service.busy {
@@ -161,10 +175,11 @@ struct EnvironmentRetirementView: View {
                 ScrollView { policyEditor }
             }.padding(24).frame(width:640,height:620)
         }
+        .sheet(item:$focusItem) { item in ResourceFocusView(item:item,planID:service.plan?.id) }
         .sheet(isPresented:$simulatorSetup) { SimulatorSetupView() }
         .sheet(isPresented:$appRecovery) { AppRecoveryView() }
         .interactiveDismissDisabled(service.executing)
-        .task { tab=initialTab;preview() }
+        .task { preview() }
         .onChange(of: service.plan?.id) { _ in loadPolicy() }
         .confirmationDialog("선택한 항목을 실행합니다", isPresented: $confirm, titleVisibility:.visible) {
             Button("경고 확인 · 선택한 \(chosen.count)개 실행", role:.destructive) {
@@ -224,6 +239,7 @@ struct EnvironmentRetirementView: View {
                 Text(item.bytes.map { size($0) } ?? (item.kind == "cache" ? "공유 캐시" : "")).monospacedDigit().foregroundStyle(.secondary)
             }
             if item.kind == "registration" { VStack(alignment:.leading,spacing:4) { Text(item.platform + " · " + item.runtime); Text(item.path).foregroundStyle(.secondary).textSelection(.enabled) }.font(.caption) }
+            if ["process","vm","device","volume"].contains(item.kind) { Button("대상 앱·연결된 대화 보기") { focusItem=item }.disabled(service.executing) }
             EnvironmentConditionChips(item:item,selected:selected.contains(item.id),required:platforms.contains(item.platform) && item.kind == "device")
             if !item.invariant.isEmpty {
                 HStack { Label(item.invariant,systemImage:"exclamationmark.circle").font(.callout).foregroundStyle(.orange); Spacer(); Button("폴더 연결") { folderAccess=true } }

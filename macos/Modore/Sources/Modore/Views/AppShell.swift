@@ -13,16 +13,16 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
-        case .health: return "지금 이 Mac"
-        case .status: return "진단"
+        case .health: return "대시보드"
+        case .status: return "문제 점검"
         case .storage: return "저장공간"
-        case .security: return "보안"
+        case .security: return "권한·자동 실행 점검"
         // Not "AI 세션": the object here is a project, and sessions are
         // one of the things it has. The old name also stopped being true
         // -- worktrees, git state and lineage arrived first on that
         // screen long before any session did.
-        case .work: return "작업"
-        case .activity: return "기록"
+        case .work: return "프로젝트·대화 찾기"
+        case .activity: return "조치 기록"
         }
     }
 
@@ -45,10 +45,7 @@ struct ModernRootView: View {
     @State private var storageSection: StorageWorkspaceSection = .overview
 
     var body: some View {
-        NavigationSplitView {
-            ModernSidebar(selection: selection, onSelect: navigate)
-                .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 240)
-        } detail: {
+        NavigationStack {
             VStack(spacing: 0) {
                 if let freeSpace = model.liveState.freeSpace,
                    freeSpace.value.pressure.needsRecovery {
@@ -68,6 +65,12 @@ struct ModernRootView: View {
             }
             .navigationTitle(selection.title)
             .toolbar {
+                ToolbarItem(placement:.navigation) {
+                    Button { navigate(to:.health) } label: { Label("대시보드",systemImage:"square.grid.2x2") }.disabled(selection == .health)
+                }
+                ToolbarItem(placement:.automatic) {
+                    Menu("다른 작업") { ForEach(AppDestination.allCases.filter { $0 != .health }) { destination in Button(destination.title) { navigate(to:destination) } } }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         performPrimaryAction()
@@ -81,7 +84,6 @@ struct ModernRootView: View {
                 }
             }
         }
-        .navigationSplitViewStyle(.balanced)
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         .onOpenURL(perform: openURL)
         .onChange(of: monitor.showHealth) { value in
@@ -394,7 +396,7 @@ struct ModernDetailView: View {
     var body: some View {
         switch destination {
         case .health:
-            HealthContextView(openRecovery: { onOpenStorage(.goal) }, openWork: { onNavigate(.work) }, openStorageOverview: { onOpenStorage(.overview) })
+            HealthContextView(openRecovery: { onOpenStorage(.goal) }, openWork: { onNavigate(.work) }, openStorageOverview: { onOpenStorage(.overview) }, openDiagnosis:{onNavigate(.status)}, openSecurity:{onNavigate(.security)})
         case .status:
             StatusPage(
                 onOpenStorage: onOpenStorage,

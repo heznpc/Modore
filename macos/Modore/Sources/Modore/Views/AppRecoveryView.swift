@@ -20,7 +20,7 @@ struct AppRecoveryView: View {
             HStack { Text("앱만 다시 시작").font(.title2.bold());Spacer();Button("닫기") { dismiss() }.disabled(busy) }
             Text("Mac을 재부팅하지 않고 선택한 앱만 정상 종료한 뒤 다시 엽니다. 저장 요청이 나오면 앱에서 먼저 처리하세요.").foregroundStyle(.secondary)
             List(apps) { app in
-                HStack { Text(app.name);Spacer();Button("재시작…") { selected=app }.disabled(busy) }
+                HStack { Text(app.name);Spacer();Button("앱 보기") { focus(app) }.disabled(busy);Button("재시작…") { selected=app }.disabled(busy) }
             }
             if busy { ProgressView("앱의 정상 종료와 재실행을 확인하고 있습니다…") }
             if !message.isEmpty { Text(message).textSelection(.enabled) }
@@ -30,6 +30,10 @@ struct AppRecoveryView: View {
             Button("정상 종료 후 다시 열기") { if let app=selected { Task { await restart(app) } };selected=nil }
             Button("취소",role:.cancel) { selected=nil }
         } message: { Text("진행 중인 작업이 중단될 수 있습니다. 앱이 저장 확인 등으로 종료하지 않으면 강제 종료하지 않고 기다림을 끝냅니다.") }
+    }
+    private func focus(_ item:RestartableApp) {
+        guard let app=NSRunningApplication(processIdentifier:item.id),app.launchDate==item.launched,app.bundleURL==item.url else {message="앱 상태가 바뀌었습니다. 다시 확인하세요.";refresh();return}
+        if !app.activate(options:[.activateIgnoringOtherApps]) { message="앱을 앞으로 가져오지 못했습니다." }
     }
     private func refresh() {
         apps=NSWorkspace.shared.runningApplications.compactMap { app in

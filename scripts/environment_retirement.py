@@ -411,6 +411,19 @@ def dispatch(req,root=ROOT):
             save(root/'policy.json',pol)
             return {'message':'예약 정리 결과 기록됨','plan':plan['id']}
         p=plan_path(root,req['id']);plan=json.loads(p.read_text())
+        if action=='focus-target':
+            item=next(i for i in plan['items'] if i['id']==req['item'])
+            current=observe_item(item,plan['projects'])
+            if current is None or current['fingerprint']!=item['fingerprint']:raise ValueError('대상 상태 변경 · 다시 측정 후 확인하세요')
+            pids=[]
+            if item['kind']=='process':
+                pid=int(item['target'])
+                for _ in range(12):
+                    if pid<=1 or pid in pids:break
+                    pids.append(pid)
+                    try:pid=int(run(['/bin/ps','-p',str(pid),'-o','ppid=']).strip())
+                    except Exception:break
+            return {'pids':pids}
         if action=='remeasure':
             for i in plan['items']:
                 if i['mutation']=='succeeded':
