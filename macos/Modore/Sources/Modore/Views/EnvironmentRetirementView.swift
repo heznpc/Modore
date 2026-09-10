@@ -6,7 +6,7 @@ struct EnvironmentRetirementView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var service = EnvironmentRetirementService()
     @State private var selected: Set<String> = []
-    @State private var tab = "device"
+    @State private var tab = "space"
     @State private var confirm = false
     @State private var platforms: Set<String> = ["iOS", "iPadOS", "watchOS"]
     @State private var schedule = false
@@ -44,47 +44,68 @@ struct EnvironmentRetirementView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("환경 정리").font(.title2.bold())
-                    Text("저장공간 삭제와 실행 환경 종료를 구분해서 선택하세요.").foregroundStyle(.secondary)
-                }
+            HStack(spacing: 12) {
+                Image(systemName:"square.stack.3d.up.fill").font(.title2).foregroundStyle(.teal)
+                Text("작업대").font(.title2.bold())
                 Spacer()
                 if service.busy { ProgressView().controlSize(.small) }
-                Button("폴더 접근 허용") { folderAccess = true }.disabled(service.executing)
-                Button("앱 재시작") { appRecovery = true }.disabled(service.busy)
-                Button("이전 기록") { perform(["action":"latest"]) }.disabled(service.busy)
-                Button("다시 측정") { preview() }.disabled(service.busy)
-                Button("닫기") { dismiss() }.disabled(service.executing).keyboardShortcut(.cancelAction)
-            }.padding(22)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                Button { preview() } label: { Image(systemName:"arrow.clockwise") }.help("다시 측정").disabled(service.busy)
+                Menu {
+                    Button("정리 기록") { perform(["action":"latest"]) }
+                    Button("자동 정리·유지 조건") { showPolicy = true }
+                    Button("폴더 접근 허용") { folderAccess = true }
+                } label: { Image(systemName:"ellipsis") }.disabled(service.executing)
+                Button { dismiss() } label: { Image(systemName:"xmark") }.keyboardShortcut(.cancelAction).disabled(service.executing)
+            }.buttonStyle(.plain).padding(24)
+            HStack(alignment:.top, spacing:0) {
+                RetirementIntentRail(selection:$tab, freeBytes:service.plan.map { ($0.after ?? $0.before).freeBytes })
+                ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
                     if let plan = service.plan {
-                        capacitySummary(plan)
-                        DisclosureGroup("유지할 개발 환경 · 예약 정리", isExpanded: $showPolicy) { policyEditor.padding(.top, 12) }
-                        if !plan.missingPlatforms.isEmpty {
-                            Button("필요한 OS·기종 준비") { simulatorSetup = true }
-                            Label("필요하지만 없는 환경: " + plan.missingPlatforms.joined(separator: " · "), systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(.orange)
+                        VStack(alignment:.leading,spacing:8) {
+                            Text(intentTitle).font(.system(size:32,weight:.bold))
+                            Text(intentDetail).font(.callout).foregroundStyle(.secondary)
+                        }.padding(.bottom,8)
+                        if tab == "finish" {
+                            Button { appRecovery = true } label: { Label("앱만 다시 시작하기",systemImage:"arrow.clockwise.circle") }
                         }
-                        Picker("정리 종류", selection: $tab) {
-                            Text("기기 데이터").tag("device")
-                            Text("OS 런타임").tag("runtime")
-                            Text("재생성 캐시").tag("cache")
-                            Text("서버 종료").tag("process")
-                            Text("VM 종료").tag("vm")
-                            Text("SSD 추출").tag("volume")
-                        }.pickerStyle(.segmented)
-                        Text(["process","vm"].contains(tab) ? "정상 종료할 실행 환경을 선택하세요. 저장된 프로젝트·VM 디스크는 유지합니다." : (tab == "volume" ? "추출할 SSD를 선택하세요. 선택한 서버·VM 종료 뒤 추출합니다." : "삭제할 항목을 직접 선택하세요. 아무 항목도 자동 선택하지 않습니다."))
-                            .font(.callout).foregroundStyle(.secondary)
-                        if tab == "cache" {
-                            Text("공유 재생성 캐시 전체: \(size(plan.cacheBytes)) · 런타임별 중복 합산을 하지 않습니다.")
+                        if tab == "space", !plan.missingPlatforms.isEmpty {
+                            HStack(spacing:12) {
+                                Image(systemName:"ipad.and.iphone").font(.title2).foregroundStyle(.teal)
+                                VStack(alignment:.leading,spacing:4) {
+                                    Text("개발 환경 채워두기").font(.headline)
+                                    Text(plan.missingPlatforms.joined(separator:" · ") + " 환경이 없습니다").font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("준비하기") { simulatorSetup = true }
+                            }.padding(16).background(Color.teal.opacity(0.07),in:RoundedRectangle(cornerRadius:16))
                         }
-                        if items.filter({ $0.kind == tab }).isEmpty {
-                            Text("현재 이 종류의 정리 대상이 없습니다.").foregroundStyle(.secondary).padding(.vertical, 30)
+                        ForEach(visibleKinds,id: \.self) { kind in
+                            let group = items.filter { $0.kind == kind }
+                            if kind == "cache", plan.cacheBytes == 0 {
+                                DisclosureGroup("캐시는 이미 비어 있습니다") {
+                                    ForEach(group) { item in itemCard(item) }
+                                }.font(.callout).foregroundStyle(.secondary)
+                            } else if !group.isEmpty {
+                                VStack(alignment:.leading,spacing:12) {
+                                    HStack {
+                                        Text(groupTitle(kind)).font(.headline)
+                                        Spacer()
+                                        Text("\(kind == "process" ? Set(group.map(\.project)).count : group.count)개").foregroundStyle(.secondary)
+                                    }
+                                    if kind == "cache" { Text("공유 캐시 \(size(plan.cacheBytes)) · 다시 만들어지는 자료").font(.caption).foregroundStyle(.secondary) }
+                                    if kind == "process" { projectGroups(group) }
+                                    else { ForEach(group) { item in itemCard(item) } }
+                                }
+                            }
                         }
-                        ForEach(items.filter { $0.kind == tab }) { item in itemCard(item) }
+                        if !items.contains(where: { visibleKinds.contains($0.kind) }) {
+                            VStack(spacing:12) {
+                                Image(systemName:"checkmark.circle").font(.system(size:40)).foregroundStyle(.teal)
+                                Text("지금 정리할 대상이 없습니다").font(.headline)
+                                Text("다시 측정하면 현재 상태를 확인합니다.").foregroundStyle(.secondary)
+                            }.frame(maxWidth:.infinity).padding(.vertical,60)
+                        }
                         if !selectionWarnings.isEmpty && !chosen.isEmpty {
                             VStack(alignment: .leading, spacing: 5) {
                                 Label("선택에 따른 영향 · 확인 후 계속할 수 있습니다", systemImage: "exclamationmark.triangle").font(.headline)
@@ -114,7 +135,8 @@ struct EnvironmentRetirementView: View {
                         Text(service.busy ? "기기·런타임·캐시와 프로젝트 서버를 측정하고 있습니다…" : "환경을 측정해 정리할 항목을 선택하세요.").padding(.vertical,40)
                     }
                     if !service.error.isEmpty { Text(service.error).foregroundStyle(.red).textSelection(.enabled) }
-                }.padding(24)
+                }.padding(28)
+                }
             }
             Divider()
             HStack {
@@ -123,13 +145,13 @@ struct EnvironmentRetirementView: View {
                     Spacer()
                     if service.executing { Button("이후 항목 취소") { service.cancel() } }
                 } else {
-                    Text("\(chosen.count)개 선택 · 파일 용량 \(size(chosen.compactMap(\.bytes).reduce(0,+)))").font(.headline)
+                    Text(chosen.isEmpty ? "대상을 선택하면 여기에 모입니다" : "\(chosen.count)개 선택 · \(size(chosen.compactMap(\.bytes).reduce(0,+)))").font(.headline).foregroundStyle(chosen.isEmpty ? .secondary : .primary)
                     Spacer()
                     Button("선택 해제") { selected = [] }
                     if let plan = service.plan, chosen.contains(where: { $0.approved && !$0.changed }) {
                         Button("승인된 항목 재시도") { perform(["action":"execute","id":plan.id,"ids":Array(selected)], mutation:true) }
                     }
-                    Button(["process","vm"].contains(tab) ? "선택 검토·종료" : "선택 검토·실행") { confirm = true }
+                    Button("\(chosen.count)개 검토하기") { confirm = true }
                         .buttonStyle(.borderedProminent).disabled(chosen.isEmpty)
                 }
             }.padding(20)
@@ -137,6 +159,12 @@ struct EnvironmentRetirementView: View {
         .fileImporter(isPresented:$folderAccess,allowedContentTypes:[.folder]) { result in
             do { try EnvironmentFolderAccess.grant(result.get());preview() }
             catch { service.error=error.localizedDescription }
+        }
+        .sheet(isPresented:$showPolicy) {
+            VStack(alignment:.leading,spacing:16) {
+                HStack { Text("자동 정리·유지 조건").font(.title2.bold()); Spacer(); Button("닫기") { showPolicy=false } }
+                ScrollView { policyEditor }
+            }.padding(24).frame(width:640,height:620)
         }
         .sheet(isPresented:$simulatorSetup) { SimulatorSetupView() }
         .sheet(isPresented:$appRecovery) { AppRecoveryView() }
@@ -153,30 +181,53 @@ struct EnvironmentRetirementView: View {
             Text((chosen.map { "\($0.name) · \(["process","vm"].contains($0.kind) ? "정상 종료" : ($0.kind == "volume" ? "추출" : "삭제"))" } + selectionWarnings).joined(separator:"\n"))
         }
     }
-    private func capacitySummary(_ plan: EnvironmentPlan) -> some View {
-        let c = plan.after ?? plan.before
-        return VStack(alignment:.leading, spacing:10) {
-            HStack {
-                VStack(alignment:.leading) { Text("내부 디스크 여유").foregroundStyle(.secondary); Text(size(c.freeBytes)).font(.system(size:30,weight:.semibold)) }
-                Spacer()
-                VStack(alignment:.trailing) { Text("전체 \(size(c.totalBytes))"); Text("사용 \(size(c.totalBytes-c.freeBytes))").foregroundStyle(.secondary) }
+    private var visibleKinds: [String] {
+        tab == "space" ? ["cache","device","runtime"] : (tab == "finish" ? ["process","vm"] : ["volume","process","vm"])
+    }
+    private var intentTitle: String { tab == "space" ? "가볍게 만들기" : (tab == "finish" ? "오늘 작업 마치기" : "SSD 가져가기") }
+    private var intentDetail: String {
+        tab == "space" ? "다시 만들 수 있는 자료부터 살펴보세요. 기기와 OS는 필요한 만큼 남깁니다." :
+        (tab == "finish" ? "프로젝트 서버와 가상머신을 정상 종료합니다. 작업 파일은 그대로 남습니다." : "드라이브와 연결된 작업을 살펴보고, 종료할 작업과 추출할 SSD를 함께 선택하세요.")
+    }
+    private func groupTitle(_ kind:String) -> String {
+        ["cache":"다시 만들어지는 자료", "device":"내 테스트 기기", "runtime":"기기가 사용하는 OS", "process":"실행 중인 프로젝트", "vm":"가상머신", "volume":"연결된 드라이브"][kind] ?? kind
+    }
+    private func projectGroups(_ group:[EnvironmentItem]) -> some View {
+        let paths = Array(Set(group.map(\.project))).sorted()
+        return VStack(spacing:12) {
+            ForEach(paths,id: \.self) { path in
+                let members = group.filter { $0.project == path }
+                DisclosureGroup {
+                    ForEach(members) { item in itemCard(item) }
+                } label: {
+                    HStack(spacing:12) {
+                        Image(systemName:"folder").font(.title2).foregroundStyle(.teal)
+                        VStack(alignment:.leading,spacing:5) {
+                            Text(path.isEmpty ? "연결 프로젝트 미확인" : URL(fileURLWithPath:path).lastPathComponent).font(.headline)
+                            Text("실행 중인 작업 \(members.count)개 · 선택 \(members.filter { selected.contains($0.id) }.count)개").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }.padding(.vertical,8)
+                }.padding(12).background(Color.secondary.opacity(0.035),in:RoundedRectangle(cornerRadius:16))
             }
-            ProgressView(value:Double(c.totalBytes-c.freeBytes),total:Double(c.totalBytes)).tint(c.freeBytes < 10_000_000_000 ? .orange : .blue)
-            Text("삭제 대상의 합계와 실제 확보량은 다릅니다. 실행 후 지연되는 공간 반환을 다시 측정합니다.").font(.caption).foregroundStyle(.secondary)
-        }.padding(18).background(Color.secondary.opacity(0.06), in:RoundedRectangle(cornerRadius:12))
+        }
     }
     private func itemCard(_ item: EnvironmentItem) -> some View {
         VStack(alignment:.leading, spacing:10) {
             HStack(spacing:12) {
                 Toggle(isOn:Binding(get:{ selected.contains(item.id) },set:{ if $0 { selected.insert(item.id) } else { selected.remove(item.id) } })) {
-                    Label(item.name, systemImage:item.icon).font(.headline)
+                    HStack(spacing:14) {
+                        Image(systemName:item.icon).font(.system(size:26)).foregroundStyle(.teal).frame(width:38,height:44)
+                        VStack(alignment:.leading,spacing:5) { Text(item.name).font(.headline); Text(item.subtitle).font(.caption).foregroundStyle(.secondary) }
+                    }
                 }.disabled(item.finished || item.changed || !item.invariant.isEmpty)
                 Spacer()
                 Text(item.bytes.map { size($0) } ?? (item.kind == "cache" ? "공유 캐시" : "")).monospacedDigit().foregroundStyle(.secondary)
             }
-            Text(item.subtitle).foregroundStyle(.secondary)
-            if !item.invariant.isEmpty { Label(item.invariant,systemImage:"lock").foregroundStyle(.orange) }
-            DisclosureGroup("영향·연결 정보") {
+            if !item.invariant.isEmpty {
+                HStack { Label(item.invariant,systemImage:"exclamationmark.circle").font(.callout).foregroundStyle(.orange); Spacer(); Button("폴더 연결") { folderAccess=true } }
+            }
+            DisclosureGroup("연결된 작업과 정리 영향") {
                 ForEach(item.warnings,id:\.self) { Text($0).font(.callout) }
                 if !item.path.isEmpty { Text(item.path).font(.caption).textSelection(.enabled) }
                 Text(item.runtime).font(.caption).textSelection(.enabled)
@@ -184,8 +235,8 @@ struct EnvironmentRetirementView: View {
             if item.mutation != "pending" { Text("실행: \(label(item.mutation)) · 사후 확인: \(label(item.verification))").font(.callout) }
             if !item.error.isEmpty { Text(item.error).foregroundStyle(.orange) }
             if item.changed, let plan=service.plan { Button("이 항목 다시 확인") { perform(["action":"refresh","id":plan.id,"ids":[item.id]]) } }
-        }.padding(16).background(Color(nsColor:.controlBackgroundColor),in:RoundedRectangle(cornerRadius:12))
-            .overlay(RoundedRectangle(cornerRadius:12).stroke(Color.primary.opacity(0.08)))
+        }.padding(16).background(selected.contains(item.id) ? Color.teal.opacity(0.08) : Color.secondary.opacity(0.035),in:RoundedRectangle(cornerRadius:16))
+            .overlay(RoundedRectangle(cornerRadius:16).stroke(selected.contains(item.id) ? Color.teal.opacity(0.6) : Color.primary.opacity(0.06)))
     }
     private var policyEditor: some View {
         VStack(alignment:.leading, spacing:12) {
