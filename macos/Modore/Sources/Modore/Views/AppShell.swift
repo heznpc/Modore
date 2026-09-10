@@ -42,7 +42,7 @@ struct ModernRootView: View {
     @EnvironmentObject private var model: ScanModel
     @EnvironmentObject private var monitor: CPUWatchService
     @State private var selection: AppDestination = .health
-    @State private var storageSection: StorageWorkspaceSection = .cleanup
+    @State private var storageSection: StorageWorkspaceSection = .overview
 
     var body: some View {
         NavigationSplitView {
@@ -394,7 +394,7 @@ struct ModernDetailView: View {
     var body: some View {
         switch destination {
         case .health:
-            HealthContextView(openRecovery: { onOpenStorage(.goal) }, openWork: { onNavigate(.work) })
+            HealthContextView(openRecovery: { onOpenStorage(.goal) }, openWork: { onNavigate(.work) }, openStorageOverview: { onOpenStorage(.overview) })
         case .status:
             StatusPage(
                 onOpenStorage: onOpenStorage,

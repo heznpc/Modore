@@ -87,6 +87,11 @@ case "$COMMAND" in
     help|-h|--help)
         usage
         ;;
+    environments)
+        [[ "${1:-}" == "status" ]] || fail_usage 'environments requires status.'
+        shift
+        exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/environment_retirement.py" --inventory "$@"
+        ;;
     resources)
         exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/work_resources.py" "$@"
         ;;

@@ -52,3 +52,13 @@ scripts/modules/macos/storage.sh; a bounded storage-watch status is not a
 substitute for that full inventory. Existing simulator inventory and keep rules
 remain separate from live resource/session registration. This change adds the
 missing connection and control surface rather than replacing the storage scan.
+
+## Storage and lifecycle retirement
+
+The resource cards now link to [환경 정리](ENVIRONMENT_RETIREMENT.md). This adds
+explicit nonduplicate device/runtime retirement, separate iOS/iPadOS/watchOS
+requirements, project-server and VM shutdown, ordered SSD ejection, app restart,
+exact-type device reuse/setup, quiet cache scheduling, and delayed remeasurement.
+The older duplicate shortcut remains scoped to duplicates; it is not the only
+route for a user to approve device deletion. `modore environments status` and MCP
+`environment_retirement_status` expose the new inventory and requirements.

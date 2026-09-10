@@ -6,8 +6,11 @@ struct HealthContextView: View {
     @EnvironmentObject private var model: ScanModel
     let openRecovery: () -> Void
     let openWork: () -> Void
+    let openStorageOverview: () -> Void
     @State private var copied = false
     @State private var query = ""
+    @State private var environmentRecovery = false
+    @State private var appRecovery = false
 
     var body: some View {
         ScrollView {
@@ -37,21 +40,28 @@ struct HealthContextView: View {
                             Text("관찰 시각 \(snapshot.date.formatted(date: .omitted, time: .standard))")
                                 .font(.caption).foregroundStyle(.secondary)
                             HStack {
+                                Button("전체 저장공간") { openStorageOverview() }
                                 Button("공간 확보") { monitor.markAction("공간 확보 검토 열기"); openRecovery() }
+                                Button("실행 환경 정리") { environmentRecovery = true }
+                                Button("앱 재시작") { appRecovery = true }
+                                Menu("더 보기") {
                                 Button("활동 모니터에서 작업 확인") {
                                     monitor.markAction("활동 모니터 열기")
                                     NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
                                 }
                                 Button("조치 전 상태 기록") { monitor.markAction("사용자가 조치 전 상태 기록") }
+                                }
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                     }
                     processSection(snapshot)
                 } else { ProgressView("첫 관찰값을 읽는 중…") }
-                sessionSection
-                historySection
+                DisclosureGroup("최근 프로젝트·세션") { sessionSection }
+                DisclosureGroup("발생 기록과 조치 후 변화") { historySection }
             }.padding(24)
         }
+        .sheet(isPresented:$environmentRecovery) { EnvironmentRetirementView() }
+        .sheet(isPresented:$appRecovery) { AppRecoveryView() }
         .task {
             await monitor.refreshNotificationStatus()
             if model.sessionIndex == nil && !model.sessionIndexLoading { model.refreshSessionIndex() }
@@ -67,10 +77,12 @@ struct HealthContextView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text(process.name).fontWeight(.medium)
-                        Text("PID \(process.pid)").foregroundStyle(.secondary)
+
                         Spacer()
                         Text("CPU \(Int(process.cpu))% · RAM \(HealthSnapshot.bytes(process.residentBytes.map { Int64(clamping: $0) }))")
                     }
+                    DisclosureGroup("연결·프로세스 상세") {
+                    Text("PID \(process.pid)").font(.caption).foregroundStyle(.secondary)
                     if let workspace = process.workspace {
                         Text(workspace).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         let matches = matchingSessions(workspace)
@@ -83,6 +95,7 @@ struct HealthContextView: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         } else { Text("연결된 세션 메타데이터 없음").font(.caption).foregroundStyle(.secondary) }
                     } else { Text("작업 경로 미확인").font(.caption).foregroundStyle(.secondary) }
+                    }
                 }.padding(.vertical, 4)
                 Divider()
             }
