@@ -41,3 +41,13 @@ extension LocalizationTests {
         }
     }
 }
+
+extension LocalizationTests {
+    func testLegacyDiagnosticsLocalizeWithoutRewritingEmbeddedTargets() {
+        XCTAssertEqual(L10n.message("잔류 후보 시스템 Chrome 자동화", preferences: ["en"]), "Possible leftover: System Chrome automation")
+        XCTAssertEqual(L10n.message("경로: /Volumes/자료/원본", preferences: ["en"]), "Path: /Volumes/자료/원본")
+        XCTAssertEqual(L10n.message("앱·사용자 자료", preferences: ["en"]), L10n.text("앱·사용자 자료", preferences: ["en"]))
+        XCTAssertEqual(L10n.message("/Volumes/자료/원본", preferences: ["ja"]), "/Volumes/자료/원본")
+        XCTAssertEqual(L10n.message("외부 도구가 반환한 미등록 내용", preferences: ["en"]), "외부 도구가 반환한 미등록 내용")
+    }
+}

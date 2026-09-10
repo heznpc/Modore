@@ -48,7 +48,7 @@ struct FullStorageBalanceView: View {
                     ForEach(Array(entries.enumerated()),id:\.element.path) { index,item in directoryTile(item,index:index) }
                 }
                 Text(L10n.text("폴더 크기 = 파일 할당량 · 최소 = 일부 접근 제한 · 미측정 ≠ 0 · APFS 공유 블록 때문에 위 물리 용량과 합계가 다를 수 있습니다.")).font(.caption).foregroundStyle(.secondary)
-                if !error.isEmpty { Label(error,systemImage:"exclamationmark.circle").foregroundStyle(.orange) }
+                if !error.isEmpty { Label(L10n.message(error),systemImage:"exclamationmark.circle").foregroundStyle(.orange) }
             }.padding(26)
         }.task { measure(fresh:false) }
             .navigationDestination(isPresented:$appDuplicates) { EnvironmentRetirementView(initialTab:"apps") }
@@ -65,14 +65,14 @@ struct FullStorageBalanceView: View {
             GeometryReader { geo in
                 HStack(spacing:1) {
                     ForEach(Array(b.volumes.enumerated()),id:\.offset) { i,v in
-                        Rectangle().fill(colors[i % colors.count]).frame(width:segmentWidth(geo.size.width,v.bytes,b.totalBytes)).help(v.name + " " + size(v.bytes))
+                        Rectangle().fill(colors[i % colors.count]).frame(width:segmentWidth(geo.size.width,v.bytes,b.totalBytes)).help(L10n.text(v.name) + " " + size(v.bytes))
                     }
                     Rectangle().fill(Color.secondary.opacity(0.12))
                 }.clipShape(RoundedRectangle(cornerRadius:10))
             }.frame(height:42)
             LazyVGrid(columns:[GridItem(.adaptive(minimum:150),alignment:.leading)],alignment:.leading,spacing:12) {
                 ForEach(Array(b.volumes.enumerated()),id:\.offset) { i,v in
-                    HStack(spacing:8) { RoundedRectangle(cornerRadius:3).fill(colors[i % colors.count]).frame(width:10,height:24); VStack(alignment:.leading,spacing:3) { Text(v.name).font(.caption); Text(size(v.bytes)).font(.callout.weight(.semibold)) } }
+                    HStack(spacing:8) { RoundedRectangle(cornerRadius:3).fill(colors[i % colors.count]).frame(width:10,height:24); VStack(alignment:.leading,spacing:3) { Text(L10n.text(v.name)).font(.caption); Text(size(v.bytes)).font(.callout.weight(.semibold)) } }
                 }
             }
         }.padding(22).background(Color.teal.opacity(0.045),in:RoundedRectangle(cornerRadius:20))

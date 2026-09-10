@@ -84,7 +84,7 @@ private struct CleanupRecoveryPaths: View {
                 Text(L10n.text("복구 및 확인 경로"))
                     .font(.headline)
                 ForEach(preview.recoveryPathMessages, id: \.self) { message in
-                    Text(message)
+                    Text(L10n.message(message))
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -138,7 +138,7 @@ private struct CleanupApprovalNotices: View {
                 .foregroundStyle(.secondary)
         }
         if !preview.blockedReason.isEmpty {
-            Label(preview.blockedReason, systemImage: "pause.circle")
+            Label(L10n.message(preview.blockedReason), systemImage: "pause.circle")
                 .foregroundStyle(.secondary)
         }
         if !runningProcesses.isEmpty {
@@ -254,7 +254,7 @@ private struct CleanupExplanation: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Label(row.title, systemImage: row.icon)
                             .font(.subheadline.weight(.semibold))
-                        Text(row.detail)
+                        Text(L10n.message(row.detail))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
