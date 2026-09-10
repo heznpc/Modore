@@ -164,20 +164,20 @@ struct EnvironmentRetirementView: View {
                         .buttonStyle(.borderedProminent).disabled(chosen.isEmpty)
                 }
             }.padding(20)
-        }.frame(width: 1000, height: 760)
+        }.frame(maxWidth:.infinity,maxHeight:.infinity)
         .fileImporter(isPresented:$folderAccess,allowedContentTypes:[.folder]) { result in
             do { try EnvironmentFolderAccess.grant(result.get());preview() }
             catch { service.error=error.localizedDescription }
         }
-        .sheet(isPresented:$showPolicy) {
+        .navigationDestination(isPresented:$showPolicy) {
             VStack(alignment:.leading,spacing:16) {
                 HStack { Text("자동 정리·유지 조건").font(.title2.bold()); Spacer(); Button("닫기") { showPolicy=false } }
                 ScrollView { policyEditor }
             }.padding(24).frame(width:640,height:620)
         }
         .sheet(item:$focusItem) { item in ResourceFocusView(item:item,planID:service.plan?.id) }
-        .sheet(isPresented:$simulatorSetup) { SimulatorSetupView() }
-        .sheet(isPresented:$appRecovery) { AppRecoveryView() }
+        .navigationDestination(isPresented:$simulatorSetup) { SimulatorSetupView() }
+        .navigationDestination(isPresented:$appRecovery) { AppRecoveryView() }
         .interactiveDismissDisabled(service.executing)
         .task { preview() }
         .onChange(of: service.plan?.id) { _ in loadPolicy() }

@@ -16,7 +16,7 @@ struct HealthDashboardTiles: View {
     private func tile(_ name:String,_ icon:String,value:String,detail:String,status:String,warning:Bool,action:String,run:@escaping ()->Void) -> some View {
         let color:Color = ["미확인","측정 중"].contains(value) ? .secondary : (warning ? .orange : .teal)
         return Button(action:run) {
-            VStack(alignment:.leading,spacing:18) {
+            VStack(alignment:.leading,spacing:12) {
                 HStack { Image(systemName:icon).font(.title2).foregroundStyle(color); Text(name).font(.headline); Spacer(); Circle().fill(color).frame(width:8,height:8) }
                 Text(value).font(.system(size:32,weight:.bold,design:.rounded)).minimumScaleFactor(0.6).lineLimit(1)
                 VStack(alignment:.leading,spacing:6) {
@@ -24,7 +24,7 @@ struct HealthDashboardTiles: View {
                     Label(status,systemImage:warning ? "exclamationmark.circle.fill" : "waveform.path").font(.caption).foregroundStyle(.secondary)
                 }
                 HStack { Text(action).font(.callout.weight(.semibold)); Spacer(); Image(systemName:"arrow.up.right") }.foregroundStyle(color)
-            }.padding(22).frame(maxWidth:.infinity,alignment:.leading)
+            }.padding(18).frame(maxWidth:.infinity,alignment:.leading)
                 .background(color.opacity(0.065),in:RoundedRectangle(cornerRadius:20)).contentShape(RoundedRectangle(cornerRadius:20))
         }.buttonStyle(.plain)
     }
@@ -39,7 +39,7 @@ struct HealthActionTile: View {
                 Image(systemName:icon).font(.system(size:27)).foregroundStyle(.teal).frame(width:36)
                 VStack(alignment:.leading,spacing:6) { Text(title).font(.headline); Text(subtitle).font(.caption).foregroundStyle(.secondary) }
                 Spacer(); Image(systemName:"arrow.right").foregroundStyle(.teal)
-            }.padding(20).frame(maxWidth:.infinity,alignment:.leading)
+            }.padding(16).frame(maxWidth:.infinity,alignment:.leading)
                 .background(Color.secondary.opacity(0.045),in:RoundedRectangle(cornerRadius:16)).contentShape(Rectangle())
         }.buttonStyle(.plain)
     }

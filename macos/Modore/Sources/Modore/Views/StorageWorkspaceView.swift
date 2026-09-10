@@ -64,8 +64,8 @@ struct StorageWorkspacePage: View {
                 }
             }
         }
-        .sheet(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
-        .sheet(isPresented: $retirementOpen) { AssetRetirementView() }
+        .navigationDestination(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
+        .navigationDestination(isPresented: $retirementOpen) { AssetRetirementView() }
     }
 
     @ViewBuilder

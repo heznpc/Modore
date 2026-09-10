@@ -16,10 +16,11 @@ struct HealthContextView: View {
     @State private var environmentRoute: HealthWorkbenchRoute?
     @State private var appRecovery = false
     @State private var showHistory = false
+    @State private var showProcesses = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+        VStack {
+            VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:8) {
                         Text("내 Mac 작업실").font(.system(size:34,weight:.bold))
@@ -41,7 +42,7 @@ struct HealthContextView: View {
                 }
                 if let error = monitor.journalError { Label(error,systemImage:"exclamationmark.circle").foregroundStyle(.orange) }
                 if let snapshot=monitor.snapshot {
-                    HealthDashboardTiles(snapshot:snapshot,storage:openStorageOverview,memory:{ appRecovery=true },cpu:{ environmentRoute=HealthWorkbenchRoute(id:"finish") })
+                    HealthDashboardTiles(snapshot:snapshot,storage:openStorageOverview,memory:{ appRecovery=true },cpu:{ showProcesses=true })
                     if !snapshot.issues.isEmpty {
                         Label(snapshot.issues.joined(separator:" · "),systemImage:"exclamationmark.triangle.fill").font(.headline).foregroundStyle(.orange)
                     }
@@ -53,17 +54,26 @@ struct HealthContextView: View {
                         HealthActionTile(title:"문제 점검",subtitle:"오류 · 시작 프로그램 · 상태 진단",icon:"stethoscope",action:openDiagnosis)
                         HealthActionTile(title:"권한·자동 실행 점검",subtitle:"앱 접근 권한 · 백그라운드 실행",icon:"lock.shield",action:openSecurity)
                     }
-                    processSection(snapshot)
+
                 } else { ProgressView("상태를 읽고 있습니다").frame(maxWidth:.infinity,minHeight:180) }
-                sessionSection
-                Button { showHistory=true } label: {
-                    HStack { Label("발생 기록과 조치 후 변화",systemImage:"clock.arrow.circlepath"); Spacer(); Text("기록 보기"); Image(systemName:"arrow.right") }.padding(18).contentShape(Rectangle())
-                }.buttonStyle(.plain).background(Color.secondary.opacity(0.04),in:RoundedRectangle(cornerRadius:14))
+                HStack(spacing:16) {
+                    HealthActionTile(title:"프로젝트·대화",subtitle:"작업 찾아 이어가기",icon:"folder",action:openWork)
+                    HealthActionTile(title:"조치 기록",subtitle:"실행 결과 · 전후 변화",icon:"clock.arrow.circlepath") { showHistory=true }
+                }
+                Spacer(minLength:0)
             }.padding(24)
         }
-        .sheet(item:$environmentRoute) { route in EnvironmentRetirementView(initialTab:route.id) }
-        .sheet(isPresented:$appRecovery) { AppRecoveryView() }
-        .sheet(isPresented:$showHistory) { VStack { HStack { Text("발생 기록").font(.title2.bold()); Spacer(); Button("닫기") { showHistory=false } }; ScrollView { historySection } }.padding(24).frame(width:800,height:650) }
+        .navigationDestination(isPresented:Binding(get:{environmentRoute != nil},set:{if !$0 {environmentRoute=nil}})) { EnvironmentRetirementView(initialTab:environmentRoute?.id ?? "space") }
+        .navigationDestination(isPresented:$showProcesses) {
+            ScrollView {
+                VStack(alignment:.leading,spacing:20) {
+                    HStack { Text("실행 작업").font(.largeTitle.bold());Spacer();Button("서버·가상머신 관리") { environmentRoute=HealthWorkbenchRoute(id:"finish") } }
+                    if let snapshot=monitor.snapshot { processSection(snapshot) }
+                }.padding(24)
+            }
+        }
+        .navigationDestination(isPresented:$appRecovery) { AppRecoveryView() }
+        .navigationDestination(isPresented:$showHistory) { VStack { HStack { Text("발생 기록").font(.title2.bold()); Spacer(); Button("닫기") { showHistory=false } }; ScrollView { historySection } }.padding(24).frame(maxWidth:.infinity,maxHeight:.infinity) }
         .task {
             await monitor.refreshNotificationStatus()
             if model.sessionIndex == nil && !model.sessionIndexLoading { model.refreshSessionIndex() }

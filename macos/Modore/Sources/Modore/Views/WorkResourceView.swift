@@ -75,7 +75,7 @@ struct WorkResourceView: View {
                 do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch { return }
             }
         }
-        .sheet(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
+        .navigationDestination(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
         .sheet(item: $detail) { r in ResourceDetailSheet(resource: resources.first { $0.id == r.id } ?? r) }
         .sheet(item: $connecting) { r in
             ResourceConnectionSheet(resource: r, sessions: model.sessionIndex?.sessions ?? []) { project, session in

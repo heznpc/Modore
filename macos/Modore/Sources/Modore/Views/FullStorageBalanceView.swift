@@ -51,8 +51,8 @@ struct FullStorageBalanceView: View {
                 if !error.isEmpty { Label(error,systemImage:"exclamationmark.circle").foregroundStyle(.orange) }
             }.padding(26)
         }.task { measure(fresh:false) }
-            .sheet(isPresented:$appDuplicates) { EnvironmentRetirementView(initialTab:"apps") }
-            .sheet(isPresented:$workbench) { EnvironmentRetirementView() }
+            .navigationDestination(isPresented:$appDuplicates) { EnvironmentRetirementView(initialTab:"apps") }
+            .navigationDestination(isPresented:$workbench) { EnvironmentRetirementView() }
     }
     private func segmentWidth(_ width:CGFloat,_ bytes:Int64,_ total:Int64)->CGFloat { max(CGFloat(0),width * CGFloat(bytes) / CGFloat(max(total,1)) - 1) }
     private func volumeMap(_ b:DiskBalance)->some View {
