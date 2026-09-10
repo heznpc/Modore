@@ -48,6 +48,7 @@ struct ModoreApp: App {
     @NSApplicationDelegateAdaptor(PCHealthCheckApplicationDelegate.self)
     private var applicationDelegate
     @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var maintenance = QuietMaintenanceService()
     @StateObject private var cpuWatch = CPUWatchService()
     @StateObject private var model: ScanModel
     /// Retaining the descriptor is what retains singleton ownership. The lock
@@ -97,6 +98,7 @@ struct ModoreApp: App {
                 .frame(minWidth: 900, minHeight: 640)
                 .onAppear {
                     cpuWatch.start()
+                    maintenance.start(model: model)
                     applicationDelegate.bind(to: model)
                     model.setApplicationActive(scenePhase == .active)
                 }

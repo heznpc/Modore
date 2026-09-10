@@ -102,6 +102,7 @@ enum BackgroundNotifier {
         // `open -g -j` already skips activation; this additionally keeps a Dock
         // icon from ever appearing for what should be an invisible launch.
         NSApplication.shared.setActivationPolicy(.prohibited)
+        guard LocalUserPresence.allowsNotification else { exit(0) }
 
         let center = UNUserNotificationCenter.current()
         let semaphore = DispatchSemaphore(value: 0)

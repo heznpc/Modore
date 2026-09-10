@@ -28,7 +28,7 @@ def _payload(result: dict) -> dict:
 def test_only_the_read_only_judgment_tools_are_exposed():
     assert sorted(mcp_server.HANDLERS) == ["agent_file_access", "agent_session_list",
                                            "agent_session_search", "agent_state_report",
-                                           "mcp_hygiene", "model_residue_report",
+                                           "environment_retirement_status", "mcp_hygiene", "model_residue_report",
                                            "operator_friction_report", "system_scan_summary",
                                            "uninstall_residue_report", "work_resource_status"]
 
@@ -80,8 +80,10 @@ def test_no_tool_can_run_anything_but_the_judgment_scripts(monkeypatch, tmp_path
     assert spawned, "expected the judgment scripts to be invoked"
     for argv in spawned:
         script = Path(argv[3]).name
+        if script == "environment_retirement.py":
+            assert argv[4:] == ["--inventory"]
         assert script in ("scree.py", "friction.py", "moraine.py", "hfscan.py",
-                          "mcpaudit.py", "fileaccess.py", "work_resources.py"), argv
+                          "mcpaudit.py", "fileaccess.py", "work_resources.py", "environment_retirement.py"), argv
         joined = " ".join(argv)
         for forbidden in ("cleanup", "scanner", "storage_watch", "schedule",
                           "preserve", "--raw"):
@@ -728,7 +730,7 @@ def test_initialize_echoes_a_supported_version_and_falls_back_otherwise():
 
 def test_tools_list_declares_closed_input_schemas():
     tools = mcp_server.handle_request("tools/list", {})["tools"]
-    assert [t["name"] for t in tools] == ["agent_state_report", "agent_session_list",
+    assert [t["name"] for t in tools] == ["environment_retirement_status", "agent_state_report", "agent_session_list",
                                           "agent_session_search", "operator_friction_report",
                                           "model_residue_report", "mcp_hygiene",
                                           "agent_file_access", "system_scan_summary",
@@ -780,7 +782,7 @@ def test_serve_handles_a_full_session_including_malformed_input():
 def test_cli_tools_dump_is_the_registered_surface(capsys):
     assert mcp_server.main(["--tools"]) == 0
     dumped = json.loads(capsys.readouterr().out)
-    assert [t["name"] for t in dumped["exposed"]] == ["agent_state_report", "agent_session_list",
+    assert [t["name"] for t in dumped["exposed"]] == ["environment_retirement_status", "agent_state_report", "agent_session_list",
                                                       "agent_session_search", "operator_friction_report",
                                                       "model_residue_report", "mcp_hygiene",
                                                       "agent_file_access", "system_scan_summary",

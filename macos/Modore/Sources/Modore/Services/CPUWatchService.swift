@@ -236,7 +236,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         let changed = journal.observe(current)
         detail = current.summary
         if changed || Date().timeIntervalSince(lastSaved) >= 60 { persist() }
-        guard changed || (!current.issues.isEmpty && Date().timeIntervalSince(lastNotice) >= 600) else { return }
+        guard changed, LocalUserPresence.allowsNotification else { return }
         guard enabled else { return }
         let content = UNMutableNotificationContent()
         content.title = current.issues.isEmpty ? "관찰된 부하가 경고 기준 아래로 내려왔습니다" : current.issues.joined(separator: " · ")

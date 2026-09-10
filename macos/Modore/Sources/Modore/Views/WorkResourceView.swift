@@ -4,6 +4,7 @@ struct WorkResourceView: View {
     @EnvironmentObject private var model: ScanModel
     @Environment(\.dismiss) private var dismiss
     @StateObject private var service = WorkResourceService()
+    @State private var environmentRetirement = false
     @State private var filter = "active"
     @State private var detail: WorkResource?
     @State private var connecting: WorkResource?
@@ -54,6 +55,7 @@ struct WorkResourceView: View {
                 }
                 Button { Task { await service.refresh(root: model.projectRoot) } } label: { Image(systemName: "arrow.clockwise") }
                     .help("상태 새로고침").disabled(service.busy)
+                Button("저장공간·서버 정리") { environmentRetirement = true }
                 Button("닫기") { dismiss() }.keyboardShortcut(.cancelAction)
             }.padding(20)
             Divider()
@@ -73,6 +75,7 @@ struct WorkResourceView: View {
                 do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch { return }
             }
         }
+        .sheet(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
         .sheet(item: $detail) { r in ResourceDetailSheet(resource: resources.first { $0.id == r.id } ?? r) }
         .sheet(item: $connecting) { r in
             ResourceConnectionSheet(resource: r, sessions: model.sessionIndex?.sessions ?? []) { project, session in

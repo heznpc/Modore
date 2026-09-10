@@ -1,6 +1,7 @@
 import SwiftUI
 
 enum StorageWorkspaceSection: String, CaseIterable, Identifiable {
+    case overview
     case cleanup
     case goal
     case development
@@ -11,6 +12,7 @@ enum StorageWorkspaceSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .overview: return "전체"
         case .cleanup: return "정리"
         case .goal: return "목표"
         case .development: return "개발"
@@ -24,14 +26,21 @@ struct StorageWorkspacePage: View {
     @EnvironmentObject private var model: ScanModel
     @Binding var section: StorageWorkspaceSection
     @State private var retirementOpen = false
+    @State private var environmentRetirement = false
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                Button("시뮬레이터·실행 환경 정리") { environmentRetirement = true }
                 Button("레포 아카이브·로컬 정리") { retirementOpen = true }
                 Spacer()
             }.padding(.horizontal, 20).padding(.vertical, 8)
-            if let storage = model.storage {
+            if section == .overview {
+                Picker("저장공간 보기", selection: $section) {
+                    ForEach(StorageWorkspaceSection.allCases) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented).padding(.horizontal, 20)
+                FullStorageBalanceView()
+            } else if let storage = model.storage {
                 VStack(spacing: 0) {
                     StorageWorkspaceToolbar(section: $section, storage: storage)
                     workspaceList(storage)
@@ -55,12 +64,14 @@ struct StorageWorkspacePage: View {
                 }
             }
         }
+        .sheet(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
         .sheet(isPresented: $retirementOpen) { AssetRetirementView() }
     }
 
     @ViewBuilder
     private func workspaceList(_ storage: StorageSnapshot) -> some View {
         switch section {
+        case .overview: FullStorageBalanceView()
         case .cleanup: CleanupWorkspaceList(storage: storage)
         case .goal: SpaceGoalWorkspaceList(
             storage: storage,
@@ -110,6 +121,7 @@ private struct StorageWorkspaceToolbar: View {
 
     private var summary: String {
         switch section {
+        case .overview: return "전체 사용량과 미측정 영역을 먼저 확인합니다."
         case .cleanup: return "실행 가능한 대상의 점유 추정이며 미리보기에서 다시 측정합니다."
         case .goal: return "정리 후보를 검토하고 실제 여유 공간으로 목표 달성을 확인합니다. 파일 크기는 회수량이 아닙니다."
         case .development: return "빌드 도구와 실행 중인 생성원을 구분해 보여줍니다."
@@ -120,6 +132,7 @@ private struct StorageWorkspaceToolbar: View {
 
     private var value: String {
         switch section {
+        case .overview: return String(format: "%.1fGB", storage.totalGB)
         case .cleanup: return storage.reclaimableText
         case .goal: return storage.recoveryText
         case .development: return storage.developerText
