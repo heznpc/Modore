@@ -31,3 +31,15 @@ def test_reappearing_app_changes_approved_identity():
         assert before['id']==after['id']
         assert before['fingerprint']!=after['fingerprint']
         assert after['state']=='실제 앱 복사본'
+
+def test_focus_rejects_changed_target_before_resolving_parent_apps():
+    import environment_retirement as m
+    import uuid
+    with tempfile.TemporaryDirectory() as root:
+        root=Path(root);item={'id':'process:123','kind':'process','target':'123','fingerprint':'old'}
+        plan={'id':str(uuid.uuid4()),'items':[item],'projects':[]}
+        m.save(m.plan_path(root,plan['id']),plan)
+        with patch.object(m,'observe_item',return_value=dict(item,fingerprint='new')),patch.object(m,'run') as command:
+            import pytest
+            with pytest.raises(ValueError,match='대상 상태 변경'):m.dispatch({'action':'focus-target','id':plan['id'],'item':item['id']},root)
+            command.assert_not_called()
