@@ -11,6 +11,7 @@ struct RetirementIntentRail: View {
             destination("space", "공간 비우기", "기기 · OS · 캐시", "sparkles")
             destination("finish", "작업 마치기", "서버 · 가상머신", "moon")
             destination("eject", "SSD 가져가기", "연결 해제 준비", "externaldrive")
+            destination("apps", "앱 중복 정리", "복사본 · 남은 등록", "square.on.square")
             Spacer()
             VStack(alignment:.leading,spacing:5) {
                 Text("이 Mac의 여유 공간").font(.caption).foregroundStyle(.secondary)

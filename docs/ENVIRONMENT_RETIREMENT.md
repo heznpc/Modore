@@ -119,3 +119,22 @@ linked-work counts and deletion/retention effects appear as labeled icon chips.
 Project headers are full-width buttons with visible running/selected counts;
 individual process choices are revealed by clicking the card, not a tiny triangle.
 Raw paths and verbose evidence remain available from target context menus.
+
+## Storage map and app registrations
+
+Storage now shows a colored physical APFS composition and size-ranked folder cards.
+Clicking a folder measures its children inside Modore; unknown measurements remain
+unknown. Finder remains available from the context menu. The full measurement's
+timestamp is visible and may differ from the live sidebar capacity.
+
+The app-duplicate view groups LaunchServices records by display name, while retaining
+exact path, bundle identifier and version as separate identities. Embedded app helpers
+are excluded. Missing paths and existing app copies have different labels. A missing
+Info.plist on an existing bundle is an identity failure, not proof of a stale record.
+Selection authorizes only `lsregister -u <exact path>` after fingerprint revalidation;
+app bundles and user data remain. Verification checks the entire registry, including
+single remaining records, so shrinking a duplicate group cannot fake success.
+
+Menu-bar settings have separate state. Registry removal is not reported as proof that
+macOS removed a menu-bar permission row. No global LaunchServices reset, preference
+database edits or silent deletion of app copies is performed.

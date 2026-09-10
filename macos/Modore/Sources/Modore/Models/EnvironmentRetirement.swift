@@ -35,6 +35,10 @@ struct EnvironmentItem: Decodable, Identifiable {
     let invariant: String
     let approved, changed: Bool
     let mutation, verification, error: String
+    var actionLabel: String {
+        switch kind { case "registration": return "등록 해제 · 파일 유지"; case "process","vm": return "정상 종료"; case "volume": return "추출"; default:return "삭제" }
+    }
+    var displayName: String { kind == "registration" ? URL(fileURLWithPath:path).lastPathComponent : name }
     var subtitle: String {
         let states = ["Shutdown":"꺼짐", "Running":"실행 중", "Booted":"실행 중", "Ready":"설치됨", "Mounted":"연결됨"]
         let stateText = states[state] ?? state
@@ -44,6 +48,7 @@ struct EnvironmentItem: Decodable, Identifiable {
     var finished: Bool { mutation == "succeeded" }
     var icon: String {
         switch kind {
+        case "registration": return "app.dashed"
         case "runtime": return "shippingbox"
         case "cache": return "arrow.triangle.2.circlepath"
         case "process": return "terminal"

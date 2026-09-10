@@ -71,6 +71,7 @@ struct EnvironmentConditionChips: View {
     }
     private var effect:String {
         switch item.kind {
+        case "registration": return "등록 해제 · 앱 유지"
         case "device": return "테스트 데이터 삭제"
         case "runtime": return "OS 제거"
         case "cache": return "재생성 가능"

@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import app_registrations
 
 ROOT = Path.home() / 'Library/Application Support/Modore/environment-retirement'
 
@@ -213,6 +214,8 @@ def inventory(req, root, measure=True):
     except Exception as exc: warnings.append('VM 조회 불완전: '+str(exc))
     try: rows+=volume_inventory()
     except Exception as exc: warnings.append('외장 드라이브 조회 불완전: '+str(exc))
+    try: rows+=app_registrations.rows(run)
+    except Exception as exc: warnings.append('앱 등록 조회 불완전: '+str(exc))
     pol=policy(root)
     missing=[p for p in pol['platforms'] if not any(x['kind']=='device' and x['platform']==p for x in rows)]
     return {'observedAt':time.time(),'capacity':capacity(),'memory':memory(),'items':annotate(rows,pol),'warnings':warnings,
@@ -234,6 +237,7 @@ def preview(req, root):
     save(plan_path(root,plan['id']),plan);return plan
 
 def observe_item(item, projects):
+    if item['kind']=='registration':return next((r for r in app_registrations.rows(run,True) if r['id']==item['id']),None)
     rows=processes(projects) if item['kind']=='process' else (vm_inventory() if item['kind']=='vm' else (volume_inventory() if item['kind']=='volume' else simulator_inventory(False)))
     return next((r for r in rows if r['id']==item['id']),None)
 
@@ -246,7 +250,7 @@ def verify(item, projects):
 def execute(plan, root, selected):
     path=plan_path(root,plan['id']);cancel=root/('cancel-'+plan['id'])
     # Devices before runtime removal; disallow removing runtime under unselected running devices.
-    for item in sorted(plan['items'], key=lambda i: {'process':0,'vm':1,'device':2,'cache':3,'runtime':4,'volume':5}[i['kind']]):
+    for item in sorted(plan['items'], key=lambda i: {'process':0,'vm':1,'device':2,'cache':3,'runtime':4,'volume':5,'registration':6}[i['kind']]):
         if cancel.exists(): plan['cancelled']=True;break
         if item['id'] not in selected or not item['approved'] or item['changed']: continue
         if item['mutation']=='succeeded':
@@ -265,6 +269,7 @@ def execute(plan, root, selected):
             elif item['kind']=='vm':
                 result=subprocess.run([item['runtime'],'stop',item['target']],env=dict(os.environ,LIMA_HOME=item['path']),capture_output=True,timeout=120)
                 if result.returncode:raise ValueError(result.stderr.decode(errors='replace'))
+            elif item['kind']=='registration':run([app_registrations.LSREGISTER,'-u',item['path']],45)
             elif item['kind']=='volume':run(['/usr/sbin/diskutil','eject',item['path']],60)
             elif item['kind']=='device':
                 if current['state']!='Shutdown': run(['/usr/bin/xcrun','simctl','shutdown',item['target']],60)
@@ -279,6 +284,18 @@ def execute(plan, root, selected):
         save(path,plan)
     plan['after']=capacity();plan['memoryAfter']=memory();save(path,plan);return plan
 
+
+def directory_contents(path):
+    from concurrent.futures import ThreadPoolExecutor
+    p=Path(path)
+    if not p.is_absolute() or p.is_symlink() or not p.is_dir():raise ValueError('폴더 식별 실패')
+    def measure(child):
+        if child.is_symlink():return None
+        value=allocated(child)
+        return {'name':child.name,'path':str(child),'bytes':value,'complete':value is not None,'directory':child.is_dir()}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        entries=[x for x in pool.map(measure,list(p.iterdir())) if x]
+    return {'path':str(p),'observedAt':time.time(),'entries':sorted(entries,key=lambda x:x['bytes'] or 0,reverse=True)}
 
 def disk_balance(root, fresh=False):
     path=root/'disk-balance.json'
@@ -359,6 +376,7 @@ def dispatch(req,root=ROOT):
         if action=='setup-options': return setup_options()
         if action in ('download-runtime','ensure-device'): return setup(req,root)
         if action=='health': return {'capacity':capacity(),'memory':memory()}
+        if action=='directory': return directory_contents(req['path'])
         if action=='balance': return disk_balance(root,req.get('fresh',False))
         if action=='preview': return preview(req,root)
         if action=='latest':
