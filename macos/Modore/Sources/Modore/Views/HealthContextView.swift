@@ -11,57 +11,51 @@ struct HealthContextView: View {
     @State private var query = ""
     @State private var environmentRecovery = false
     @State private var appRecovery = false
+    @State private var showHistory = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("지금 이 Mac").font(.largeTitle.bold())
-                        Text(monitor.enabled ? "10초마다 공간·RAM·스왑·CPU 관찰 · 앱 종료 시 중단" : "감시 꺼짐 · 아래 값은 마지막 관찰 기록입니다")
-                            .foregroundStyle(.secondary)
+                HStack(alignment:.top) {
+                    VStack(alignment:.leading,spacing:8) {
+                        Text("지금 이 Mac").font(.system(size:34,weight:.bold))
+                        HStack(spacing:8) {
+                            Circle().fill(monitor.enabled ? Color.teal : Color.secondary).frame(width:7,height:7)
+                            Text(monitor.enabled ? "실시간 관찰" : "관찰 꺼짐 · 마지막 기록")
+                            if let snapshot=monitor.snapshot { Text(snapshot.date.formatted(date:.omitted,time:.standard)).monospacedDigit() }
+                        }.font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if !monitor.enabled {
-                        Button("감시 켜기") { Task { await monitor.setEnabled(true) } }
+                    if !monitor.enabled { Button("관찰 켜기") { Task { await monitor.setEnabled(true) } } }
+                    Menu("기록·도구") {
+                        Button("발생 기록과 조치 후 변화") { showHistory=true }
+                        Button(copied ? "복사됨" : "상황 설명 복사") { copyContext() }.disabled(monitor.snapshot == nil)
+                        Button("조치 전 상태 기록") { monitor.markAction("사용자가 조치 전 상태 기록") }
+                        Button("활동 모니터") { NSWorkspace.shared.open(URL(fileURLWithPath:"/System/Applications/Utilities/Activity Monitor.app")) }
+                        Text(monitor.notificationStatus)
                     }
-                    Button(copied ? "복사됨" : "상황 설명 복사") { copyContext() }
-                        .disabled(monitor.snapshot == nil)
                 }
-                Text(monitor.notificationStatus).font(.caption).foregroundStyle(.secondary)
-                if let error = monitor.journalError { Text(error).foregroundStyle(.orange) }
-                if let snapshot = monitor.snapshot {
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(snapshot.issues.isEmpty ? (snapshot.complete ? "관찰 범위에서 경고 없음" : "관찰값 확인 중") : snapshot.issues.joined(separator: " · "))
-                                .font(.title2.bold())
-                            Text(snapshot.summary).font(.headline)
-                            Text(snapshot.explanation(from: monitor.journal.incidents.first?.first))
-                            Text("관찰 시각 \(snapshot.date.formatted(date: .omitted, time: .standard))")
-                                .font(.caption).foregroundStyle(.secondary)
-                            HStack {
-                                Button("전체 저장공간") { openStorageOverview() }
-                                Button("공간 확보") { monitor.markAction("공간 확보 검토 열기"); openRecovery() }
-                                Button("실행 환경 정리") { environmentRecovery = true }
-                                Button("앱 재시작") { appRecovery = true }
-                                Menu("더 보기") {
-                                Button("활동 모니터에서 작업 확인") {
-                                    monitor.markAction("활동 모니터 열기")
-                                    NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
-                                }
-                                Button("조치 전 상태 기록") { monitor.markAction("사용자가 조치 전 상태 기록") }
-                                }
-                            }
-                        }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                if let error = monitor.journalError { Label(error,systemImage:"exclamationmark.circle").foregroundStyle(.orange) }
+                if let snapshot=monitor.snapshot {
+                    HealthDashboardTiles(snapshot:snapshot,storage:openStorageOverview,memory:{ appRecovery=true },cpu:{ environmentRecovery=true })
+                    if !snapshot.issues.isEmpty {
+                        Label(snapshot.issues.joined(separator:" · "),systemImage:"exclamationmark.triangle.fill").font(.headline).foregroundStyle(.orange)
+                    }
+                    HStack(spacing:16) {
+                        HealthActionTile(title:"공간 비우기",subtitle:"전체 측정 · 정리 대상",icon:"sparkles") { monitor.markAction("공간 확보 검토 열기");openRecovery() }
+                        HealthActionTile(title:"작업대",subtitle:"기기 · 프로젝트 · SSD",icon:"square.stack.3d.up") { environmentRecovery=true }
                     }
                     processSection(snapshot)
-                } else { ProgressView("첫 관찰값을 읽는 중…") }
-                DisclosureGroup("최근 프로젝트·세션") { sessionSection }
-                DisclosureGroup("발생 기록과 조치 후 변화") { historySection }
+                } else { ProgressView("상태를 읽고 있습니다").frame(maxWidth:.infinity,minHeight:180) }
+                sessionSection
+                Button { showHistory=true } label: {
+                    HStack { Label("발생 기록과 조치 후 변화",systemImage:"clock.arrow.circlepath"); Spacer(); Text("기록 보기"); Image(systemName:"arrow.right") }.padding(18).contentShape(Rectangle())
+                }.buttonStyle(.plain).background(Color.secondary.opacity(0.04),in:RoundedRectangle(cornerRadius:14))
             }.padding(24)
         }
         .sheet(isPresented:$environmentRecovery) { EnvironmentRetirementView() }
         .sheet(isPresented:$appRecovery) { AppRecoveryView() }
+        .sheet(isPresented:$showHistory) { VStack { HStack { Text("발생 기록").font(.title2.bold()); Spacer(); Button("닫기") { showHistory=false } }; ScrollView { historySection } }.padding(24).frame(width:800,height:650) }
         .task {
             await monitor.refreshNotificationStatus()
             if model.sessionIndex == nil && !model.sessionIndexLoading { model.refreshSessionIndex() }
@@ -69,43 +63,47 @@ struct HealthContextView: View {
     }
 
     private func processSection(_ snapshot: HealthSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("부하가 큰 프로세스와 작업").font(.headline)
-            Text("CPU·메모리 상위 각 5개. 메모리는 프로세스 상주량이며 공유 메모리가 포함될 수 있습니다.")
-                .font(.caption).foregroundStyle(.secondary)
-            ForEach(snapshot.processes) { process in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(process.name).fontWeight(.medium)
-
-                        Spacer()
-                        Text("CPU \(Int(process.cpu))% · RAM \(HealthSnapshot.bytes(process.residentBytes.map { Int64(clamping: $0) }))")
-                    }
-                    DisclosureGroup("연결·프로세스 상세") {
-                    Text("PID \(process.pid)").font(.caption).foregroundStyle(.secondary)
-                    if let workspace = process.workspace {
-                        Text(workspace).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        let matches = matchingSessions(workspace)
-                        if !matches.isEmpty {
-                            Button("같은 경로의 대화 \(matches.count)개 확인") {
-                                model.sessionSearch = workspace
-                                openWork()
-                            }.font(.caption)
-                            Text("경로 일치 후보 · 현재 프로세스를 실행한 세션인지 미확정")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        } else { Text("연결된 세션 메타데이터 없음").font(.caption).foregroundStyle(.secondary) }
-                    } else { Text("작업 경로 미확인").font(.caption).foregroundStyle(.secondary) }
-                    }
-                }.padding(.vertical, 4)
-                Divider()
+        VStack(alignment:.leading,spacing:14) {
+            HStack {
+                Text("지금 자원을 쓰는 작업").font(.title3.bold())
+                Spacer()
+                Text("CPU·메모리 상위 작업").font(.caption).foregroundStyle(.secondary)
             }
+            LazyVGrid(columns:[GridItem(.flexible()),GridItem(.flexible())],spacing:12) {
+                ForEach(snapshot.processes) { process in
+                    VStack(alignment:.leading,spacing:12) {
+                        HStack(spacing:12) {
+                            Image(systemName:process.name.contains("VirtualMachine") ? "server.rack" : "app").font(.title2).foregroundStyle(.teal)
+                            Text(process.name.contains("VirtualMachine") ? "가상머신" : process.name).font(.headline).lineLimit(1).help(process.name)
+                            Spacer()
+                        }
+                        HStack(spacing:16) {
+                            Label(snapshot.cpuAvailable ? "\(Int(process.cpu))%" : "측정 중",systemImage:"cpu")
+                            Label(HealthSnapshot.bytes(process.residentBytes.map { Int64(clamping:$0) }),systemImage:"memorychip")
+                        }.font(.callout.weight(.medium)).monospacedDigit()
+                        if let workspace=process.workspace {
+                            HStack {
+                                Label(URL(fileURLWithPath:workspace).lastPathComponent,systemImage:"folder").lineLimit(1).help(workspace)
+                                Spacer()
+                                let matches=matchingSessions(workspace)
+                                if !matches.isEmpty {
+                                    Button("경로 일치 대화 \(matches.count)") { model.sessionSearch=workspace;openWork() }.buttonStyle(.plain).foregroundStyle(.teal)
+                                }
+                            }.font(.caption).foregroundStyle(.secondary)
+                        } else { Label("프로젝트 연결 미확인",systemImage:"link").font(.caption).foregroundStyle(.secondary) }
+                    }.padding(18).frame(maxWidth:.infinity,alignment:.leading)
+                        .background(Color.secondary.opacity(0.04),in:RoundedRectangle(cornerRadius:16))
+                        .contextMenu { Text("PID \(process.pid)"); Text(process.name); Text(process.workspace ?? "작업 경로 미확인") }
+                }
+            }
+            Text("CPU 100% = 코어 1개 · 메모리는 공유 영역을 포함한 상주량 · 경로 일치는 실행한 세션의 확정 근거가 아닙니다.").font(.caption2).foregroundStyle(.secondary)
         }
     }
 
     private var sessionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("이어서 볼 세션").font(.headline)
+                Text("이어서 할 작업").font(.title3.bold())
                 Spacer()
                 Button("목록 갱신") { model.refreshSessionIndex() }.disabled(model.sessionIndexLoading)
             }
@@ -117,7 +115,7 @@ struct HealthContextView: View {
             if model.sessionIndexLoading { ProgressView("세션 메타데이터 읽는 중…") }
             if let error = model.sessionIndexError { Text(error).foregroundStyle(.orange) }
             if let warning = model.sessionIndex?.coverage.warningText { Text(warning).font(.caption).foregroundStyle(.orange) }
-            ForEach(Array((model.sessionIndex?.sessions ?? []).filter(\.isReadable).prefix(5))) { session in
+            ForEach(Array((model.sessionIndex?.sessions ?? []).filter(\.isReadable).prefix(3))) { session in
                 Button {
                     model.sessionSearch = session.workspace
                     model.selectedSessionSource = session.source
@@ -128,8 +126,8 @@ struct HealthContextView: View {
                         Text(session.displayLabel)
                         Text(session.tool).foregroundStyle(.secondary)
                         Spacer()
-                        Text(session.lastActive).font(.caption).foregroundStyle(.secondary)
-                    }
+                        Image(systemName:"arrow.up.right").foregroundStyle(.teal)
+                    }.padding(14).frame(maxWidth:.infinity,alignment:.leading).background(Color.secondary.opacity(0.04),in:RoundedRectangle(cornerRadius:12)).contentShape(Rectangle())
                 }.buttonStyle(.plain)
             }
             Text("최근 세션 메타데이터입니다. 대화 내용은 세션을 열거나 검색을 실행할 때 읽습니다.")
