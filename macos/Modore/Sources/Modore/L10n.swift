@@ -27,23 +27,54 @@ enum L10n {
     /// identifiers, or conversation content through this compatibility adapter.
     /// Stored warning text stays unchanged for transaction revalidation.
     static func message(_ raw: String) -> String {
-        let translated = text(raw)
-        if translated != raw { return translated }
-        // Legacy Python messages concatenate a fixed prefix/suffix with a target.
-        // Match only catalogued boundary fragments; retain the target verbatim.
-        let fragments = messageFragments
-        for prefix in fragments where raw.hasPrefix(prefix) {
-            let remainder = String(raw.dropFirst(prefix.count))
-            for suffix in fragments where remainder.hasSuffix(suffix) {
-                return text(prefix) + String(remainder.dropLast(suffix.count)) + text(suffix)
+        message(raw, preferences: Locale.preferredLanguages)
+    }
+
+    static func message(_ raw: String, preferences: [String]) -> String {
+        let localize: (String) -> String = { text($0, preferences: preferences) }
+        let translated = localize(raw)
+        if translated != raw || tables["en"]?[raw] != nil { return translated }
+        if language(for: preferences) == "ko" { return raw }
+        guard raw.unicodeScalars.contains(where: { (0xAC00...0xD7AF).contains($0.value) }) else { return raw }
+        // Legacy formatted diagnostics keep target names and paths as captured data.
+        if raw.utf16.count <= 16_384 {
+            let range = NSRange(raw.startIndex..., in: raw)
+            for template in messageTemplates {
+                guard let match = template.pattern.firstMatch(in: raw, range: range) else { continue }
+                let values: [CVarArg] = (1..<match.numberOfRanges).map { index in
+                    (raw as NSString).substring(with: match.range(at: index)) as NSString
+                }
+                return String(format: localize(template.key), locale: Locale.current, arguments: values)
             }
-            return text(prefix) + text(remainder)
         }
-        for suffix in fragments where raw.hasSuffix(suffix) {
-            return String(raw.dropLast(suffix.count)) + text(suffix)
+        for prefix in messageFragments where raw.hasPrefix(prefix) {
+            let remainder = String(raw.dropFirst(prefix.count))
+            for suffix in messageFragments where remainder.hasSuffix(suffix) {
+                return localize(prefix) + String(remainder.dropLast(suffix.count)) + localize(suffix)
+            }
+            return localize(prefix) + localize(remainder)
+        }
+        for suffix in messageFragments where raw.hasSuffix(suffix) {
+            return String(raw.dropLast(suffix.count)) + localize(suffix)
+        }
+        if raw.contains("\n") {
+            return raw.components(separatedBy: "\n").map { message($0, preferences: preferences) }.joined(separator: "\n")
         }
         return raw
     }
+
+    private static let messageTemplates: [(key: String, pattern: NSRegularExpression)] = {
+        let keys = (tables["en"] ?? [:]).keys.filter {
+            $0.contains("%@") && !$0.hasPrefix("report.") && !$0.replacingOccurrences(of: "%%", with: "").replacingOccurrences(of: "%@", with: "").contains("%")
+        }.sorted { $0.count > $1.count }
+        return keys.compactMap { key in
+            let pieces = key.components(separatedBy: "%@").map {
+                NSRegularExpression.escapedPattern(for: $0.replacingOccurrences(of: "%%", with: "%"))
+            }
+            guard let pattern = try? NSRegularExpression(pattern: "\\A" + pieces.joined(separator: "(.*?)") + "\\z") else { return nil }
+            return (key, pattern)
+        }
+    }()
 
     private static let messageFragments: [String] = tables["en"]?.keys.filter {
         !$0.isEmpty && !$0.hasPrefix("report.") && ($0.hasSuffix(": ") || $0.hasPrefix(" ") || $0 == "할당 메모리 " || $0 == "잔류 후보 ")
