@@ -238,6 +238,21 @@ enum RuntimeWorkspace {
         return resultsDirectory
     }
 
+    private static let preparationQueue = DispatchQueue(label: "me.heznpc.modore.runtime-preparation", qos: .userInitiated)
+
+    /// Work screens can request many titles/conversations together. Signature
+    /// checks and runtime installation are blocking operations, so callers
+    /// suspend instead of occupying Swift's cooperative worker pool.
+    static func prepareExecutionAsync(projectRoot: URL) async -> RuntimeExecutionContext? {
+        guard !Task.isCancelled else { return nil }
+        let context = await withCheckedContinuation { continuation in
+            preparationQueue.async {
+                continuation.resume(returning: prepareExecution(projectRoot: projectRoot))
+            }
+        }
+        return Task.isCancelled ? nil : context
+    }
+
     static func prepareExecution(
         projectRoot: URL,
         environment: [String: String] = ProcessInfo.processInfo.environment,
