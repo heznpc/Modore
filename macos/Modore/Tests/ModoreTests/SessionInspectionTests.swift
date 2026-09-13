@@ -58,6 +58,18 @@ final class SessionConversationDecodingTests: XCTestCase {
         }
     }
 
+    func test_partialReadsPreserveTurnsAndDescribeCoverageWithoutClaimingFormatFailure() throws {
+        for raw in ["truncated", "time", "parse"] {
+            let conversation = try decode(payload(status: raw, turns:
+                "[{\"index\":0,\"role\":\"user\",\"text\":\"visible portion\"}]"))
+            XCTAssertEqual(conversation.status.rawValue, raw)
+            XCTAssertNil(conversation.status.failureText)
+            XCTAssertNotNil(conversation.status.partialReadText)
+            XCTAssertEqual(conversation.turns.first?.text, "visible portion")
+        }
+        XCTAssertNil(SessionConversation.Status.ok.partialReadText)
+    }
+
     /// Three different reasons all produce zero turns. Showing them as an
     /// empty conversation tells someone about to retire a repo that there
     /// was nothing to lose, so each has to carry its own sentence.
