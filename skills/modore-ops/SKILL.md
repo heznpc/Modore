@@ -42,7 +42,24 @@ For simulator, development environment, or external SSD work, first run
 users, and explicit session/project connections. Never claim a missing session
 connection proves the resource is unused. Device names are not ownership proof.
 
-Reuse an existing device with:
+When Modore's turn hooks provide a provider, session, project, and turn token,
+start a turn's simulator test with:
+`modore resources begin-test --runtime <exact-runtime-ID> --provider <provider> --session <session-ID> --project <absolute-path> --turn <token>`.
+This selects and boots an unused existing device. It never creates or adopts an
+already running unowned device. Use the returned UDID for every simulator action.
+The synchronous `Stop` hook shuts down that managed test run after the response,
+preserving the AI session, device, installed apps, and persistent data. This is a
+runtime shutdown, not a process pause; the running app and transient UI state
+must be relaunched next time. A foreign registration, even expired, blocks it
+until explicitly released. Ownership outside the registration system is unknown.
+
+If the user needs a running preview or a background test after the response, run
+`modore resources hold --id <UDID> --provider <provider> --session <ID> --turn <token>`.
+Release it when that use actually finishes. Do not equate a permission prompt,
+interruption, compaction, or lease timeout with completion. If a Stop hook causes
+the agent to continue, begin-test again before further simulator actions.
+
+Without verified lifecycle hooks, register an existing device with:
 `modore resources acquire --runtime <exact-runtime-ID> --project <absolute-path> --session <session-ID>`.
 The result provides the existing UDID; specify it in every simulator tool action.
 This command does not create or boot devices. A different OS requirement is a
@@ -50,7 +67,9 @@ reason to select another existing device, not a duplicate on the same OS.
 Register an exact simulator or external volume with `resources claim --id <ID>`
 and the same project/session arguments. Refresh a lease every five minutes with
 `resources heartbeat --session <ID>`, and `release --session <ID>` when finished.
-A lease expires after fifteen minutes and remains visible as stale evidence.
+A lease expires after fifteen minutes and remains visible as stale evidence;
+expiry does not authorize automatic shutdown. A released lease requires a new
+acquire/claim rather than heartbeat to become active again.
 All state and receipts belong to Modore; no Taxi dependency.
 
 Before changing a feature, inspect its existing UI, collector, persisted results,

@@ -43,6 +43,43 @@ The agent command intentionally has no full-system scan or cleanup-preview
 route: the former would collect unrelated security metadata, while the latter
 would mint a live destructive approval token.
 
+## Turn test resources
+
+```bash
+modore resources install-hooks --provider claude
+modore resources install-hooks --provider codex
+modore resources begin-test --runtime <runtime> --provider <provider> --session <ID> --project <path> --turn <token>
+modore resources hold --id <UDID> --provider <provider> --session <ID> --turn <token>
+modore resources release --id <UDID> --provider <provider> --session <ID>
+```
+
+The installer merges two synchronous lifecycle hooks into the selected user's
+configuration and backs up existing JSON under Modore's work-resource directory.
+It preserves other hooks and does not grant trust. Codex requires review of both
+definitions in `/hooks`; existing sessions may need a configuration refresh.
+
+`UserPromptSubmit` records metadata and supplies the turn token. `Stop` explicitly
+ends that turn's managed test use. Codex matches `turn_id`; Claude uses a generated
+token and synchronous prompt/Stop ordering. The bridge ignores other lifecycle
+events and never reads a transcript or stores prompt/response/tool contents.
+It never emits a decision to interrupt, end, or continue an AI session.
+
+`begin-test` only boots an existing Shutdown simulator with no unresolved lease.
+Shutdown requires the same UDID, resource fingerprint, and boot timestamp, and
+no unreleased consumer, including expired registrations. `hold` keeps a preview
+or background test running until explicit `release`. Foreign and unregistered
+running devices are never adopted. Boot intent and status remain in the registry;
+shutdown writes a receipt with the verification result. An uncertain boot or
+changed identity prevents automatic shutdown.
+Command timeout or a missing/disabled hook leaves a pending resource for review;
+it is not proof of successful cleanup. This feature currently covers managed
+simulator runs, not arbitrary browsers, processes, or sessions. Hook `Stop` can
+also be an attempted turn finish followed by another hook's continuation; the
+next simulator use must call `begin-test` again.
+
+References: [Codex hooks](https://learn.chatgpt.com/docs/hooks),
+[Claude Code hooks](https://code.claude.com/docs/en/hooks).
+
 ## Agent access
 
 ```bash

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -41,10 +42,23 @@ def registry(root=ROOT):
     if root.is_symlink(): raise ValueError('Registry directory is a symlink')
     fd = os.open(root / 'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise ValueError('다른 자원 작업이 진행 중입니다. 잠시 후 다시 확인하세요.')
+                time.sleep(0.05)
         path = root / 'leases.json'
         if path.is_symlink(): raise ValueError('Registry file is a symlink')
         state = json.loads(path.read_text()) if path.exists() else {'leases': [], 'preferred': {}}
+        for lease in state['leases']:
+            # The old release action encoded explicit release as expiry before
+            # updatedAt. Ordinary TTL expiry always remains after updatedAt.
+            if not lease.get('releasedAt') and lease.get('expiresAt', 0) < lease.get('updatedAt', 0):
+                lease['releasedAt'] = lease['updatedAt']
         yield state
         atomic(path, state)
     finally:
@@ -66,8 +80,8 @@ def simulator_rows(payload):
     return rows
 
 
-def devices():
-    return simulator_rows(json.loads(command(['/usr/bin/xcrun', 'simctl', 'list', 'devices', '--json'])))
+def devices(timeout=20):
+    return simulator_rows(json.loads(command(['/usr/bin/xcrun', 'simctl', 'list', 'devices', '--json'], timeout)))
 
 
 def volumes():
@@ -123,7 +137,14 @@ def process_evidence(rows):
 
 def active_leases(state, rid, now=None):
     now = time.time() if now is None else now
-    return [x for x in state['leases'] if x['resourceID'] == rid and x['expiresAt'] > now]
+    return [x for x in state['leases'] if x['resourceID'] == rid and x['expiresAt'] > now
+            and not x.get('releasedAt')]
+
+
+def unresolved_leases(state, rid):
+    # Expiry is loss of evidence, not proof that another session has finished.
+    # Old records without an explicit release marker remain protective.
+    return [x for x in state['leases'] if x['resourceID'] == rid and not x.get('releasedAt')]
 
 
 def snapshot(root=ROOT, observe=True):
@@ -139,6 +160,7 @@ def snapshot(root=ROOT, observe=True):
             r['expiredLeases'] = [x for x in state['leases'] if x['resourceID'] == r['id'] and x['expiresAt'] <= time.time()]
             r['processes'] = evidence.get(r['id'], [])
             r['preferred'] = r['id'] in state['preferred'].values()
+            r['managedTest'] = state.get('testRuns', {}).get(r['id'])
     return {'observedAt': time.time(), 'resources': rows, 'warnings': warnings,
             'coverage': '프로세스 연결은 열린 파일 관찰, 세션 연결은 명시적 사용 등록입니다. 미등록 세션의 소속은 알 수 없습니다.'}
 
@@ -150,11 +172,19 @@ def select_existing(rows, runtime='', device_type='', preferred=None):
     return sorted(candidates, key=lambda r: (r['id'] != preferred, r['state'] != 'Booted', not bool(r['lastBooted']), r['id']))[0]
 
 
-def register(req, root=ROOT):
-    session = req.get('session', '').strip(); project = req.get('project', '').strip()
+def project_session(req):
+    session = req.get('session', ''); project = req.get('project', '')
+    if not isinstance(session, str) or not isinstance(project, str):
+        raise ValueError('프로젝트 경로와 세션 ID는 문자열이어야 합니다.')
+    session = session.strip(); project = project.strip()
     if not session or len(session) > 256 or not os.path.isabs(project) or not Path(project).is_dir():
         raise ValueError('실제 프로젝트 절대 경로와 세션 ID가 필요합니다.')
     project = str(Path(project).resolve())
+    return project, session
+
+
+def register(req, root=ROOT):
+    project, session = project_session(req)
     rows = devices()
     vs, _ = volumes(); rows += vs
     with registry(root) as state:
@@ -167,10 +197,208 @@ def register(req, root=ROOT):
             key = runtime + '/' + req.get('deviceType', '')
             r = select_existing(rows, runtime, req.get('deviceType', ''), state['preferred'].get(key))
             state['preferred'][key] = r['id']
+        if any(x['session'] == session and x['resourceID'] == r['id'] and
+               x.get('lifetime') == 'turn' and not x.get('releasedAt') for x in state['leases']):
+            raise ValueError('턴 테스트로 등록된 기기입니다. begin-test로 재사용하거나 hold로 유지하세요.')
         state['leases'] = [x for x in state['leases'] if not (x['session'] == session and x['resourceID'] == r['id'])]
         state['leases'].append({'resourceID': r['id'], 'session': session, 'project': project,
                                'updatedAt': time.time(), 'expiresAt': time.time() + 900})
         return {'resource': r, 'leases': active_leases(state, r['id']), 'instruction': '이 UDID를 모든 simctl/시뮬레이터 도구 호출에 명시하세요. 5분마다 heartbeat, 종료 시 release. 기기를 새로 만들지 마세요.'}
+
+
+def turn_key(provider, session):
+    if provider not in ('codex', 'claude') or not isinstance(session, str) or not session or len(session) > 256:
+        raise ValueError('codex 또는 claude 제공자와 실제 세션 ID가 필요합니다.')
+    return hashlib.sha256((provider + '\0' + session).encode()).hexdigest()
+
+
+def save_registry(root, state):
+    # Commit intent before simctl: even a killed hook leaves a recoverable record.
+    atomic(root / 'leases.json', state)
+
+
+def settle_tests(state, root, resource_ids):
+    """Stop only runs booted by Modore whose consumers explicitly finished."""
+    results = []
+    deadline = time.monotonic() + 40
+    for rid, run in state.get('testRuns', {}).items():
+        if rid not in resource_ids: continue
+        if not run.get('stopRequested') or run.get('status') not in ('booted', 'stop-pending'):
+            continue
+        blockers = unresolved_leases(state, rid)
+        if blockers:
+            run['blockedReason'] = 'unreleased-session'
+            results.append({'id': rid, 'status': 'kept', 'reason': 'unreleased-session'})
+            continue
+        if time.monotonic() > deadline - 20:
+            results.append({'id': rid, 'status': 'pending', 'reason': 'time-budget'})
+            continue
+        receipt = {'id': str(uuid.uuid4()), 'resourceID': rid, 'action': 'turn-shutdown',
+                   'startedAt': time.time(), 'status': 'attempting', 'verified': False}
+        path = root / ('receipt-' + receipt['id'] + '.json')
+        try:
+            r = next((x for x in devices(5) if x['id'] == rid), None)
+            if r is None or r['fingerprint'] != run['fingerprint']:
+                raise ValueError('시뮬레이터 식별이 바뀌어 자동 종료하지 않았습니다.')
+            # Detect a shutdown/reboot outside Modore when simctl exposes it.
+            if r['state'] != 'Shutdown' and (not run.get('lastBooted') or r['lastBooted'] != run['lastBooted']):
+                raise ValueError('부팅 식별을 확인할 수 없어 자동 종료하지 않았습니다.')
+            run['status'] = 'stop-pending'
+            save_registry(root, state)
+            atomic(path, receipt)
+            if r['state'] == 'Booted':
+                command(['/usr/bin/xcrun', 'simctl', 'shutdown', rid], 10)
+            elif r['state'] != 'Shutdown':
+                raise ValueError('시뮬레이터가 상태 전환 중입니다.')
+            fresh = next((x for x in devices(5) if x['id'] == rid), None)
+            receipt['verified'] = bool(fresh and fresh['fingerprint'] == run['fingerprint'] and fresh['state'] == 'Shutdown')
+            receipt['status'] = 'succeeded' if receipt['verified'] else 'unverified'
+            run['status'] = 'shutdown' if receipt['verified'] else 'stop-pending'
+            run.pop('blockedReason', None)
+        except Exception as exc:
+            receipt['status'] = 'failed'
+            receipt['error'] = str(exc)
+        receipt['finishedAt'] = time.time()
+        atomic(path, receipt)
+        run['receipt'] = str(path)
+        results.append({'id': rid, 'status': receipt['status'], 'verified': receipt['verified'], 'receipt': str(path)})
+    return results
+
+
+def begin_test(req, root=ROOT):
+    """Register and boot an existing, unused device for exactly one observed turn."""
+    project, session = project_session(req)
+    key = turn_key(req.get('provider'), session)
+    with registry(root) as state:
+        turn = state.get('turns', {}).get(key)
+        if not turn or turn.get('finishedAt') or turn['project'] != project or turn['token'] != req.get('turn'):
+            raise ValueError('현재 턴 훅의 provider·session·project·turn 값이 필요합니다.')
+        rows = devices()
+        owned = [x for x in state['leases'] if x.get('turnKey') == key and x.get('turn') == turn['token']
+                 and x.get('lifetime') == 'turn' and not x.get('releasedAt')]
+        if req.get('id'):
+            candidates = [r for r in rows if r['id'] == req['id'] and r['available']]
+        else:
+            if not req.get('runtime'):
+                raise ValueError('기존 기기의 ID 또는 runtime을 지정하세요.')
+            candidates = [r for r in rows if r['available'] and r['runtime'] == req['runtime']
+                          and (not req.get('deviceType') or r['deviceType'] == req['deviceType'])]
+        for r in candidates:
+            run = state.get('testRuns', {}).get(r['id'], {})
+            if any(x['resourceID'] == r['id'] for x in owned):
+                if run.get('status') == 'booted' and run.get('fingerprint') == r['fingerprint'] and r['state'] == 'Booted' and run.get('lastBooted') == r['lastBooted']:
+                    return {'resource': r, 'turn': turn['token'], 'reused': True}
+                raise ValueError('관리 중인 기기의 상태가 바뀌었습니다. 새로 확인하세요.')
+        candidates = [r for r in candidates if r['state'] == 'Shutdown' and not unresolved_leases(state, r['id'])]
+        if not candidates:
+            raise ValueError('명시적 사용 등록이 없는 꺼진 기존 기기가 없습니다. 다른 세션의 기기를 끄거나 새로 만들지 않습니다.')
+        r = select_existing(candidates, req.get('runtime', ''), req.get('deviceType', ''))
+        rid = r['id']; now = time.time()
+        # Keep one current row per session/device for the app's stable identity.
+        # Completed execution history remains in the mutation receipts.
+        state['leases'] = [x for x in state['leases'] if not (
+            x['resourceID'] == rid and x['session'] == session and x.get('releasedAt'))]
+        run_id = str(uuid.uuid4())
+        lease = {'resourceID': rid, 'session': session, 'project': project, 'runID': run_id,
+                 'provider': req['provider'], 'turnKey': key, 'turn': turn['token'],
+                 'lifetime': 'turn', 'updatedAt': now, 'expiresAt': now + 900}
+        state['leases'].append(lease)
+        run = {'id': run_id, 'fingerprint': r['fingerprint'], 'startedAt': now, 'status': 'boot-pending', 'stopRequested': False}
+        state.setdefault('testRuns', {})[rid] = run
+        save_registry(root, state)
+        try:
+            command(['/usr/bin/xcrun', 'simctl', 'boot', rid], 20)
+            fresh = next((x for x in devices() if x['id'] == rid), None)
+            if not fresh or fresh['state'] != 'Booted' or fresh['fingerprint'] != r['fingerprint'] or not fresh['lastBooted']:
+                raise ValueError('부팅 식별을 확인하지 못했습니다. 자동 종료는 보류합니다.')
+            run.update(status='booted', lastBooted=fresh['lastBooted'])
+            return {'resource': fresh, 'turn': turn['token'], 'reused': False,
+                    'instruction': '이 UDID를 모든 액션에 명시하세요. Stop 훅은 이 테스트 실행만 종료합니다. 사용자 검토용으로 유지할 때는 resources hold --id ... --provider ... --session ... --turn ... 를 호출하세요.'}
+        except Exception as exc:
+            run['status'] = 'boot-unverified'; run['error'] = str(exc)
+            return {'error': str(exc), 'resource': r, 'verified': False}
+
+
+def turn_hook(provider, payload, root=ROOT):
+    """Consume only lifecycle metadata; never retain hook text or read transcripts."""
+    event = payload.get('hook_event_name')
+    if event not in ('UserPromptSubmit', 'Stop') or payload.get('agent_id'):
+        return {}
+    project, session = project_session({'project': payload.get('cwd'), 'session': payload.get('session_id')})
+    key = turn_key(provider, session)
+    wire_turn = payload.get('turn_id')
+    if provider == 'codex' and (not isinstance(wire_turn, str) or not wire_turn or len(wire_turn) > 256):
+        raise ValueError('Codex turn_id가 없어 자동 처리를 보류합니다.')
+    with registry(root) as state:
+        turns = state.setdefault('turns', {})
+        old = turns.get(key)
+        if event == 'UserPromptSubmit':
+            # Claude does not supply turn_id. Synchronous hooks serialize its
+            # prompt/Stop lifecycle; never configure this bridge as async.
+            token = wire_turn if provider == 'codex' else str(uuid.uuid4())
+            if not old or old['token'] != token or old.get('finishedAt'):
+                turns[key] = {'project': project, 'token': token, 'startedAt': time.time()}
+            context = ('Modore test-resource lifecycle: when using an iOS simulator for this turn, run '
+                       'modore resources status, then modore resources begin-test --runtime <runtime> '
+                       f'--provider {provider} --session {shlex.quote(session)} --project {shlex.quote(project)} --turn {shlex.quote(token)}. '
+                       'Use the returned UDID. Stop will shut down only this managed test run, preserving the device and data. '
+                       'If the user needs a running preview or background test, use resources hold with the same provider/session/turn and --id <UDID> before responding. '
+                       'Never adopt or stop an unregistered running simulator.')
+            return {'hookSpecificOutput': {'hookEventName': event, 'additionalContext': context}}
+        if not old or old['project'] != project or (provider == 'codex' and old['token'] != wire_turn):
+            return {}
+        old['finishedAt'] = time.time()
+        targets = set()
+        for lease in state['leases']:
+            if lease.get('turnKey') == key and lease.get('turn') == old['token'] and lease.get('lifetime') == 'turn':
+                lease['releasedAt'] = lease['updatedAt'] = time.time()
+                lease['expiresAt'] = time.time() - 1
+                run = state.get('testRuns', {}).get(lease['resourceID'])
+                if run and run['id'] == lease.get('runID'):
+                    run['stopRequested'] = True
+                    targets.add(lease['resourceID'])
+        save_registry(root, state)
+        results = settle_tests(state, root, targets)
+        if not results: return {}
+        stopped = sum(x.get('verified', False) for x in results)
+        return {'systemMessage': f'Modore: 테스트 시뮬레이터 {stopped}대 종료 확인, {len(results) - stopped}대 유지/확인 필요. 기기와 세션 데이터는 보존됩니다.'}
+
+
+def install_hooks(provider, root=ROOT, home=None, executable=None):
+    """Merge only our two handlers. Never grant Codex hook trust programmatically."""
+    turn_key(provider, 'install')
+    home = Path.home() if home is None else Path(home)
+    executable = Path(__file__).resolve().parents[1] / 'bin/modore' if executable is None else Path(executable)
+    path = home / ('.codex/hooks.json' if provider == 'codex' else '.claude/settings.json')
+    if not executable.is_file() or not executable.is_absolute():
+        raise ValueError('실제 Modore 명령 경로가 필요합니다.')
+    if path.is_symlink() or path.parent.is_symlink():
+        raise ValueError('심볼릭 링크 설정은 자동 수정하지 않습니다.')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    before = path.read_bytes() if path.exists() else None
+    config = json.loads(before) if before else {}
+    if config.get('disableAllHooks'):
+        raise ValueError('Claude 훅이 비활성화돼 있습니다. 사용자 설정을 유지합니다.')
+    hooks = config.setdefault('hooks', {})
+    command_text = shlex.quote(str(executable)) + ' resources hook --provider ' + provider
+    for event in ('UserPromptSubmit', 'Stop'):
+        groups = hooks.setdefault(event, [])
+        expected = {'hooks': [{'type': 'command', 'command': command_text, 'timeout': 60}]}
+        if expected not in groups:
+            groups.append(expected)
+    changed = not before or json.loads(before) != config
+    backup = None
+    if changed:
+        with registry(root):
+            if (path.read_bytes() if path.exists() else None) != before:
+                raise ValueError('설정이 다른 작업에서 바뀌었습니다. 다시 실행하세요.')
+            if before:
+                backup = root / (provider + '-hooks-backup-' + str(uuid.uuid4()) + '.json')
+                atomic(backup, json.loads(before))
+            atomic(path, config)
+    return {'config': str(path), 'changed': changed, 'backup': str(backup) if backup else None,
+            'reviewRequired': provider == 'codex',
+            'instruction': 'Codex /hooks에서 두 Modore 훅을 검토·신뢰해야 실행됩니다.' if provider == 'codex' else '새 턴에서 훅 적용을 확인하세요. 실행 중 세션은 훅 설정 새로고침이 필요할 수 있습니다.'}
 
 
 def mutate(req, root=ROOT):
@@ -231,29 +459,69 @@ def dispatch(req, root=ROOT):
     action = req.get('action', 'status')
     if action == 'status': return snapshot(root)
     if action in ('acquire', 'claim'): return register(req, root)
+    if action == 'begin-test': return begin_test(req, root)
+    if action == 'install-hooks': return install_hooks(req.get('provider'), root)
+    if action == 'hold':
+        key = turn_key(req.get('provider'), req.get('session'))
+        with registry(root) as state:
+            found = False
+            for lease in state['leases']:
+                if (lease['resourceID'] == req.get('id') and lease.get('turnKey') == key and
+                        lease.get('turn') == req.get('turn') and not lease.get('releasedAt')):
+                    lease['lifetime'] = 'session'; found = True
+            if not found: raise ValueError('현재 턴에 등록된 테스트 기기를 찾지 못했습니다.')
+        return {'message': '사용자 검토/백그라운드 테스트용으로 유지합니다. 사용이 끝나면 release가 필요합니다.'}
     if action in ('heartbeat', 'release'):
         if not req.get('session'): raise ValueError('세션 ID가 필요합니다.')
         with registry(root) as state:
+            targets = set()
             for x in state['leases']:
-                if x['session'] == req['session']:
+                if x['session'] == req['session'] and (not req.get('id') or x['resourceID'] == req['id']):
+                    if req.get('provider') and x.get('provider') != req['provider']: continue
+                    if action == 'heartbeat' and x.get('releasedAt'): continue
                     x['updatedAt'] = time.time(); x['expiresAt'] = time.time() + (900 if action == 'heartbeat' else -1)
-        return {'message': action}
+                    if action == 'release':
+                        x['releasedAt'] = time.time()
+                        targets.add(x['resourceID'])
+                        if x.get('turnKey'):
+                            run = state.get('testRuns', {}).get(x['resourceID'])
+                            if run and run['id'] == x.get('runID'): run['stopRequested'] = True
+            results = []
+            if action == 'release':
+                save_registry(root, state)
+                results = settle_tests(state, root, targets)
+        return {'message': action, 'results': results}
     return mutate(req, root)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', nargs='?', default='status')
-    for flag in ['id','runtime','deviceType','session','project','fingerprint']:
+    for flag in ['id','runtime','deviceType','session','project','fingerprint','provider','turn']:
         parser.add_argument('--'+flag, default='')
     parser.add_argument('--override', action='store_true')
     parser.add_argument('--request-file')
     args = vars(parser.parse_args())
-    if args.get('request_file'): args = json.loads(Path(args['request_file']).read_text())
-    try: print(json.dumps(dispatch(args), ensure_ascii=False))
+    if args['action'] == 'hook':
+        # A hook must not continue, interrupt or block the AI session on failure.
+        # In particular, never return exit 2 or a Stop decision field.
+        try:
+            raw = sys.stdin.buffer.read(2_097_153)
+            if len(raw) > 2_097_152: raise ValueError('hook input too large')
+            payload = json.loads(raw)
+            if not isinstance(payload, dict): raise ValueError('hook input must be an object')
+            result = turn_hook(args['provider'], payload)
+        except Exception:
+            result = {'systemMessage': 'Modore: 턴 자원 연결을 확인하지 못했습니다. 자동 종료를 보류합니다.'}
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    try:
+        if args.get('request_file'): args = json.loads(Path(args['request_file']).read_text())
+        result = dispatch(args)
+        print(json.dumps(result, ensure_ascii=False))
+        return 1 if 'error' in result else 0
     except Exception as exc:
         print(json.dumps({'error': str(exc)}, ensure_ascii=False)); return 1
-    return 0
 
 
 if __name__ == '__main__': sys.exit(main())
