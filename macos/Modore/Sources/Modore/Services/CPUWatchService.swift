@@ -172,6 +172,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
 
     func start() {
         UNUserNotificationCenter.current().delegate = self
+        PressureNotification.register(on: UNUserNotificationCenter.current())
         Task { await refreshNotificationStatus() }
         guard enabled, task == nil else { return }
         if activity == nil {
@@ -207,7 +208,10 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         task?.cancel(); task = nil; previous = nil; cpuHighSince = nil
         journal.resume(); persist()
         if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
-        if value { start() } else { detail = L10n.text("CPU 감시 꺼짐") }
+        if value { start() } else {
+            detail = L10n.text("CPU 감시 꺼짐")
+            NSApplication.shared.dockTile.badgeLabel = nil
+        }
     }
 
     func sendTestNotification() async {
@@ -236,12 +240,17 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         }.value
         guard !Task.isCancelled else { return }
         snapshot = current
+        let lowStorage = HealthNoticePolicy.storageLevel(current.freeBytes) > 0
+        let badge = lowStorage ? current.freeBytes.map { String(format: "%.1f GB", Double($0) / 1_073_741_824) } : nil
+        if NSApplication.shared.dockTile.badgeLabel != badge {
+            NSApplication.shared.dockTile.badgeLabel = badge
+        }
         let changed = journal.observe(current)
         detail = current.summary
         if changed || Date().timeIntervalSince(lastSaved) >= 60 { persist() }
         guard enabled, noticePolicy.shouldSend(
             current, journalChanged: changed,
-            userPresent: LocalUserPresence.allowsNotification, now: Date()
+            userPresent: lowStorage || LocalUserPresence.allowsNotification, now: Date()
         ) else { return }
         guard await refreshNotificationStatus() else {
             noticePolicy.didAttempt(current, accepted: false, now: Date())
@@ -254,13 +263,15 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
                 : ((current.memoryPressure ?? 0) >= 2 ? L10n.text("RAM 사용을 줄여야 합니다") : (current.cpuElevated ? L10n.text("CPU 부하가 계속 높습니다") : L10n.text("CPU 순간 부하 감지"))))
         let topProcess = usage.first.map { "\(String($0.name.prefix(22))) CPU \(Int($0.percent))%" }
         let memory = (current.memoryPressure ?? 0) >= 2 ? L10n.text("RAM 주의") : nil
-        content.body = (current.freeBytes ?? Int64.max) < 20 * 1_073_741_824
-            ? L10n.text("빌드와 스왑에 쓸 여유 공간이 부족합니다. 눌러서 상황과 조치 기록을 확인하세요.")
+        content.body = lowStorage
+            ? [current.summary, current.cpuElevated || current.cpuBurst == true ? topProcess : nil,
+               L10n.text("공간 확보 또는 실행 중인 앱 확인을 여세요.")].compactMap { $0 }.joined(separator: "\n")
             : [topProcess, memory].compactMap { $0 }.joined(separator: " · ")
-        content.userInfo = ["modoreRoute": "health"]
+        content.userInfo = ["modoreRoute": lowStorage ? "storage" : "health"]
+        if lowStorage { content.categoryIdentifier = PressureNotification.category }
         do {
             try await UNUserNotificationCenter.current().add(UNNotificationRequest(
-                identifier: "modore-health", content: content, trigger: nil))
+                identifier: lowStorage ? PressureNotification.category : "modore-health", content: content, trigger: nil))
             noticePolicy.didAttempt(current, accepted: true, now: Date())
             await refreshNotificationStatus()
         } catch {
@@ -272,10 +283,13 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                            didReceive response: UNNotificationResponse,
                                            withCompletionHandler completionHandler: @escaping () -> Void) {
-        if response.notification.request.content.userInfo["modoreRoute"] as? String == "health" {
+        if let destination = PressureNotification.destination(
+            action: response.actionIdentifier,
+            route: response.notification.request.content.userInfo["modoreRoute"] as? String
+        ) {
             Task { @MainActor [weak self] in
-                self?.showHealth = true
-                NSWorkspace.shared.open(URL(string: "modore://health")!)
+                if destination.absoluteString == "modore://health" { self?.showHealth = true }
+                NSWorkspace.shared.open(destination)
             }
         }
         completionHandler()

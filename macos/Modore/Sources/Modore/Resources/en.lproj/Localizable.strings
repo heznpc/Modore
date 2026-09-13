@@ -131,7 +131,7 @@
 "10초마다 자동 갱신" = "Refreshes every 10 seconds";
 "1분" = "1 minute";
 "2. 개인정보 보호 및 보안 > 전체 디스크 접근 권한으로 이동합니다." = "2. Go to Privacy & Security > Full Disk Access.";
-"20GB 미만이거나 한 시간에 8GB 이상 줄면 알림을 보냅니다. 급감 시에는 원인 복원을 위해 알려진 캐시·개발 경로를 최대 8개, 총 8초 안에서 측정합니다." = "Notify below 20GB or after an 8GB drop within an hour. A sudden drop triggers measurement of up to eight known cache and development paths within eight seconds.";
+"20·10·5·3GB 아래로 내려가면 알립니다. 5GB 미만은 10분, 3GB 미만은 5분마다 다시 알리며, 한 시간에 8GB 이상 줄어도 경고합니다. 알림에서 공간 확보와 실행 중인 앱 확인을 열 수 있습니다." = "Alerts escalate below 20, 10, 5 and 3GB. Below 5GB, reminders repeat every 10 minutes; below 3GB, every 5 minutes. A loss of 8GB within an hour also triggers an alert. Open storage recovery or running apps from the notification.";
 "2분" = "2 minutes";
 "3. Modore 앱 또는 Terminal을 허용합니다." = "3. Allow Modore or Terminal.";
 "30초" = "30 seconds";
@@ -181,13 +181,13 @@
 "LaunchServices 등록 해제 · 앱 파일과 사용자 자료는 유지됩니다." = "Unregister from LaunchServices; app files and user data are kept.";
 "Lima 네트워크 도우미" = "Lima network helper";
 "Mac 상태 감시" = "Monitor Mac health";
-"Mac 상태 감시에서는 공간·스왑·RAM 압박·CPU 상위 프로세스와 작업 경로를 이 Mac에 최대 40건 기록합니다. 대화 내용은 자동 수집하지 않습니다. 저장공간 시간별 감시는 여유 공간과 검사 시각을 기록합니다. 8GB 이상 급감할 때만 고정된 후보 경로·크기·측정 상태를 남기며, 파일 내용은 읽거나 기록하지 않고 자동 삭제도 실행하지 않습니다." = "Health monitoring stores up to 40 local incidents with storage, swap, memory pressure, top CPU processes and working paths. It does not collect conversation content. Hourly storage monitoring records free space and time. Drops of at least 8GB additionally record known candidate paths, sizes and measurement status. File contents are not read or stored and nothing is automatically deleted by that monitor.";
+"Mac 상태 감시는 공간·스왑·RAM 압박·CPU 상위 프로세스와 작업 경로를 이 Mac에 최대 40건 기록합니다. 매분 공간 감시는 시각·여유 공간을 기록하고, 용량 부족이나 급감 시 알려진 경로의 크기와 실행 상태를 제한된 시간 안에 측정합니다. 대화·파일 내용 수집과 자동 삭제는 하지 않습니다." = "Mac health monitoring stores up to 40 local records of storage, swap, memory pressure, leading CPU processes and working paths. Minute checks record time and free space, with bounded measurements of known paths and runtime state when space is low or falling quickly. Conversation and file contents are not collected, and nothing is deleted automatically.";
 "Modore - Full Disk Access 안내" = "Modore — Full Disk Access guide";
 "Modore CPU 알림 테스트" = "Modore CPU notification test";
 "Modore 관찰 %@" = "Modore observation %@";
 "Modore 세션 백업 확인" = "Verify Modore session backup";
 "Modore 시작" = "Modore started";
-"Modore 실행 중 10초마다 관찰합니다. 공간 부족과 RAM 압박, 1분 지속된 CPU 부하를 알립니다. 같은 상태는 10분 간격, 새 경고와 회복은 상태가 바뀔 때 알립니다. 알림을 누르면 상황과 조치 기록을 엽니다. 앱 종료 시 감시도 멈춥니다." = "While Modore runs, sample approximately every two seconds. Record memory pressure, low storage and CPU spikes; distinguish sustained CPU load. Notifications require an active user and are rate-limited. Monitoring stops when the app quits.";
+"Modore 실행 중 약 2초마다 공간·RAM·CPU를 관찰하고, 공간이 부족하면 Dock에도 잔여 용량을 표시합니다. 앱 종료 후 공간 감시는 위의 매분 확인 설정을 따릅니다. RAM 압박이나 지속 CPU 부하는 10분마다, 위험한 RAM 압박은 5분마다 다시 알립니다." = "While Modore runs, storage, RAM and CPU are observed about every two seconds. Low free space also appears on the Dock icon. After quitting, storage monitoring follows the minute-check setting above. Persistent RAM or CPU pressure reminds every 10 minutes; critical RAM pressure every 5 minutes.";
 "Modore 실행 중 예약 정리" = "Scheduled cleanup while Modore runs";
 "Modore 정리 가이드" = "Modore cleanup guide";
 "Modore 조치 기록" = "Modore action record";
@@ -599,12 +599,12 @@
 "마지막 기록상 %@" = "Last recorded: %@";
 "마지막 성공이 오래됨" = "Last success is old";
 "마지막 활동 %@" = "Last active %@";
-"매시간 여유 공간 확인" = "Check free space hourly";
+"앱 종료 후에도 매분 여유 공간 확인" = "Check free space every minute, even when the app is closed";
 "매시간 여유 공간만 확인해, 20GB 미만이거나 한 시간에 8GB 이상 줄면 알립니다. 삭제는 실행하지 않습니다." = "Checks free space hourly and notifies below 20GB or after an 8GB drop within an hour. Does not delete files.";
-"매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림" = "Hourly checks · notify below 20GB or after an 8GB drop";
-"매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림 · 아직 실행 전" = "Hourly checks · below 20GB or 8GB drop · not run yet";
-"매시간 확인 · 최근 실행 기록이 오래됐습니다" = "Hourly checks · latest run is stale";
-"매시간 확인 · 최근 실행이 완료되지 않았습니다" = "Hourly checks · latest run did not finish";
+"매분 확인 · 단계별 용량 경고 · 최근 실행 정상" = "Every minute · escalating storage alerts · latest check succeeded";
+"매분 확인 · 단계별 용량 경고 · 아직 실행 전" = "Every minute · escalating storage alerts · awaiting first check";
+"매분 확인 · 3분 넘게 새 실행 기록이 없습니다" = "Every minute · no fresh check for over 3 minutes";
+"매분 확인 · 최근 점검의 완료를 확인하는 중" = "Every minute · awaiting completion of the latest check";
 "매우 큰 검사 결과의 행 수를 제한했습니다" = "Rows were limited for a very large scan result";
 "먼저 로컬 검사를 실행해 안전하게 정리할 수 있는 경로를 확인하세요." = "Run a local scan first to identify eligible cleanup paths.";
 "먼저 종료할 작업이 있어 아직 크기를 측정하지 않았습니다. 종료 후 '다시 확인'을 누르면 측정합니다." = "Size has not been measured because a task must quit first. Quit it, then choose Check again.";
@@ -1925,3 +1925,6 @@
 "잔류 후보 " = "Possible leftover: ";
 
 "빌드와 스왑에 쓸 여유 공간이 부족합니다. 눌러서 상황과 조치 기록을 확인하세요." = "Storage is running low for builds and swap. Click to review the situation and action history.";
+"실행 중인 앱 확인" = "Review running apps";
+"공간 확보 또는 실행 중인 앱 확인을 여세요." = "Open storage recovery or review running apps.";
+"공간 확보" = "Free up space";

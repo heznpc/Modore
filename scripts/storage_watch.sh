@@ -89,7 +89,7 @@ path_has_unexpected_symlink() {
 HOME_ROOT=""
 if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
     STATE_DIR="${PCH_STATE_DIR:-}"
-    HISTORY_LIMIT="${PCH_WATCH_HISTORY_LIMIT:-336}"
+    HISTORY_LIMIT="${PCH_WATCH_HISTORY_LIMIT:-10000}"
     FREE_THRESHOLD_GB="${PCH_WATCH_FREE_GB:-20}"
     DROP_THRESHOLD_GB="${PCH_WATCH_DROP_GB:-8}"
     PRESSURE_DROP_THRESHOLD_MB="${PCH_WATCH_PRESSURE_DROP_MB:-512}"
@@ -173,7 +173,7 @@ else
         && ! -L "$HOME_ROOT/Library/Application Support" ]] || exit 64
     migrate_support_directory_if_needed "$HOME_ROOT/Library/Application Support" || true
     STATE_DIR="$HOME_ROOT/Library/Application Support/$SUPPORT_DIR_NAME"
-    HISTORY_LIMIT=336
+    HISTORY_LIMIT=10000
     FREE_THRESHOLD_GB=20
     DROP_THRESHOLD_GB=8
     PRESSURE_DROP_THRESHOLD_MB=512
@@ -583,6 +583,7 @@ case "$FREE_KB" in ''|*[!0-9]*) /usr/bin/printf 'ERROR: free space unavailable.\
 PREVIOUS_KB=0
 PREVIOUS_STATUS="normal"
 LAST_NOTIFY=0
+LAST_NOTIFY_LEVEL=0
 LAST_SNAPSHOT=0
 SNAPSHOT_COMPLETENESS="unknown"
 EVIDENCE_POINTER_VERSION=""
@@ -594,6 +595,7 @@ if [[ -f "$STATE_FILE" ]]; then
     PREVIOUS_KB="$(/usr/bin/awk -F '\t' '$1 == "freeKB" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     PREVIOUS_STATUS="$(/usr/bin/awk -F '\t' '$1 == "status" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_NOTIFY="$(/usr/bin/awk -F '\t' '$1 == "lastNotify" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
+    LAST_NOTIFY_LEVEL="$(/usr/bin/awk -F '\t' '$1 == "lastNotifiedLevel" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_SNAPSHOT="$(/usr/bin/awk -F '\t' '$1 == "lastSnapshot" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     SNAPSHOT_COMPLETENESS="$(/usr/bin/awk -F '\t' '$1 == "snapshotCompleteness" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     EVIDENCE_POINTER_VERSION="$(/usr/bin/awk -F '\t' '$1 == "evidencePointerVersion" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
@@ -618,6 +620,7 @@ normalize_past_epoch() {
     /usr/bin/printf '%s' "$value"
 }
 LAST_NOTIFY="$(normalize_past_epoch "$LAST_NOTIFY")"
+case "$LAST_NOTIFY_LEVEL" in 0|1|2|3|4) ;; *) LAST_NOTIFY_LEVEL=0 ;; esac
 LAST_SNAPSHOT="$(normalize_past_epoch "$LAST_SNAPSHOT")"
 case "$SNAPSHOT_COMPLETENESS" in complete|partial|unknown) ;; *) SNAPSHOT_COMPLETENESS="unknown" ;; esac
 [[ "$EVIDENCE_POINTER_VERSION" == "2" ]] || EVIDENCE_POINTER_VERSION=""
@@ -689,15 +692,42 @@ fi
 FREE_THRESHOLD_KB=$((FREE_THRESHOLD_GB * 1024 * 1024))
 DROP_THRESHOLD_KB=$((DROP_THRESHOLD_GB * 1024 * 1024))
 PRESSURE_DROP_THRESHOLD_KB=$((PRESSURE_DROP_THRESHOLD_MB * 1024))
+# New rows carry epoch in column 5. Old four-column rows remain readable.
+# A minute sampler must compare the whole recent hour, not only two adjacent
+# samples, or gradual writes can evade the existing 8GB drop warning.
+HOUR_DROP_KB=0
+if [[ -f "$HISTORY_FILE" ]]; then
+    HOUR_DROP_KB="$(/usr/bin/awk -F '\t' -v now="$NOW_EPOCH" -v free="$FREE_KB" '
+        NF >= 5 && $5 ~ /^[0-9]+$/ && $5 >= now-3600 && $5 <= now && $2 ~ /^[0-9]+$/ {
+            if ($2 > peak) peak=$2
+        }
+        END { printf "%.0f", (peak > free ? peak-free : 0) }
+    ' "$HISTORY_FILE")"
+fi
+case "$HOUR_DROP_KB" in ''|*[!0-9]*) HOUR_DROP_KB=0 ;; esac
 STATUS="normal"
+PRESSURE_LEVEL=0
+NOTIFY_INTERVAL=7200
 MESSAGE="저장공간 변화가 정상 범위입니다."
+FREE_GB="$(/usr/bin/awk -v kb="$FREE_KB" 'BEGIN {printf "%.1f", kb/1048576}')"
 if [[ "$FREE_KB" -lt "$FREE_THRESHOLD_KB" ]]; then
     STATUS="warning"
-    MESSAGE="남은 저장공간이 ${FREE_THRESHOLD_GB}GB 아래입니다. Modore를 열어 원인을 확인하세요."
-elif [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
+    PRESSURE_LEVEL=1
+    if [[ "$FREE_KB" -lt $((3 * 1024 * 1024)) ]]; then
+        PRESSURE_LEVEL=4; NOTIFY_INTERVAL=300
+    elif [[ "$FREE_KB" -lt $((5 * 1024 * 1024)) ]]; then
+        PRESSURE_LEVEL=3; NOTIFY_INTERVAL=600
+    elif [[ "$FREE_KB" -lt $((10 * 1024 * 1024)) ]]; then
+        PRESSURE_LEVEL=2; NOTIFY_INTERVAL=1800
+    fi
+    MESSAGE="여유 공간 ${FREE_GB}GB. 빌드와 스왑에 쓸 공간이 부족합니다. 공간 확보 또는 실행 중인 앱 확인을 여세요."
+    [[ "$PRESSURE_LEVEL" -lt 3 ]] || MESSAGE="디스크 위험 · ${FREE_GB}GB 남음. 빌드·다운로드를 잠시 멈추고 공간 확보 또는 실행 중인 앱 확인을 여세요."
+elif [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" || "$HOUR_DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
     STATUS="warning"
-    MESSAGE="최근 점검 이후 저장공간이 ${DROP_THRESHOLD_GB}GB 이상 줄었습니다. Modore를 열어 원인을 확인하세요."
+    PRESSURE_LEVEL=1
+    MESSAGE="여유 공간 ${FREE_GB}GB. 최근 점검 또는 한 시간 사이에 ${DROP_THRESHOLD_GB}GB 이상 줄었습니다. 공간 확보에서 원인을 확인하세요."
 fi
+[[ "$STATUS" == "warning" ]] || LAST_NOTIFY_LEVEL=0
 
 NOW_ISO="$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
 [[ -z "$TEST_NOW_ISO" ]] || NOW_ISO="$TEST_NOW_ISO"
@@ -1298,16 +1328,17 @@ capture_drop_snapshot() {
 # time, which is the whole question the warning raises. Measured on this
 # machine the slow slide is the common case, and the fast drop is rare.
 #
-# Rate-limited the same way the notification is, and for the same reason:
-# once under the threshold every hourly run would otherwise re-measure
+# Attribution has a separate cooldown from the lightweight notification:
+# once under the threshold every minute run would otherwise re-measure
 # the same roots forever. Entering the warning state captures; staying in
 # it re-captures only after the cooldown, or after losing another
 # threshold's worth of space.
 SNAPSHOT_COOLDOWN_SECONDS=21600
 SNAPSHOT_REASON=""
-if [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
+if [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" || ( "$HOUR_DROP_KB" -ge "$DROP_THRESHOLD_KB" \
+    && $((NOW_EPOCH - LAST_SNAPSHOT)) -ge 300 ) ]]; then
     SNAPSHOT_REASON="rapid-drop"
-elif [[ "$STATUS" == "warning" ]]; then
+elif [[ "$STATUS" == "warning" && "$FREE_KB" -lt "$FREE_THRESHOLD_KB" ]]; then
     if [[ "$PREVIOUS_STATUS" != "warning" ]]; then
         SNAPSHOT_REASON="entered-low-free"
     elif [[ "$DROP_KB" -ge "$PRESSURE_DROP_THRESHOLD_KB" \
@@ -1330,19 +1361,7 @@ elif [[ "$STATUS" == "warning" ]]; then
         SNAPSHOT_REASON="still-low-free"
     fi
 fi
-if [[ -n "$SNAPSHOT_REASON" ]]; then
-    if capture_drop_snapshot; then
-        LAST_SNAPSHOT="$NOW_EPOCH"
-        if [[ "$SNAPSHOT_CAPTURED" -gt 0 || "$SIGNALS_CAPTURED" -gt 0 ]]; then
-            PREVIOUS_EVIDENCE_AT="$LAST_EVIDENCE_AT"
-            LAST_EVIDENCE_AT="$EVENT_ISO"
-        fi
-        if [[ "$SNAPSHOT_CAPTURED" -gt 0 ]]; then
-            PREVIOUS_PATH_EVIDENCE_AT="$LAST_PATH_EVIDENCE_AT"
-            LAST_PATH_EVIDENCE_AT="$EVENT_ISO"
-        fi
-    fi
-fi
+
 # Notifications must remain under Modore's identity. `osascript display
 # notification` is always attributed to com.apple.ScriptEditor2, so using it as
 # a fallback produces a misleading Script Editor alert and click target. If the
@@ -1429,8 +1448,10 @@ notify_via_app_bundle() {
     return 1
 }
 
+NOTIFICATION_RESULT="not-due"
 if [[ "$STATUS" == "warning" && "$NOTIFY" == "1" ]]; then
-    if [[ "$PREVIOUS_STATUS" != "warning" || $((NOW_EPOCH - LAST_NOTIFY)) -ge 21600 ]]; then
+    if [[ "$PRESSURE_LEVEL" -gt "$LAST_NOTIFY_LEVEL" || $((NOW_EPOCH - LAST_NOTIFY)) -ge "$NOTIFY_INTERVAL" ]]; then
+        NOTIFICATION_RESULT="deferred"
         notification_delivered=0
         if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
             if notify_via_app_bundle; then
@@ -1439,10 +1460,25 @@ if [[ "$STATUS" == "warning" && "$NOTIFY" == "1" ]]; then
         fi
         if [[ "$notification_delivered" == "1" ]]; then
             LAST_NOTIFY="$NOW_EPOCH"
+            LAST_NOTIFY_LEVEL="$PRESSURE_LEVEL"
+            NOTIFICATION_RESULT="accepted"
         fi
     fi
 fi
 
+if [[ -n "$SNAPSHOT_REASON" ]]; then
+    if capture_drop_snapshot; then
+        LAST_SNAPSHOT="$NOW_EPOCH"
+        if [[ "$SNAPSHOT_CAPTURED" -gt 0 || "$SIGNALS_CAPTURED" -gt 0 ]]; then
+            PREVIOUS_EVIDENCE_AT="$LAST_EVIDENCE_AT"
+            LAST_EVIDENCE_AT="$EVENT_ISO"
+        fi
+        if [[ "$SNAPSHOT_CAPTURED" -gt 0 ]]; then
+            PREVIOUS_PATH_EVIDENCE_AT="$LAST_PATH_EVIDENCE_AT"
+            LAST_PATH_EVIDENCE_AT="$EVENT_ISO"
+        fi
+    fi
+fi
 TMP_FILE="$(/usr/bin/mktemp ./.storage-watch.XXXXXX)" || exit 1
 HISTORY_TMP=""
 cleanup() {
@@ -1460,6 +1496,10 @@ trap cleanup EXIT
     /usr/bin/printf 'snapshotRows\t%s\n' "$SNAPSHOT_CAPTURED"
     /usr/bin/printf 'signalsRows\t%s\n' "$SIGNALS_CAPTURED"
     /usr/bin/printf 'lastNotify\t%s\n' "$LAST_NOTIFY"
+    /usr/bin/printf 'lastNotifiedLevel\t%s\n' "$LAST_NOTIFY_LEVEL"
+    /usr/bin/printf 'pressureLevel\t%s\n' "$PRESSURE_LEVEL"
+    /usr/bin/printf 'hourDropKB\t%s\n' "$HOUR_DROP_KB"
+    /usr/bin/printf 'notificationResult\t%s\n' "$NOTIFICATION_RESULT"
     /usr/bin/printf 'lastSnapshot\t%s\n' "$LAST_SNAPSHOT"
     /usr/bin/printf 'snapshotCompleteness\t%s\n' "$SNAPSHOT_COMPLETENESS"
     /usr/bin/printf 'evidencePointerVersion\t%s\n' "$EVIDENCE_POINTER_VERSION"
@@ -1477,7 +1517,7 @@ TMP_FILE=""
 HISTORY_TMP="$(/usr/bin/mktemp ./.storage-samples.XXXXXX)" || exit 1
 {
     [[ -f "$HISTORY_FILE" ]] && /bin/cat "$HISTORY_FILE"
-    /usr/bin/printf '%s\t%s\t%s\t%s\n' "$NOW_ISO" "$FREE_KB" "$DROP_KB" "$STATUS"
+    /usr/bin/printf '%s\t%s\t%s\t%s\t%s\n' "$NOW_ISO" "$FREE_KB" "$DROP_KB" "$STATUS" "$NOW_EPOCH"
 } | /usr/bin/tail -n "$HISTORY_LIMIT" > "$HISTORY_TMP" || exit 1
 /bin/chmod 600 "$HISTORY_TMP" 2>/dev/null || true
 /bin/mv "$HISTORY_TMP" "$HISTORY_FILE" || exit 1
@@ -1498,3 +1538,7 @@ emit "lastPathEvidenceAt" "$LAST_PATH_EVIDENCE_AT"
 emit "previousPathEvidenceAt" "$PREVIOUS_PATH_EVIDENCE_AT"
 emit "snapshotReason" "$SNAPSHOT_REASON"
 emit "message" "$MESSAGE"
+
+emit "pressureLevel" "$PRESSURE_LEVEL"
+emit "hourDropKB" "$HOUR_DROP_KB"
+emit "notificationResult" "$NOTIFICATION_RESULT"

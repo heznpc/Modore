@@ -396,6 +396,9 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/modules/macos/privacy.sh",
     "scripts/modules/macos/devtool_updates.sh",
     "macos/Modore/Package.swift",
+    "macos/Modore/Sources/Modore/Resources/en.lproj/Localizable.strings",
+    "macos/Modore/Sources/Modore/Resources/ja.lproj/Localizable.strings",
+    "macos/Modore/Sources/Modore/Resources/ko.lproj/Localizable.strings",
     "shared/ModoreDomain/Package.swift",
     # No `vendor/mothball/LICENSE`: the subtree is Modore's own code
     # under Modore's own terms, and a second LICENSE file there implied

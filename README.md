@@ -496,7 +496,7 @@ Distribution mode only runs from a clean `v<version>` tag at `HEAD` verified by 
 - **No file uploads.** VirusTotal integration uses SHA-256 hashes only.
 - **Local cache only.** VT response cache lives in `%LOCALAPPDATA%/PC건강검진/` (Windows) or `~/Library/Caches/PC건강검진/` (macOS).
 - **Local cleanup receipts.** Mac cleanup receipts stay under `~/Library/Application Support/Modore/cleanup-receipts/`; they contain local paths and are never uploaded.
-- **Local maintenance state.** Simulator keep UUIDs, bounded scan snapshots, and hourly free-space samples stay under `~/Library/Application Support/Modore/` with owner-only permissions. They are never uploaded and can contain local paths, so exported support material should not include them.
+- **Local maintenance state.** Simulator keep UUIDs, bounded scan snapshots, and minute free-space samples stay under `~/Library/Application Support/Modore/` with owner-only permissions. They are never uploaded and can contain local paths, so exported support material should not include them.
 - **Auditable.** VirusTotal calls are in `scripts/vt-lookup.ps1` / `scripts/scanner_helper.jxa.js`; optional Sysinternals downloads are in `scripts/sigcheck-helper.ps1` / `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api`.
 
 ## Contributing
