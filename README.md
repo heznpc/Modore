@@ -63,6 +63,15 @@ inspection.
 `search --first` stops at the newest matching turn; ordinary `search` keeps its
 full coverage contract for absence claims.
 
+**Currently implemented — turn test resources:** opt-in Claude/Codex lifecycle
+hooks connect a completed response to simulator runs started by
+`modore resources begin-test`. Modore shuts down only its registered test run,
+preserves devices and persistent data, and keeps resources with unresolved
+consumers or an explicit preview hold. Hook setup requires host review where
+applicable; disabled hooks and unregistered processes are outside this coverage.
+This does not pause or terminate AI sessions. See the
+[command contract](./skills/modore-ops/references/command-contract.md#turn-test-resources).
+
 ### Windows
 
 Clone the repository or download its source archive, then run `scan.bat`. See [Installation](#installation) for requirements and troubleshooting.

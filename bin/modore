@@ -29,6 +29,8 @@ usage() {
         '  modore sessions current' \
         '  modore search [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
         '  modore resources status|acquire|claim|heartbeat|release [options]' \
+        '  modore resources begin-test|hold --provider codex|claude --session ID --turn ID [options]' \
+        '  modore resources install-hooks --provider codex|claude' \
         '  modore storage status' \
         '  modore storage recovery' \
         '  modore cleanup list' \
