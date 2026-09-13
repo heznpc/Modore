@@ -10,6 +10,9 @@ struct SessionConversationBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let notice = conversation.status.partialReadText {
+                Text(notice).font(.caption).foregroundStyle(.secondary)
+            }
             // A transcript that is gone, unreadable, or in a format this
             // build cannot decode all arrive here with zero turns.
             // Rendering them as an empty conversation would tell someone
@@ -19,7 +22,9 @@ struct SessionConversationBody: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if conversation.turns.isEmpty {
-                Text(L10n.text("이 대화에는 표시할 내용이 없습니다."))
+                Text(L10n.text(conversation.status.partialReadText == nil
+                    ? "이 대화에는 표시할 내용이 없습니다."
+                    : "확인한 구간에서 표시할 대화를 찾지 못했습니다."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
