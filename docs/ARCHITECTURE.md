@@ -174,8 +174,10 @@ Changes to outbound networking, signature verification, cleanup targets, standal
 - `scripts/package_macos_release.sh`: clean exact signed-annotated-tag gate pinned to an externally supplied SSH public-key fingerprint and principal `heznpc`, Git replace-object rejection, source-prefix removal, architecture/minimum-OS validation, payload audit, externally pinned Developer ID Team ID and leaf-certificate SHA-256, hardened runtime, notarytool, stapling, Gatekeeper validation, final source revalidation, and sidecar release metadata when credentials are supplied externally.
 
 
-Process validation and spawning run on a serial dispatch queue rather than the Swift
-cooperative executor. Security.framework may synchronously wait for dispatch work; concurrent
-conversation/title loads must not occupy every cooperative worker with that wait. Signature
-validation, pinned-file checks, per-process cancellation and process-group cleanup remain in
-place; only validation and spawn are serialized, not child execution or output draining.
+Session runtime preparation and process validation/spawning each run on a serial dispatch
+queue rather than the Swift cooperative executor. Security.framework may synchronously wait
+for dispatch work; concurrent conversation/title loads must suspend while preparation runs
+instead of occupying every cooperative worker. Signature validation, pinned-file checks,
+per-process cancellation and process-group cleanup remain in place; only preparation,
+validation and spawn are serialized, not child execution or output draining. Cancelled
+preparation callers discard their result before launching a child.

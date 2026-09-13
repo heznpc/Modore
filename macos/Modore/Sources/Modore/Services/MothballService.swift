@@ -129,9 +129,7 @@ enum MothballService {
         for candidate: ArchiveCandidate,
         projectRoot: URL
     ) async -> [SessionPresentation] {
-        guard let execution = await Task.detached(priority: .userInitiated, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
-        }).value else {
+        guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: projectRoot) else {
             return []
         }
         var titles: [SessionPresentation] = []
@@ -160,9 +158,7 @@ enum MothballService {
         projectRoot: URL
     ) async -> [ArchiveCandidate] {
         guard !candidates.isEmpty else { return candidates }
-        guard let execution = await Task.detached(priority: .userInitiated, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
-        }).value else {
+        guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: projectRoot) else {
             // Every candidate keeps its `.notAssessed` default -- the
             // honest answer, and the one the gate refuses to archive
             // from. A binder that could not run must not leave a repo
@@ -227,9 +223,7 @@ extension ScanModel {
         let root = projectRoot
         startTrackedApplicationTask(scope: .workScreen) { [weak self] in
             guard let self else { return }
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 finishConversationLoad(
                     key: key,
                     token: token,
@@ -263,9 +257,7 @@ extension ScanModel {
     func refreshSessionIndex() {
         let root = projectRoot
         refreshSessionIndex {
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 return .failure(.init(message: L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")))
             }
             guard !Task.isCancelled else {
@@ -440,9 +432,7 @@ extension ScanModel {
             defer {
                 if generation == contentSearchGeneration { contentSearchRunning = false }
             }
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 if generation == contentSearchGeneration {
                     contentSearchError = L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")
                 }
@@ -498,9 +488,7 @@ extension ScanModel {
         let root = projectRoot
         startTrackedApplicationTask(scope: .workScreen) { [weak self] in
             guard let self else { return }
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 finishSessionTitleRequest(
                     sources: wanted,
                     token: token,
@@ -555,9 +543,7 @@ extension ScanModel {
         let root = projectRoot
         startTrackedApplicationTask(scope: .workScreen) { [weak self] in
             guard let self else { return }
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 finishConversationLoad(
                     key: key,
                     token: token,
