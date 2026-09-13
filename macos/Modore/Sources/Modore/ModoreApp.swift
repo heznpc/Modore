@@ -190,6 +190,7 @@ struct StorageWatchSettingsView: View {
                 Text(L10n.text("기준: 전체 코어 평균 70% 이상, 프로세스 하나가 150% 이상, 또는 macOS 열압력과 CPU 부하가 함께 감지될 때. CPU 100%는 코어 1개입니다."))
                     .font(.caption).foregroundStyle(.secondary)
                 Text(cpuWatch.detail).font(.caption).textSelection(.enabled)
+                Text(cpuWatch.notificationStatus).font(.caption).textSelection(.enabled)
                 Button(L10n.text("테스트 알림 보내기")) { Task { await cpuWatch.sendTestNotification() } }
                     .disabled(!cpuWatch.enabled || cpuWatch.configuring)
             }

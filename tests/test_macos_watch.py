@@ -1921,6 +1921,16 @@ def test_schedule_install_threads_the_app_bundle_path_into_the_plist(project_roo
         "loaded_definition_is_current's expected_arguments must match install_agent's "
         "argument list byte-for-byte, including the new env entry"
     )
+    assert parse_protocol(status.stdout)["loadedDefinitionMatchesInstalledPins"] == "true"
+
+    # Renewal must never accept malformed pins from an old definition.
+    definition["ProgramArguments"][7] = "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256=invalid"
+    plist.write_bytes(plistlib.dumps(definition))
+    invalid = subprocess.run(
+        [str(script), "--status"], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert invalid.returncode == 0, invalid.stderr
+    assert parse_protocol(invalid.stdout)["loadedDefinitionMatchesInstalledPins"] == "false"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="launchd plist tools are macOS-only")
