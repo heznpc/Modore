@@ -114,6 +114,7 @@ enum BackgroundNotifier {
             let content = UNMutableNotificationContent()
             content.title = "Modore"
             content.body = backgroundRequest.message
+            content.userInfo = ["modoreRoute": "health"]
             let request = UNNotificationRequest(
                 identifier: "storage-watch-\(UUID().uuidString)",
                 content: content,

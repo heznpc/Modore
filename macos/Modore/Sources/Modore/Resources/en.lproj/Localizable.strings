@@ -1923,3 +1923,5 @@
 "휴지통 비우기 후보" = "Review emptying Trash";
 "휴지통입니다. 복구할 파일이 없을 때 비우면 즉시 공간을 회수할 수 있습니다." = "Trash. Empty it when no files need restoring to reclaim space.";
 "잔류 후보 " = "Possible leftover: ";
+
+"빌드와 스왑에 쓸 여유 공간이 부족합니다. 눌러서 상황과 조치 기록을 확인하세요." = "Storage is running low for builds and swap. Click to review the situation and action history.";

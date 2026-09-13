@@ -252,6 +252,7 @@ status() {
     local enabled="false"
     local job_loaded="false"
     local definition_current="false"
+    local installed_pins_match="false"
     refresh_app_executable_pin || true
     loaded && job_loaded="true"
     if [[ "$job_loaded" == "true" ]] \
@@ -261,12 +262,32 @@ status() {
         enabled="true"
         definition_current="true"
     fi
+    if [[ "$job_loaded" == "true" ]] && launch_directories_are_safe \
+        && secure_owned_regular_file "$PLIST" \
+        && loaded_definition_matches_installed_pins; then
+        installed_pins_match="true"
+    fi
     emit "version" "1"
     emit "enabled" "$enabled"
     emit "loaded" "$job_loaded"
     emit "loadedDefinitionCurrent" "$definition_current"
+    emit "loadedDefinitionMatchesInstalledPins" "$installed_pins_match"
     emit "plist" "$PLIST"
     emit "intervalSeconds" "3600"
+}
+
+# An app update changes the two pinned hashes. Report whether the running
+# job otherwise still has exactly this product's arguments and destinations.
+# This is evidence for the app's narrowly scoped renewal of an enabled watch;
+# it never executes content from the old plist.
+loaded_definition_matches_installed_pins() {
+    local APP_EXECUTABLE_SHA256 WATCH_HASH
+    APP_EXECUTABLE_SHA256="$(/usr/bin/plutil -extract ProgramArguments.7 raw "$PLIST" 2>/dev/null)" || return 1
+    [[ "$APP_EXECUTABLE_SHA256" == PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256=* ]] || return 1
+    APP_EXECUTABLE_SHA256="${APP_EXECUTABLE_SHA256#PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256=}"
+    WATCH_HASH="$(/usr/bin/plutil -extract ProgramArguments.13 raw "$PLIST" 2>/dev/null)" || return 1
+    [[ "$APP_EXECUTABLE_SHA256" =~ ^[0-9a-f]{64}$ && "$WATCH_HASH" =~ ^[0-9a-f]{64}$ ]] || return 1
+    loaded_definition_is_current
 }
 
 require_approval() {
