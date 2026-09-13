@@ -663,11 +663,11 @@ final class StorageWatchSnapshotTests: XCTestCase {
         )
         let freshestSuccessAt = ISO8601DateFormatter().date(from: "2026-08-12T02:00:05Z")!
 
-        // 30 minutes after the success: well inside the 135-minute grace window.
+        // One minute after the success is inside the minute watch grace window.
         let state = StorageWatchService.healthState(
             heartbeatURL: heartbeatURL,
             freshestSuccessAt: freshestSuccessAt,
-            now: freshestSuccessAt.addingTimeInterval(30 * 60)
+            now: freshestSuccessAt.addingTimeInterval(60)
         )
         XCTAssertEqual(state, .recentSuccess)
     }

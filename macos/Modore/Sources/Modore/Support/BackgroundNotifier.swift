@@ -8,7 +8,7 @@ struct BackgroundNotificationRequest: Equatable, Sendable {
     let nonce: String
 }
 
-/// The scheduled hourly watch launches the app itself with `--post-storage-notice
+/// The scheduled minute watch launches the app itself with `--post-storage-notice
 /// <message>` so the resulting banner is attributed to Modore's own identity
 /// rather than com.apple.ScriptEditor2 — the only identity `osascript display
 /// notification` can ever use, an Apple-binary entitlement this app cannot
@@ -102,21 +102,21 @@ enum BackgroundNotifier {
         // `open -g -j` already skips activation; this additionally keeps a Dock
         // icon from ever appearing for what should be an invisible launch.
         NSApplication.shared.setActivationPolicy(.prohibited)
-        guard LocalUserPresence.allowsNotification else { exit(0) }
-
         let center = UNUserNotificationCenter.current()
+        PressureNotification.register(on: center)
         let semaphore = DispatchSemaphore(value: 0)
         center.getNotificationSettings { settings in
-            guard settings.authorizationStatus == .authorized else {
+            guard settings.authorizationStatus == .authorized, settings.alertSetting == .enabled else {
                 semaphore.signal()
                 return
             }
             let content = UNMutableNotificationContent()
             content.title = "Modore"
             content.body = backgroundRequest.message
-            content.userInfo = ["modoreRoute": "health"]
+            content.userInfo = ["modoreRoute": "storage"]
+            content.categoryIdentifier = PressureNotification.category
             let request = UNNotificationRequest(
-                identifier: "storage-watch-\(UUID().uuidString)",
+                identifier: PressureNotification.category,
                 content: content,
                 trigger: nil
             )

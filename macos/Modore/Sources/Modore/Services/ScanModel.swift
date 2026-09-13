@@ -1013,7 +1013,7 @@ final class ScanModel: ObservableObject {
         }
     }
 
-    private func refreshStorageWatchStatus() async {
+    func refreshStorageWatchStatus() async {
         let status = await StorageWatchService.status(projectRoot: projectRoot)
         storageWatchEnabled = status.enabled
         storageWatchDetail = status.detail

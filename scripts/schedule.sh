@@ -1,5 +1,5 @@
 #!/bin/bash -p
-# Installs or removes the local hourly storage watch LaunchAgent.
+# Installs or removes the local minute storage watch LaunchAgent.
 
 set -u
 set -o pipefail
@@ -49,6 +49,7 @@ SAFE_LOCALE="en_US.UTF-8"
 # every check degrades to a silent no-op rather than an exit.
 # shellcheck disable=SC2016 # The loaded LaunchAgent shell expands these later.
 WATCH_WRAPPER='set -u; script="$2"; expected="$1"; hb="$HOME/Library/Application Support/Modore/storage-watch-heartbeat.tsv"; hbdir="$(/usr/bin/dirname "$hb")"; hb_write() { [[ -d "$hbdir" && ! -L "$hbdir" && ! -L "$hb" ]] || return 0; local tmp="$(/usr/bin/mktemp "$hbdir/.storage-watch-heartbeat.XXXXXX" 2>/dev/null)"; [[ -n "$tmp" ]] || return 0; /usr/bin/printf "%s" "$1" > "$tmp" 2>/dev/null || { /bin/rm -f "$tmp" 2>/dev/null; return 0; }; /bin/chmod 600 "$tmp" 2>/dev/null; /bin/mv -f "$tmp" "$hb" 2>/dev/null || /bin/rm -f "$tmp" 2>/dev/null; }; attempt_at="$(/bin/date -u "+%Y-%m-%dT%H:%M:%SZ")"; hb_write "$(/usr/bin/printf "lastAttemptAt\t%s\n" "$attempt_at")"; [[ -f "$script" && ! -L "$script" ]] || exit 78; size=$(/usr/bin/stat -f "%z" "$script") || exit 78; [[ "$size" -le 1048576 ]] || exit 78; payload=$(/usr/bin/base64 < "$script") || exit 78; digest=$(/usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /usr/bin/shasum -a 256) || exit 78; actual="${digest%% *}"; [[ "$actual" == "$expected" ]] || exit 78; /usr/bin/printf "%s" "$payload" | /usr/bin/base64 -D | /bin/bash -p; ec=$?; hb_write "$(/usr/bin/printf "lastAttemptAt\t%s\nlastExitCode\t%s\nlastFinishedAt\t%s\n" "$attempt_at" "$ec" "$(/bin/date -u "+%Y-%m-%dT%H:%M:%SZ")")"; exit "$ec"'
+WATCH_INTERVAL=60
 WATCH_HASH="${PCH_STORAGE_WATCH_SHA256:-}"
 if [[ -z "$WATCH_HASH" ]]; then
     WATCH_HASH="$(/usr/bin/shasum -a 256 "$WATCH_SCRIPT" 2>/dev/null \
@@ -245,7 +246,8 @@ loaded_definition_is_current() {
         && launchctl_field_matches "$definition" path "$PLIST" \
         && launchctl_field_matches "$definition" program /usr/bin/env \
         && launchctl_field_matches "$definition" "stdout path" /dev/null \
-        && launchctl_field_matches "$definition" "stderr path" /dev/null
+        && launchctl_field_matches "$definition" "stderr path" /dev/null \
+        && launchctl_field_matches "$definition" "run interval" "$WATCH_INTERVAL seconds"
 }
 
 status() {
@@ -273,7 +275,7 @@ status() {
     emit "loadedDefinitionCurrent" "$definition_current"
     emit "loadedDefinitionMatchesInstalledPins" "$installed_pins_match"
     emit "plist" "$PLIST"
-    emit "intervalSeconds" "3600"
+    emit "intervalSeconds" "$WATCH_INTERVAL"
 }
 
 # An app update changes the two pinned hashes. Report whether the running
@@ -281,7 +283,9 @@ status() {
 # This is evidence for the app's narrowly scoped renewal of an enabled watch;
 # it never executes content from the old plist.
 loaded_definition_matches_installed_pins() {
-    local APP_EXECUTABLE_SHA256 WATCH_HASH
+    local APP_EXECUTABLE_SHA256 WATCH_HASH WATCH_INTERVAL
+    WATCH_INTERVAL="$(/usr/bin/plutil -extract StartInterval raw "$PLIST" 2>/dev/null)" || return 1
+    [[ "$WATCH_INTERVAL" == "60" || "$WATCH_INTERVAL" == "3600" ]] || return 1
     APP_EXECUTABLE_SHA256="$(/usr/bin/plutil -extract ProgramArguments.7 raw "$PLIST" 2>/dev/null)" || return 1
     [[ "$APP_EXECUTABLE_SHA256" == PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256=* ]] || return 1
     APP_EXECUTABLE_SHA256="${APP_EXECUTABLE_SHA256#PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256=}"
@@ -359,7 +363,7 @@ install_agent() {
             -string "$argument" "$temporary" || exit 1
         argument_index=$((argument_index + 1))
     done
-    /usr/bin/plutil -insert StartInterval -integer 3600 "$temporary" || exit 1
+    /usr/bin/plutil -insert StartInterval -integer "$WATCH_INTERVAL" "$temporary" || exit 1
     /usr/bin/plutil -insert RunAtLoad -bool true "$temporary" || exit 1
     /usr/bin/plutil -insert StandardOutPath -string /dev/null "$temporary" || exit 1
     /usr/bin/plutil -insert StandardErrorPath -string /dev/null "$temporary" || exit 1

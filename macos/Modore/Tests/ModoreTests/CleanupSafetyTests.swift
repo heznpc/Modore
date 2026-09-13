@@ -280,7 +280,7 @@ final class CleanupSafetyTests: XCTestCase {
         let appBundlePath = "/Applications/Modore.app"
         let appExecutableHash = String(repeating: "a", count: 64)
 
-        func writePlist(watcher: URL, extraEnvironment: Bool = false) throws {
+        func writePlist(watcher: URL, extraEnvironment: Bool = false, interval: Int = 60) throws {
             let watcherData = (try? Data(contentsOf: watcher)) ?? Data(watcher.path.utf8)
             let watcherHash = SHA256.hash(data: watcherData)
                 .map { String(format: "%02x", $0) }
@@ -310,7 +310,7 @@ final class CleanupSafetyTests: XCTestCase {
             let payload: [String: Any] = [
                 "Label": "me.heznpc.modore.storage-watch",
                 "ProgramArguments": arguments,
-                "StartInterval": 3600,
+                "StartInterval": interval,
                 "RunAtLoad": true,
                 "StandardOutPath": "/dev/null",
                 "StandardErrorPath": "/dev/null",
@@ -351,6 +351,16 @@ final class CleanupSafetyTests: XCTestCase {
             )
         }
         // Relocated paths are not an in-place app update.
+        XCTAssertEqual(repairState(repairValues), .stale)
+
+        try writePlist(watcher: expectedWatcher, interval: 3600)
+        XCTAssertEqual(repairState(repairValues), .current)
+        XCTAssertEqual(StorageWatchService.runtimeState(
+            protocolValues: protocolValues, expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root, expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
+        ), .stale)
+        try writePlist(watcher: expectedWatcher, interval: 120)
         XCTAssertEqual(repairState(repairValues), .stale)
 
         // Installing replaces the stale definition with the current signed

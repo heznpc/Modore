@@ -757,7 +757,7 @@ extension ScanModel {
             if result.status == 0, let value = values["enabled"], stateMatchesRequest {
                 storageWatchEnabled = value == "true"
                 storageWatchDetail = storageWatchEnabled
-                    ? L10n.text("매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림")
+                    ? L10n.text("매분 확인 · 단계별 용량 경고 · 최근 실행 정상")
                     : L10n.text("꺼짐 · 자동 삭제 없음")
                 appendLog(storageWatchEnabled ? L10n.text("저장공간 급감 감시를 켰습니다.") : L10n.text("저장공간 급감 감시를 껐습니다."))
                 AccessibilityAnnouncer.announce(

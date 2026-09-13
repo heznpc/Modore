@@ -23,7 +23,7 @@ enum StorageWatchHealthState: Equatable, Sendable {
     /// than it -- either the run just failed/crashed, or it's still in
     /// flight. Both read the same to the user: "something's wrong right now."
     case attemptedThenFailed
-    /// The freshest success is within one missed hourly run's grace.
+    /// The freshest success is within the minute watch's three-minute grace.
     case recentSuccess
     /// There has been a success at some point, but not recently enough to
     /// trust that the watch is still running -- distinct from
@@ -128,13 +128,13 @@ enum StorageWatchService {
         } else if enabled {
             switch health {
             case .neverAttempted:
-                detail = L10n.text("매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림 · 아직 실행 전")
+                detail = L10n.text("매분 확인 · 단계별 용량 경고 · 아직 실행 전")
             case .attemptedThenFailed:
-                detail = L10n.text("매시간 확인 · 최근 실행이 완료되지 않았습니다")
+                detail = L10n.text("매분 확인 · 최근 점검의 완료를 확인하는 중")
             case .recentSuccess:
-                detail = L10n.text("매시간 확인 · 20GB 미만 또는 8GB 급감 시 알림")
+                detail = L10n.text("매분 확인 · 단계별 용량 경고 · 최근 실행 정상")
             case .staleSuccess:
-                detail = L10n.text("매시간 확인 · 최근 실행 기록이 오래됐습니다")
+                detail = L10n.text("매분 확인 · 3분 넘게 새 실행 기록이 없습니다")
             }
         } else {
             detail = L10n.text("꺼짐 · 자동 삭제 없음")
@@ -151,9 +151,8 @@ enum StorageWatchService {
         StorageHistoryStore.stateDirectory.appendingPathComponent("storage-watch-heartbeat.tsv")
     }
 
-    /// One missed hourly run (StartInterval 3600 in schedule.sh) plus buffer
-    /// for the sleep/wake catch-up delay launchd itself introduces.
-    static let heartbeatStalenessInterval: TimeInterval = 135 * 60
+    /// Minute sampling allows a small grace for an attribution capture and wake.
+    static let heartbeatStalenessInterval: TimeInterval = 3 * 60
 
     static func healthState(
         heartbeatURL: URL = heartbeatURL,
@@ -309,7 +308,8 @@ enum StorageWatchService {
                 arguments, expected: expectedArguments,
                 acceptInstalledPinsForRepair: acceptInstalledPinsForRepair
               ),
-              (dictionary["StartInterval"] as? NSNumber)?.intValue == 3600,
+              let interval = (dictionary["StartInterval"] as? NSNumber)?.intValue,
+              (interval == 60 || (acceptInstalledPinsForRepair && interval == 3600)),
               (dictionary["RunAtLoad"] as? NSNumber)?.boolValue == true,
               dictionary["StandardOutPath"] as? String == "/dev/null",
               dictionary["StandardErrorPath"] as? String == "/dev/null" else {
