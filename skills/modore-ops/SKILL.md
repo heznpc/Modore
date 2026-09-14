@@ -59,6 +59,19 @@ Release it when that use actually finishes. Do not equate a permission prompt,
 interruption, compaction, or lease timeout with completion. If a Stop hook causes
 the agent to continue, begin-test again before further simulator actions.
 
+For Playwright CLI tests, use
+`modore resources begin-browser-test --provider <provider> --session <ID> --project <path> --turn <token> --url <URL> [--headed]`
+instead of opening another unmanaged test browser. It uses an already installed
+CLI and isolated Chromium, returning `cwd` and `argv` for subsequent Playwright
+commands. Use both exactly; use `goto` for another page, and reuse the browser
+within the turn. Save test artifacts to explicit project paths when needed.
+`Stop` normally closes that exact browser. Test cookies and transient page state
+end with it. `hold --id <returned-ID>` keeps a requested preview; explicit
+`release` closes it later. Ordinary Chrome, external browser tools, and browsers
+opened outside this command are not adopted or automatically stopped.
+Missing hooks or uncertain launch/close results remain pending for review;
+do not describe those resources as cleaned up.
+
 Without verified lifecycle hooks, register an existing device with:
 `modore resources acquire --runtime <exact-runtime-ID> --project <absolute-path> --session <session-ID>`.
 The result provides the existing UDID; specify it in every simulator tool action.

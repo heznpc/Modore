@@ -62,3 +62,22 @@ exact-type device reuse/setup, quiet cache scheduling, and delayed remeasurement
 The older duplicate shortcut remains scoped to duplicates; it is not the only
 route for a user to approve device deletion. `modore environments status` and MCP
 `environment_retirement_status` expose the new inventory and requirements.
+
+## Browser test turns
+
+Playwright CLI sessions can outlive the agent's response and leave separate
+Chrome instances in the Dock. Simulator-only lifecycle registration did not
+cover them. `resources begin-browser-test` now creates one isolated Chromium
+execution per observed turn, using an installed CLI, a unique name and a private
+workspace. It returns the working directory and argv for subsequent browser
+actions. Repeated calls reuse the same browser; they do not create more windows.
+
+The existing synchronous Stop hook closes only that registered execution after
+checking its process start identity and session-file fingerprint. `hold` retains
+a requested preview, and `release` closes it. There is no AI-session stop, generic
+process kill, or workspace deletion. Normal browser close discards transient
+test cookies and page state. Uncertain launches, failed closes, and missing hooks
+remain visible in the registry and receipts. Other browsers are not adopted.
+`resources status` exposes these runs in `browsers`; native resource cards remain
+limited to simulators and volumes. The hook and ops skill guide new test turns
+through the managed launch command; bypassing it is still outside this coverage.
