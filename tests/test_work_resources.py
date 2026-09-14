@@ -260,4 +260,115 @@ class TurnResourceTests(unittest.TestCase):
             self.assertEqual(json.loads(Path(result['backup']).read_text()),previous)
 
 
+class BrowserTurnTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / 'registry'
+        self.event = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'a',
+                      'turn_id': 'turn-a', 'cwd': self.tmp.name}
+        self.req = {'provider': 'codex', 'session': 'a', 'project': self.tmp.name, 'turn': 'turn-a'}
+        self.processes, self.calls = {}, []
+        def cli(run, args, timeout=10):
+            self.calls.append((run['id'], args))
+            if args[0] == 'open':
+                pid = 100 + len(self.calls)
+                self.processes[pid] = 'Mon Sep 14 12:00:00 2026 node cliDaemon.js ' + run['name']
+                return {'pid': pid}
+            if args == ['close']:
+                self.processes[run['pid']] = ''
+                return {'status': 'closed'}
+            self.fail('unexpected browser command')
+        for name, kwargs in [
+            ('playwright_runtime', {'return_value': ['/node', '/playwright-cli.js']}),
+            ('browser_command', {'side_effect': cli}),
+            ('browser_process', {'side_effect': lambda pid: self.processes.get(pid, '')}),
+            ('browser_identity', {'side_effect': lambda run: {'path': run['name'], 'sha256': 'original', 'inode': 1}}),
+            ('browser_children', {'return_value': {'200': 'browser child'}}),
+        ]:
+            p = patch.object(m, name, **kwargs); p.start(); self.addCleanup(p.stop)
+        m.turn_hook('codex', self.event, self.root)
+
+    def stop(self, **fields):
+        return m.turn_hook('codex', {**self.event, 'hook_event_name': 'Stop', **fields}, self.root)
+
+    def test_parallel_turns_close_only_their_own_browser(self):
+        a = m.begin_browser_test(self.req, self.root)
+        other = {**self.event, 'session_id': 'b'}
+        m.turn_hook('codex', other, self.root)
+        b = m.begin_browser_test({**self.req, 'session': 'b'}, self.root)
+        self.assertNotEqual(a['name'], b['name'])
+        self.stop()
+        self.assertEqual([rid for rid, args in self.calls if args == ['close']], [a['id']])
+        with m.registry(self.root) as state:
+            self.assertEqual(state['browserRuns'][b['id']]['status'], 'open')
+        receipt = json.loads(next(self.root.glob('receipt-*.json')).read_text())
+        self.assertTrue(receipt['verified'])
+        self.assertTrue(Path(a['cwd']).is_dir())
+
+    def test_repeated_begin_reuses_one_browser(self):
+        first = m.begin_browser_test(self.req, self.root)
+        second = m.begin_browser_test(self.req, self.root)
+        self.assertEqual(first['id'], second['id'])
+        self.assertTrue(second['reused'])
+        self.assertEqual(len(self.calls), 1)
+        self.stop(); self.stop()
+        self.assertEqual(len(self.calls), 2)
+
+    def test_hold_survives_stop_and_release_closes(self):
+        browser = m.begin_browser_test(self.req, self.root)
+        m.dispatch({**self.req, 'action': 'hold', 'id': browser['id']}, self.root)
+        self.stop()
+        self.assertEqual(len(self.calls), 1)
+        m.dispatch({**self.req, 'action': 'release', 'id': browser['id']}, self.root)
+        self.assertEqual(self.calls[-1][1], ['close'])
+
+    def test_unobserved_turn_cannot_launch(self):
+        with self.assertRaises(ValueError): m.begin_browser_test({**self.req, 'turn': 'wrong'}, self.root)
+        self.assertFalse(self.calls)
+
+    def test_pid_reuse_or_changed_session_file_prevents_close(self):
+        m.begin_browser_test(self.req, self.root)
+        with patch.object(m, 'browser_identity', return_value={'sha256': 'changed'}):
+            self.assertIn('확인 필요', self.stop()['systemMessage'])
+        self.processes[101] = 'different process with reused PID'
+        self.assertIn('확인 필요', self.stop()['systemMessage'])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_late_stop_and_interrupt_do_not_close(self):
+        m.begin_browser_test(self.req, self.root)
+        m.turn_hook('codex', {**self.event, 'hook_event_name': 'Interrupt'}, self.root)
+        m.turn_hook('codex', {**self.event, 'turn_id': 'new'}, self.root)
+        self.stop()
+        self.assertEqual(len(self.calls), 1)
+
+    def test_launch_timeout_is_visible_and_not_relaunched_or_killed(self):
+        with patch.object(m, 'browser_command', side_effect=TimeoutError('launch timeout')):
+            result = m.begin_browser_test(self.req, self.root)
+        self.assertIn('error', result)
+        with self.assertRaises(ValueError): m.begin_browser_test(self.req, self.root)
+        self.assertIn('확인 필요', self.stop()['systemMessage'])
+        self.assertFalse(self.calls)
+
+    def test_close_failure_is_receipted_and_explicit_stop_can_retry(self):
+        m.begin_browser_test(self.req, self.root)
+        with patch.object(m, 'browser_command', side_effect=TimeoutError('close timeout')):
+            result = self.stop()
+        self.assertNotIn('decision', result)
+        self.assertIn('확인 필요', result['systemMessage'])
+        receipt = json.loads(next(self.root.glob('receipt-*.json')).read_text())
+        self.assertFalse(receipt['verified'])
+        self.stop()
+        self.assertEqual(self.calls[-1][1], ['close'])
+
+    def test_dead_daemon_with_surviving_browser_is_not_success(self):
+        m.begin_browser_test(self.req, self.root)
+        self.processes[101] = ''
+        self.processes[200] = 'browser child'
+        self.assertIn('확인 필요', self.stop()['systemMessage'])
+        receipt = json.loads(next(self.root.glob('receipt-*.json')).read_text())
+        self.assertFalse(receipt['verified'])
+        self.assertEqual(receipt['survivingChildren'], ['200'])
+
+
 if __name__=='__main__':unittest.main()

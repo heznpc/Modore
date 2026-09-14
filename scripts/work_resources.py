@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -161,7 +162,8 @@ def snapshot(root=ROOT, observe=True):
             r['processes'] = evidence.get(r['id'], [])
             r['preferred'] = r['id'] in state['preferred'].values()
             r['managedTest'] = state.get('testRuns', {}).get(r['id'])
-    return {'observedAt': time.time(), 'resources': rows, 'warnings': warnings,
+        browser_runs = list(state.get('browserRuns', {}).values())
+    return {'observedAt': time.time(), 'resources': rows, 'browsers': browser_runs, 'warnings': warnings,
             'coverage': '프로세스 연결은 열린 파일 관찰, 세션 연결은 명시적 사용 등록입니다. 미등록 세션의 소속은 알 수 없습니다.'}
 
 
@@ -215,6 +217,165 @@ def turn_key(provider, session):
 def save_registry(root, state):
     # Commit intent before simctl: even a killed hook leaves a recoverable record.
     atomic(root / 'leases.json', state)
+
+
+def playwright_runtime(req):
+    """Use an already installed CLI; never install packages in a lifecycle hook."""
+    candidates = ([Path(req['cli'])] if req.get('cli') else
+                  list((Path.home() / '.npm/_npx').glob('*/node_modules/@playwright/cli/playwright-cli.js')) +
+                  [Path('/opt/homebrew/lib/node_modules/@playwright/cli/playwright-cli.js')])
+    candidates = [p.resolve() for p in candidates if p.is_file()]
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    cli = next((p for p in candidates if p.name == 'playwright-cli.js' and
+                json.loads((p.parent / 'package.json').read_text()).get('name') == '@playwright/cli'), None)
+    nodes = ([Path(req['node'])] if req.get('node') else
+             [Path(shutil.which('node') or '/nonexistent'), Path('/opt/homebrew/bin/node'),
+              Path('/usr/local/bin/node')] +
+             sorted((Path.home() / '.local/share/mise/installs/node').glob('*/bin/node'), reverse=True))
+    node = next((p.resolve() for p in nodes if p.is_file() and os.access(p, os.X_OK)), None)
+    if not cli or not node:
+        raise ValueError('설치된 Playwright CLI와 Node가 필요합니다. --cli와 --node로 절대 경로를 지정할 수 있습니다.')
+    return [str(node), str(cli)]
+
+
+def browser_command(run, args, timeout=10):
+    # A private workspace prevents project configs from selecting a user's
+    # normal profile/CDP connection. No package download or updater on Stop.
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('PLAYWRIGHT_', 'PWTEST_', 'NODE_'))}
+    env.update(CI='1', NO_UPDATE_NOTIFIER='1')
+    p = subprocess.run(run['cli'] + ['-s=' + run['name']] + args + ['--json'],
+                       cwd=run['workspace'], env=env, capture_output=True, timeout=timeout)
+    if p.returncode:
+        raise ValueError(p.stderr.decode(errors='replace')[-1000:] or 'Playwright command failed')
+    return json.loads(p.stdout)
+
+
+def browser_process(pid):
+    p = subprocess.run(['/bin/ps', '-p', str(int(pid)), '-o', 'lstart=', '-o', 'command='],
+                       capture_output=True, timeout=2)
+    if p.returncode not in (0, 1): raise ValueError('브라우저 프로세스 확인 실패')
+    return p.stdout.decode(errors='replace').strip()
+
+
+def browser_identity(run):
+    base = Path.home() / 'Library/Caches/ms-playwright/daemon'
+    files = list(base.glob('*/' + run['name'] + '.session'))
+    if len(files) != 1 or files[0].is_symlink():
+        raise ValueError('Playwright 실행 식별 파일을 확인하지 못했습니다.')
+    path = files[0]
+    stat = path.stat()
+    return {'path': str(path), 'inode': stat.st_ino,
+            'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def browser_children(pid):
+    """Record browser children too: a dead daemon alone is not successful cleanup."""
+    pairs = command(['/bin/ps', '-axo', 'pid=,ppid='], 2).decode().splitlines()
+    parents = {int(parts[0]): int(parts[1]) for line in pairs if len(parts := line.split()) == 2}
+    descendants = {pid}
+    while True:
+        found = {child for child, parent in parents.items() if parent in descendants}
+        if found <= descendants: break
+        descendants |= found
+    return {str(child): identity for child in descendants - {pid}
+            if (identity := browser_process(child))}
+
+
+def begin_browser_test(req, root=ROOT):
+    project, session = project_session(req)
+    key = turn_key(req.get('provider'), session)
+    with registry(root) as state:
+        turn = state.get('turns', {}).get(key)
+        if not turn or turn.get('finishedAt') or turn['project'] != project or turn['token'] != req.get('turn'):
+            raise ValueError('현재 턴 훅의 provider·session·project·turn 값이 필요합니다.')
+        for lease in state['leases']:
+            if lease.get('turnKey') == key and lease.get('turn') == turn['token'] and not lease.get('releasedAt'):
+                run = state.get('browserRuns', {}).get(lease['resourceID'])
+                if run:
+                    if (run['status'] != 'open' or browser_process(run['pid']) != run['processIdentity'] or
+                            browser_identity(run) != run['identity']):
+                        raise ValueError('이 턴의 기존 브라우저 실행이 미확인 상태입니다. 중복 실행하지 않습니다.')
+                    return browser_result(run, reused=True)
+        cli = playwright_runtime(req)
+        rid = 'browser-' + uuid.uuid4().hex
+        workspace = root / 'browser-workspaces' / rid
+        config = workspace / '.playwright' / 'cli.config.json'
+        config.parent.mkdir(mode=0o700, parents=True)
+        atomic(config, {'browser': {'browserName': 'chromium', 'launchOptions': {'channel': 'chromium'}}})
+        now = time.time()
+        run = {'id': rid, 'name': rid, 'cli': cli, 'workspace': str(workspace),
+               'project': project, 'session': session, 'provider': req['provider'],
+               'startedAt': now, 'status': 'open-pending', 'stopRequested': False}
+        state.setdefault('browserRuns', {})[rid] = run
+        state['leases'].append({'resourceID': rid, 'runID': rid, 'project': project, 'session': session,
+                                'provider': req['provider'], 'turnKey': key, 'turn': turn['token'],
+                                'lifetime': 'turn', 'updatedAt': now, 'expiresAt': now + 900})
+        save_registry(root, state)
+        try:
+            url = req.get('url') or 'about:blank'
+            if not isinstance(url, str) or not url.startswith(('http://', 'https://', 'file://', 'about:')):
+                raise ValueError('지원하지 않는 테스트 URL입니다.')
+            result = browser_command(run, ['open', url] + (['--headed'] if req.get('headed') else []), 30)
+            run['pid'] = int(result['pid'])
+            run['processIdentity'] = browser_process(run['pid'])
+            if 'cliDaemon.js ' + rid not in run['processIdentity']:
+                raise ValueError('새로 시작한 Playwright 프로세스를 확인하지 못했습니다.')
+            run['identity'] = browser_identity(run)
+            run['children'] = browser_children(run['pid'])
+            if not run['children']:
+                raise ValueError('테스트 브라우저의 자식 프로세스를 확인하지 못했습니다.')
+            run['status'] = 'open'
+            return browser_result(run)
+        except Exception as exc:
+            run.update(status='open-unverified', error=str(exc))
+            return {'error': str(exc), 'id': rid, 'verified': False}
+
+
+def browser_result(run, reused=False):
+    return {'id': run['id'], 'name': run['name'], 'reused': reused,
+            'cwd': run['workspace'], 'argv': run['cli'] + ['-s=' + run['name']],
+            'instruction': '반환된 cwd에서 argv에 snapshot/click/goto 등 Playwright 명령을 추가하세요. 같은 턴은 이 브라우저를 재사용합니다. Stop이 정상 종료합니다. 사용자 미리보기는 resources hold --id <id>로 유지하세요. 테스트 쿠키와 임시 화면 상태는 종료 시 사라집니다.'}
+
+
+def settle_browsers(state, root, resource_ids):
+    results = []
+    deadline = time.monotonic() + 14
+    for rid, run in state.get('browserRuns', {}).items():
+        if rid not in resource_ids or not run.get('stopRequested') or run['status'] == 'closed': continue
+        if unresolved_leases(state, rid):
+            results.append({'id': rid, 'status': 'kept', 'reason': 'unreleased-session'}); continue
+        if time.monotonic() > deadline - 10:
+            results.append({'id': rid, 'status': 'pending', 'reason': 'time-budget'}); continue
+        receipt = {'id': str(uuid.uuid4()), 'resourceID': rid, 'action': 'turn-browser-close',
+                   'startedAt': time.time(), 'status': 'attempting', 'verified': False}
+        path = root / ('receipt-' + receipt['id'] + '.json')
+        atomic(path, receipt)
+        try:
+            if run['status'] not in ('open', 'stop-pending'):
+                raise ValueError('시작이 미확인된 브라우저는 자동 종료하지 않습니다.')
+            identity = browser_process(run['pid'])
+            if identity:
+                if identity != run['processIdentity'] or browser_identity(run) != run['identity']:
+                    raise ValueError('브라우저 실행 식별이 바뀌어 자동 종료하지 않았습니다.')
+                run['status'] = 'stop-pending'
+                save_registry(root, state)
+                browser_command(run, ['close'], 6)
+                until = time.monotonic() + 1.5
+                while browser_process(run['pid']) == identity and time.monotonic() < until:
+                    time.sleep(0.1)
+            survivors = [pid for pid, expected in run.get('children', {}).items()
+                         if browser_process(int(pid)) == expected]
+            receipt['survivingChildren'] = survivors
+            receipt['verified'] = not browser_process(run['pid']) and not survivors
+            receipt['status'] = 'succeeded' if receipt['verified'] else 'unverified'
+            run['status'] = 'closed' if receipt['verified'] else 'stop-pending'
+        except Exception as exc:
+            receipt.update(status='failed', error=str(exc))
+        receipt['finishedAt'] = time.time()
+        atomic(path, receipt)
+        run['receipt'] = str(path)
+        results.append({'id': rid, 'status': receipt['status'], 'verified': receipt['verified'], 'receipt': str(path)})
+    return results
 
 
 def settle_tests(state, root, resource_ids):
@@ -343,7 +504,14 @@ def turn_hook(provider, payload, root=ROOT):
                        f'--provider {provider} --session {shlex.quote(session)} --project {shlex.quote(project)} --turn {shlex.quote(token)}. '
                        'Use the returned UDID. Stop will shut down only this managed test run, preserving the device and data. '
                        'If the user needs a running preview or background test, use resources hold with the same provider/session/turn and --id <UDID> before responding. '
-                       'Never adopt or stop an unregistered running simulator.')
+                       'Never adopt or stop an unregistered running simulator. '
+                       'For Playwright CLI browser tests, use modore resources begin-browser-test '
+                       f'--provider {provider} --session {shlex.quote(session)} --project {shlex.quote(project)} --turn {shlex.quote(token)} '
+                       '--url <URL> [--headed] instead of directly opening another test browser. '
+                       'It starts isolated Chromium, returns cwd/argv for all subsequent Playwright actions, reuses it within the turn, '
+                       'and closes it normally on Stop. Test cookies and transient UI state end with it. '
+                       'Use resources hold with its returned id only when the user needs a running preview after the response. '
+                       'It does not close ordinary Chrome, external browser tools, or unregistered browsers.')
             return {'hookSpecificOutput': {'hookEventName': event, 'additionalContext': context}}
         if not old or old['project'] != project or (provider == 'codex' and old['token'] != wire_turn):
             return {}
@@ -357,11 +525,15 @@ def turn_hook(provider, payload, root=ROOT):
                 if run and run['id'] == lease.get('runID'):
                     run['stopRequested'] = True
                     targets.add(lease['resourceID'])
+                browser = state.get('browserRuns', {}).get(lease['resourceID'])
+                if browser and browser['id'] == lease.get('runID'):
+                    browser['stopRequested'] = True
+                    targets.add(lease['resourceID'])
         save_registry(root, state)
-        results = settle_tests(state, root, targets)
+        results = settle_tests(state, root, targets) + settle_browsers(state, root, targets)
         if not results: return {}
         stopped = sum(x.get('verified', False) for x in results)
-        return {'systemMessage': f'Modore: 테스트 시뮬레이터 {stopped}대 종료 확인, {len(results) - stopped}대 유지/확인 필요. 기기와 세션 데이터는 보존됩니다.'}
+        return {'systemMessage': f'Modore: 테스트 실행 {stopped}개 종료 확인, {len(results) - stopped}개 유지/확인 필요. AI 세션과 시뮬레이터 기기는 보존됩니다.'}
 
 
 def install_hooks(provider, root=ROOT, home=None, executable=None):
@@ -460,6 +632,7 @@ def dispatch(req, root=ROOT):
     if action == 'status': return snapshot(root)
     if action in ('acquire', 'claim'): return register(req, root)
     if action == 'begin-test': return begin_test(req, root)
+    if action == 'begin-browser-test': return begin_browser_test(req, root)
     if action == 'install-hooks': return install_hooks(req.get('provider'), root)
     if action == 'hold':
         key = turn_key(req.get('provider'), req.get('session'))
@@ -469,7 +642,7 @@ def dispatch(req, root=ROOT):
                 if (lease['resourceID'] == req.get('id') and lease.get('turnKey') == key and
                         lease.get('turn') == req.get('turn') and not lease.get('releasedAt')):
                     lease['lifetime'] = 'session'; found = True
-            if not found: raise ValueError('현재 턴에 등록된 테스트 기기를 찾지 못했습니다.')
+            if not found: raise ValueError('현재 턴에 등록된 테스트 자원을 찾지 못했습니다.')
         return {'message': '사용자 검토/백그라운드 테스트용으로 유지합니다. 사용이 끝나면 release가 필요합니다.'}
     if action in ('heartbeat', 'release'):
         if not req.get('session'): raise ValueError('세션 ID가 필요합니다.')
@@ -486,10 +659,12 @@ def dispatch(req, root=ROOT):
                         if x.get('turnKey'):
                             run = state.get('testRuns', {}).get(x['resourceID'])
                             if run and run['id'] == x.get('runID'): run['stopRequested'] = True
+                            browser = state.get('browserRuns', {}).get(x['resourceID'])
+                            if browser and browser['id'] == x.get('runID'): browser['stopRequested'] = True
             results = []
             if action == 'release':
                 save_registry(root, state)
-                results = settle_tests(state, root, targets)
+                results = settle_tests(state, root, targets) + settle_browsers(state, root, targets)
         return {'message': action, 'results': results}
     return mutate(req, root)
 
@@ -497,9 +672,10 @@ def dispatch(req, root=ROOT):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', nargs='?', default='status')
-    for flag in ['id','runtime','deviceType','session','project','fingerprint','provider','turn']:
+    for flag in ['id','runtime','deviceType','session','project','fingerprint','provider','turn','cli','node','url']:
         parser.add_argument('--'+flag, default='')
     parser.add_argument('--override', action='store_true')
+    parser.add_argument('--headed', action='store_true')
     parser.add_argument('--request-file')
     args = vars(parser.parse_args())
     if args['action'] == 'hook':
