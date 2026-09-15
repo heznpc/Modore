@@ -89,9 +89,7 @@ enum ScreeService {
     static func sessionBackup(
         projectRoot: URL, operation: SessionBackupOperation
     ) async -> Result<SessionBackupReceipt, ScreeInspectionError> {
-        guard let execution = await Task.detached(priority: .userInitiated, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
-        }).value else {
+        guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: projectRoot) else {
             return .failure(.init(message: L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")))
         }
         return await sessionBackup(execution: execution, operation: operation)
@@ -162,9 +160,7 @@ enum ScreeService {
     /// same mutable, ownership-checked location every other Modore output
     /// already writes to; scree.py's own `--out` handling creates it.
     static func preserve(projectRoot: URL, tool: String, source: String) async -> ScreePreserveOutcome {
-        guard let execution = await Task.detached(priority: .userInitiated, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
-        }).value else {
+        guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: projectRoot) else {
             return .failure(L10n.text("서명된 실행 런타임을 확인하지 못해 scree를 실행하지 않았습니다."))
         }
         let destination = execution.outputRoot
@@ -278,9 +274,7 @@ extension ScreeService {
         repoURL: String?,
         deep: Bool = false
     ) async -> ScreeBindOutcome {
-        guard let execution = await Task.detached(priority: .userInitiated, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
-        }).value else {
+        guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: projectRoot) else {
             return .failed(L10n.text("서명된 실행 런타임을 확인하지 못해 세션 바인더를 실행하지 않았습니다."))
         }
         return await bind(execution: execution, workspace: workspace,
@@ -1074,9 +1068,7 @@ extension ScreeService {
         arguments: [String],
         timeout: TimeInterval
     ) async -> RawOutcome {
-        guard let execution = await Task.detached(priority: .userInitiated, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
-        }).value else {
+        guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: projectRoot) else {
             return .failure(L10n.text("서명된 실행 런타임을 확인하지 못해 scree를 실행하지 않았습니다."))
         }
         return await invoke(execution: execution, arguments: arguments, timeout: timeout)
@@ -1423,9 +1415,7 @@ extension ScanModel {
             defer {
                 if generation == storageEvidenceGeneration { storageEvidenceRunning = false }
             }
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 if generation == storageEvidenceGeneration {
                     storageEvidenceError = L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")
                 }
