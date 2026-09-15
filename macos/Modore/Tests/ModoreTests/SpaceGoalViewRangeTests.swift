@@ -2,13 +2,9 @@ import SwiftUI
 import XCTest
 @testable import Modore
 
-/// The goal slider's range is the one place in this view that can take the
-/// whole page down: SwiftUI's Slider divides the range by `step` and calls
-/// `fatalError("max stride must be positive")` on a zero-width range, which
-/// is not catchable. `1...max(achievableGB, 1)` collapsed to `1...1` for any
-/// cleanable total in (0, 1]GB -- a single small npm cache -- so the 목표 tab
-/// hard-crashed the app. These assert the bound is always strictly above the
-/// lower bound, and that the sub-1GB case doesn't render a slider at all.
+/// Keep the small/empty candidate cases that crashed the former goal slider.
+/// The target now uses a stepper independent of estimated candidate sizes;
+/// these render checks preserve coverage for all those storage states.
 final class SpaceGoalViewRangeTests: XCTestCase {
     private func snapshot(cleanableGB: [Double]) -> StorageSnapshot {
         let candidates = cleanableGB.enumerated().map { index, size in

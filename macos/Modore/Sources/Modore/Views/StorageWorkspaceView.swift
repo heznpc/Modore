@@ -12,12 +12,12 @@ enum StorageWorkspaceSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .overview: return L10n.text("전체")
-        case .cleanup: return L10n.text("정리")
-        case .goal: return L10n.text("목표")
+        case .overview: return L10n.text("사용 현황")
+        case .cleanup: return L10n.text("정리 후보")
+        case .goal: return L10n.text("공간 확보")
         case .development: return L10n.text("개발")
         case .applications: return L10n.text("앱")
-        case .simulators: return "Simulator"
+        case .simulators: return L10n.text("시뮬레이터")
         }
     }
 }
@@ -29,43 +29,79 @@ struct StorageWorkspacePage: View {
     @State private var environmentRetirement = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Button(L10n.text("시뮬레이터·실행 환경 정리")) { environmentRetirement = true }
-                Button(L10n.text("레포 아카이브·로컬 정리")) { retirementOpen = true }
-                Spacer()
-            }.padding(.horizontal, 20).padding(.vertical, 8)
-            if section == .overview {
-                Picker(L10n.text("저장공간 보기"), selection: $section) {
-                    ForEach(StorageWorkspaceSection.allCases) { Text($0.title).tag($0) }
-                }.pickerStyle(.segmented).padding(.horizontal, 20)
-                FullStorageBalanceView()
-            } else if let storage = model.storage {
-                VStack(spacing: 0) {
-                    StorageWorkspaceToolbar(section: $section, storage: storage)
-                    workspaceList(storage)
-                }
-            } else {
-                VStack(spacing: 16) {
-                    ModernEmptyState(
-                        symbol: "internaldrive",
-                        title: model.isRunning ? L10n.text("정리 후보를 측정하고 있습니다") : L10n.text("저장공간 정보가 없습니다"),
-                        message: model.isRunning
-                            ? L10n.text("검사가 끝나면 이 화면에 확보 계획이 바로 표시됩니다.")
-                            : L10n.text("먼저 로컬 검사를 실행해 안전하게 정리할 수 있는 경로를 확인하세요.")
-                    )
-                    if model.isRunning {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Button(L10n.text("정리 후보 측정")) { model.runScan() }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(model.isBusy)
+        HStack(spacing: 0) {
+            sidebar
+            Divider()
+            Group {
+                if section == .overview {
+                    FullStorageBalanceView()
+                } else if let storage = model.storage {
+                    VStack(spacing: 0) {
+                        if section != .goal {
+                            StorageWorkspaceToolbar(section: $section, storage: storage)
+                        }
+                        workspaceList(storage)
+                    }
+                } else {
+                    VStack(spacing: 16) {
+                        ModernEmptyState(
+                            symbol: "internaldrive",
+                            title: model.isRunning ? L10n.text("정리 후보를 측정하고 있습니다") : L10n.text("저장공간 정보가 없습니다"),
+                            message: model.isRunning
+                                ? L10n.text("검사가 끝나면 이 화면에 확보 계획이 바로 표시됩니다.")
+                                : L10n.text("먼저 로컬 검사를 실행해 안전하게 정리할 수 있는 경로를 확인하세요.")
+                        )
+                        if model.isRunning {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button(L10n.text("정리 후보 측정")) { model.runScan() }
+                                .buttonStyle(.borderedProminent).disabled(model.isBusy)
+                        }
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationDestination(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
         .navigationDestination(isPresented: $retirementOpen) { AssetRetirementView() }
+    }
+
+    private var sidebar: some View {
+        List(selection: Binding<StorageWorkspaceSection?>(
+            get: { section },
+            set: { if let value = $0 { section = value } }
+        )) {
+            Section(L10n.text("저장공간")) {
+                ForEach(StorageWorkspaceSection.allCases) { item in
+                    Label(item.title, systemImage: symbol(item)).tag(item)
+                        .padding(.vertical, 3)
+                }
+            }
+            Section(L10n.text("환경 정리")) {
+                Button { environmentRetirement = true } label: {
+                    Label(L10n.text("실행 환경"), systemImage: "desktopcomputer")
+                }
+                .buttonStyle(.plain).padding(.vertical, 3)
+                Button { retirementOpen = true } label: {
+                    Label(L10n.text("프로젝트 정리"), systemImage: "archivebox")
+                }
+                .buttonStyle(.plain).padding(.vertical, 3)
+            }
+        }
+        .listStyle(.sidebar)
+        .frame(width: 180)
+        .accessibilityLabel(L10n.text("저장공간 보기"))
+    }
+
+    private func symbol(_ section: StorageWorkspaceSection) -> String {
+        switch section {
+        case .overview: return "chart.pie"
+        case .cleanup: return "tray.full"
+        case .goal: return "sparkles"
+        case .development: return "hammer"
+        case .applications: return "app"
+        case .simulators: return "iphone"
+        }
     }
 
     @ViewBuilder
@@ -75,7 +111,7 @@ struct StorageWorkspacePage: View {
         case .cleanup: CleanupWorkspaceList(storage: storage)
         case .goal: SpaceGoalWorkspaceList(
             storage: storage,
-            currentFreeGB: model.currentFreeGB
+            currentFreeGB: model.liveState.freeSpace?.value.freeGB
         )
         case .development: DevelopmentWorkspaceList(storage: storage)
         case .applications: ApplicationWorkspaceList(storage: storage)
@@ -91,14 +127,7 @@ private struct StorageWorkspaceToolbar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker(L10n.text("저장공간 분류"), selection: $section) {
-                ForEach(StorageWorkspaceSection.allCases) { section in
-                    Text(section.title).tag(section)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 560)
+            Text(section.title).font(.title2.weight(.semibold))
 
             HStack {
                 Text(summary)

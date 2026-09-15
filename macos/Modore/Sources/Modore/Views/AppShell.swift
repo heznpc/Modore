@@ -48,7 +48,8 @@ struct ModernRootView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 if let freeSpace = model.liveState.freeSpace,
-                   freeSpace.value.pressure.needsRecovery {
+                   freeSpace.value.pressure.needsRecovery,
+                   !(selection == .storage && storageSection == .goal) {
                     StoragePressureBanner(
                         freeSpace: freeSpace.value,
                         openRecovery: openStorageRecovery
@@ -69,7 +70,16 @@ struct ModernRootView: View {
                     Button { navigate(to:.health) } label: { Label(L10n.text("대시보드"),systemImage:"square.grid.2x2") }.disabled(selection == .health)
                 }
                 ToolbarItem(placement:.automatic) {
-                    Menu(L10n.text("다른 작업")) { ForEach(AppDestination.allCases.filter { $0 != .health }) { destination in Button(destination.title) { navigate(to:destination) } } }
+                    Menu {
+                        ForEach(AppDestination.allCases.filter { $0 != .health }) { destination in
+                            Button(destination.title) { navigate(to: destination) }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "ellipsis.circle")
+                            Text(L10n.text("다른 작업"))
+                        }
+                    }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -214,7 +224,7 @@ private struct StoragePressureBanner: View {
 
     private var detail: String {
         String(
-            format: L10n.text("현재 %.1fGB 남았습니다. 정리 후보를 검토한 뒤 한 번 승인해 목표 용량을 확보할 수 있습니다."),
+            format: L10n.text("현재 %.1fGB 남았습니다. 정리할 항목을 확인해 공간을 확보하세요."),
             freeSpace.freeGB
         )
     }
