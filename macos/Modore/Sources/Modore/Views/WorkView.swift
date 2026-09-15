@@ -15,6 +15,7 @@ import MothballCore
 /// Reaching a conversation is a project click and a title click.
 struct WorkPage: View {
     @State private var resources = false
+    @EnvironmentObject private var quotaWork: QuotaWorkModel
     @EnvironmentObject private var model: ScanModel
 
     var body: some View {
@@ -25,6 +26,12 @@ struct WorkPage: View {
                 Button(L10n.text("작업 환경 보기")) { resources = true }
                     .keyboardShortcut("k", modifiers: [.command, .shift])
             }.padding(12)
+            if let message = quotaWork.message {
+                WorkNotice(text: message, action: (L10n.text("닫기"), {
+                    quotaWork.requestedTaskID = nil
+                    quotaWork.message = nil
+                }))
+            }
         HSplitView {
             WorkListPane()
                 .frame(minWidth: 340, idealWidth: 420)
@@ -32,6 +39,19 @@ struct WorkPage: View {
                 .frame(minWidth: 320)
         }
         }
+        .task {
+            repeat {
+                await quotaWork.refresh()
+                resolveQuotaTask()
+                do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { break }
+            } while !Task.isCancelled
+        }
+        .task(id: quotaWork.requestedTaskID) {
+            guard quotaWork.requestedTaskID != nil else { return }
+            await quotaWork.refresh()
+            resolveQuotaTask()
+        }
+        .onChange(of: model.sessionIndex) { _ in resolveQuotaTask() }
         .sheet(isPresented: $resources) { WorkResourceView() }
         // The git judgment needs the workspace list the audit produces, so
         // a cold start waits until that lands. A boolean only changes on the
@@ -47,6 +67,24 @@ struct WorkPage: View {
             // say what a retirement would strand.
             RetirementReviewSheet(projectID: target.id)
         }
+    }
+    private func resolveQuotaTask() {
+        guard let id = quotaWork.requestedTaskID else { return }
+        guard let snapshot = quotaWork.state.snapshot, snapshot.isCurrent() else {
+            quotaWork.message = L10n.text("QuotaPie의 최신 작업 상태를 확인할 수 없습니다.")
+            return
+        }
+        guard let index = model.sessionIndex else { return }
+        guard let session = snapshot.session(for: id, in: index.sessions) else {
+            quotaWork.message = L10n.text("현재 수집 범위에서 연결된 대화를 하나로 확인하지 못했습니다. QuotaPie에서 작업을 확인하세요.")
+            return
+        }
+        quotaWork.requestedTaskID = nil
+        quotaWork.message = nil
+        model.selectedSearchMatch = nil
+        model.selectedSessionSource = session.source
+        model.loadSessionTitles(for: [session.source])
+        model.loadConversation(for: session)
     }
 }
 
@@ -381,6 +419,7 @@ private struct ConversationTitleRow: View {
 }
 
 private struct WorkDetailPane: View {
+    @EnvironmentObject private var quotaWork: QuotaWorkModel
     @EnvironmentObject private var model: ScanModel
     @State private var backupTarget: BackupTarget?
     @State private var exporting = false
@@ -428,6 +467,9 @@ private struct WorkDetailPane: View {
                     }
                     if let exportError {
                         Text(exportError).font(.caption).foregroundStyle(.red)
+                    }
+                    if let snapshot = quotaWork.state.snapshot, let task = snapshot.task(for: session) {
+                        QuotaWorkCard(snapshot: snapshot, task: task)
                     }
                     Divider()
                     conversationDetail(

@@ -1965,3 +1965,28 @@
 "승인하면 아래 항목을 정리합니다. 사용 중인 항목은 건너뛰고 목표에 도달하면 멈춥니다." = "Approval cleans the items below. Items in use are skipped, and cleanup stops at the goal.";
 "대상 파일 크기 · 확보량과 다를 수 있음" = "File size · space reclaimed may differ";
 "%@개 항목 정리" = "Clean up %@ items";
+"재개 가능 · QuotaPie에서 확인 필요" = "Ready to resume · review in QuotaPie";
+
+"재개 승인됨 · 실행 결과는 QuotaPie에서 확인" = "Resume approved · check the launch in QuotaPie";
+
+"한도 회복 대기 중" = "Waiting for quota recovery";
+
+"QuotaPie를 열 수 없습니다. 앱과 최신 수집 상태를 확인하세요." = "Could not open QuotaPie. Check the app and its latest collection state.";
+
+"QuotaPie의 최신 작업 상태를 확인할 수 없습니다." = "The latest QuotaPie work state is unavailable.";
+
+"현재 수집 범위에서 연결된 대화를 하나로 확인하지 못했습니다. QuotaPie에서 작업을 확인하세요." = "The current index could not identify one matching conversation. Check the task in QuotaPie.";
+
+"작업 상태가 오래되었습니다" = "Work state is out of date";
+
+"QuotaPie에서 이어가기 확인" = "Review resume in QuotaPie";
+
+"재개할 때 QuotaPie가 한도와 세션을 다시 확인하고 승인을 요청합니다." = "QuotaPie rechecks quota and the session, then asks for approval before resuming.";
+
+"크기 제한으로 일부 구간만 읽었습니다. 마지막 대화가 아닐 수 있습니다." = "Only part of this conversation was read because of the size limit. These may not be the latest turns.";
+
+"시간 제한까지 읽은 구간만 표시합니다. 마지막 대화가 아닐 수 있습니다." = "Showing the portion read before the time limit. These may not be the latest turns.";
+
+"일부 기록을 해석하지 못했습니다. 읽을 수 있는 대화만 표시합니다." = "Some records could not be parsed. Showing only the readable conversation.";
+
+"확인한 구간에서 표시할 대화를 찾지 못했습니다." = "No displayable turns were found in the portion that was read.";

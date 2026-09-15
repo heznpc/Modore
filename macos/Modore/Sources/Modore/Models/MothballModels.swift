@@ -199,6 +199,9 @@ struct SessionConversation: Decodable, Equatable {
         case missing
         case unreadable
         case unrecognized
+        case truncated
+        case time
+        case parse
 
         init(from decoder: Decoder) throws {
             let raw = try decoder.singleValueContainer().decode(String.self)
@@ -208,10 +211,19 @@ struct SessionConversation: Decodable, Equatable {
         /// What to put in front of the person, when there is nothing to show.
         var failureText: String? {
             switch self {
-            case .ok: return nil
+            case .ok, .truncated, .time, .parse: return nil
             case .missing: return L10n.text("이 대화 파일은 더 이상 존재하지 않습니다. 제공자가 정리했을 수 있습니다.")
             case .unreadable: return L10n.text("이 대화 파일을 읽을 권한이 없습니다.")
             case .unrecognized: return L10n.text("이 대화 파일의 형식을 읽지 못했습니다.")
+            }
+        }
+
+        var partialReadText: String? {
+            switch self {
+            case .truncated: return L10n.text("크기 제한으로 일부 구간만 읽었습니다. 마지막 대화가 아닐 수 있습니다.")
+            case .time: return L10n.text("시간 제한까지 읽은 구간만 표시합니다. 마지막 대화가 아닐 수 있습니다.")
+            case .parse: return L10n.text("일부 기록을 해석하지 못했습니다. 읽을 수 있는 대화만 표시합니다.")
+            default: return nil
             }
         }
     }
