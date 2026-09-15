@@ -28,6 +28,15 @@ final class SpaceGoalSelectionTests: XCTestCase {
         XCTAssertEqual(SpaceGoalSelection.reviewCandidates(candidates).count, 2)
     }
 
+    func testRescanKeepsExclusionIdentityWhenSizeAndScanUUIDChange() {
+        let before = item(label: "cache", sizeGB: 1, path: "/tmp/a")
+        let after = item(label: "cache", sizeGB: 2, path: "/tmp/a")
+        XCTAssertNotEqual(before.id, after.id)
+        XCTAssertEqual(SpaceGoalSelection.key(before), SpaceGoalSelection.key(after))
+        let another = item(label: "cache", sizeGB: 1, path: "/tmp/b")
+        XCTAssertNotEqual(SpaceGoalSelection.key(before), SpaceGoalSelection.key(another))
+    }
+
     // Labels are deliberately in the opposite order from their sizes: if
     // selection ever fell back to array/alphabetical order instead of
     // sorting by size, this would select 3 small-first items instead of the

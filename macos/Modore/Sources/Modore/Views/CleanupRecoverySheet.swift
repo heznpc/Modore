@@ -41,10 +41,10 @@ struct CleanupRecoverySheet: View {
                     .font(.system(size: 26, weight: .medium))
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n.text("공간 확보 계획"))
+                    Text(L10n.text("정리 전 확인"))
                         .font(.title2.weight(.semibold))
                     Text(plan.canExecute
-                        ? L10n.text("승인한 후보를 순서대로 정리하고 실제 여유 공간으로 중단 여부를 판단합니다. 모든 후보를 정리해도 목표에 못 미칠 수 있습니다.")
+                        ? L10n.text("승인하면 아래 항목을 정리합니다. 사용 중인 항목은 건너뛰고 목표에 도달하면 멈춥니다.")
                         : (plan.readyEntries.isEmpty
                             ? L10n.text("이번에 확인된 실행 가능 항목이 없습니다. 항목별 이유를 확인하고 다시 시도하세요.")
                             : L10n.text("확인 후 시간이 지나 대상의 현재 상태를 다시 확인해야 합니다.")))
@@ -52,13 +52,15 @@ struct CleanupRecoverySheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text(L10n.text("실제 회수량 미확정"))
-                        .font(.title3.weight(.semibold))
-                        .monospacedDigit()
-                    Text(L10n.format("파일 크기 합계 %@ · 공유 블록 포함 가능", String(describing: plan.estimatedText)))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if !plan.readyEntries.isEmpty {
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text(plan.estimatedText)
+                            .font(.title3.weight(.semibold))
+                            .monospacedDigit()
+                        Text(L10n.text("대상 파일 크기 · 확보량과 다를 수 있음"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -115,7 +117,7 @@ struct CleanupRecoverySheet: View {
                         Button(role: .destructive) {
                             model.executeRecoveryPlan(plan)
                         } label: {
-                            Label(L10n.format("%@개 계획 실행", String(describing: plan.readyEntries.count)), systemImage: "trash")
+                            Label(L10n.format("%@개 항목 정리", String(describing: plan.readyEntries.count)), systemImage: "trash")
                         }
                         .disabled(model.cleanupInFlight)
                         .tint(.red)
