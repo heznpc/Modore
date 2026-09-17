@@ -37,7 +37,7 @@ struct StorageWatchSignalRow: View {
     private var detail: String {
         let capturedDetail = switch signal.kind {
         case .swap: signal.reference
-        case .processRSS: "PID \(signal.pid) · 짧은 실행명만 기록"
+        case .processRSS: L10n.format("PID %@ · 짧은 실행명만 기록", String(describing: signal.pid))
         }
         guard signal.isPartial else { return capturedDetail }
         return "\(capturedDetail) · \(partialStatusText)"
@@ -45,10 +45,10 @@ struct StorageWatchSignalRow: View {
 
     private var partialStatusText: String {
         switch signal.status {
-        case .ok: "측정 완료"
-        case .timedOut: "시간 제한 전 일부 수집"
-        case .outputLimited: "출력 제한 전 일부 수집"
-        case .failed: "중단 전 일부 수집"
+        case .ok: L10n.text("측정 완료")
+        case .timedOut: L10n.text("시간 제한 전 일부 수집")
+        case .outputLimited: L10n.text("출력 제한 전 일부 수집")
+        case .failed: L10n.text("중단 전 일부 수집")
         }
     }
 
@@ -69,16 +69,16 @@ struct StorageWatchSignalRow: View {
 extension StorageWatchSignalEvent {
     func collectionSummary(for kind: StorageWatchSignalKind, label: String) -> String {
         let matching = rows.filter { $0.kind == kind }
-        guard !matching.isEmpty else { return "\(label) 신호 없음" }
+        guard !matching.isEmpty else { return L10n.format("%@ 신호 없음", String(describing: label)) }
         guard matching.allSatisfy(\.isComplete) else {
             if matching.contains(where: { $0.status == .timedOut }) {
-                return "\(label) 시간 제한으로 일부만 수집"
+                return L10n.format("%@ 시간 제한으로 일부만 수집", String(describing: label))
             }
             if matching.contains(where: { $0.status == .outputLimited }) {
-                return "\(label) 출력 제한으로 일부만 수집"
+                return L10n.format("%@ 출력 제한으로 일부만 수집", String(describing: label))
             }
-            return "\(label) 중단 전에 일부만 수집"
+            return L10n.format("%@ 중단 전에 일부만 수집", String(describing: label))
         }
-        return "\(label) 측정 완료"
+        return L10n.format("%@ 측정 완료", String(describing: label))
     }
 }

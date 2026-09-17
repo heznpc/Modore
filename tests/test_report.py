@@ -173,6 +173,7 @@ def test_macos_jxa_report_redacts_share_copy(fixtures_dir, project_root, tmp_pat
         "PCH_SCAN": str(fixtures_dir / "sample_scan_macos.json"),
         "PCH_REPORT_OUTPUT": str(output_path),
         "PCH_REDACT": "true",
+        "PCH_LANG": "ko",
     })
     result = subprocess.run(
         [

@@ -27,13 +27,13 @@ enum LoginItemService {
         switch values["status"] {
         case "ready":
             guard let token = values["approvalToken"], token.count == 64 else {
-                return .failure("승인 토큰을 확인하지 못했습니다.")
+                return .failure(L10n.text("승인 토큰을 확인하지 못했습니다."))
             }
             return .ready(name: reportedName, approvalToken: token)
         case "not_found":
             return .notFound(name: reportedName)
         default:
-            return .failure("로그인 항목을 미리 확인하지 못했습니다.")
+            return .failure(L10n.text("로그인 항목을 미리 확인하지 못했습니다."))
         }
     }
 
@@ -47,7 +47,7 @@ enum LoginItemService {
         case "already_gone":
             return .alreadyGone(name: reportedName)
         default:
-            return .failure("로그인 항목을 제거하지 못했습니다.", name: reportedName)
+            return .failure(L10n.text("로그인 항목을 제거하지 못했습니다."), name: reportedName)
         }
     }
 
@@ -89,14 +89,14 @@ enum LoginItemService {
         guard let execution = await Task.detached(priority: .userInitiated, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
         }).value else {
-            return .failure("서명된 실행 런타임을 확인하지 못해 실행하지 않았습니다.")
+            return .failure(L10n.text("서명된 실행 런타임을 확인하지 못해 실행하지 않았습니다."))
         }
         guard let invocation = execution.pinnedInvocation(
             relativePath: "scripts/login_items.sh",
             name: "login_items"
         ), let supportModule = execution.pinnedSupportDirectoryModule(),
            let tokenModule = execution.pinnedApprovalTokenModule() else {
-            return .failure("봉인한 로그인 항목 스크립트를 확인하지 못해 실행하지 않았습니다.")
+            return .failure(L10n.text("봉인한 로그인 항목 스크립트를 확인하지 못해 실행하지 않았습니다."))
         }
         var files = invocation.files
             .merging(supportModule.files) { current, _ in current }
@@ -108,7 +108,7 @@ enum LoginItemService {
             // collision possible to reintroduce silently. A colliding key now
             // refuses instead of clobbering whichever payload merged first.
             guard files[key] == nil else {
-                return .failure("내부 오류: 고정 파일 키가 충돌해 실행하지 않았습니다 (\(key)).")
+                return .failure(L10n.format("내부 오류: 고정 파일 키가 충돌해 실행하지 않았습니다 (%@).", String(describing: key)))
             }
             files[key] = value
         }
@@ -127,7 +127,7 @@ enum LoginItemService {
         // mismatch/failed) -- both still emit a real status line to parse.
         // Anything else means the invocation itself never ran cleanly.
         guard result.status == 0 || result.status == 1, result.endState == .exited else {
-            return .failure("로그인 항목 스크립트 실행이 실패했습니다 (status \(result.status)).")
+            return .failure(L10n.format("로그인 항목 스크립트 실행이 실패했습니다 (status %@).", String(describing: result.status)))
         }
         return .success(result.output)
     }
@@ -155,7 +155,7 @@ extension ScanModel {
             case .ready(let confirmedName, let token):
                 pendingLoginItemRemoval = PendingLoginItemRemoval(name: confirmedName, approvalToken: token)
             case .notFound:
-                errorMessage = "이 로그인 항목을 더 이상 찾을 수 없습니다. 목록을 새로고침하세요."
+                errorMessage = L10n.text("이 로그인 항목을 더 이상 찾을 수 없습니다. 목록을 새로고침하세요.")
             case .failure(let message):
                 errorMessage = message
             }
@@ -207,8 +207,8 @@ extension ScanModel {
             }
             switch await execute(pending) {
             case .ok(let name), .alreadyGone(let name):
-                appendLog("로그인 항목 제거: \(name)")
-                AccessibilityAnnouncer.announce("로그인 항목을 제거했습니다")
+                appendLog(L10n.format("로그인 항목 제거: %@", String(describing: name)))
+                AccessibilityAnnouncer.announce(L10n.text("로그인 항목을 제거했습니다"))
             case .failure(let message, _):
                 executeFailure = message
             }

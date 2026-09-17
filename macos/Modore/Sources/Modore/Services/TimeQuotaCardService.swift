@@ -164,36 +164,36 @@ struct TimeQuotaCardPresentation {
             let window = windowKindName(headline.windowKind)
             var facts: [String] = []
             if let remaining = headline.remainingPercent {
-                facts.append("\(percentText(remaining)) 남음")
+                facts.append(L10n.format("%@ 남음", String(describing: percentText(remaining))))
             }
             if let exhaustsAt = headline.exhaustsAt {
-                facts.append("\(exhaustsAt.formatted(date: .abbreviated, time: .shortened))경 소진 예상")
+                facts.append(L10n.format("%@경 소진 예상", String(describing: exhaustsAt.formatted(date: .abbreviated, time: .shortened))))
             }
             return Notice(
                 symbol: "exclamationmark.triangle",
-                title: [provider, window, "소진 위험"].filter { !$0.isEmpty }.joined(separator: " "),
-                detail: fallbackDetail(facts, headline: headline, defaultText: "현재 속도라면 리셋 전에 한도를 소진할 수 있습니다.")
+                title: [provider, window, L10n.text("소진 위험")].filter { !$0.isEmpty }.joined(separator: " "),
+                detail: fallbackDetail(facts, headline: headline, defaultText: L10n.text("현재 속도라면 리셋 전에 한도를 소진할 수 있습니다."))
             )
         case .degraded:
             let provider = providerName(headline.provider)
             return Notice(
                 symbol: "clock.badge.questionmark",
-                title: [provider, "한도 확인 지연"].filter { !$0.isEmpty }.joined(separator: " "),
+                title: [provider, L10n.text("한도 확인 지연")].filter { !$0.isEmpty }.joined(separator: " "),
                 detail: recoveryText(
                     headline.errorCategory,
                     fallback: headline.displayDetail,
-                    defaultText: "최근 한도 값을 확인할 수 없어 사용량 수치를 숨겼습니다."
+                    defaultText: L10n.text("최근 한도 값을 확인할 수 없어 사용량 수치를 숨겼습니다.")
                 )
             )
         case .setup:
             let provider = providerName(headline.provider)
             return Notice(
                 symbol: "exclamationmark.triangle",
-                title: [provider, "설정 필요"].filter { !$0.isEmpty }.joined(separator: " "),
+                title: [provider, L10n.text("설정 필요")].filter { !$0.isEmpty }.joined(separator: " "),
                 detail: recoveryText(
                     headline.errorCategory,
                     fallback: headline.displayDetail,
-                    defaultText: "QuotaPie에서 공급자 연결을 설정해야 합니다."
+                    defaultText: L10n.text("QuotaPie에서 공급자 연결을 설정해야 합니다.")
                 )
             )
         }
@@ -202,32 +202,32 @@ struct TimeQuotaCardPresentation {
     static func headerValue(for state: TimeQuotaCardState) -> String {
         switch state {
         case .invalid:
-            return "읽기 실패"
+            return L10n.text("읽기 실패")
         case .stale:
-            return "오래됨"
+            return L10n.text("오래됨")
         case .current(let snapshot):
             if let headline = snapshot.headline {
                 switch headline.kind {
                 case .setup:
-                    return "설정 필요"
+                    return L10n.text("설정 필요")
                 case .degraded:
-                    return "확인 지연"
+                    return L10n.text("확인 지연")
                 case .paceRisk:
-                    guard snapshot.collectionHealthy else { return "수집 실패" }
+                    guard snapshot.collectionHealthy else { return L10n.text("수집 실패") }
                     let provider = providerName(headline.provider ?? snapshot.window?.provider)
-                    return [provider, "소진 위험"].filter { !$0.isEmpty }.joined(separator: " ")
+                    return [provider, L10n.text("소진 위험")].filter { !$0.isEmpty }.joined(separator: " ")
                 case .normal:
-                    guard snapshot.collectionHealthy else { return "수집 실패" }
+                    guard snapshot.collectionHealthy else { return L10n.text("수집 실패") }
                     if let remaining = headline.remainingPercent {
                         let provider = providerName(headline.provider ?? snapshot.window?.provider)
-                        return [provider, "\(percentText(remaining)) 남음"]
+                        return [provider, L10n.format("%@ 남음", String(describing: percentText(remaining)))]
                             .filter { !$0.isEmpty }
                             .joined(separator: " ")
                     }
-                    return "한도 확인됨"
+                    return L10n.text("한도 확인됨")
                 }
             }
-            guard snapshot.collectionHealthy else { return "수집 실패" }
+            guard snapshot.collectionHealthy else { return L10n.text("수집 실패") }
             guard let window = snapshot.window, let used = window.usedPercent else { return "" }
             return "\(providerName(window.provider)) \(percentText(used))"
         }
@@ -239,20 +239,20 @@ struct TimeQuotaCardPresentation {
     ) -> ProviderStatus {
         let state: String
         switch provider.state {
-        case .recentSuccess: state = "수집 성공"
-        case .neverAttempted: state = "수집 시작 전"
-        case .attemptedThenFailed: state = "수집 실패"
-        case .staleSuccess: state = "성공 기록이 오래됨"
+        case .recentSuccess: state = L10n.text("수집 성공")
+        case .neverAttempted: state = L10n.text("수집 시작 전")
+        case .attemptedThenFailed: state = L10n.text("수집 실패")
+        case .staleSuccess: state = L10n.text("성공 기록이 오래됨")
         }
-        let stateText = boundaryIsStale ? "마지막 기록상 \(state)" : recentStateText(provider.state)
+        let stateText = boundaryIsStale ? L10n.format("마지막 기록상 %@", String(describing: state)) : recentStateText(provider.state)
         return ProviderStatus(
             symbol: !boundaryIsStale && provider.state == .recentSuccess
                 ? "checkmark.circle"
                 : "clock.badge.questionmark",
             title: "\(providerName(provider.name)): \(stateText)",
             detail: boundaryIsStale
-                ? "오래된 경계 파일의 상태이며 현재 상태로 보지 않습니다."
-                : "QuotaPie가 마지막 경계 파일에 기록한 공급자 수집 상태입니다."
+                ? L10n.text("오래된 경계 파일의 상태이며 현재 상태로 보지 않습니다.")
+                : L10n.text("QuotaPie가 마지막 경계 파일에 기록한 공급자 수집 상태입니다.")
         )
     }
 
@@ -277,18 +277,18 @@ struct TimeQuotaCardPresentation {
 
     private static func recentStateText(_ state: TimeQuotaSnapshot.ProviderState.State) -> String {
         switch state {
-        case .recentSuccess: return "최근 수집 성공"
-        case .neverAttempted: return "수집 시작 전"
-        case .attemptedThenFailed: return "수집 실패"
-        case .staleSuccess: return "마지막 성공이 오래됨"
+        case .recentSuccess: return L10n.text("최근 수집 성공")
+        case .neverAttempted: return L10n.text("수집 시작 전")
+        case .attemptedThenFailed: return L10n.text("수집 실패")
+        case .staleSuccess: return L10n.text("마지막 성공이 오래됨")
         }
     }
 
     private static func windowKindName(_ kind: TimeQuotaSnapshot.Headline.WindowKind?) -> String {
         switch kind {
-        case .fiveHour: return "5시간"
-        case .weekly: return "주간"
-        case .monthly: return "월간"
+        case .fiveHour: return L10n.text("5시간")
+        case .weekly: return L10n.text("주간")
+        case .monthly: return L10n.text("월간")
         case .other, nil: return ""
         }
     }
@@ -310,14 +310,14 @@ struct TimeQuotaCardPresentation {
         defaultText: String
     ) -> String {
         switch category {
-        case .authRequired: return "QuotaPie에서 공급자 로그인이 필요합니다."
-        case .authExpired: return "QuotaPie에서 공급자 로그인을 다시 연결해야 합니다."
-        case .rateLimited: return "공급자 요청 한도 때문에 잠시 후 다시 확인해야 합니다."
-        case .network: return "네트워크 연결을 확인한 뒤 QuotaPie 수집을 다시 시도하세요."
-        case .notConfigured: return "QuotaPie에서 이 공급자의 수집 방식을 설정해야 합니다."
-        case .isolationUnsafe: return "계정 격리를 확인할 수 없어 수집이 중단됐습니다."
-        case .providerError: return "공급자 응답 오류로 최근 한도를 확인하지 못했습니다."
-        case .noWindows: return "사용량 창을 아직 확인하지 못했습니다."
+        case .authRequired: return L10n.text("QuotaPie에서 공급자 로그인이 필요합니다.")
+        case .authExpired: return L10n.text("QuotaPie에서 공급자 로그인을 다시 연결해야 합니다.")
+        case .rateLimited: return L10n.text("공급자 요청 한도 때문에 잠시 후 다시 확인해야 합니다.")
+        case .network: return L10n.text("네트워크 연결을 확인한 뒤 QuotaPie 수집을 다시 시도하세요.")
+        case .notConfigured: return L10n.text("QuotaPie에서 이 공급자의 수집 방식을 설정해야 합니다.")
+        case .isolationUnsafe: return L10n.text("계정 격리를 확인할 수 없어 수집이 중단됐습니다.")
+        case .providerError: return L10n.text("공급자 응답 오류로 최근 한도를 확인하지 못했습니다.")
+        case .noWindows: return L10n.text("사용량 창을 아직 확인하지 못했습니다.")
         case nil:
             if let fallback, !fallback.isEmpty { return fallback }
             return defaultText

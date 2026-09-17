@@ -64,22 +64,22 @@ struct ScreeWorktreeDiscovery: Equatable {
 
     var emptyStateText: String {
         globalComplete
-            ? "등록된 에이전트 워크트리가 없습니다."
-            : "세션 기록이 가리킨 경로에서는 에이전트 워크트리를 찾지 못했습니다."
+            ? L10n.text("등록된 에이전트 워크트리가 없습니다.")
+            : L10n.text("세션 기록이 가리킨 경로에서는 에이전트 워크트리를 찾지 못했습니다.")
     }
 
     var coverageText: String {
         if globalComplete {
-            return "디스크 전체 범위를 확인했습니다."
+            return L10n.text("디스크 전체 범위를 확인했습니다.")
         }
         var text = scope == "session-metadata"
-            ? "세션 기록의 작업 경로 \(observedWorkspaces)곳만 확인했습니다. 디스크 전체 검색 결과가 아닙니다."
-            : "확인 범위가 제한되어 디스크 전체 검색 결과로 해석할 수 없습니다."
+            ? L10n.format("세션 기록의 작업 경로 %@곳만 확인했습니다. 디스크 전체 검색 결과가 아닙니다.", String(describing: observedWorkspaces))
+            : L10n.text("확인 범위가 제한되어 디스크 전체 검색 결과로 해석할 수 없습니다.")
         if unreadable > 0 {
-            text += " \(unreadable)곳은 읽지 못했습니다."
+            text += L10n.format(" %@곳은 읽지 못했습니다.", String(describing: unreadable))
         }
         if truncated {
-            text += " 시간 또는 수량 한도에서 확인을 멈췄습니다."
+            text += L10n.text(" 시간 또는 수량 한도에서 확인을 멈췄습니다.")
         }
         return text
     }
@@ -150,9 +150,9 @@ struct ScreeExpiringSession: Identifiable {
 
     var workspaceStateText: String {
         switch storyAlive {
-        case true: return "작업 경로 현존"
-        case false: return "작업 경로 소멸"
-        case nil: return "작업 경로 확인 못함"
+        case true: return L10n.text("작업 경로 현존")
+        case false: return L10n.text("작업 경로 소멸")
+        case nil: return L10n.text("작업 경로 확인 못함")
         }
     }
 }
@@ -199,7 +199,7 @@ struct ScreeWorktreeItem: Identifiable {
     /// A stray checkout must never read like just another disposable
     /// worktree entry -- it's the repo directory itself.
     var displayLabel: String {
-        strayCheckout ? "메인 체크아웃 · \(pathLastComponent)" : pathLastComponent
+        strayCheckout ? L10n.format("메인 체크아웃 · %@", String(describing: pathLastComponent)) : pathLastComponent
     }
 
     /// scree.py sends dirty/unpushed_commits as null when the git call for
@@ -214,23 +214,23 @@ struct ScreeWorktreeItem: Identifiable {
     var reasonText: String {
         if verdict == "unreadable" {
             return registered == false
-                ? "git 확인 실패 · 등록 끊김 · 재검사 필요"
-                : "git 확인 실패 · 재검사 필요"
+                ? L10n.text("git 확인 실패 · 등록 끊김 · 재검사 필요")
+                : L10n.text("git 확인 실패 · 재검사 필요")
         }
         var parts: [String] = []
         if dirty { parts.append("dirty") }
         if unpushedCommits > 0 { parts.append("unpushed \(unpushedCommits)") }
         if parts.isEmpty { parts.append("clean") }
-        if registered == nil { parts.append("등록 여부 확인 실패") }
-        if registered == false { parts.append("등록 끊김") }
+        if registered == nil { parts.append(L10n.text("등록 여부 확인 실패")) }
+        if registered == false { parts.append(L10n.text("등록 끊김")) }
         return parts.joined(separator: " · ")
     }
 
     var verdictLabel: String {
         switch verdict {
-        case "protected": return "보호 대상"
-        case "rebuildable": return "재구축 가능"
-        default: return "확인 불가"
+        case "protected": return L10n.text("보호 대상")
+        case "rebuildable": return L10n.text("재구축 가능")
+        default: return L10n.text("확인 불가")
         }
     }
 
@@ -381,16 +381,16 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
     }
 
     var subtitle: String {
-        var parts = [tool, isReadable ? "대화" : "편집기 상태", lastActive]
+        var parts = [tool, isReadable ? L10n.text("대화") : L10n.text("편집기 상태"), lastActive]
         if segmentCount > 1 {
-            parts.append("기록 조각 \(segmentCount)개")
+            parts.append(L10n.format("기록 조각 %@개", String(describing: segmentCount)))
         }
-        parts.append(sizeComplete == false ? "전체 크기는 백업 시 계산" : sizeText)
+        parts.append(sizeComplete == false ? L10n.text("전체 크기는 백업 시 계산") : sizeText)
         if !workspace.isEmpty {
             if workspaceExists == false {
-                parts.append("작업 경로 소멸")
+                parts.append(L10n.text("작업 경로 소멸"))
             } else if workspaceExists == nil {
-                parts.append("작업 경로 확인 못함")
+                parts.append(L10n.text("작업 경로 확인 못함"))
             }
         }
         return parts.joined(separator: " · ")
@@ -483,11 +483,11 @@ struct SessionIndexCoverage: Decodable, Equatable {
         guard !complete else { return nil }
         let issues = stores.compactMap(\.issueText)
         guard !issues.isEmpty else {
-            return "일부 로컬 대화 저장소를 끝까지 확인하지 못했습니다. 현재 목록을 전체 기록으로 단정하지 않습니다."
+            return L10n.text("일부 로컬 대화 저장소를 끝까지 확인하지 못했습니다. 현재 목록을 전체 기록으로 단정하지 않습니다.")
         }
-        return "일부 로컬 대화 저장소를 끝까지 확인하지 못했습니다: "
+        return L10n.text("일부 로컬 대화 저장소를 끝까지 확인하지 못했습니다: ")
             + issues.joined(separator: " · ")
-            + ". 현재 목록을 전체 기록으로 단정하지 않습니다."
+            + L10n.text(". 현재 목록을 전체 기록으로 단정하지 않습니다.")
     }
 }
 
@@ -501,15 +501,15 @@ struct SessionIndexStoreCoverage: Decodable, Equatable, Identifiable {
     var issueText: String? {
         switch status {
         case "ok", "missing":
-            return unrecognized > 0 ? "\(store) 형식 미인식 \(unrecognized)개" : nil
+            return unrecognized > 0 ? L10n.format("%@ 형식 미인식 %@개", String(describing: store), String(describing: unrecognized)) : nil
         case "unreadable":
-            return "\(store) 읽기 실패"
+            return L10n.format("%@ 읽기 실패", String(describing: store))
         case "truncated":
-            return "\(store) 확인 중단"
+            return L10n.format("%@ 확인 중단", String(describing: store))
         case "unrecognized":
-            return "\(store) 형식 미인식 \(max(1, unrecognized))개"
+            return L10n.format("%@ 형식 미인식 %@개", String(describing: store), String(describing: max(1, unrecognized)))
         default:
-            return "\(store) 상태 확인 불가"
+            return L10n.format("%@ 상태 확인 불가", String(describing: store))
         }
     }
 }
@@ -550,7 +550,7 @@ struct SessionSearchMatch: Decodable, Identifiable, Equatable {
     }
 
     var subtitle: String {
-        [displayLabel, tool, lastActive, isUser ? "나" : "에이전트"].joined(separator: " · ")
+        [displayLabel, tool, lastActive, isUser ? L10n.text("나") : L10n.text("에이전트")].joined(separator: " · ")
     }
 
     var supportsOriginalBackup: Bool {
@@ -595,15 +595,15 @@ struct SessionSearchResult: Decodable, Equatable {
         if !isComplete {
             switch truncatedReason {
             case "time":
-                notes.append("시간이 오래 걸려 \(scannedSessions)/\(totalSessions)개까지만 훑었습니다.")
+                notes.append(L10n.format("시간이 오래 걸려 %@/%@개까지만 훑었습니다.", String(describing: scannedSessions), String(describing: totalSessions)))
             case "discovery":
-                notes.append("일부 로컬 대화 저장소를 확인하지 못했습니다.")
+                notes.append(L10n.text("일부 로컬 대화 저장소를 확인하지 못했습니다."))
             default:
-                notes.append("결과가 많아 일부만 표시했습니다. 검색어를 좁히세요.")
+                notes.append(L10n.text("결과가 많아 일부만 표시했습니다. 검색어를 좁히세요."))
             }
         }
         if unreadableSessions > 0 {
-            notes.append("세션 \(unreadableSessions)개는 읽지 못했습니다.")
+            notes.append(L10n.format("세션 %@개는 읽지 못했습니다.", String(describing: unreadableSessions)))
         }
         return notes.isEmpty ? nil : notes.joined(separator: " ")
     }
@@ -615,13 +615,13 @@ struct SessionSearchResult: Decodable, Equatable {
     /// see, or it turns "I do not know" into "there is none" -- the
     /// collapse this project keeps having to undo.
     var emptyResultText: String {
-        if definitive { return "이 검색어가 나오는 대화가 없습니다." }
+        if definitive { return L10n.text("이 검색어가 나오는 대화가 없습니다.") }
         if unreadableSessions > 0 && isComplete {
             let readable = max(0, totalSessions - unreadableSessions)
-            return "읽을 수 있었던 대화 \(readable)개에서는 찾지 못했습니다."
-                + " \(unreadableSessions)개는 확인하지 못했습니다."
+            return L10n.format("읽을 수 있었던 대화 %@개에서는 찾지 못했습니다.", String(describing: readable))
+                + L10n.format(" %@개는 확인하지 못했습니다.", String(describing: unreadableSessions))
         }
-        return "아직 일치하는 대화를 찾지 못했습니다. 전부 훑지는 못했습니다."
+        return L10n.text("아직 일치하는 대화를 찾지 못했습니다. 전부 훑지는 못했습니다.")
     }
 }
 
@@ -652,30 +652,30 @@ struct ScreeEvidenceResult: Decodable, Equatable {
         if coverage != "complete" {
             switch truncatedReason {
             case "time":
-                notes.append("시간 제한으로 \(scannedSessions)/\(totalSessions)개 대화까지만 확인했습니다.")
+                notes.append(L10n.format("시간 제한으로 %@/%@개 대화까지만 확인했습니다.", String(describing: scannedSessions), String(describing: totalSessions)))
             case "discovery":
-                notes.append("일부 로컬 대화 저장소를 확인하지 못했습니다.")
+                notes.append(L10n.text("일부 로컬 대화 저장소를 확인하지 못했습니다."))
             default:
-                notes.append("결과 제한에 닿아 모든 대화를 확인하지 못했습니다.")
+                notes.append(L10n.text("결과 제한에 닿아 모든 대화를 확인하지 못했습니다."))
             }
         }
         if unreadableSessions > 0 {
-            notes.append("대화 \(unreadableSessions)개는 읽지 못했습니다.")
+            notes.append(L10n.format("대화 %@개는 읽지 못했습니다.", String(describing: unreadableSessions)))
         }
         if notes.isEmpty {
-            notes.append("모든 대화를 확인하지 못했습니다.")
+            notes.append(L10n.text("모든 대화를 확인하지 못했습니다."))
         }
-        return notes.joined(separator: " ") + " 기록이 없다고 단정하지 않습니다."
+        return notes.joined(separator: " ") + L10n.text(" 기록이 없다고 단정하지 않습니다.")
     }
 
     var matchSummary: String {
         guard conversationMentions.isEmpty && providerToolInvocations.isEmpty else {
-            return "대화 언급과 provider 도구 호출 기록을 종류별로 표시합니다."
+            return L10n.text("대화 언급과 provider 도구 호출 기록을 종류별로 표시합니다.")
         }
         if definitive {
-            return "확인한 모든 대화에서 이 문구의 언급이나 provider 도구 기록을 찾지 못했습니다."
+            return L10n.text("확인한 모든 대화에서 이 문구의 언급이나 provider 도구 기록을 찾지 못했습니다.")
         }
-        return "아직 일치하는 언급이나 provider 도구 기록을 찾지 못했습니다."
+        return L10n.text("아직 일치하는 언급이나 provider 도구 기록을 찾지 못했습니다.")
     }
 }
 
@@ -687,10 +687,10 @@ enum ScreeEvidenceKind: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .conversationMention: return "언급됨"
-        case .providerToolInvocation: return "Provider 도구 기록"
-        case .modoreCleanupReceipt: return "Modore 조치 기록"
-        case .filesystemObservation: return "후속 변화 관찰됨"
+        case .conversationMention: return L10n.text("언급됨")
+        case .providerToolInvocation: return L10n.text("Provider 도구 기록")
+        case .modoreCleanupReceipt: return L10n.text("Modore 조치 기록")
+        case .filesystemObservation: return L10n.text("후속 변화 관찰됨")
         }
     }
 }

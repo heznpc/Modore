@@ -50,13 +50,13 @@ enum ScanResultLoader {
             return emptyResult(
                 history: existingHistory,
                 samples: samples,
-                diagnostic: "검사 결과가 \(maximumScanResultBytes / 1_048_576)MB 제한을 넘어 읽지 않았습니다. 다시 검사하세요."
+                diagnostic: L10n.format("검사 결과가 %@MB 제한을 넘어 읽지 않았습니다. 다시 검사하세요.", String(describing: maximumScanResultBytes / 1_048_576))
             )
         } catch {
             return emptyResult(
                 history: existingHistory,
                 samples: samples,
-                diagnostic: "검사 결과를 읽지 못했습니다: \(error.localizedDescription)"
+                diagnostic: L10n.format("검사 결과를 읽지 못했습니다: %@", String(describing: error.localizedDescription))
             )
         }
 
@@ -64,7 +64,7 @@ enum ScanResultLoader {
             return emptyResult(
                 history: existingHistory,
                 samples: samples,
-                diagnostic: "검사 결과 JSON이 올바르지 않아 표시하지 않았습니다. 다시 검사하세요."
+                diagnostic: L10n.text("검사 결과 JSON이 올바르지 않아 표시하지 않았습니다. 다시 검사하세요.")
             )
         }
 
@@ -138,7 +138,7 @@ enum ScanResultLoader {
                     in: existingHistory.filter { $0.sourceID != sourceID } + [entry]
                 ),
                 freeSpaceSamples: samples,
-                diagnostic: "저장공간 이력을 기록하지 못했습니다: \(error.localizedDescription)"
+                diagnostic: L10n.format("저장공간 이력을 기록하지 못했습니다: %@", String(describing: error.localizedDescription))
             )
         }
     }

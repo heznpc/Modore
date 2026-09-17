@@ -38,7 +38,7 @@ def main():
     parser.add_argument("--explain", default=str(project_dir / "data" / "explain.json"))
     parser.add_argument("--output", default=str(project_dir / "검사결과.html"))
     parser.add_argument("--lang", default=None,
-                        help="리포트 언어 (ko/en/ja). 기본: $PCH_LANG → $LANG → ko")
+                        help="리포트 언어 (ko/en/ja). 기본: $PCH_LANG → $LC_ALL → $LC_MESSAGES → $LANG → en")
     args = parser.parse_args()
 
     scan_path = Path(args.scan)

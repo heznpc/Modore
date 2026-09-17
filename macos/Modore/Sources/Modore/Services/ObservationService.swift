@@ -50,14 +50,14 @@ enum ObservationService {
         guard let execution = await Task.detached(priority: .userInitiated, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
         }).value else {
-            return .failure("서명된 실행 런타임을 확인하지 못해 실행하지 않았습니다.")
+            return .failure(L10n.text("서명된 실행 런타임을 확인하지 못해 실행하지 않았습니다."))
         }
         guard let cpuInvocation = execution.pinnedInvocation(relativePath: "scripts/idle_cpu.sh", name: "idle_cpu"),
               let networkInvocation = execution.pinnedInvocation(
                 relativePath: "scripts/network_watch.sh",
                 name: "network_watch"
               ) else {
-            return .failure("봉인한 관찰 스크립트를 확인하지 못해 실행하지 않았습니다.")
+            return .failure(L10n.text("봉인한 관찰 스크립트를 확인하지 못해 실행하지 않았습니다."))
         }
 
         // The slack after the window is exactly when 4 lsof + 2 ps snapshots
@@ -83,11 +83,11 @@ enum ObservationService {
 
         guard case .success(let cpuOutput) = cpuResult else {
             if case .failure(let message) = cpuResult { return .failure(message) }
-            return .failure("CPU 관찰을 실행하지 못했습니다.")
+            return .failure(L10n.text("CPU 관찰을 실행하지 못했습니다."))
         }
         guard case .success(let networkOutput) = networkResult else {
             if case .failure(let message) = networkResult { return .failure(message) }
-            return .failure("네트워크 관찰을 실행하지 못했습니다.")
+            return .failure(L10n.text("네트워크 관찰을 실행하지 못했습니다."))
         }
 
         let networkValues = StorageWatchService.protocolValues(networkOutput)
@@ -125,9 +125,9 @@ enum ObservationService {
             // "status 124" alone hid the one failure the owner can actually
             // act on: the machine was too loaded to finish inside the cap.
             if result.endState == .timedOut {
-                return .failure("관찰이 제한 시간을 넘겨 중단되었습니다. 시스템 부하가 높을 수 있으니 잠시 뒤 다시 시도하세요.")
+                return .failure(L10n.text("관찰이 제한 시간을 넘겨 중단되었습니다. 시스템 부하가 높을 수 있으니 잠시 뒤 다시 시도하세요."))
             }
-            return .failure("관찰 스크립트 실행이 실패했습니다 (status \(result.status)).")
+            return .failure(L10n.format("관찰 스크립트 실행이 실패했습니다 (status %@).", String(describing: result.status)))
         }
         return .success(result.output)
     }

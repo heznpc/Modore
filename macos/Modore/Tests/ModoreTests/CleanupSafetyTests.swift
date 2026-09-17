@@ -280,7 +280,7 @@ final class CleanupSafetyTests: XCTestCase {
         let appBundlePath = "/Applications/Modore.app"
         let appExecutableHash = String(repeating: "a", count: 64)
 
-        func writePlist(watcher: URL, extraEnvironment: Bool = false) throws {
+        func writePlist(watcher: URL, extraEnvironment: Bool = false, interval: Int = 60) throws {
             let watcherData = (try? Data(contentsOf: watcher)) ?? Data(watcher.path.utf8)
             let watcherHash = SHA256.hash(data: watcherData)
                 .map { String(format: "%02x", $0) }
@@ -310,7 +310,7 @@ final class CleanupSafetyTests: XCTestCase {
             let payload: [String: Any] = [
                 "Label": "me.heznpc.modore.storage-watch",
                 "ProgramArguments": arguments,
-                "StartInterval": 3600,
+                "StartInterval": interval,
                 "RunAtLoad": true,
                 "StandardOutPath": "/dev/null",
                 "StandardErrorPath": "/dev/null",
@@ -335,6 +335,34 @@ final class CleanupSafetyTests: XCTestCase {
             expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
 
+        // The same signed bundle was updated in place: the watcher content
+        // and executable hash changed. Renewal is allowed only with evidence
+        // that launchd still runs the old, otherwise exact definition.
+        let repairValues = protocolValues.merging([
+            "loaded": "true", "loadedDefinitionCurrent": "false",
+            "loadedDefinitionMatchesInstalledPins": "true",
+        ]) { _, new in new }
+        func repairState(_ values: [String: String]) -> StorageWatchRuntimeState {
+            StorageWatchService.runtimeState(
+                protocolValues: values, expectedWatcherURL: expectedWatcher,
+                expectedHomeURL: root, expectedAppBundlePath: appBundlePath,
+                expectedAppExecutableSHA256: String(repeating: "b", count: 64),
+                acceptInstalledPinsForRepair: true
+            )
+        }
+        // Relocated paths are not an in-place app update.
+        XCTAssertEqual(repairState(repairValues), .stale)
+
+        try writePlist(watcher: expectedWatcher, interval: 3600)
+        XCTAssertEqual(repairState(repairValues), .current)
+        XCTAssertEqual(StorageWatchService.runtimeState(
+            protocolValues: protocolValues, expectedWatcherURL: expectedWatcher,
+            expectedHomeURL: root, expectedAppBundlePath: appBundlePath,
+            expectedAppExecutableSHA256: appExecutableHash
+        ), .stale)
+        try writePlist(watcher: expectedWatcher, interval: 120)
+        XCTAssertEqual(repairState(repairValues), .stale)
+
         // Installing replaces the stale definition with the current signed
         // bundle watcher path.
         try writePlist(watcher: expectedWatcher)
@@ -358,6 +386,12 @@ final class CleanupSafetyTests: XCTestCase {
             expectedAppBundlePath: appBundlePath,
             expectedAppExecutableSHA256: appExecutableHash
         ), .stale)
+        XCTAssertEqual(repairState(repairValues), .current)
+        XCTAssertEqual(repairState(protocolValues), .stale)
+        XCTAssertEqual(repairState(repairValues.merging(["loaded": "false"]) { _, new in new }), .stale)
+        XCTAssertEqual(repairState(repairValues.merging([
+            "loadedDefinitionMatchesInstalledPins": "false",
+        ]) { _, new in new }), .stale)
         try "#!/bin/bash\nexit 0\n".write(
             to: expectedWatcher,
             atomically: true,
@@ -392,6 +426,7 @@ final class CleanupSafetyTests: XCTestCase {
         )
 
         try writePlist(watcher: expectedWatcher, extraEnvironment: true)
+        XCTAssertEqual(repairState(repairValues), .stale)
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,
@@ -402,6 +437,7 @@ final class CleanupSafetyTests: XCTestCase {
 
         let mutableWatcher = root.appendingPathComponent("Application Support/Modore/runtime/scripts/storage_watch.sh")
         try writePlist(watcher: mutableWatcher)
+        XCTAssertEqual(repairState(repairValues), .stale)
         XCTAssertEqual(StorageWatchService.runtimeState(
             protocolValues: protocolValues,
             expectedWatcherURL: expectedWatcher,

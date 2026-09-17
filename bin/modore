@@ -26,8 +26,13 @@ usage() {
     /usr/bin/printf '%s\n' \
         'Usage:' \
         '  modore sessions [--limit N]' \
+        '  modore ci status|refresh [--discover] [--repo owner/name] [--project PATH]' \
         '  modore sessions current' \
         '  modore search [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
+        '  modore resources status|acquire|claim|heartbeat|release [options]' \
+        '  modore resources begin-test|hold --provider codex|claude --session ID --turn ID [options]' \
+        '  modore resources begin-browser-test --provider codex|claude --session ID --project PATH --turn ID --url URL [--headed]' \
+        '  modore resources install-hooks --provider codex|claude' \
         '  modore storage status' \
         '  modore storage recovery' \
         '  modore cleanup list' \
@@ -83,8 +88,19 @@ COMMAND="${1:-help}"
 [[ "$#" -eq 0 ]] || shift
 
 case "$COMMAND" in
+    ci)
+        exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/ci_watch.py" "$@"
+        ;;
     help|-h|--help)
         usage
+        ;;
+    environments)
+        [[ "${1:-}" == "status" ]] || fail_usage 'environments requires status.'
+        shift
+        exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/environment_retirement.py" --inventory "$@"
+        ;;
+    resources)
+        exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/work_resources.py" "$@"
         ;;
     sessions)
         if [[ "${1:-}" == "current" ]]; then

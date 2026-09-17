@@ -25,30 +25,30 @@ struct CollectionCoverageSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "검사 범위",
-                subtitle: "무엇을 실제로 확인했는지와 누락된 수집기를 구분합니다.",
+                title: L10n.text("검사 범위"),
+                subtitle: L10n.text("무엇을 실제로 확인했는지와 누락된 수집기를 구분합니다."),
                 value: coverage.complete
                     ? "\(coverage.coverageText) · \(coverage.allCoverageText)"
-                    : "판단 보류"
+                    : L10n.text("판단 보류")
             )
         }
     }
 
     private var coverageTitle: String {
-        guard coverage.complete else { return "필수 검사 범위가 불완전합니다" }
+        guard coverage.complete else { return L10n.text("필수 검사 범위가 불완전합니다") }
         return coverage.allSourcesComplete
-            ? "모든 검사 범위를 완료했습니다"
-            : "필수 검사 범위를 완료했습니다"
+            ? L10n.text("모든 검사 범위를 완료했습니다")
+            : L10n.text("필수 검사 범위를 완료했습니다")
     }
 
     private var coverageDetail: String {
         guard coverage.complete else {
-            return "완료하지 못한 필수 수집기가 있어 안전 여부를 확정하지 않습니다."
+            return L10n.text("완료하지 못한 필수 수집기가 있어 안전 여부를 확정하지 않습니다.")
         }
         guard !coverage.optionalIssues.isEmpty else {
-            return "모든 수집기가 응답했습니다. 정상 판정은 이 범위 안에서만 유효합니다."
+            return L10n.text("모든 수집기가 응답했습니다. 정상 판정은 이 범위 안에서만 유효합니다.")
         }
-        return "선택 수집기 \(coverage.optionalIssues.count)개가 응답하지 않았습니다. 정상 판정은 완료된 범위 안에서만 유효합니다."
+        return L10n.format("선택 수집기 %@개가 응답하지 않았습니다. 정상 판정은 완료된 범위 안에서만 유효합니다.", String(describing: coverage.optionalIssues.count))
     }
 
     private func issueSymbol(_ source: CollectionSourceStatus) -> String {
@@ -67,20 +67,20 @@ struct SecurityBaselineRows: View {
     var body: some View {
         SecurityBaselineRow(
             title: "Gatekeeper",
-            subtitle: "다운로드한 앱의 서명과 공증을 확인합니다.",
-            value: security.gatekeeperEnabled ? "켜짐" : "확인 필요",
+            subtitle: L10n.text("다운로드한 앱의 서명과 공증을 확인합니다."),
+            value: security.gatekeeperEnabled ? L10n.text("켜짐") : L10n.text("확인 필요"),
             isHealthy: security.gatekeeperEnabled
         )
         SecurityBaselineRow(
-            title: "시스템 무결성 보호",
-            subtitle: "macOS 핵심 영역의 변경을 제한합니다.",
-            value: security.sipEnabled ? "켜짐" : "확인 필요",
+            title: L10n.text("시스템 무결성 보호"),
+            subtitle: L10n.text("macOS 핵심 영역의 변경을 제한합니다."),
+            value: security.sipEnabled ? L10n.text("켜짐") : L10n.text("확인 필요"),
             isHealthy: security.sipEnabled
         )
         SecurityBaselineRow(
             title: "XProtect",
-            subtitle: "Apple의 내장 악성코드 정의입니다.",
-            value: security.xprotectVersion.isEmpty ? "확인 필요" : "버전 \(security.xprotectVersion)",
+            subtitle: L10n.text("Apple의 내장 악성코드 정의입니다."),
+            value: security.xprotectVersion.isEmpty ? L10n.text("확인 필요") : L10n.format("버전 %@", String(describing: security.xprotectVersion)),
             isHealthy: security.xprotectVersion.isEmpty ? false : nil
         )
     }
@@ -100,7 +100,7 @@ struct SecurityDisclosureLabel: View {
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.body.weight(.medium))
-                Text(detail)
+                Text(L10n.message(detail))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -127,7 +127,7 @@ struct SecurityDetailRow: View {
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.body.weight(.medium))
-                Text(detail)
+                Text(L10n.message(detail))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -152,7 +152,7 @@ struct SecurityRiskDetailRow: View {
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.body.weight(.medium))
-                Text(detail)
+                Text(L10n.message(detail))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -161,7 +161,7 @@ struct SecurityRiskDetailRow: View {
         }
         .padding(.vertical, 5)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(risk == "danger" ? "위험" : "확인 필요"), \(detail)")
+        .accessibilityLabel("\(title), \(risk == "danger" ? L10n.text("위험") : L10n.text("확인 필요")), \(detail)")
     }
 }
 
@@ -179,7 +179,7 @@ struct SecurityStatusRow: View {
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.body.weight(.medium))
-                Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
+                Text(L10n.message(subtitle)).font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
             if let value {
@@ -195,15 +195,15 @@ struct StorageAccessIssuesSection: View {
     let openSettings: () -> Void
 
     var body: some View {
-        Section("읽기 제한") {
+        Section(L10n.text("읽기 제한")) {
             ForEach(issues) { issue in
                 SecurityDetailRow(
                     symbol: "lock.trianglebadge.exclamationmark",
                     title: issue.label,
-                    detail: "macOS가 읽기를 제한했습니다 · \(issue.path)"
+                    detail: L10n.format("macOS가 읽기를 제한했습니다 · %@", String(describing: issue.path))
                 )
             }
-            Button("전체 디스크 접근 권한 열기", systemImage: "gear", action: openSettings)
+            Button(L10n.text("전체 디스크 접근 권한 열기"), systemImage: "gear", action: openSettings)
         }
     }
 }
@@ -219,9 +219,9 @@ struct SecurityFindingsSection: View {
             }
         } header: {
             NativeSectionHeader(
-                title: "확인 필요",
-                subtitle: "보안 관련 진단 결과입니다.",
-                value: "\(attentionCount)건"
+                title: L10n.text("확인 필요"),
+                subtitle: L10n.text("보안 관련 진단 결과입니다."),
+                value: L10n.format("%@건", String(describing: attentionCount))
             )
         }
     }
@@ -241,7 +241,7 @@ private struct SecurityBaselineRow: View {
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.body.weight(.medium))
-                Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
+                Text(L10n.message(subtitle)).font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
             Text(value).font(.callout).foregroundStyle(.secondary)
@@ -269,8 +269,8 @@ private struct SecurityFindingRow: View {
                 .foregroundStyle(findingColor)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 3) {
-                Text(finding.title).font(.body.weight(.medium))
-                Text(finding.detail)
+                Text(L10n.message(finding.title)).font(.body.weight(.medium))
+                Text(L10n.message(finding.detail))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)

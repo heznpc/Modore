@@ -4,6 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "Modore",
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v13)
     ],
@@ -21,7 +22,8 @@ let package = Package(
                 .product(name: "ModoreDomain", package: "ModoreDomain"),
                 .product(name: "MothballCore", package: "mothball")
             ],
-            path: "Sources/Modore"
+            path: "Sources/Modore",
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "ModoreTests",

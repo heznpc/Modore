@@ -10,15 +10,15 @@ enum CleanupTier: Int, Comparable, Sendable {
 
     var title: String {
         switch self {
-        case .safe: return "바로 다시 생겨도 되는 캐시"
-        case .rebuild: return "필요할 때 다시 받거나 빌드하는 데이터"
+        case .safe: return L10n.text("바로 다시 생겨도 되는 캐시")
+        case .rebuild: return L10n.text("필요할 때 다시 받거나 빌드하는 데이터")
         }
     }
 
     var shortTitle: String {
         switch self {
-        case .safe: return "캐시"
-        case .rebuild: return "재생성 필요"
+        case .safe: return L10n.text("캐시")
+        case .rebuild: return L10n.text("재생성 필요")
         }
     }
 }
@@ -103,12 +103,12 @@ struct CleanupRecoveryPlan: Identifiable {
     }
 
     func approvalStatusText(at date: Date) -> String {
-        guard let earliestApprovalExpiry else { return "승인 정보를 다시 측정해야 합니다" }
+        guard let earliestApprovalExpiry else { return L10n.text("승인 정보를 다시 측정해야 합니다") }
         let remaining = Int(earliestApprovalExpiry.timeIntervalSince(date).rounded(.down))
         guard remaining >= Int(Self.minimumApprovalValidity) else {
-            return "승인 만료 · 실행 전 다시 측정"
+            return L10n.text("승인 만료 · 실행 전 다시 측정")
         }
-        return String(format: "승인 유효 %d:%02d", remaining / 60, remaining % 60)
+        return String(format: L10n.text("승인 유효 %d:%02d"), remaining / 60, remaining % 60)
     }
 }
 

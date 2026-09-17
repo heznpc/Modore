@@ -2,6 +2,7 @@ import ModoreDomain
 import SwiftUI
 
 enum AppDestination: String, CaseIterable, Identifiable, Hashable {
+    case health
     case status
     case storage
     case security
@@ -12,20 +13,22 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
-        case .status: return "진단"
-        case .storage: return "저장공간"
-        case .security: return "보안"
+        case .health: return L10n.text("대시보드")
+        case .status: return L10n.text("문제 점검")
+        case .storage: return L10n.text("저장공간")
+        case .security: return L10n.text("권한·자동 실행 점검")
         // Not "AI 세션": the object here is a project, and sessions are
         // one of the things it has. The old name also stopped being true
         // -- worktrees, git state and lineage arrived first on that
         // screen long before any session did.
-        case .work: return "작업"
-        case .activity: return "기록"
+        case .work: return L10n.text("프로젝트·대화 찾기")
+        case .activity: return L10n.text("조치 기록")
         }
     }
 
     var symbol: String {
         switch self {
+        case .health: return "heart.text.clipboard"
         case .status: return "waveform.path.ecg"
         case .storage: return "internaldrive"
         case .security: return "lock.shield"
@@ -36,18 +39,19 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 }
 
 struct ModernRootView: View {
+    @EnvironmentObject private var ci: CIWatchService
     @EnvironmentObject private var model: ScanModel
-    @State private var selection: AppDestination = .status
-    @State private var storageSection: StorageWorkspaceSection = .cleanup
+    @EnvironmentObject private var monitor: CPUWatchService
+    @EnvironmentObject private var quotaWork: QuotaWorkModel
+    @State private var selection: AppDestination = .health
+    @State private var storageSection: StorageWorkspaceSection = .overview
 
     var body: some View {
-        NavigationSplitView {
-            ModernSidebar(selection: selection, onSelect: navigate)
-                .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 240)
-        } detail: {
+        NavigationStack {
             VStack(spacing: 0) {
                 if let freeSpace = model.liveState.freeSpace,
-                   freeSpace.value.pressure.needsRecovery {
+                   freeSpace.value.pressure.needsRecovery,
+                   !(selection == .storage && storageSection == .goal) {
                     StoragePressureBanner(
                         freeSpace: freeSpace.value,
                         openRecovery: openStorageRecovery
@@ -64,6 +68,21 @@ struct ModernRootView: View {
             }
             .navigationTitle(selection.title)
             .toolbar {
+                ToolbarItem(placement:.navigation) {
+                    Button { navigate(to:.health) } label: { Label(L10n.text("대시보드"),systemImage:"square.grid.2x2") }.disabled(selection == .health)
+                }
+                ToolbarItem(placement:.automatic) {
+                    Menu {
+                        ForEach(AppDestination.allCases.filter { $0 != .health }) { destination in
+                            Button(destination.title) { navigate(to: destination) }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "ellipsis.circle")
+                            Text(L10n.text("다른 작업"))
+                        }
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         performPrimaryAction()
@@ -77,9 +96,11 @@ struct ModernRootView: View {
                 }
             }
         }
-        .navigationSplitViewStyle(.balanced)
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         .onOpenURL(perform: openURL)
+        .onChange(of: monitor.showHealth) { value in
+            if value { selection = .health; monitor.showHealth = false }
+        }
         .alert(
             "Modore",
             isPresented: Binding(
@@ -87,7 +108,7 @@ struct ModernRootView: View {
                 set: { if !$0 { model.errorMessage = nil } }
             )
         ) {
-            Button("확인", role: .cancel) { model.errorMessage = nil }
+            Button(L10n.text("확인"), role: .cancel) { model.errorMessage = nil }
         } message: {
             Text(model.errorMessage ?? "")
         }
@@ -113,6 +134,15 @@ struct ModernRootView: View {
 
     private func apply(_ route: ModoreRoute) {
         switch route {
+        case .ci:
+            selection = .work
+            ci.showIncidents = true
+        case .quotaTask(let id):
+            quotaWork.requestedTaskID = id
+            quotaWork.message = nil
+            selection = .work
+        case .health:
+            selection = .health
         case .storageRecovery:
             openStorage(.goal)
             if route.shouldStartStorageScan(
@@ -135,11 +165,11 @@ struct ModernRootView: View {
     }
 
     private var primaryActionTitle: String {
-        if model.cleanupIsExecuting { return "정리 중" }
-        if model.cleanupInFlight { return "미리보기 취소" }
-        if model.isRunning { return "정밀 검사 취소" }
-        if model.storageWatchInFlight { return "설정 적용 중" }
-        return "정밀 검사"
+        if model.cleanupIsExecuting { return L10n.text("정리 중") }
+        if model.cleanupInFlight { return L10n.text("미리보기 취소") }
+        if model.isRunning { return L10n.text("정밀 검사 취소") }
+        if model.storageWatchInFlight { return L10n.text("설정 적용 중") }
+        return L10n.text("정밀 검사")
     }
 
     private var primaryActionSymbol: String {
@@ -153,11 +183,11 @@ struct ModernRootView: View {
     }
 
     private var primaryActionHelp: String {
-        if model.cleanupIsExecuting { return "승인한 정리가 끝날 때까지 중단하지 않습니다" }
-        if model.cleanupInFlight { return "삭제 없이 정리 대상 확인을 취소합니다" }
-        if model.isRunning { return "현재 정밀 검사를 안전하게 중단합니다" }
-        if model.storageWatchInFlight { return "감시 설정을 적용하고 있습니다" }
-        return "캐시·보안·자동 실행을 한 시점의 증거로 다시 평가합니다"
+        if model.cleanupIsExecuting { return L10n.text("승인한 정리가 끝날 때까지 중단하지 않습니다") }
+        if model.cleanupInFlight { return L10n.text("삭제 없이 정리 대상 확인을 취소합니다") }
+        if model.isRunning { return L10n.text("현재 정밀 검사를 안전하게 중단합니다") }
+        if model.storageWatchInFlight { return L10n.text("감시 설정을 적용하고 있습니다") }
+        return L10n.text("캐시·보안·자동 실행을 한 시점의 증거로 다시 평가합니다")
     }
 }
 
@@ -184,7 +214,7 @@ private struct StoragePressureBanner: View {
 
             Spacer(minLength: 16)
 
-            Button("확보 계획 열기", action: openRecovery)
+            Button(L10n.text("확보 계획 열기"), action: openRecovery)
                 .buttonStyle(.borderedProminent)
                 .tint(tint)
         }
@@ -195,15 +225,15 @@ private struct StoragePressureBanner: View {
 
     private var title: String {
         switch freeSpace.pressure {
-        case .danger: return "저장공간을 지금 확보해야 합니다"
-        case .warning: return "저장공간 확보를 권장합니다"
-        case .normal: return "저장공간이 충분합니다"
+        case .danger: return L10n.text("저장공간을 지금 확보해야 합니다")
+        case .warning: return L10n.text("저장공간 확보를 권장합니다")
+        case .normal: return L10n.text("저장공간이 충분합니다")
         }
     }
 
     private var detail: String {
         String(
-            format: "현재 %.1fGB 남았습니다. 정리 후보를 검토한 뒤 한 번 승인해 목표 용량을 확보할 수 있습니다.",
+            format: L10n.text("현재 %.1fGB 남았습니다. 정리할 항목을 확인해 공간을 확보하세요."),
             freeSpace.freeGB
         )
     }
@@ -262,7 +292,7 @@ private struct SidebarDestinationRow: View {
                 } else if destination == .storage,
                           let pressure = model.liveState.storagePressure,
                           pressure.needsRecovery {
-                    Text(pressure == .danger ? "위험" : "부족")
+                    Text(pressure == .danger ? L10n.text("위험") : L10n.text("부족"))
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(storagePressureColor(pressure))
                 }
@@ -315,12 +345,12 @@ private struct SidebarScanStatus: View {
                 Text(statusTitle(at: date))
                     .font(.caption.weight(.semibold))
                 if let liveFreeSpace = model.liveState.freeSpace {
-                    Text("\(liveFreeSpace.value.freeGB, specifier: "%.1f")GB 사용 가능")
+                    Text(ByteCountFormatter.string(fromByteCount:liveFreeSpace.value.freeBytes,countStyle:.file) + L10n.text(" 사용 가능"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 } else if let storage = model.storage {
-                    Text("검사 당시 \(storage.freeGB, specifier: "%.1f")GB")
+                    Text(L10n.format("검사 당시 %@GB", String(format: "%.1f", locale: Locale.current, storage.freeGB)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
@@ -331,28 +361,28 @@ private struct SidebarScanStatus: View {
     }
 
     private func statusTitle(at date: Date) -> String {
-        if model.isRunning { return "정밀 검사 중" }
+        if model.isRunning { return L10n.text("정밀 검사 중") }
         if model.cleanupIsExecuting {
             return model.cleanupRecoveryProgress.map {
-                "\($0.currentLabel) 정리 중"
-            } ?? "정리 중"
+                L10n.format("%@ 정리 중", String(describing: $0.currentLabel))
+            } ?? L10n.text("정리 중")
         }
-        if model.cleanupRecoveryProgress != nil { return "공간 확보 계획 준비 중" }
-        if model.cleanupInFlight { return "정리 대상 확인 중" }
-        if model.browserAutomationStopInFlight { return "자동화 브라우저 확인 중" }
-        if model.storageWatchInFlight { return "감시 설정 적용 중" }
-        if model.liveState.storagePressure == .danger { return "저장공간 즉시 확보 필요" }
-        if model.state == .failed { return "정밀 검사 실패" }
+        if model.cleanupRecoveryProgress != nil { return L10n.text("공간 확보 계획 준비 중") }
+        if model.cleanupInFlight { return L10n.text("정리 대상 확인 중") }
+        if model.browserAutomationStopInFlight { return L10n.text("자동화 브라우저 확인 중") }
+        if model.storageWatchInFlight { return L10n.text("감시 설정 적용 중") }
+        if model.liveState.storagePressure == .danger { return L10n.text("저장공간 즉시 확보 필요") }
+        if model.state == .failed { return L10n.text("정밀 검사 실패") }
         if model.securityHasDanger {
             return model.securityAttentionCount > 0
-                ? "위험 신호 \(model.securityAttentionCount)건"
-                : "위험 신호 확인"
+                ? L10n.format("위험 신호 %@건", String(describing: model.securityAttentionCount))
+                : L10n.text("위험 신호 확인")
         }
-        if model.liveState.storagePressure == .warning { return "저장공간 확보 권장" }
-        if model.summary == nil { return "정밀 검사 필요" }
-        if model.collectionIsIncomplete { return "안전 판단 보류" }
-        if model.deepScanSnapshotNeedsRefresh(at: date) { return "정밀 검사 필요" }
-        if model.securityAttentionCount > 0 { return "확인 항목 \(model.securityAttentionCount)건" }
+        if model.liveState.storagePressure == .warning { return L10n.text("저장공간 확보 권장") }
+        if model.summary == nil { return L10n.text("정밀 검사 필요") }
+        if model.collectionIsIncomplete { return L10n.text("안전 판단 보류") }
+        if model.deepScanSnapshotNeedsRefresh(at: date) { return L10n.text("정밀 검사 필요") }
+        if model.securityAttentionCount > 0 { return L10n.format("확인 항목 %@건", String(describing: model.securityAttentionCount)) }
         return model.deepScanSnapshotAgeText
     }
 
@@ -384,6 +414,8 @@ struct ModernDetailView: View {
 
     var body: some View {
         switch destination {
+        case .health:
+            HealthContextView(openRecovery: { onOpenStorage(.goal) }, openWork: { onNavigate(.work) }, openStorageOverview: { onOpenStorage(.overview) }, openDiagnosis:{onNavigate(.status)}, openSecurity:{onNavigate(.security)})
         case .status:
             StatusPage(
                 onOpenStorage: onOpenStorage,

@@ -73,13 +73,13 @@ enum ScanPipeline {
     ) async -> ScanRunResult {
         guard !Task.isCancelled else { return .scanFailed }
         guard let execution = dependencies.prepareExecution(projectRoot) else {
-            onOutput("검사 런타임 무결성을 확인하지 못해 실행을 중단했습니다.")
+            onOutput(L10n.text("검사 런타임 무결성을 확인하지 못해 실행을 중단했습니다."))
             return .scanFailed
         }
         guard !Task.isCancelled else { return .scanFailed }
 
         guard let configurationData = configurationSnapshot(at: execution.configurationURL) else {
-            onOutput("사용자 설정을 안전하게 읽지 못해 검사를 중단했습니다.")
+            onOutput(L10n.text("사용자 설정을 안전하게 읽지 못해 검사를 중단했습니다."))
             return .scanFailed
         }
         guard !Task.isCancelled else { return .scanFailed }
@@ -87,7 +87,7 @@ enum ScanPipeline {
             in: execution.outputRoot,
             expectedParentIdentity: execution.outputRootIdentity
         ) else {
-            onOutput("검증 전 검사 결과를 격리할 작업 공간을 만들지 못했습니다.")
+            onOutput(L10n.text("검증 전 검사 결과를 격리할 작업 공간을 만들지 못했습니다."))
             return .scanFailed
         }
         defer { ScanPublication.discard(stagedOutput) }
@@ -132,7 +132,7 @@ enum ScanPipeline {
             ]
             for resource in resources {
                 guard let contents = payload[resource.path] else {
-                    onOutput("서명 시점에 봉인한 검사 리소스가 없어 실행을 중단했습니다: \(resource.path)")
+                    onOutput(L10n.format("서명 시점에 봉인한 검사 리소스가 없어 실행을 중단했습니다: %@", String(describing: resource.path)))
                     return .scanFailed
                 }
                 pinnedScannerFiles[resource.name] = contents
@@ -162,7 +162,7 @@ enum ScanPipeline {
         )
         guard !Task.isCancelled else { return .scanFailed }
         guard scanner == 0 else {
-            onOutput("scanner.sh 실패: \(scanner)")
+            onOutput(L10n.format("scanner.sh 실패: %@", String(describing: scanner)))
             return .scanFailed
         }
         guard FilesystemIdentity.directory(at: execution.outputRoot) == execution.outputRootIdentity,
@@ -171,7 +171,7 @@ enum ScanPipeline {
               RegularFileGeneration.capture(stagedOutput.scanResultURL) != nil,
               RegularFileGeneration.capture(stagedOutput.rawFactsURL) != nil,
               ScanPublication.outputsAreConsistent(stagedOutput) else {
-            onOutput("이번 실행의 새 검사 결과를 확인하지 못해 이전 결과 사용을 차단했습니다.")
+            onOutput(L10n.text("이번 실행의 새 검사 결과를 확인하지 못해 이전 결과 사용을 차단했습니다."))
             return .scanFailed
         }
         guard !Task.isCancelled else { return .scanFailed }
@@ -180,7 +180,7 @@ enum ScanPipeline {
             in: execution.outputRoot,
             expectedParentIdentity: execution.outputRootIdentity
         ) else {
-            onOutput("검증한 검사 결과를 신뢰 상태로 승격하지 못했습니다.")
+            onOutput(L10n.text("검증한 검사 결과를 신뢰 상태로 승격하지 못했습니다."))
             return .scanFailed
         }
 
@@ -188,7 +188,7 @@ enum ScanPipeline {
             execution: execution,
             expectedCanonicalIdentity: stagedOutput.directoryIdentity
         ) else {
-            onOutput("게시한 검사 결과의 정확한 입력 스냅샷을 고정하지 못했습니다.")
+            onOutput(L10n.text("게시한 검사 결과의 정확한 입력 스냅샷을 고정하지 못했습니다."))
             return ScanRunResult(
                 scan: .succeeded,
                 normalReport: .failed,
@@ -207,7 +207,7 @@ enum ScanPipeline {
             projectRoot: projectRoot,
             fileName: "검사결과.html",
             redacted: false,
-            label: "일반 리포트",
+            label: L10n.text("일반 리포트"),
             scanSnapshot: scanSnapshot,
             dependencies: dependencies,
             onOutput: onOutput
@@ -223,7 +223,7 @@ enum ScanPipeline {
             projectRoot: projectRoot,
             fileName: "검사결과_공유용.html",
             redacted: true,
-            label: "공유용 리포트",
+            label: L10n.text("공유용 리포트"),
             scanSnapshot: scanSnapshot,
             dependencies: dependencies,
             onOutput: onOutput
@@ -253,7 +253,7 @@ enum ScanPipeline {
     ) async -> PipelineStageState {
         guard !Task.isCancelled else { return .notAttempted }
         guard let execution = dependencies.prepareExecution(projectRoot) else {
-            onOutput("\(label) 런타임 서명을 다시 확인하지 못해 생성을 중단했습니다.")
+            onOutput(L10n.format("%@ 런타임 서명을 다시 확인하지 못해 생성을 중단했습니다.", String(describing: label)))
             return .failed
         }
         guard !Task.isCancelled else { return .notAttempted }
@@ -267,7 +267,7 @@ enum ScanPipeline {
         )
         guard !Task.isCancelled else { return .notAttempted }
         guard status == 0 else {
-            onOutput("\(label) 생성 실패: \(status)")
+            onOutput(L10n.format("%@ 생성 실패: %@", String(describing: label), String(describing: status)))
             return .failed
         }
         return .succeeded
@@ -289,6 +289,8 @@ enum ScanPipeline {
             ? execution.outputRootIdentity : execution.runtimeRootIdentity
         var environment = [
             "PCH_PROJECT_DIR": execution.outputRoot.path,
+            "PCH_LANG": L10n.language(for: Locale.preferredLanguages),
+            "PCH_REPORT_STRINGS": L10n.reportStrings,
         ]
         if redacted {
             environment["PCH_REDACT"] = "true"
@@ -298,7 +300,7 @@ enum ScanPipeline {
             in: execution.outputRoot,
             expectedParentIdentity: execution.outputRootIdentity
         ) else {
-            onOutput("\(redacted ? "공유용" : "일반") 리포트의 임시 작업 공간을 만들지 못했습니다.")
+            onOutput(L10n.format("%@ 리포트의 임시 작업 공간을 만들지 못했습니다.", String(describing: redacted ? L10n.text("공유용") : L10n.text("일반"))))
             return -1
         }
         defer { ScanPublication.discard(stagedOutput) }
@@ -315,14 +317,14 @@ enum ScanPipeline {
                 == scanSnapshot.outputRootIdentity,
               ScanPublication.canonicalDirectory(in: execution.outputRoot)?.identity
                 == scanSnapshot.canonicalIdentity else {
-            onOutput("게시한 검사 결과와 리포트 출력 위치의 연결을 다시 확인하지 못했습니다.")
+            onOutput(L10n.text("게시한 검사 결과와 리포트 출력 위치의 연결을 다시 확인하지 못했습니다."))
             return -1
         }
         guard !Task.isCancelled else { return LocalProcessRunner.cancellationStatus }
         var pinnedFiles: [String: Data] = ["scan_result": scanSnapshot.data]
         if let payload = execution.sealedRuntimeFiles {
             guard let reportData = payload["scripts/report.jxa.js"] else {
-                onOutput("봉인한 리포트 코드를 읽지 못했습니다.")
+                onOutput(L10n.text("봉인한 리포트 코드를 읽지 못했습니다."))
                 return -1
             }
             pinnedFiles["report"] = reportData
@@ -375,7 +377,7 @@ enum ScanPipeline {
                 == scanSnapshot.canonicalIdentity,
               RegularFileGeneration.capture(stagedReport) != previousGeneration else {
             if status == 0 {
-                onOutput("이번 실행의 검사 세대가 바뀌었거나 새 리포트 파일을 확인하지 못했습니다.")
+                onOutput(L10n.text("이번 실행의 검사 세대가 바뀌었거나 새 리포트 파일을 확인하지 못했습니다."))
                 return -1
             }
             return status
@@ -386,7 +388,7 @@ enum ScanPipeline {
             requireCurrentOwner: true,
             expectedParentIdentity: stagedOutput.directoryIdentity
         ), !report.isEmpty else {
-            onOutput("새 리포트를 안전하게 읽지 못했습니다.")
+            onOutput(L10n.text("새 리포트를 안전하게 읽지 못했습니다."))
             return -1
         }
         guard !Task.isCancelled else { return LocalProcessRunner.cancellationStatus }
@@ -398,7 +400,7 @@ enum ScanPipeline {
                 expectedParentIdentity: execution.outputRootIdentity
             )
         } catch {
-            onOutput("새 리포트를 소유자 전용 파일로 확정하지 못했습니다.")
+            onOutput(L10n.text("새 리포트를 소유자 전용 파일로 확정하지 못했습니다."))
             return -1
         }
         return 0
