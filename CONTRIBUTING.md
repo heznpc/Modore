@@ -67,7 +67,7 @@ This is the highest-value contribution: adding a legitimate local app that curre
 
 - [ ] `python3 -I -B -m pytest tests/ -q` passes.
 - [ ] `python3 -I -B scripts/release_smoke.py --check-only` passes.
-- [ ] If you touched the Mac app, `swift test --package-path macos/Modore -Xswiftc -warnings-as-errors -Xswiftc -strict-concurrency=complete` passes.
+- [ ] If you touched the Mac app, `bash scripts/test_macos_models.sh` passes. It runs Korean-copy model contracts with process-local language preferences, then checks localization under English and Japanese without changing system settings.
 - [ ] If you touched Mac packaging, `scripts/package_macos_release.sh --local` completes and its app, DMG, and sidecar metadata report the intended architectures/minimum OS. This never creates a publishable release.
 - [ ] If you touched a PowerShell script, run a parse check:
       `pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('scripts/<file>.ps1', [ref]\$null, [ref]\$null)"`.
