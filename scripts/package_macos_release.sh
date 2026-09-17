@@ -721,6 +721,7 @@ else
     # runner account. This exception is restricted to explicitly nonpublishable
     # local artifacts; distribution still requires a root-owned toolchain.
     build_environment+=("PCH_ALLOW_USER_TOOLCHAIN=1")
+    build_environment+=("PCH_SIGNING_IDENTITY=-")
 fi
 /usr/bin/env -i "${clean_environment[@]}" "${build_environment[@]}" \
     "$BUILD_ROOT/scripts/build_macos_swift_app.sh"
