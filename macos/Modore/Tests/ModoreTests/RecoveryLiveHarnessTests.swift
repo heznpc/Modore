@@ -76,6 +76,8 @@ final class RecoveryLiveHarnessTests: XCTestCase {
         await model.cleanupTask?.value
         for task in model.cancelTrackedApplicationTasks() { await task.value }
         XCTAssertEqual(model.cleanupRecoveryResult?.succeededCount, 1, model.errorMessage ?? model.logText)
+        XCTAssertNil(model.scanTask)
+        XCTAssertFalse(model.cleanupRecoveryResult?.rescanScheduled ?? true)
         XCTAssertFalse(manager.fileExists(atPath: target.path))
         XCTAssertTrue(manager.fileExists(atPath: marker.path))
         let saved = try XCTUnwrap(RecoveryHistoryStore.load(in: root).first)

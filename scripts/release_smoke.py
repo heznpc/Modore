@@ -362,6 +362,7 @@ MODORE_SOURCE_CHECKOUT_FILES = [
 ]
 
 MACOS_BASE_FILES = COMMON_FILES + [
+    "docs/CI_INCIDENTS.md",
     "scan.command",
     "run-mac-app.command",
     "scripts/scanner.sh",
@@ -375,6 +376,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/mcpaudit.py",
     "scripts/fileaccess.py",
     "scripts/mcp_server.py",
+    "scripts/ci_watch.py",
     "scripts/idle_cpu.sh",
     "scripts/network_watch.sh",
     "scripts/login_items.sh",
@@ -383,6 +385,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/build_macos_swift_app.sh",
     "scripts/build_macos_icon.sh",
     "scripts/package_macos_release.sh",
+    "scripts/test_macos_models.sh",
     "scripts/artifact_audit.py",
     "scripts/modules/build_support.sh",
     "scripts/modules/support_dir.sh",
@@ -396,6 +399,9 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/modules/macos/privacy.sh",
     "scripts/modules/macos/devtool_updates.sh",
     "macos/Modore/Package.swift",
+    "macos/Modore/Sources/Modore/Resources/en.lproj/Localizable.strings",
+    "macos/Modore/Sources/Modore/Resources/ja.lproj/Localizable.strings",
+    "macos/Modore/Sources/Modore/Resources/ko.lproj/Localizable.strings",
     "shared/ModoreDomain/Package.swift",
     # No `vendor/mothball/LICENSE`: the subtree is Modore's own code
     # under Modore's own terms, and a second LICENSE file there implied

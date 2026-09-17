@@ -284,7 +284,8 @@ def test_storage_watch_warns_below_free_space_floor(project_root, tmp_path):
     assert second.returncode == 0, second.stderr
     assert payload["status"] == "warning"
     assert int(payload["dropKB"]) < 8 * 1024 * 1024, "drop must stay below the drop trigger"
-    assert "아래입니다" in payload["message"], "warning must be the low-free-space floor, not the drop"
+    assert payload["pressureLevel"] == "1"
+    assert "19.0GB" in payload["message"]
 
 
 def test_storage_watch_captures_bounded_top_paths_only_after_large_drop(
@@ -1442,7 +1443,7 @@ def test_schedule_requires_approval_and_stays_inside_test_home(project_root, tmp
             watcher_hash,
             str(watcher),
         ],
-        "StartInterval": 3600,
+        "StartInterval": 60,
         "RunAtLoad": True,
         "StandardOutPath": "/dev/null",
         "StandardErrorPath": "/dev/null",
@@ -1851,19 +1852,21 @@ def test_storage_watch_notification_deadline_stops_the_entire_process_tree(
         "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256": _app_executable_hash(bundle),
     }
 
-    started = time.monotonic()
     result = subprocess.run(
         [str(project_root / "scripts" / "storage_watch.sh")],
         capture_output=True,
         text=True,
         encoding="utf-8",
         env=env,
-        timeout=5,
+        timeout=10,
     )
 
     assert result.returncode == 0, result.stderr
-    assert time.monotonic() - started < 4
     assert child_pid_file.is_file()
+    # Measure the notification deadline from notifier startup. The outer
+    # command also verifies the signed app and collects storage facts, which
+    # can take several seconds on a shared CI host before notification begins.
+    assert time.time() - child_pid_file.stat().st_mtime < 4
     child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
     for _ in range(50):
         try:
@@ -1921,6 +1924,16 @@ def test_schedule_install_threads_the_app_bundle_path_into_the_plist(project_roo
         "loaded_definition_is_current's expected_arguments must match install_agent's "
         "argument list byte-for-byte, including the new env entry"
     )
+    assert parse_protocol(status.stdout)["loadedDefinitionMatchesInstalledPins"] == "true"
+
+    # Renewal must never accept malformed pins from an old definition.
+    definition["ProgramArguments"][7] = "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256=invalid"
+    plist.write_bytes(plistlib.dumps(definition))
+    invalid = subprocess.run(
+        [str(script), "--status"], capture_output=True, text=True, encoding="utf-8", env=env
+    )
+    assert invalid.returncode == 0, invalid.stderr
+    assert parse_protocol(invalid.stdout)["loadedDefinitionMatchesInstalledPins"] == "false"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="launchd plist tools are macOS-only")
@@ -2231,3 +2244,78 @@ def test_storage_watch_retries_partial_evidence_after_five_minutes(
     ]
     assert latest_rows
     assert all(row[2] == "ok" for row in latest_rows)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="signed notification fixture")
+def test_minute_watch_escalates_and_repeats_critical_pressure(project_root, tmp_path):
+    state_dir = tmp_path / "state"
+    bundle = _signed_app_bundle(tmp_path)
+    roots = tmp_path / "roots"
+    roots.mkdir()
+    env = {**os.environ, "PCH_TEST_MODE": "1", "PCH_STATE_DIR": str(state_dir),
+           "PCH_WATCH_NOTIFY": "1", "PCH_WATCH_SNAPSHOT_ROOT": str(roots),
+           "PCH_STORAGE_WATCH_APP_BUNDLE": str(bundle),
+           "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256": _app_executable_hash(bundle)}
+    for free, level in [(19, 1), (9, 2), (4, 3), (2, 4)]:
+        result, _, _ = _run_watch_with_stubbed_notifiers(
+            project_root, {**env, "PCH_TEST_FREE_KB": str(free * 1024 * 1024)}, tmp_path, open_ack=True)
+        assert result.returncode == 0, result.stderr
+        state = parse_protocol((state_dir / "storage-watch.tsv").read_text())
+        assert state["notificationResult"] == "accepted"
+        assert state["lastNotifiedLevel"] == str(level)
+
+    result, _, _ = _run_watch_with_stubbed_notifiers(
+        project_root, {**env, "PCH_TEST_FREE_KB": str(2 * 1024 * 1024)}, tmp_path, open_ack=True)
+    assert parse_protocol(result.stdout)["notificationResult"] == "not-due"
+    state = parse_protocol((state_dir / "storage-watch.tsv").read_text())
+    state["lastNotify"] = str(int(time.time()) - 301)
+    (state_dir / "storage-watch.tsv").write_text("".join(f"{k}\t{v}\n" for k, v in state.items()))
+    result, _, _ = _run_watch_with_stubbed_notifiers(
+        project_root, {**env, "PCH_TEST_FREE_KB": str(2 * 1024 * 1024)}, tmp_path, open_ack=True)
+    assert parse_protocol(result.stdout)["notificationResult"] == "accepted"
+
+
+def test_minute_watch_detects_cumulative_hour_drop(project_root, tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o700)
+    now = int(time.time())
+    state_file = state_dir / "storage-watch.tsv"
+    state_file.write_text(f"freeKB\t{45 * 1024 * 1024}\nstatus\tnormal\nlastSnapshot\t{now}\n")
+    state_file.chmod(0o600)
+    history = state_dir / "storage-samples.tsv"
+    history.write_text(f"2026-09-13T00:00:00Z\t{50 * 1024 * 1024}\t0\tnormal\t{now-3000}\n"
+                       f"2026-09-13T00:40:00Z\t{45 * 1024 * 1024}\t0\tnormal\t{now-600}\n")
+    history.chmod(0o600)
+    result = subprocess.run([str(project_root / "scripts/storage_watch.sh")], capture_output=True, text=True,
+                            env={**os.environ, "PCH_TEST_MODE": "1", "PCH_STATE_DIR": str(state_dir),
+                                 "PCH_TEST_FREE_KB": str(40 * 1024 * 1024), "PCH_WATCH_NOTIFY": "0"})
+    assert result.returncode == 0, result.stderr
+    values = parse_protocol(result.stdout)
+    assert values["status"] == "warning"
+    assert values["dropKB"] == str(5 * 1024 * 1024)
+    assert values["hourDropKB"] == str(10 * 1024 * 1024)
+    assert values["snapshotReason"] == ""
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="signed notification fixture")
+def test_pressure_notice_precedes_slow_path_measurement(project_root, tmp_path):
+    import shlex
+    state_dir = tmp_path / "state"
+    roots = tmp_path / "roots"
+    roots.mkdir()
+    (roots / "known-cache").mkdir()
+    log = tmp_path / "notify-calls.log"
+    du = tmp_path / "du-stub"
+    du.write_text("#!/bin/bash\nprintf 'du\\n' >> " + shlex.quote(str(log)) + "\nexec /usr/bin/du \"$@\"\n")
+    du.chmod(0o755)
+    bundle = _signed_app_bundle(tmp_path)
+    result, _, _ = _run_watch_with_stubbed_notifiers(project_root,
+        {**os.environ, "PCH_TEST_MODE": "1", "PCH_STATE_DIR": str(state_dir),
+         "PCH_TEST_FREE_KB": str(2 * 1024 * 1024), "PCH_WATCH_NOTIFY": "1",
+         "PCH_WATCH_SNAPSHOT_ROOT": str(roots), "PCH_TEST_WATCH_DU_BIN": str(du),
+         "PCH_STORAGE_WATCH_APP_BUNDLE": str(bundle),
+         "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256": _app_executable_hash(bundle)}, tmp_path, open_ack=True)
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    assert "du" in calls
+    assert calls[0] == "open"

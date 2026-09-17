@@ -26,7 +26,7 @@ SwiftUI view
 
 The SwiftUI app owns navigation, local state presentation, approval sheets, and process execution. It mirrors the cleanup recipe catalog only to hide stale/unsupported actions in old scan results; `cleanup.sh` remains the final authority and independently rejects every unknown recipe or changed target.
 
-Every app build embeds an explicit runtime allowlist under `Contents/Resources/runtime`; no build records the developer checkout path. The signed Mac app also carries a pinned python-build-standalone CPython runtime under `Contents/Resources/modore-python`, reduced to the interpreter and standard library needed by scree. Keeping the complete runtime in Resources prevents ordinary provenance and standard-library files from being misclassified as nested code under `Contents/Helpers`; the Mach-O interpreter itself is still signed before the enclosing app. The build verifies the upstream archive SHA-256, architecture and deployment target; artifact audit requires an exact per-file hash manifest and fixed provenance record. Scree runs that interpreter with `-I -B`; a signed app never falls back to PATH or a separately installed Python. Mutable output stays under `~/Library/Application Support/Modore/results`, separate from the non-executable runtime migration mirror. Production resolution validates the sealed app bundle, binds its active-slice cdhash to the kernel-tracked running process, captures every Bash/JXA/module/rule input, and validates the signature again. The process runner copies those captured bytes into unlinked files and passes only inherited `/dev/fd` handles to interpreters, so later bundle pathname replacement cannot change scanner, report, cleanup, or scheduler bytes. Child processes also start from a fixed minimal environment and pin the runtime working-directory device/inode. User settings remain separate at `~/Library/Application Support/Modore/config.json` (mode `0600`); only `data/config.example.json` is tracked and bundled. Legacy results are copied without overwrite, and unknown files in an old runtime are retained in a `runtime-backup-*` directory instead of being deleted. The hourly watcher uses an exact clean-environment LaunchAgent definition; both its on-disk plist and launchd's loaded program/arguments are revalidated, and unstable DMG/App Translocation paths are rejected. The source launcher asks an existing development app to terminate safely before rebuilding, so an old process cannot be paired with new resources.
+Every app build embeds an explicit runtime allowlist under `Contents/Resources/runtime`; no build records the developer checkout path. The signed Mac app also carries a pinned python-build-standalone CPython runtime under `Contents/Resources/modore-python`, reduced to the interpreter and standard library needed by scree. Keeping the complete runtime in Resources prevents ordinary provenance and standard-library files from being misclassified as nested code under `Contents/Helpers`; the Mach-O interpreter itself is still signed before the enclosing app. The build verifies the upstream archive SHA-256, architecture and deployment target; artifact audit requires an exact per-file hash manifest and fixed provenance record. Scree runs that interpreter with `-I -B`; a signed app never falls back to PATH or a separately installed Python. Mutable output stays under `~/Library/Application Support/Modore/results`, separate from the non-executable runtime migration mirror. Production resolution validates the sealed app bundle, binds its active-slice cdhash to the kernel-tracked running process, captures every Bash/JXA/module/rule input, and validates the signature again. The process runner copies those captured bytes into unlinked files and passes only inherited `/dev/fd` handles to interpreters, so later bundle pathname replacement cannot change scanner, report, cleanup, or scheduler bytes. Child processes also start from a fixed minimal environment and pin the runtime working-directory device/inode. User settings remain separate at `~/Library/Application Support/Modore/config.json` (mode `0600`); only `data/config.example.json` is tracked and bundled. Legacy results are copied without overwrite, and unknown files in an old runtime are retained in a `runtime-backup-*` directory instead of being deleted. The minute watcher uses an exact clean-environment LaunchAgent definition; both its on-disk plist and launchd's loaded program/arguments are revalidated, and unstable DMG/App Translocation paths are rejected. The source launcher asks an existing development app to terminate safely before rebuilding, so an old process cannot be paired with new resources.
 
 ## Mac source layout
 
@@ -57,9 +57,28 @@ Every app build embeds an explicit runtime allowlist under `Contents/Resources/r
 The native **Work** page is the composition boundary: Swift groups scree sessions, Mothball's
 read-only repository assessment, and discovered worktrees by canonical workspace. Mothball's
 archive/trash API remains unreachable without Modore's approval-token boundary. QuotaPie remains
-a separate producer: Modore optionally reads only its owner-controlled semantic-v2
-`~/Library/Application Support/QuotaPie/quota.json`; it does not share collectors, credentials,
-network behavior, or process lifecycle.
+a separate producer: Modore optionally reads its owner-controlled semantic-v2
+`~/Library/Application Support/QuotaPie/quota.json` overview and the independent schema-v1
+`work-state.json` work contract. It does not share collectors, credentials, network behavior,
+or process lifecycle.
+
+`QuotaWorkModel` owns work integration refresh/navigation separately from `ScanModel`.
+`QuotaWorkStateService` bounds reads to 1 MiB, rejects symbolic links and invalid schemas,
+and keeps publication freshness separate from account collection health and window validity.
+A task matches only when its provider/account/session SHA-256 and canonical profile membership
+both agree. Missing or ambiguous index matches are visible limitations, never guessed links.
+`modore://work/quota-task/<UUID>` selects one conversation; `quotapie://resume/<UUID>` opens
+QuotaPie's task review. Neither route executes a command. QuotaPie revalidates current capacity
+and session identity and retains the user approval boundary before resuming.
+
+The v1 payload contains accounts, window observations and active task references with a maximum
+ten-minute publication lifetime. It excludes credentials, native session IDs, raw profile paths
+and executable plans. See QuotaPie's `docs/work-continuity.md` for the producer contract.
+
+Conversation inspection preserves known partial statuses (`truncated`, `time`, `parse`):
+readable masked turns remain visible with a coverage notice, while missing, unreadable and
+unknown formats remain failures. A partial read is not evidence of complete history and may
+omit the latest turns; these display semantics do not grant storage cleanup approval.
 
 Work passes Mothball only the exact repository roots already established by scree; it never falls
 back to recursive discovery when a root disappears. The assessment has one 30-second screen budget,
@@ -153,3 +172,12 @@ Changes to outbound networking, signature verification, cleanup targets, standal
 - `python3 -I -B scripts/release_smoke.py`: OS-specific source allowlists plus secret/PII/archive-structure audit.
 - `scripts/package_macos_release.sh --local`: strict Universal 2 standalone app/DMG build under `dist/local/`, clearly unsigned for distribution and never overwriting a release artifact. Git, Swift/Xcode, Python audit, signing, and disk-image tools run from a minimal environment; metadata records the selected developer directory and Swift version.
 - `scripts/package_macos_release.sh`: clean exact signed-annotated-tag gate pinned to an externally supplied SSH public-key fingerprint and principal `heznpc`, Git replace-object rejection, source-prefix removal, architecture/minimum-OS validation, payload audit, externally pinned Developer ID Team ID and leaf-certificate SHA-256, hardened runtime, notarytool, stapling, Gatekeeper validation, final source revalidation, and sidecar release metadata when credentials are supplied externally.
+
+
+Session runtime preparation and process validation/spawning each run on a serial dispatch
+queue rather than the Swift cooperative executor. Security.framework may synchronously wait
+for dispatch work; concurrent conversation/title loads must suspend while preparation runs
+instead of occupying every cooperative worker. Signature validation, pinned-file checks,
+per-process cancellation and process-group cleanup remain in place; only preparation,
+validation and spawn are serialized, not child execution or output draining. Cancelled
+preparation callers discard their result before launching a child.

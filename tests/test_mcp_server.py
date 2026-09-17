@@ -28,9 +28,9 @@ def _payload(result: dict) -> dict:
 def test_only_the_read_only_judgment_tools_are_exposed():
     assert sorted(mcp_server.HANDLERS) == ["agent_file_access", "agent_session_list",
                                            "agent_session_search", "agent_state_report",
-                                           "mcp_hygiene", "model_residue_report",
+                                           "ci_incident_status", "environment_retirement_status", "mcp_hygiene", "model_residue_report",
                                            "operator_friction_report", "system_scan_summary",
-                                           "uninstall_residue_report"]
+                                           "uninstall_residue_report", "work_resource_status"]
 
 
 def test_every_tool_is_annotated_read_only_and_non_destructive():
@@ -80,8 +80,10 @@ def test_no_tool_can_run_anything_but_the_judgment_scripts(monkeypatch, tmp_path
     assert spawned, "expected the judgment scripts to be invoked"
     for argv in spawned:
         script = Path(argv[3]).name
-        assert script in ("scree.py", "friction.py", "moraine.py", "hfscan.py",
-                          "mcpaudit.py", "fileaccess.py"), argv
+        if script == "environment_retirement.py":
+            assert argv[4:] == ["--inventory"]
+        assert script in ("ci_watch.py", "scree.py", "friction.py", "moraine.py", "hfscan.py",
+                          "mcpaudit.py", "fileaccess.py", "work_resources.py", "environment_retirement.py"), argv
         joined = " ".join(argv)
         for forbidden in ("cleanup", "scanner", "storage_watch", "schedule",
                           "preserve", "--raw"):
@@ -728,11 +730,11 @@ def test_initialize_echoes_a_supported_version_and_falls_back_otherwise():
 
 def test_tools_list_declares_closed_input_schemas():
     tools = mcp_server.handle_request("tools/list", {})["tools"]
-    assert [t["name"] for t in tools] == ["agent_state_report", "agent_session_list",
+    assert [t["name"] for t in tools] == ["ci_incident_status", "environment_retirement_status", "agent_state_report", "agent_session_list",
                                           "agent_session_search", "operator_friction_report",
                                           "model_residue_report", "mcp_hygiene",
                                           "agent_file_access", "system_scan_summary",
-                                          "uninstall_residue_report"]
+                                          "uninstall_residue_report", "work_resource_status"]
     for tool in tools:
         assert tool["inputSchema"]["additionalProperties"] is False
         assert tool["description"] and tool["title"]
@@ -780,11 +782,11 @@ def test_serve_handles_a_full_session_including_malformed_input():
 def test_cli_tools_dump_is_the_registered_surface(capsys):
     assert mcp_server.main(["--tools"]) == 0
     dumped = json.loads(capsys.readouterr().out)
-    assert [t["name"] for t in dumped["exposed"]] == ["agent_state_report", "agent_session_list",
+    assert [t["name"] for t in dumped["exposed"]] == ["ci_incident_status", "environment_retirement_status", "agent_state_report", "agent_session_list",
                                                       "agent_session_search", "operator_friction_report",
                                                       "model_residue_report", "mcp_hygiene",
                                                       "agent_file_access", "system_scan_summary",
-                                                      "uninstall_residue_report"]
+                                                      "uninstall_residue_report", "work_resource_status"]
     assert dumped["rejected"] == []
 
 
@@ -918,3 +920,10 @@ def test_file_access_preserves_incomplete_content_coverage(monkeypatch):
 
     assert payload["paths"] == []
     assert payload["content_scan"] == content_scan
+
+
+def test_resource_inventory_is_fixed_read_only_status(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mcp_server, "_run_json", lambda script, arguments, timeout: calls.append((script.name, arguments)) or {})
+    _payload(_call("work_resource_status", {}))
+    assert calls == [("work_resources.py", ["status"])]

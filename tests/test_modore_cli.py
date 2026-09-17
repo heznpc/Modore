@@ -33,6 +33,23 @@ def test_help_exposes_only_modore_owned_routes(project_root):
     assert "ship" not in result.stdout.lower()
 
 
+def test_resource_hook_invalid_input_does_not_block_or_continue_ai_turn(project_root):
+    result = run_cli(project_root, 'resources', 'hook', '--provider', 'codex', stdin='invalid')
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert 'systemMessage' in payload
+    assert 'decision' not in payload
+    assert 'continue' not in payload
+
+
+def test_resource_hook_ignores_session_end_and_interrupt(project_root):
+    for event in ('SessionEnd', 'Interrupt', 'PermissionRequest'):
+        result = run_cli(project_root, 'resources', 'hook', '--provider', 'codex',
+                         stdin=json.dumps({'hook_event_name': event}))
+        assert result.returncode == 0
+        assert json.loads(result.stdout) == {}
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="cleanup catalog is macOS-only")
 def test_cleanup_list_delegates_to_the_allowlisted_preview_harness(project_root):
     result = run_cli(project_root, "cleanup", "list")

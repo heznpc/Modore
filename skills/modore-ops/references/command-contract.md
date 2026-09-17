@@ -43,6 +43,59 @@ The agent command intentionally has no full-system scan or cleanup-preview
 route: the former would collect unrelated security metadata, while the latter
 would mint a live destructive approval token.
 
+## Turn test resources
+
+```bash
+modore resources install-hooks --provider claude
+modore resources install-hooks --provider codex
+modore resources begin-test --runtime <runtime> --provider <provider> --session <ID> --project <path> --turn <token>
+modore resources begin-browser-test --provider <provider> --session <ID> --project <path> --turn <token> --url <URL> [--headed]
+modore resources hold --id <UDID> --provider <provider> --session <ID> --turn <token>
+modore resources release --id <UDID> --provider <provider> --session <ID>
+```
+
+The installer merges two synchronous lifecycle hooks into the selected user's
+configuration and backs up existing JSON under Modore's work-resource directory.
+It preserves other hooks and does not grant trust. Codex requires review of both
+definitions in `/hooks`; existing sessions may need a configuration refresh.
+
+`UserPromptSubmit` records metadata and supplies the turn token. `Stop` explicitly
+ends that turn's managed test use. Codex matches `turn_id`; Claude uses a generated
+token and synchronous prompt/Stop ordering. The bridge ignores other lifecycle
+events and never reads a transcript or stores prompt/response/tool contents.
+It never emits a decision to interrupt, end, or continue an AI session.
+
+`begin-test` only boots an existing Shutdown simulator with no unresolved lease.
+Shutdown requires the same UDID, resource fingerprint, and boot timestamp, and
+no unreleased consumer, including expired registrations. `hold` keeps a preview
+or background test running until explicit `release`. Foreign and unregistered
+running devices are never adopted. Boot intent and status remain in the registry;
+shutdown writes a receipt with the verification result. An uncertain boot or
+changed identity prevents automatic shutdown.
+Command timeout or a missing/disabled hook leaves a pending resource for review;
+it is not proof of successful cleanup. This feature covers managed simulator
+and Playwright CLI browser runs, not arbitrary processes or AI sessions. Hook `Stop` can
+also be an attempted turn finish followed by another hook's continuation; the
+next simulator use must call `begin-test` again.
+
+`begin-browser-test` starts one randomly named Playwright session per turn using
+locally installed Node and `@playwright/cli` (optional `--node`/`--cli` absolute
+paths). Its private workspace fixes the browser to bundled Chromium, preventing
+project configuration from selecting ordinary Chrome, a user profile, or CDP.
+No package or browser installation runs in a hook. Repeated calls reuse the
+same execution and return its exact cwd and argv. All subsequent commands must
+use both. `hold` and `release` also accept its browser ID. Stop compares the
+daemon PID/start identity and session-file fingerprint, requests CLI `close`,
+then checks process exit and writes a receipt. It never uses `kill-all`, deletes
+project/session folders, or adopts previously running browsers. Browser test
+cookies and transient page state are lost on normal close. The CLI status
+includes registered browser runs under `browsers`; the existing native resource
+cards still show simulators and volumes. Unregistered browser discovery and
+cleanup require a separate explicit diagnosis.
+
+References: [Codex hooks](https://learn.chatgpt.com/docs/hooks),
+[Claude Code hooks](https://code.claude.com/docs/en/hooks).
+
 ## Agent access
 
 ```bash

@@ -14,15 +14,49 @@ import MothballCore
 /// conversations on the left, the selected conversation on the right.
 /// Reaching a conversation is a project click and a title click.
 struct WorkPage: View {
+    @EnvironmentObject private var ci: CIWatchService
+    @State private var resources = false
+    @EnvironmentObject private var quotaWork: QuotaWorkModel
     @EnvironmentObject private var model: ScanModel
 
     var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(L10n.text("작업 환경")).font(.headline)
+                Spacer()
+                Button(L10n.text("CI 문제")) { ci.showIncidents = true }
+                    .accessibilityIdentifier("work-ci-incidents")
+                Button(L10n.text("작업 환경 보기")) { resources = true }
+                    .keyboardShortcut("k", modifiers: [.command, .shift])
+            }.padding(12)
+            if let message = quotaWork.message {
+                WorkNotice(text: message, action: (L10n.text("닫기"), {
+                    quotaWork.requestedTaskID = nil
+                    quotaWork.message = nil
+                }))
+            }
         HSplitView {
             WorkListPane()
                 .frame(minWidth: 340, idealWidth: 420)
             WorkDetailPane()
                 .frame(minWidth: 320)
         }
+        }
+        .task {
+            repeat {
+                await quotaWork.refresh()
+                resolveQuotaTask()
+                do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { break }
+            } while !Task.isCancelled
+        }
+        .task(id: quotaWork.requestedTaskID) {
+            guard quotaWork.requestedTaskID != nil else { return }
+            await quotaWork.refresh()
+            resolveQuotaTask()
+        }
+        .onChange(of: model.sessionIndex) { _ in resolveQuotaTask() }
+        .sheet(isPresented: $resources) { WorkResourceView() }
+        .sheet(isPresented: $ci.showIncidents) { CIIncidentsView() }
         // The git judgment needs the workspace list the audit produces, so
         // a cold start waits until that lands. A boolean only changes on the
         // first report; a revision also restarts binding after a successful
@@ -37,6 +71,24 @@ struct WorkPage: View {
             // say what a retirement would strand.
             RetirementReviewSheet(projectID: target.id)
         }
+    }
+    private func resolveQuotaTask() {
+        guard let id = quotaWork.requestedTaskID else { return }
+        guard let snapshot = quotaWork.state.snapshot, snapshot.isCurrent() else {
+            quotaWork.message = L10n.text("QuotaPie의 최신 작업 상태를 확인할 수 없습니다.")
+            return
+        }
+        guard let index = model.sessionIndex else { return }
+        guard let session = snapshot.session(for: id, in: index.sessions) else {
+            quotaWork.message = L10n.text("현재 수집 범위에서 연결된 대화를 하나로 확인하지 못했습니다. QuotaPie에서 작업을 확인하세요.")
+            return
+        }
+        quotaWork.requestedTaskID = nil
+        quotaWork.message = nil
+        model.selectedSearchMatch = nil
+        model.selectedSessionSource = session.source
+        model.loadSessionTitles(for: [session.source])
+        model.loadConversation(for: session)
     }
 }
 
@@ -54,9 +106,9 @@ struct WorkListPane: View {
             header
             Divider()
             if let error = model.sessionIndexError {
-                WorkNotice(text: error, action: ("다시 시도", { model.refreshSessionIndex() }))
+                WorkNotice(text: error, action: (L10n.text("다시 시도"), { model.refreshSessionIndex() }))
             } else if model.sessionIndexLoading && model.sessionIndex == nil {
-                WorkNotice(text: "작업을 읽는 중…", action: nil)
+                WorkNotice(text: L10n.text("작업을 읽는 중…"), action: nil)
             } else {
                 list
             }
@@ -73,10 +125,10 @@ struct WorkListPane: View {
             // is the project" are the same question asked two ways, and
             // making the user pick the right box first is how the answer
             // ended up in a terminal instead.
-            TextField("작업·대화 검색 (Return으로 대화 내용까지)", text: $model.sessionSearch)
+            TextField(L10n.text("작업·대화 검색 (Return으로 대화 내용까지)"), text: $model.sessionSearch)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { model.runContentSearch() }
-            Button("백업 확인·복원…") { showingBackup = true }
+            Button(L10n.text("백업 확인·복원…")) { showingBackup = true }
                 .font(.caption)
                 .accessibilityIdentifier("work-backup-library")
             if let summary = Self.summary(model.workProjects) {
@@ -87,7 +139,7 @@ struct WorkListPane: View {
             if model.contentSearchRunning {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text("대화 내용을 검색하는 중…")
+                    Text(L10n.text("대화 내용을 검색하는 중…"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -103,8 +155,8 @@ struct WorkListPane: View {
         guard !projects.isEmpty else { return nil }
         let attention = projects.filter(\.needsAttention).count
         let conversations = projects.reduce(0) { $0 + $1.conversationCount }
-        var parts = ["작업 \(projects.count)개", "대화 \(conversations)개"]
-        if attention > 0 { parts.append("확인 필요 \(attention)개") }
+        var parts = [L10n.format("작업 %@개", String(describing: projects.count)), L10n.format("대화 %@개", String(describing: conversations))]
+        if attention > 0 { parts.append(L10n.format("확인 필요 %@개", String(describing: attention))) }
         return parts.joined(separator: " · ")
     }
 
@@ -135,7 +187,7 @@ struct WorkListPane: View {
                     Divider()
                 }
                 if let error = model.contentSearchError {
-                    WorkNotice(text: error, action: ("다시 시도", { model.runContentSearch() }))
+                    WorkNotice(text: error, action: (L10n.text("다시 시도"), { model.runContentSearch() }))
                     Divider()
                 } else if let result = model.contentSearch {
                     ContentSearchResults(result: result)
@@ -144,8 +196,8 @@ struct WorkListPane: View {
                 if projects.isEmpty {
                     WorkNotice(
                         text: model.workProjects.isEmpty
-                            ? "아직 확인된 작업이 없습니다."
-                            : "검색어와 일치하는 작업이 없습니다.",
+                            ? L10n.text("아직 확인된 작업이 없습니다.")
+                            : L10n.text("검색어와 일치하는 작업이 없습니다."),
                         action: nil
                     )
                 }
@@ -204,8 +256,8 @@ struct WorkProjectRow: View {
             // project can hold seventy of them, and an action on the
             // project does not belong at the bottom of a list of its
             // contents.
-            if expanded, project.candidate != nil {
-                Button("은퇴 검토") {
+            if expanded {
+                Button(L10n.text("아카이브·로컬 정리")) {
                     model.retirementReview = RetirementReviewTarget(id: project.id)
                 }
                     .buttonStyle(.link)
@@ -222,7 +274,7 @@ struct WorkProjectRow: View {
             }
 
             if !expanded, project.conversationCount > previewCount {
-                Button("전체 대화 \(project.conversationCount)개 보기") {
+                Button(L10n.format("전체 대화 %@개 보기", String(describing: project.conversationCount))) {
                     model.selectedProjectID = project.id
                 }
                 .buttonStyle(.link)
@@ -230,7 +282,7 @@ struct WorkProjectRow: View {
                 .padding(.leading, 8)
             }
             if expanded, remaining > 0 {
-                Button("\(min(remaining, Self.pageSize))개 더 보기 (남은 \(remaining)개)") {
+                Button(L10n.format("%@개 더 보기 (남은 %@개)", String(describing: min(remaining, Self.pageSize)), String(describing: remaining))) {
                     page += 1
                 }
                 .buttonStyle(.link)
@@ -297,7 +349,7 @@ struct WorkProjectRow: View {
             if project.needsAttention {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(Color.secondary)
-                    .accessibilityLabel("확인 필요")
+                    .accessibilityLabel(L10n.text("확인 필요"))
             }
         }
         .contentShape(Rectangle())
@@ -306,15 +358,15 @@ struct WorkProjectRow: View {
     nonisolated static func subtitle(_ project: WorkProject) -> String {
         var parts: [String] = []
         if !project.tools.isEmpty { parts.append(project.tools.joined(separator: " · ")) }
-        parts.append("대화 \(project.conversationCount)개")
+        parts.append(L10n.format("대화 %@개", String(describing: project.conversationCount)))
         if let last = project.lastActive { parts.append(last) }
         parts.append(project.sizeText)
         if !project.protectedWorktrees.isEmpty {
-            parts.append("보호할 워크트리 \(project.protectedWorktrees.count)개")
+            parts.append(L10n.format("보호할 워크트리 %@개", String(describing: project.protectedWorktrees.count)))
         }
         if !project.unverifiedWorktrees.isEmpty {
             // Not "protected": nobody knows what is in these.
-            parts.append("확인 못 한 워크트리 \(project.unverifiedWorktrees.count)개")
+            parts.append(L10n.format("확인 못 한 워크트리 %@개", String(describing: project.unverifiedWorktrees.count)))
         }
         return parts.joined(separator: " · ")
     }
@@ -358,19 +410,20 @@ private struct ConversationTitleRow: View {
 
     nonisolated static func label(session: SessionIndexEntry, title: SessionTitle?) -> String {
         if let text = title?.title, !text.isEmpty { return text }
-        return title == nil ? "제목을 읽는 중…" : session.sourceURL.lastPathComponent
+        return title == nil ? L10n.text("제목을 읽는 중…") : session.sourceURL.lastPathComponent
     }
 
     /// A guessed label shown as confidently as a real request is how a
     /// person decides against a conversation they never actually saw.
     nonisolated static func detail(session: SessionIndexEntry, title: SessionTitle?) -> String {
         var parts = [session.tool, session.lastActive]
-        if title?.isWeak == true { parts.append("제목 추정") }
+        if title?.isWeak == true { parts.append(L10n.text("제목 추정")) }
         return parts.joined(separator: " · ")
     }
 }
 
 private struct WorkDetailPane: View {
+    @EnvironmentObject private var quotaWork: QuotaWorkModel
     @EnvironmentObject private var model: ScanModel
     @State private var backupTarget: BackupTarget?
     @State private var exporting = false
@@ -402,14 +455,14 @@ private struct WorkDetailPane: View {
                         .foregroundStyle(.secondary)
                     HStack {
                         if session.supportsConversationExport {
-                            Button("대화 내보내기…") {
+                            Button(L10n.text("대화 내보내기…")) {
                                 exportConversation(tool: session.tool, source: session.source)
                             }
                                 .disabled(exporting)
-                                .help("대화 텍스트만 마스킹하여 Markdown으로 내보냅니다. 원본 백업이 아닙니다.")
+                                .help(L10n.text("대화 텍스트만 마스킹하여 Markdown으로 내보냅니다. 원본 백업이 아닙니다."))
                         }
                         if session.supportsOriginalBackup {
-                            Button("원본 백업…") {
+                            Button(L10n.text("원본 백업…")) {
                                 backupTarget = BackupTarget(tool: session.tool, source: session.source)
                             }
                                 .accessibilityIdentifier("work-session-backup")
@@ -418,6 +471,9 @@ private struct WorkDetailPane: View {
                     }
                     if let exportError {
                         Text(exportError).font(.caption).foregroundStyle(.red)
+                    }
+                    if let snapshot = quotaWork.state.snapshot, let task = snapshot.task(for: session) {
+                        QuotaWorkCard(snapshot: snapshot, task: task)
                     }
                     Divider()
                     conversationDetail(
@@ -433,14 +489,14 @@ private struct WorkDetailPane: View {
                         .foregroundStyle(.secondary)
                     HStack {
                         if searchMatch.supportsConversationExport {
-                            Button("대화 내보내기…") {
+                            Button(L10n.text("대화 내보내기…")) {
                                 exportConversation(tool: searchMatch.tool, source: searchMatch.source)
                             }
                             .disabled(exporting)
-                            .help("대화 텍스트만 마스킹하여 Markdown으로 내보냅니다. 원본 백업이 아닙니다.")
+                            .help(L10n.text("대화 텍스트만 마스킹하여 Markdown으로 내보냅니다. 원본 백업이 아닙니다."))
                         }
                         if searchMatch.supportsOriginalBackup {
-                            Button("원본 백업…") {
+                            Button(L10n.text("원본 백업…")) {
                                 backupTarget = BackupTarget(
                                     tool: searchMatch.tool,
                                     source: searchMatch.source
@@ -503,14 +559,14 @@ private struct WorkDetailPane: View {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("다시 시도", action: retry)
+                Button(L10n.text("다시 시도"), action: retry)
                     .buttonStyle(.link)
                     .font(.caption)
             }
         case .loading, .none:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("대화를 읽는 중…")
+                Text(L10n.text("대화를 읽는 중…"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -560,24 +616,24 @@ private struct WorkAuditSummary: View {
             if model.screeLoading && model.screeReport == nil {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("작업 감사 실행 중…").foregroundStyle(.secondary)
+                    Text(L10n.text("작업 감사 실행 중…")).foregroundStyle(.secondary)
                 }
             } else if let error = model.screeError {
                 ScreeNoticeRow(
                     symbol: "exclamationmark.triangle",
-                    title: "감사를 실행하지 못했습니다",
+                    title: L10n.text("감사를 실행하지 못했습니다"),
                     detail: error,
                     tint: Color.secondary
                 )
-                Button("다시 시도") { model.refreshScreeReport() }
+                Button(L10n.text("다시 시도")) { model.refreshScreeReport() }
             } else {
                 Section {
-                    Text("왼쪽에서 대화를 선택하면 여기에 표시됩니다.")
+                    Text(L10n.text("왼쪽에서 대화를 선택하면 여기에 표시됩니다."))
                         .foregroundStyle(.secondary)
                 } header: {
                     NativeSectionHeader(
-                        title: "대화",
-                        subtitle: "작업별로 최근 대화가 먼저 보입니다. 제목을 누르면 바로 열립니다.",
+                        title: L10n.text("대화"),
+                        subtitle: L10n.text("작업별로 최근 대화가 먼저 보입니다. 제목을 누르면 바로 열립니다."),
                         value: ""
                     )
                 }
@@ -638,11 +694,11 @@ private struct ContentSearchResults: View {
                 // Name the query the results belong to. A search takes
                 // long enough that the box above may already say
                 // something else by the time these land.
-                Text("“\(result.query)” 대화 검색 · \(result.matches.count)건")
+                Text(L10n.format("“%@” 대화 검색 · %@건", String(describing: result.query), String(describing: result.matches.count)))
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                 Spacer()
-                Button("지우기") { model.clearContentSearch() }
+                Button(L10n.text("지우기")) { model.clearContentSearch() }
                     .buttonStyle(.link)
                     .font(.caption)
             }
@@ -678,7 +734,7 @@ private struct ContentSearchResults: View {
                 .buttonStyle(.plain)
             }
             if result.matches.count > Self.shown {
-                Text("외 \(result.matches.count - Self.shown)건은 검색어를 좁혀서 보세요.")
+                Text(L10n.format("외 %@건은 검색어를 좁혀서 보세요.", String(describing: result.matches.count - Self.shown)))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

@@ -129,9 +129,7 @@ enum MothballService {
         for candidate: ArchiveCandidate,
         projectRoot: URL
     ) async -> [SessionPresentation] {
-        guard let execution = await Task.detached(priority: .userInitiated, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
-        }).value else {
+        guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: projectRoot) else {
             return []
         }
         var titles: [SessionPresentation] = []
@@ -160,9 +158,7 @@ enum MothballService {
         projectRoot: URL
     ) async -> [ArchiveCandidate] {
         guard !candidates.isEmpty else { return candidates }
-        guard let execution = await Task.detached(priority: .userInitiated, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: projectRoot)
-        }).value else {
+        guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: projectRoot) else {
             // Every candidate keeps its `.notAssessed` default -- the
             // honest answer, and the one the gate refuses to archive
             // from. A binder that could not run must not leave a repo
@@ -227,15 +223,13 @@ extension ScanModel {
         let root = projectRoot
         startTrackedApplicationTask(scope: .workScreen) { [weak self] in
             guard let self else { return }
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 finishConversationLoad(
                     key: key,
                     token: token,
                     state: Task.isCancelled
                         ? nil
-                        : .failed("서명된 실행 런타임을 확인하지 못했습니다.")
+                        : .failed(L10n.text("서명된 실행 런타임을 확인하지 못했습니다."))
                 )
                 return
             }
@@ -263,13 +257,11 @@ extension ScanModel {
     func refreshSessionIndex() {
         let root = projectRoot
         refreshSessionIndex {
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
-                return .failure(.init(message: "서명된 실행 런타임을 확인하지 못했습니다."))
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
+                return .failure(.init(message: L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")))
             }
             guard !Task.isCancelled else {
-                return .failure(.init(message: "세션 목록 읽기를 취소했습니다."))
+                return .failure(.init(message: L10n.text("세션 목록 읽기를 취소했습니다.")))
             }
             return await ScreeService.sessions(execution: execution)
         }
@@ -355,6 +347,9 @@ extension ScanModel {
     /// Everything the Work screen shows, assembled from the three
     /// scanners that used to own a screen each.
     var workProjects: [WorkProject] {
+        if let cached = workProjectsCache, cached.runID == workProvenance.compositionRunID {
+            return cached.projects
+        }
         let worktrees = screeReport?.worktreeItems ?? []
         let assessments = repoAssessments ?? []
         let gitRoots = (screeReport?.lineagePaths ?? []).filter { $0.hasGit == true }.map(\.path)
@@ -381,6 +376,7 @@ extension ScanModel {
                 projects[index].workspaceAttributions = byProject[projects[index].id] ?? []
             }
         }
+        workProjectsCache = (workProvenance.compositionRunID, projects)
         return projects
     }
 
@@ -440,11 +436,9 @@ extension ScanModel {
             defer {
                 if generation == contentSearchGeneration { contentSearchRunning = false }
             }
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 if generation == contentSearchGeneration {
-                    contentSearchError = "서명된 실행 런타임을 확인하지 못했습니다."
+                    contentSearchError = L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")
                 }
                 return
             }
@@ -498,9 +492,7 @@ extension ScanModel {
         let root = projectRoot
         startTrackedApplicationTask(scope: .workScreen) { [weak self] in
             guard let self else { return }
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 finishSessionTitleRequest(
                     sources: wanted,
                     token: token,
@@ -555,15 +547,13 @@ extension ScanModel {
         let root = projectRoot
         startTrackedApplicationTask(scope: .workScreen) { [weak self] in
             guard let self else { return }
-            guard let execution = await Task.detached(priority: .userInitiated, operation: {
-                RuntimeWorkspace.prepareExecution(projectRoot: root)
-            }).value else {
+            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 finishConversationLoad(
                     key: key,
                     token: token,
                     state: Task.isCancelled
                         ? nil
-                        : .failed("서명된 실행 런타임을 확인하지 못했습니다.")
+                        : .failed(L10n.text("서명된 실행 런타임을 확인하지 못했습니다."))
                 )
                 return
             }
@@ -685,7 +675,7 @@ extension ScanModel {
 
     func refreshArchiveCandidates() {
         guard let report = screeReport else {
-            archiveError = "작업 감사를 먼저 실행해야 저장소를 판정할 수 있습니다."
+            archiveError = L10n.text("작업 감사를 먼저 실행해야 저장소를 판정할 수 있습니다.")
             return
         }
         let root = projectRoot

@@ -9,10 +9,10 @@ enum ScanState: Equatable {
 
     var title: String {
         switch self {
-        case .idle: return "대기 중"
-        case .running: return "검사 실행 중"
-        case .finished: return "검사 완료"
-        case .failed: return "오류"
+        case .idle: return L10n.text("대기 중")
+        case .running: return L10n.text("검사 실행 중")
+        case .finished: return L10n.text("검사 완료")
+        case .failed: return L10n.text("오류")
         }
     }
 
@@ -54,7 +54,7 @@ struct ScanSummary {
         dangerCount = json["dangerCount"] as? Int ?? 0
         warningCount = json["warningCount"] as? Int ?? 0
         collectionComplete = JsonRead.bool(json, "collectionComplete")
-        message = json["message"] as? String ?? "검사 결과를 읽었습니다."
+        message = json["message"] as? String ?? L10n.text("검사 결과를 읽었습니다.")
     }
 }
 
@@ -96,13 +96,13 @@ struct CollectionCoverage {
     }
 
     var coverageText: String {
-        guard requiredCount > 0 else { return "필수 범위 없음" }
-        return "필수 \(completedRequiredCount)/\(requiredCount)"
+        guard requiredCount > 0 else { return L10n.text("필수 범위 없음") }
+        return L10n.format("필수 %@/%@", String(describing: completedRequiredCount), String(describing: requiredCount))
     }
 
     var allCoverageText: String {
-        guard sourceCount > 0 else { return "범위 확인 불가" }
-        return "전체 \(completedCount)/\(sourceCount)"
+        guard sourceCount > 0 else { return L10n.text("범위 확인 불가") }
+        return L10n.format("전체 %@/%@", String(describing: completedCount), String(describing: sourceCount))
     }
 }
 
@@ -124,11 +124,11 @@ struct CollectionSourceStatus: Identifiable {
 
     var statusText: String {
         switch status {
-        case "permission_denied": return "권한 필요"
-        case "unavailable": return "사용 불가"
-        case "timed_out": return "시간 초과"
-        case "failed": return "수집 실패"
-        default: return "완료"
+        case "permission_denied": return L10n.text("권한 필요")
+        case "unavailable": return L10n.text("사용 불가")
+        case "timed_out": return L10n.text("시간 초과")
+        case "failed": return L10n.text("수집 실패")
+        default: return L10n.text("완료")
         }
     }
 }
@@ -198,7 +198,7 @@ struct ScanFinding: Identifiable {
     init?(json: [String: Any]) {
         level = JsonRead.string(json, "level", "info")
         category = JsonRead.string(json, "category")
-        title = JsonRead.string(json, "title", "확인 항목")
+        title = JsonRead.string(json, "title", L10n.text("확인 항목"))
         detail = JsonRead.string(json, "detail")
         actionTarget = JsonRead.string(json, "actionTarget")
     }
@@ -256,7 +256,7 @@ struct CpuRow: Identifiable {
         memoryMB = JsonRead.double(json, "memoryMB")
         path = JsonRead.string(json, "path")
         risk = JsonRead.string(json, "risk", "unknown")
-        note = JsonRead.string(json, "note")
+        note = L10n.message(JsonRead.string(json, "note"))
     }
 
     var requiresAttention: Bool { risk == "danger" || risk == "warning" }
@@ -291,7 +291,7 @@ struct BackgroundCpuRow: Identifiable {
         selfResponsible = JsonRead.bool(json, "selfResponsible") ?? false
         windowSeconds = JsonRead.int(json, "windowSeconds")
         risk = JsonRead.string(json, "risk", "unknown")
-        note = JsonRead.string(json, "note")
+        note = L10n.message(JsonRead.string(json, "note"))
     }
 
     var requiresAttention: Bool { risk == "danger" || risk == "warning" }
@@ -360,7 +360,7 @@ struct NetworkRow: Identifiable {
         remotePort = JsonRead.int(json, "remotePort")
         path = JsonRead.string(json, "path")
         risk = JsonRead.string(json, "risk", "unknown")
-        note = JsonRead.string(json, "note")
+        note = L10n.message(JsonRead.string(json, "note"))
     }
 
     var requiresAttention: Bool { risk == "danger" || risk == "warning" }
@@ -377,13 +377,13 @@ struct ListeningPortRow: Identifiable {
     let note: String
 
     init?(json: [String: Any]) {
-        name = JsonRead.string(json, "name", "수신 포트")
+        name = JsonRead.string(json, "name", L10n.text("수신 포트"))
         process = JsonRead.string(json, "process")
         pid = JsonRead.int(json, "pid_")
         port = JsonRead.int(json, "port")
         path = JsonRead.string(json, "path")
         risk = JsonRead.string(json, "risk", "unknown")
-        note = JsonRead.string(json, "note")
+        note = L10n.message(JsonRead.string(json, "note"))
     }
 
     var requiresAttention: Bool { risk == "danger" || risk == "warning" }
@@ -399,10 +399,10 @@ struct AutorunRow: Identifiable {
 
     init?(json: [String: Any]) {
         category = JsonRead.string(json, "category")
-        entry = JsonRead.string(json, "entry", "자동실행 항목")
+        entry = JsonRead.string(json, "entry", L10n.text("자동실행 항목"))
         image = JsonRead.string(json, "image")
         risk = JsonRead.string(json, "risk", "unknown")
-        note = JsonRead.string(json, "note")
+        note = L10n.message(JsonRead.string(json, "note"))
     }
 }
 
@@ -416,9 +416,9 @@ struct RecentInstallRow: Identifiable {
 
     init?(json: [String: Any]) {
         installDate = JsonRead.string(json, "installDate")
-        name = JsonRead.string(json, "name", "앱")
+        name = JsonRead.string(json, "name", L10n.text("앱"))
         publisher = JsonRead.string(json, "publisher")
-        note = JsonRead.string(json, "note")
+        note = L10n.message(JsonRead.string(json, "note"))
         risk = JsonRead.string(json, "risk", "unknown")
     }
 }

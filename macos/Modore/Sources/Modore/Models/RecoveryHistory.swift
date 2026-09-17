@@ -8,12 +8,12 @@ struct RecoveryHistory: Codable, Identifiable, Equatable, Sendable {
 
         var title: String {
             switch self {
-            case .reviewed: return "미승인 · 다시 측정 필요"
-            case .approved: return "승인됨 · 실행 준비"
-            case .running: return "실행 중"
-            case .finished: return "실행 결과 기록됨"
-            case .interrupted: return "중단 · 결과 확인 필요"
-            case .cancelled: return "미실행 · 검토 취소"
+            case .reviewed: return L10n.text("미승인 · 다시 측정 필요")
+            case .approved: return L10n.text("승인됨 · 실행 준비")
+            case .running: return L10n.text("실행 중")
+            case .finished: return L10n.text("실행 결과 기록됨")
+            case .interrupted: return L10n.text("중단 · 결과 확인 필요")
+            case .cancelled: return L10n.text("미실행 · 검토 취소")
             }
         }
     }
@@ -85,7 +85,7 @@ struct RecoveryHistory: Codable, Identifiable, Equatable, Sendable {
         if phase == .approved || phase == .running {
             record.phase = .interrupted
             record.finalFreeBytes = nil
-            record.detail = "최종 결과가 기록되기 전에 앱이 종료되었습니다. 남은 항목은 자동 실행하지 않습니다."
+            record.detail = L10n.text("최종 결과가 기록되기 전에 앱이 종료되었습니다. 남은 항목은 자동 실행하지 않습니다.")
         }
         return record
     }

@@ -72,15 +72,15 @@ struct ScanContent {
         let findingClassification = Self.classifyFindings(findingRows)
         let virusTotal = sections?["virustotal"] as? [String: Any]
         let sectionRows = [
-            "진단 결과": findingRows,
-            "프로세스": cpuRows,
-            "유휴 CPU": backgroundCpuRows,
-            "네트워크": networkRows,
-            "수신 포트": listeningPortRows,
-            "자동 실행": autorunRows,
-            "최근 설치": installRows,
-            "카메라·마이크 권한": privacyPermissionRows,
-            "개발도구 업데이트": devtoolUpdateRows,
+            L10n.text("진단 결과"): findingRows,
+            L10n.text("프로세스"): cpuRows,
+            L10n.text("유휴 CPU"): backgroundCpuRows,
+            L10n.text("네트워크"): networkRows,
+            L10n.text("수신 포트"): listeningPortRows,
+            L10n.text("자동 실행"): autorunRows,
+            L10n.text("최근 설치"): installRows,
+            L10n.text("카메라·마이크 권한"): privacyPermissionRows,
+            L10n.text("개발도구 업데이트"): devtoolUpdateRows,
         ]
         self.init(
             summary: ScanSummary(json: root["summary"] as? [String: Any]),

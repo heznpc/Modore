@@ -219,7 +219,7 @@ enum LocalProcessRunner {
         NSError(
             domain: NSPOSIXErrorDomain,
             code: Int(EINVAL),
-            userInfo: [NSLocalizedDescriptionKey: "안전한 프로세스 환경을 구성하지 못했습니다."]
+            userInfo: [NSLocalizedDescriptionKey: L10n.text("안전한 프로세스 환경을 구성하지 못했습니다.")]
         )
     }
 }
@@ -245,6 +245,11 @@ private enum ProcessOutputMode: Sendable {
 }
 
 private final class ManagedProcessSession: @unchecked Sendable {
+    // Security validation can synchronously wait for libdispatch work. Running
+    // it on Swift's cooperative executor can exhaust that pool when a Work
+    // screen requests many titles at once. Serialize only validation/spawn on
+    // a dispatch queue; children and their cancellation/drain remain concurrent.
+    private static let launchQueue = DispatchQueue(label: "me.heznpc.modore.process-launch", qos: .userInitiated)
     private static let pollIntervalMilliseconds: Int32 = 100
     private static let stopCompletionLimit: TimeInterval = 3
     private static let postTerminationDrainLimit: TimeInterval = 2
@@ -289,46 +294,52 @@ private final class ManagedProcessSession: @unchecked Sendable {
 
     func run() async -> CapturedProcessResult {
         await withCheckedContinuation { continuation in
+            Self.launchQueue.async { [self] in
+                start(continuation)
+            }
+        }
+    }
+
+    private func start(_ continuation: CheckedContinuation<CapturedProcessResult, Never>) {
+        lock.lock()
+        self.continuation = continuation
+        let shouldCancelBeforeLaunch = stopReason == .cancelled
+        lock.unlock()
+
+        guard !shouldCancelBeforeLaunch else {
+            finish(
+                status: LocalProcessRunner.cancellationStatus,
+                output: diagnostic(for: .cancelled),
+                truncated: false,
+                state: .cancelled
+            )
+            return
+        }
+
+        do {
+            let spawned = try PosixProcessSpawner.spawn(configuration)
             lock.lock()
-            self.continuation = continuation
-            let shouldCancelBeforeLaunch = stopReason == .cancelled
+            processID = spawned.pid
+            didLaunch = true
+            let hasPendingStop = stopReason != nil
             lock.unlock()
 
-            guard !shouldCancelBeforeLaunch else {
-                finish(
-                    status: LocalProcessRunner.cancellationStatus,
-                    output: diagnostic(for: .cancelled),
-                    truncated: false,
-                    state: .cancelled
-                )
-                return
+            observeTermination(of: spawned.pid)
+            scheduleDeadline()
+            if hasPendingStop {
+                scheduleGroupTerminationIfNeeded()
             }
-
-            do {
-                let spawned = try PosixProcessSpawner.spawn(configuration)
-                lock.lock()
-                processID = spawned.pid
-                didLaunch = true
-                let hasPendingStop = stopReason != nil
-                lock.unlock()
-
-                observeTermination(of: spawned.pid)
-                scheduleDeadline()
-                if hasPendingStop {
-                    scheduleGroupTerminationIfNeeded()
-                }
-                DispatchQueue.global(qos: .utility).async { [self] in
-                    drainAndFinish(fileDescriptor: spawned.outputFileDescriptor)
-                }
-            } catch {
-                emitIfStreaming("실행 실패: \(error.localizedDescription)")
-                finish(
-                    status: -1,
-                    output: error.localizedDescription,
-                    truncated: false,
-                    state: .launchFailed
-                )
+            DispatchQueue.global(qos: .utility).async { [self] in
+                drainAndFinish(fileDescriptor: spawned.outputFileDescriptor)
             }
+        } catch {
+            emitIfStreaming(L10n.format("실행 실패: %@", String(describing: error.localizedDescription)))
+            finish(
+                status: -1,
+                output: error.localizedDescription,
+                truncated: false,
+                state: .launchFailed
+            )
         }
     }
 
@@ -642,10 +653,10 @@ private final class ManagedProcessSession: @unchecked Sendable {
     private func diagnostic(for state: ProcessEndState) -> String {
         switch state {
         case .exited: return ""
-        case .timedOut: return "실행 시간이 제한을 초과해 중단했습니다."
-        case .cancelled: return "요청이 취소되어 실행을 중단했습니다."
-        case .outputLimit: return "출력 크기가 안전 상한을 초과해 실행을 중단했습니다."
-        case .launchFailed: return "프로세스를 시작하지 못했습니다."
+        case .timedOut: return L10n.text("실행 시간이 제한을 초과해 중단했습니다.")
+        case .cancelled: return L10n.text("요청이 취소되어 실행을 중단했습니다.")
+        case .outputLimit: return L10n.text("출력 크기가 안전 상한을 초과해 실행을 중단했습니다.")
+        case .launchFailed: return L10n.text("프로세스를 시작하지 못했습니다.")
         }
     }
 
@@ -944,7 +955,7 @@ private enum PosixProcessSpawner {
             throw NSError(
                 domain: NSPOSIXErrorDomain,
                 code: Int(EINVAL),
-                userInfo: [NSLocalizedDescriptionKey: "프로세스 실행 인수가 올바르지 않습니다."]
+                userInfo: [NSLocalizedDescriptionKey: L10n.text("프로세스 실행 인수가 올바르지 않습니다.")]
             )
         }
         let validPinnedName = try! NSRegularExpression(pattern: "^[A-Za-z0-9_]{1,48}$")

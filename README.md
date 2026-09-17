@@ -19,9 +19,11 @@ Today, the Mac app focuses on AI work continuity and storage recovery. The Windo
 | Surface | What it provides |
 |---|---|
 | **Mac app** | Native SwiftUI views for storage, AI work, system evidence, activity history, settings, and approval-gated recovery. |
-| **iPhone preview** | Shows device capacity and, after explicit Photo Library permission, counts videos and screen recordings from public metadata. iOS does not expose other apps' caches or System Data, and this preview does not delete media. |
+| **iPhone preview** | Shows device capacity, reviews photos and videos after Photo Library permission, and deletes only confirmed selections. Files cleanup is limited to files explicitly chosen through the document picker. Records before/after capacity locally; iOS does not expose other apps' caches or System Data. |
 | **AI work protection** | Joins Claude, Codex, Gemini, and supported IDE sessions to repositories and worktrees; flags retention risk, missing workspaces, and unpushed sole copies. |
+| **CI incidents** | Groups GitHub Actions failures with evidence, links local projects, tracks verified recovery, and optionally notifies on new issues or recovery while the app runs. [CI workflow](./docs/CI_INCIDENTS.md). |
 | **Verified backups** | Creates and verifies original Claude and Codex session archives, then restores them only into a new safe directory. |
+| **Asset retirement** | Select GitHub archive and local repository cleanup independently; preserve ignored data, override risk warnings, retry partial operations, and inspect separate mutation/verification/free-space results. [Workflow](./docs/ASSET_RETIREMENT.md). |
 | **Storage recovery** | Explains caches, developer runtimes, apps, models, Simulator data, and project residue; safe batches require an exact preview and stop when the free-space goal is met. |
 | **Local audits** | Reviews uninstall residue and trust roots, unused model caches, broken MCP registrations, session file access, and user corrections of AI agents. |
 | **Read-only MCP** | Makes selected judgments available during an agent session without exposing cleanup, deletion, or scan execution. |
@@ -62,6 +64,15 @@ inspection.
 `search --first` stops at the newest matching turn; ordinary `search` keeps its
 full coverage contract for absence claims.
 
+**Currently implemented — turn test resources:** opt-in Claude/Codex lifecycle
+hooks connect a completed response to simulator runs started by
+`modore resources begin-test`. Modore shuts down only its registered test run,
+preserves devices and persistent data, and keeps resources with unresolved
+consumers or an explicit preview hold. Hook setup requires host review where
+applicable; disabled hooks and unregistered processes are outside this coverage.
+This does not pause or terminate AI sessions. See the
+[command contract](./skills/modore-ops/references/command-contract.md#turn-test-resources).
+
 ### Windows
 
 Clone the repository or download its source archive, then run `scan.bat`. See [Installation](#installation) for requirements and troubleshooting.
@@ -75,6 +86,8 @@ open Modore.xcodeproj
 ```
 
 Requires iOS 17 or later. The generated project is committed, so XcodeGen is needed only after changing `project.yml`. Storage thresholds and capacity arithmetic come from `shared/ModoreDomain`, the same Swift package used by the Mac app.
+
+See [iPhone cleanup](./docs/IPHONE_CLEANUP.md) for selection, confirmation, receipt behavior and validation limits.
 
 <details>
 <summary><strong>Technical and CLI reference</strong></summary>
@@ -193,7 +206,7 @@ Modore is the brand. The OS editions are separate products under that brand, not
 | Edition | Artifact | Focus | Validation rule |
 |---|---|---|---|
 | Mac Edition | `modore-v0.3.x-mac-source.zip`, optional notarized Universal 2 DMG | The scree AI-agent session/residue audit, plus macOS security context and decoding of the System Data / Developer / macOS storage bar into real paths and safe next actions | Mac-only features ship after local macOS validation |
-| iPhone preview | Source project in `ios/Modore` | Device capacity plus user-authorized video and screen-recording metadata; no cross-app cache inspection or deletion | Public iOS APIs only; Simulator tests and real-device validation before distribution |
+| iPhone preview | Source project in `ios/Modore` | Device capacity, confirmed photo/video and user-picked file deletion, and local cleanup receipts; no cross-app cache inspection | Public iOS APIs only; Simulator tests and real-device validation before distribution |
 | Windows Edition | `modore-v0.3.x-win.zip` | Korean banking/government security-plugin context, Defender, Sysinternals, autoruns, network, idle CPU monitor | Windows-only features ship only after real Windows-device validation |
 
 Shared rules, whitelist data, i18n strings, and report vocabulary can be reused where they genuinely match. OS-specific collectors stay separate.
@@ -375,6 +388,32 @@ modore/
 └── tests/                    pytest service and safety contracts
 ```
 
+## Local Mac app updates
+
+Run `bash scripts/build_macos_swift_app.sh` to build the native app with two
+compiler jobs. Local builds use an available Developer ID Application identity,
+or the explicit `PCH_SIGNING_IDENTITY` identity. Reusing the identity preserves
+macOS privacy grants across updates; changing from an older ad-hoc build can
+require granting access once to the newly signed app. For an intentionally
+ad-hoc development build, set `PCH_SIGNING_IDENTITY=-` explicitly.
+
+Deep storage scans are manual by default; enable automatic refresh in Settings
+if wanted. Live free-space readings continue independently. Recovery previews
+use two concurrent workers with a 30-second preview budget, retain verified
+candidates when another candidate fails, and allow retrying excluded candidates.
+Chrome clone cleanup checks individual clone directories for open files, keeping
+active or unverified clones while offering unused ones. Displayed clone size is
+not a promise of reclaimed space because APFS blocks can be shared.
+
+CPU load alerts can be enabled in Modore Settings. While the app is running
+(including in the background), native process CPU counters are sampled every
+10 seconds, supplemented by the system process reader for protected processes
+such as WindowServer. A minute of sustained high CPU usage or macOS thermal pressure
+produces a notification with the top three process names, PIDs, and recent CPU
+percentages. Bursts are ignored and notifications are at least ten minutes
+apart. The monitor allows system sleep, resets sustained-load evidence after
+long sampling gaps (including sleep), stores no process history, and stops when Modore quits.
+
 ## Landing page
 
 The `docs/` folder is the project landing page, designed for GitHub Pages. It is a static, script-free English page: two HTML/CSS files, no client-side i18n runtime.
@@ -467,7 +506,7 @@ Distribution mode only runs from a clean `v<version>` tag at `HEAD` verified by 
 - **No file uploads.** VirusTotal integration uses SHA-256 hashes only.
 - **Local cache only.** VT response cache lives in `%LOCALAPPDATA%/PC건강검진/` (Windows) or `~/Library/Caches/PC건강검진/` (macOS).
 - **Local cleanup receipts.** Mac cleanup receipts stay under `~/Library/Application Support/Modore/cleanup-receipts/`; they contain local paths and are never uploaded.
-- **Local maintenance state.** Simulator keep UUIDs, bounded scan snapshots, and hourly free-space samples stay under `~/Library/Application Support/Modore/` with owner-only permissions. They are never uploaded and can contain local paths, so exported support material should not include them.
+- **Local maintenance state.** Simulator keep UUIDs, bounded scan snapshots, and minute free-space samples stay under `~/Library/Application Support/Modore/` with owner-only permissions. They are never uploaded and can contain local paths, so exported support material should not include them.
 - **Auditable.** VirusTotal calls are in `scripts/vt-lookup.ps1` / `scripts/scanner_helper.jxa.js`; optional Sysinternals downloads are in `scripts/sigcheck-helper.ps1` / `scripts/autorunsc-helper.ps1`. Grep for `Invoke-RestMethod`, `Invoke-WebRequest`, `curl`, and `virustotal.com/api`.
 
 ## Contributing
@@ -499,3 +538,28 @@ This project depends on — but does not redistribute — Microsoft Sysinternals
 ---
 
 <sub>Version 0.3 · 2026</sub>
+
+### Currently implemented — local health context
+
+The **지금 이 Mac** home screen observes disk availability, macOS memory
+pressure, swap, CPU and thermal pressure every ten seconds while Modore runs.
+It records up to 40 local incidents, links notifications back to the screen,
+and compares observations before and after an action. Recovery requires a
+complete minute below the warning thresholds; restarting or a monitoring gap
+never implies recovery. Notification permission does not gate observation.
+Process working directories connect to matching session metadata as candidates,
+not proof that a session owns a process. Conversation bodies are opened only
+through explicit session selection or search. The screen also exposes cleanup
+receipts and copying the current diagnostic context.
+
+Cleanup previews report **actual recovery unknown**. Summed directory sizes
+may include shared APFS blocks and never establish goal completion. Candidate
+review includes remaining eligible recipes rather than stopping when their
+sizes add up to the requested gain. Execution still stops based on measured
+filesystem availability. A shortfall is explicitly reported after execution.
+
+**Design intent:** preserve evidence from detection through action and observed
+outcome without making the user reconstruct it in a prompt.
+
+**Non-goals:** automatic process termination, automatic deletion, inference of
+session ownership from an app name, or guaranteed recovery from directory size.
