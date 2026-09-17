@@ -672,6 +672,7 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
         "scripts/build_macos_icon.sh",
         "scripts/build_macos_swift_app.sh",
         "scripts/package_macos_release.sh",
+        "scripts/test_macos_models.sh",
     }
     build_only_modules = {
         "scripts/modules/build_support.sh",
