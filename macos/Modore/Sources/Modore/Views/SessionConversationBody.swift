@@ -22,9 +22,9 @@ struct SessionConversationBody: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if conversation.turns.isEmpty {
-                Text(L10n.text(conversation.status.partialReadText == nil
-                    ? "이 대화에는 표시할 내용이 없습니다."
-                    : "확인한 구간에서 표시할 대화를 찾지 못했습니다."))
+                Text(conversation.status.partialReadText == nil
+                    ? L10n.text("이 대화에는 표시할 내용이 없습니다.")
+                    : L10n.text("확인한 구간에서 표시할 대화를 찾지 못했습니다."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
