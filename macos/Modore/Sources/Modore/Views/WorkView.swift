@@ -14,6 +14,7 @@ import MothballCore
 /// conversations on the left, the selected conversation on the right.
 /// Reaching a conversation is a project click and a title click.
 struct WorkPage: View {
+    @EnvironmentObject private var ci: CIWatchService
     @State private var resources = false
     @EnvironmentObject private var quotaWork: QuotaWorkModel
     @EnvironmentObject private var model: ScanModel
@@ -23,6 +24,8 @@ struct WorkPage: View {
             HStack {
                 Text(L10n.text("작업 환경")).font(.headline)
                 Spacer()
+                Button(L10n.text("CI 문제")) { ci.showIncidents = true }
+                    .accessibilityIdentifier("work-ci-incidents")
                 Button(L10n.text("작업 환경 보기")) { resources = true }
                     .keyboardShortcut("k", modifiers: [.command, .shift])
             }.padding(12)
@@ -53,6 +56,7 @@ struct WorkPage: View {
         }
         .onChange(of: model.sessionIndex) { _ in resolveQuotaTask() }
         .sheet(isPresented: $resources) { WorkResourceView() }
+        .sheet(isPresented: $ci.showIncidents) { CIIncidentsView() }
         // The git judgment needs the workspace list the audit produces, so
         // a cold start waits until that lands. A boolean only changes on the
         // first report; a revision also restarts binding after a successful

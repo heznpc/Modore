@@ -480,6 +480,7 @@ RUNTIME_FILES=(
     "scripts/scree.py"
     "scripts/asset_retirement.py"
     "scripts/work_resources.py"
+    "scripts/ci_watch.py"
     "scripts/environment_retirement.py"
     "scripts/app_registrations.py"
     "scripts/report.jxa.js"

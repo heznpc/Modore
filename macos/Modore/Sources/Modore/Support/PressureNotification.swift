@@ -16,6 +16,9 @@ enum PressureNotification {
     }
 
     static func destination(action: String, route: String?) -> URL? {
+        if action == UNNotificationDefaultActionIdentifier && route == "ci" {
+            return URL(string: "modore://work/ci")
+        }
         if action == healthAction { return URL(string: "modore://health") }
         if action == recoveryAction || (action == UNNotificationDefaultActionIdentifier && route == "storage") {
             return URL(string: "modore://storage/recovery")

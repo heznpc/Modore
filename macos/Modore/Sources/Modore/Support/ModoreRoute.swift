@@ -1,11 +1,16 @@
 import Foundation
 
 enum ModoreRoute: Equatable, Sendable {
+    case ci
     case health
     case storageRecovery
     case quotaTask(String)
 
     init?(url: URL) {
+        if url.absoluteString.lowercased() == "modore://work/ci" {
+            self = .ci
+            return
+        }
         if url.absoluteString.lowercased() == "modore://health" {
             self = .health
             return
@@ -40,7 +45,7 @@ enum ModoreRoute: Equatable, Sendable {
 
     func shouldStartStorageScan(hasStorageData: Bool, isBusy: Bool) -> Bool {
         switch self {
-        case .health, .quotaTask: return false
+        case .health, .quotaTask, .ci: return false
         case .storageRecovery:
             // Existing candidates go straight to bounded, per-target previews.
             // A full scan is needed only when there is no inventory to review.
