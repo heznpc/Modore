@@ -39,6 +39,7 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 }
 
 struct ModernRootView: View {
+    @EnvironmentObject private var ci: CIWatchService
     @EnvironmentObject private var model: ScanModel
     @EnvironmentObject private var monitor: CPUWatchService
     @EnvironmentObject private var quotaWork: QuotaWorkModel
@@ -133,6 +134,9 @@ struct ModernRootView: View {
 
     private func apply(_ route: ModoreRoute) {
         switch route {
+        case .ci:
+            selection = .work
+            ci.showIncidents = true
         case .quotaTask(let id):
             quotaWork.requestedTaskID = id
             quotaWork.message = nil

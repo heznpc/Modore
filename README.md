@@ -21,6 +21,7 @@ Today, the Mac app focuses on AI work continuity and storage recovery. The Windo
 | **Mac app** | Native SwiftUI views for storage, AI work, system evidence, activity history, settings, and approval-gated recovery. |
 | **iPhone preview** | Shows device capacity, reviews photos and videos after Photo Library permission, and deletes only confirmed selections. Files cleanup is limited to files explicitly chosen through the document picker. Records before/after capacity locally; iOS does not expose other apps' caches or System Data. |
 | **AI work protection** | Joins Claude, Codex, Gemini, and supported IDE sessions to repositories and worktrees; flags retention risk, missing workspaces, and unpushed sole copies. |
+| **CI incidents** | Groups GitHub Actions failures with evidence, links local projects, tracks verified recovery, and optionally notifies on new issues or recovery while the app runs. [CI workflow](./docs/CI_INCIDENTS.md). |
 | **Verified backups** | Creates and verifies original Claude and Codex session archives, then restores them only into a new safe directory. |
 | **Asset retirement** | Select GitHub archive and local repository cleanup independently; preserve ignored data, override risk warnings, retry partial operations, and inspect separate mutation/verification/free-space results. [Workflow](./docs/ASSET_RETIREMENT.md). |
 | **Storage recovery** | Explains caches, developer runtimes, apps, models, Simulator data, and project residue; safe batches require an exact preview and stop when the free-space goal is met. |

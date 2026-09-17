@@ -51,6 +51,7 @@ struct ModoreApp: App {
     @StateObject private var maintenance = QuietMaintenanceService()
     @StateObject private var cpuWatch = CPUWatchService()
     @StateObject private var quotaWork = QuotaWorkModel()
+    @StateObject private var ciWatch = CIWatchService()
     @StateObject private var model: ScanModel
     /// Retaining the descriptor is what retains singleton ownership. The lock
     /// is released automatically after normal or deferred app termination.
@@ -97,11 +98,13 @@ struct ModoreApp: App {
                 .environment(\.layoutDirection, .leftToRight)
                 .environmentObject(cpuWatch)
                 .environmentObject(quotaWork)
+                .environmentObject(ciWatch)
                 .environmentObject(model)
                 .frame(minWidth: 900, minHeight: 640)
                 .onAppear {
                     cpuWatch.start()
                     maintenance.start(model: model)
+                    ciWatch.start(model: model)
                     applicationDelegate.bind(to: model)
                     model.setApplicationActive(scenePhase == .active)
                 }

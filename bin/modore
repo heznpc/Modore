@@ -26,6 +26,7 @@ usage() {
     /usr/bin/printf '%s\n' \
         'Usage:' \
         '  modore sessions [--limit N]' \
+        '  modore ci status|refresh [--discover] [--repo owner/name] [--project PATH]' \
         '  modore sessions current' \
         '  modore search [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
         '  modore resources status|acquire|claim|heartbeat|release [options]' \
@@ -87,6 +88,9 @@ COMMAND="${1:-help}"
 [[ "$#" -eq 0 ]] || shift
 
 case "$COMMAND" in
+    ci)
+        exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/ci_watch.py" "$@"
+        ;;
     help|-h|--help)
         usage
         ;;
