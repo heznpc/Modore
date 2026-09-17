@@ -352,6 +352,9 @@ extension ScanModel {
     /// Everything the Work screen shows, assembled from the three
     /// scanners that used to own a screen each.
     var workProjects: [WorkProject] {
+        if let cached = workProjectsCache, cached.runID == workProvenance.compositionRunID {
+            return cached.projects
+        }
         let worktrees = screeReport?.worktreeItems ?? []
         let assessments = repoAssessments ?? []
         let gitRoots = (screeReport?.lineagePaths ?? []).filter { $0.hasGit == true }.map(\.path)
@@ -378,6 +381,7 @@ extension ScanModel {
                 projects[index].workspaceAttributions = byProject[projects[index].id] ?? []
             }
         }
+        workProjectsCache = (workProvenance.compositionRunID, projects)
         return projects
     }
 

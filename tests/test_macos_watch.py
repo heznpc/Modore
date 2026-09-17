@@ -1852,19 +1852,21 @@ def test_storage_watch_notification_deadline_stops_the_entire_process_tree(
         "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256": _app_executable_hash(bundle),
     }
 
-    started = time.monotonic()
     result = subprocess.run(
         [str(project_root / "scripts" / "storage_watch.sh")],
         capture_output=True,
         text=True,
         encoding="utf-8",
         env=env,
-        timeout=5,
+        timeout=10,
     )
 
     assert result.returncode == 0, result.stderr
-    assert time.monotonic() - started < 4
     assert child_pid_file.is_file()
+    # Measure the notification deadline from notifier startup. The outer
+    # command also verifies the signed app and collects storage facts, which
+    # can take several seconds on a shared CI host before notification begins.
+    assert time.time() - child_pid_file.stat().st_mtime < 4
     child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
     for _ in range(50):
         try:
