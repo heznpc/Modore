@@ -206,6 +206,9 @@ final class ScanModel: ObservableObject {
     @Published private(set) var deepScanAt: Date?
     @Published private(set) var cleanupMutationPending = false
     private(set) var workProvenance = WorkProvenance()
+    // Every source publication changes compositionRunID. Reuse the assembled
+    // projects during UI redraws and title/CI updates that do not change sources.
+    var workProjectsCache: (runID: String, projects: [WorkProject])?
     @Published var screeReport: ScreeReport? {
         didSet { workProvenance.didPublish(.screeReport) }
     }
