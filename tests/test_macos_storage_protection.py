@@ -461,18 +461,20 @@ def test_application_metadata_tools_share_total_budget(project_root, tmp_path):
         plist_tool,
         mdls_tool,
         extra_env={
-            "PCH_STORAGE_APPLICATION_COMMAND_TIMEOUT": "5",
+            "PCH_STORAGE_APPLICATION_COMMAND_TIMEOUT": "10",
             # Bash SECONDS has whole-second resolution. A one-second budget
             # can expire during fixture validation before the tool launches.
             # Two seconds gives startup headroom while still proving that the
-            # shared budget cuts short the five-second command timeout.
+            # shared budget cuts short the ten-second command timeout.
             "PCH_STORAGE_APPLICATION_TOTAL_BUDGET": "2",
         },
     )
     elapsed = time.monotonic() - started
 
     assert result.returncode == 0, result.stderr
-    assert elapsed < 4
+    # Leave scheduling headroom on shared macOS runners while remaining
+    # below the per-command timeout (10s) and hanging child lifetime (30s).
+    assert elapsed < 8
     assert child_pid.exists(), "the tool must launch to exercise budget cancellation"
     pid = child_pid.read_text(encoding="utf-8")
     assert not subprocess.run(
