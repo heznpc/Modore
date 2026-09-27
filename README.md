@@ -159,6 +159,28 @@ by an app or script; open-file observation is not proof of future independence.
 **Non-goals:** finding renamed duplicates, deleting protected app data, pruning
 Git branches/worktrees, or proving another app can resume from the backup.
 
+### Reconnect an old local path to SSD work
+
+**저장공간 → 환경 정리 → SSD 경로 재연결** restores access through an old,
+missing local file or project-folder path by linking it to an existing SSD
+working copy. Prepare the working copy outside the archival backup first:
+opening or editing through the old path reads or changes that SSD target.
+Known backup locations are rejected to keep the recovery snapshot separate
+from ongoing work.
+
+Preview records the exact original path, target identity and, for files,
+content hash. Connecting checks them again and never replaces an existing
+local entry. Saved mappings can be checked for an unavailable SSD, changed
+target or conflicting local path. Undo removes only the recorded link and
+retains the SSD data. Previous duplicate-cleanup receipts provide missing-path
+candidates; they do not automatically connect the archival copy.
+
+This compatibility layer does not rewrite provider JSONL/JSON/SQLite stores,
+restore an app's session list, grant folder permissions, or repair linked Git
+worktree metadata. Codex, Claude and Kiro may still need their own resume or
+workspace selection step. Provider homes and app-managed stores remain
+protected; a successful path check is not proof of a successful app resume.
+
 ### Session recovery on another Mac
 
 **작업 → 백업·이전…** prepares a recovery bundle independently of any one
