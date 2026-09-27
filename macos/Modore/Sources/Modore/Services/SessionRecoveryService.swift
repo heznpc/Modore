@@ -23,7 +23,7 @@ enum SessionRecoveryService {
 
     static func invoke(execution: RuntimeExecutionContext, script: String,
                        arguments: [String], timeout: TimeInterval) async throws -> CapturedProcessResult {
-        guard ["session_recovery.py", "session_resume.py", "backup_reclaim.py"].contains(script),
+        guard ["session_recovery.py", "session_resume.py", "backup_reclaim.py", "path_reconnect.py"].contains(script),
               let invocation = execution.pinnedInvocation(relativePath: "scripts/" + script, name: "session_recovery"),
               let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
             throw SessionRecoveryFailure(message: L10n.text("백업·이전 실행 파일을 확인하지 못했습니다."))
