@@ -480,6 +480,7 @@ RUNTIME_FILES=(
     "scripts/scree.py"
     "scripts/session_recovery.py"
     "scripts/session_resume.py"
+    "scripts/backup_reclaim.py"
     "scripts/asset_retirement.py"
     "scripts/work_resources.py"
     "scripts/ci_watch.py"
@@ -755,6 +756,8 @@ run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B \
     "$RUNTIME_DIR/scripts/session_recovery.py" --help > /dev/null
 run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B \
     "$RUNTIME_DIR/scripts/session_resume.py" --help > /dev/null
+run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B \
+    "$RUNTIME_DIR/scripts/backup_reclaim.py" --help > /dev/null
 
 runtime_hash="$({
     cd "$RUNTIME_DIR"
