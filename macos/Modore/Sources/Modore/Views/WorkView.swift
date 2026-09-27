@@ -16,6 +16,7 @@ import MothballCore
 struct WorkPage: View {
     @EnvironmentObject private var ci: CIWatchService
     @State private var resources = false
+    @State private var sessionRecovery = false
     @EnvironmentObject private var quotaWork: QuotaWorkModel
     @EnvironmentObject private var model: ScanModel
 
@@ -24,6 +25,8 @@ struct WorkPage: View {
             HStack {
                 Text(L10n.text("작업 환경")).font(.headline)
                 Spacer()
+                Button(L10n.text("백업·이전")) { sessionRecovery = true }
+                    .accessibilityIdentifier("work-session-recovery")
                 Button(L10n.text("CI 문제")) { ci.showIncidents = true }
                     .accessibilityIdentifier("work-ci-incidents")
                 Button(L10n.text("작업 환경 보기")) { resources = true }
@@ -56,6 +59,7 @@ struct WorkPage: View {
         }
         .onChange(of: model.sessionIndex) { _ in resolveQuotaTask() }
         .sheet(isPresented: $resources) { WorkResourceView() }
+        .sheet(isPresented: $sessionRecovery) { SessionRecoverySheet() }
         .sheet(isPresented: $ci.showIncidents) { CIIncidentsView() }
         // The git judgment needs the workspace list the audit produces, so
         // a cold start waits until that lands. A boolean only changes on the
