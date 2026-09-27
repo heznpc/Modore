@@ -129,9 +129,59 @@ python3 scripts/scree.py backup-restore <backup.zip> --out <new-directory>
 
 **Design intent:** inspect what matters, preserve original evidence, and test
 restoration before deciding how to manage local storage. **Non-goals:** automatic
-deletion, full machine backup, provider migration, or a guarantee that a provider
+deletion, full machine backup, or a guarantee that a provider
 can resume an archived session. A successful byte comparison is not a cleanup
 authorization.
+
+### Session recovery on another Mac
+
+**작업 → 백업·이전…** prepares a recovery bundle independently of any one
+project or currently selected session. Choose an external disk or parent folder;
+Modore creates a new `Backup/YYYY-MM-DD/Modore-<id>` directory beneath it.
+The preview lists discovered stores, sizes, and Git-linked, folder-linked, or
+unassigned records. A Git relationship never means that the conversation was
+pushed to a remote repository.
+
+The bundle contains selected Codex current and archived transcripts, owned
+attachments, indices and consistent SQLite snapshots; Claude Code records and
+owned sidecars; and supported local Claude Desktop Code conversation stores.
+Hidden files inside these supported stores are considered too. Credentials,
+settings, runtime caches, external symlink targets, and cloud-only conversations
+are excluded. Raw conversation content can itself contain secrets: these bundles
+are local, unmasked and unencrypted.
+
+Verification checks every manifest entry against its SHA-256 digest. Restore
+creates a new isolated directory and works without the original Mac or source
+paths. From that restored copy, select a Codex or Claude Code session, connect
+its new project directory, and prepare an isolated provider home plus a resume
+command. This leaves live provider stores alone and does not run a model or
+mark the session as resumed. Install the provider CLI and sign in within that
+provider home before using the command.
+
+| Recovery evidence | What it establishes |
+| --- | --- |
+| Verified bundle / restored files | The included bytes match their recorded hashes. |
+| Prepared Codex / Claude Code session | Selected local records are staged and a provider resume command is available; actual continuation remains unverified until the provider opens it. |
+| Claude Desktop, Cowork, Gemini, IDE state | Native application import/resume is not guaranteed; only the explicitly supported local stores above are copied. |
+| Workspace relationship | Identifies the associated folder; it is not a backup of that folder. |
+
+**The session bundle does not contain project code or general user files.** A
+replacement Mac also needs a separate verified copy of project files, local Git
+history, uncommitted and untracked work, required ignored files, and user-created
+assets. A remote clone covers only what was pushed. Live process memory, unsaved
+editor changes, data already missing before backup, and changes after backup
+cannot be recovered from this bundle. Provider stores are captured sequentially;
+for the final recovery copy, finish active sessions and repeat the backup.
+
+The bundled backend is also available for explicit local use:
+
+```bash
+python3 scripts/session_recovery.py plan
+python3 scripts/session_recovery.py backup --destination /path/to/Backup/new-bundle --items-json '["codex.sessions","codex.archived","claude.projects"]' --include-sensitive
+python3 scripts/session_recovery.py verify /path/to/Backup/new-bundle
+python3 scripts/session_recovery.py restore /path/to/Backup/new-bundle --destination /path/to/new-restore
+python3 scripts/session_resume.py --help
+```
 
 The operator-friction audit reads the same session stores for a different question: where did the user stop or correct the agent? Its CLI entry point is:
 

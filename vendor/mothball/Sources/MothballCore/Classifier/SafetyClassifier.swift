@@ -33,40 +33,26 @@ public struct SafetyClassifier: Sendable {
     public func classify(_ repo: RepoInfo, now: Date = Date()) -> SafetyVerdict {
         let dormancyDays = daysBetween(repo.lastActivity, now)
 
-        // Recent activity: unconditionally unsafe. Don't archive things
-        // the user is currently using.
-        if dormancyDays < thresholds.recentActivityDays {
-            return SafetyVerdict(
-                tier: .unsafe,
-                reasons: [.recentActivity(daysAgo: dormancyDays)]
-            )
-        }
-
-        var reasons: [SafetyReason] = [.dormant(daysAgo: dormancyDays)]
-
-        // No remote means the only copy of the work is local.
-        // Compressing-then-deleting is recoverable from the archive,
-        // but the user has *no* origin to clone from later. Refuse.
-        guard repo.git.hasRemote else {
-            return SafetyVerdict(
-                tier: .unsafe,
-                reasons: reasons + [.noRemoteConfigured]
-            )
-        }
-
-        // From here we know: dormant >= recentActivityDays AND has remote.
-        // Grade by what work is local-only.
+        // Activity changes the retirement tier, not which local-only work
+        // we report. The Work UI uses these reasons for recovery coverage.
+        let isRecent = dormancyDays < thresholds.recentActivityDays
+        var reasons: [SafetyReason] = [isRecent
+            ? .recentActivity(daysAgo: dormancyDays)
+            : .dormant(daysAgo: dormancyDays)]
         var localOnlyProblems: [SafetyReason] = []
 
+        if !repo.git.hasRemote {
+            localOnlyProblems.append(.noRemoteConfigured)
+        }
         if repo.git.isDirty {
             localOnlyProblems.append(.dirtyWorkingTree)
         }
 
-        if !repo.git.hasUpstream {
+        if repo.git.hasRemote && !repo.git.hasUpstream {
             // Has an `origin` remote but the current branch has no
             // upstream tracking — we can't prove things are pushed.
             localOnlyProblems.append(.noUpstreamConfigured)
-        } else if let ahead = repo.git.aheadOfOrigin, ahead > 0 {
+        } else if repo.git.hasRemote, let ahead = repo.git.aheadOfOrigin, ahead > 0 {
             localOnlyProblems.append(.unpushedCommits(count: ahead))
         }
 
@@ -74,6 +60,10 @@ public struct SafetyClassifier: Sendable {
             reasons.append(.fullyPushed)
         } else {
             reasons.append(contentsOf: localOnlyProblems)
+        }
+
+        if isRecent || !repo.git.hasRemote {
+            return SafetyVerdict(tier: .unsafe, reasons: reasons)
         }
 
         // Decision: safe requires both deep dormancy AND nothing local-only.
