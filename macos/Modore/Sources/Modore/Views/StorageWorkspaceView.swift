@@ -27,6 +27,7 @@ struct StorageWorkspacePage: View {
     @Binding var section: StorageWorkspaceSection
     @State private var retirementOpen = false
     @State private var environmentRetirement = false
+    @State private var backupReclaimOpen = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -64,6 +65,7 @@ struct StorageWorkspacePage: View {
         }
         .navigationDestination(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
         .navigationDestination(isPresented: $retirementOpen) { AssetRetirementView() }
+        .navigationDestination(isPresented: $backupReclaimOpen) { BackupReclaimView() }
     }
 
     private var sidebar: some View {
@@ -78,6 +80,11 @@ struct StorageWorkspacePage: View {
                 }
             }
             Section(L10n.text("환경 정리")) {
+                Button { backupReclaimOpen = true } label: {
+                    Label(L10n.text("백업 중복 정리"), systemImage: "externaldrive.badge.checkmark")
+                }
+                .buttonStyle(.plain).padding(.vertical, 3)
+                .accessibilityIdentifier("open-backup-reclaim")
                 Button { environmentRetirement = true } label: {
                     Label(L10n.text("실행 환경"), systemImage: "desktopcomputer")
                 }

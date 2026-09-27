@@ -133,6 +133,32 @@ deletion, full machine backup, or a guarantee that a provider
 can resume an archived session. A successful byte comparison is not a cleanup
 authorization.
 
+### Clean up local copies after backup
+
+**Currently implemented:** **저장공간 → 환경 정리 → 백업 중복 정리** compares
+an explicitly chosen local folder with its corresponding folder on a different
+volume. Matching relative paths are checked with SHA-256, permissions, ACLs and
+extended attributes; provenance, quarantine and last-used metadata are excluded
+from the match. Hidden entries are included in the report. AI conversation and
+app stores, hidden configuration, Git workspaces, app packages, databases,
+build-tool dependency/cache directories, credential/key files, symlinks and hardlinks are protected.
+A matching file is not automatically selected.
+
+Select ordinary files, review their local-path impact, and confirm deletion in
+the app. The app checks both copies again and consumes a one-use comparison
+plan. Changed, open or unverifiable files are skipped. The retained backup is
+never modified. Each file is staged by rename and checked before deletion;
+interruption restores it without overwriting an existing path, or records its
+recovery location. Local receipts distinguish deleted file sizes from measured
+disk free space. Comparisons are bounded to 5,000 reported entries and three
+minutes; a partial scan is labeled, and up to 1,000 files can be selected per run.
+
+**Design intent:** keep Codex usable by retaining its JSONL transcripts, state,
+settings and attachments locally. A deleted personal file may still be needed
+by an app or script; open-file observation is not proof of future independence.
+**Non-goals:** finding renamed duplicates, deleting protected app data, pruning
+Git branches/worktrees, or proving another app can resume from the backup.
+
 ### Session recovery on another Mac
 
 **작업 → 백업·이전…** prepares a recovery bundle independently of any one
