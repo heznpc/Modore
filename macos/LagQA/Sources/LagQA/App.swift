@@ -5,35 +5,19 @@ import SwiftUI
 final class QAModel: ObservableObject {
     @Published var running = false
     @Published var saving = false
-    @Published var phaseIndex = -1
-    @Published var remaining = 80
-    @Published var phaseRemaining = 8
-    @Published var status = "시작 후 ChatGPT로 돌아가 음성 안내를 따라주세요."
+    @Published var elapsedSeconds = 0
+    @Published var status = "원하는 만큼 사용한 뒤 측정 종료를 누르세요."
     @Published var output: URL?
-    @Published var voiceEnabled = true
     @Published var ratings = ["first-input": "미확인", "typing": "미확인", "sidebar": "미확인", "attachment": "미확인"]
     @Published var context = "현재 긴 대화"
     private var recorder: Recorder?
     private var timer: Timer?
     private var startTime: Double = 0
-    private var phases = Phase.standard
-    private let speech = NSSpeechSynthesizer()
+    private var captureIndex = -1
     private var stopped: (() -> Void)?
     let smoke: Bool
 
-    init(smoke: Bool) {
-        self.smoke = smoke
-        if let voice = NSSpeechSynthesizer.availableVoices.first(where: {
-            (NSSpeechSynthesizer.attributes(forVoice: $0)[.localeIdentifier] as? String)?.hasPrefix("ko") == true
-        }) { speech.setVoice(voice) }
-        speech.rate = 205
-    }
-
-    func speak(_ text: String) {
-        guard voiceEnabled, !smoke else { return }
-        speech.stopSpeaking()
-        if !speech.startSpeaking(text) { NSSound.beep() }
-    }
+    init(smoke: Bool) { self.smoke = smoke }
 
     func start() {
         guard !running, !saving else { return }
@@ -45,14 +29,13 @@ final class QAModel: ObservableObject {
             recorder = try Recorder(mainPID: pid, smoke: smoke)
             output = nil
             ratings = ["first-input": "미확인", "typing": "미확인", "sidebar": "미확인", "attachment": "미확인"]
-            phases = smoke ? Phase.standard.map { Phase(id: $0.id, title: $0.title, instruction: $0.instruction,
-                seconds: ["first-input", "sidebar", "attachment"].contains($0.id) ? 3 : 1) } : Phase.standard
-            remaining = phases.reduce(0) { $0 + $1.seconds }
-            running = true; phaseIndex = -1
+            elapsedSeconds = 0
+            running = true; captureIndex = -1
+            status = "ChatGPT를 평소처럼 사용하세요. 끝났을 때 이 창에서 종료하면 됩니다."
             startTime = ProcessInfo.processInfo.systemUptime
             recorder?.start()
             tick()
-            let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tick() }
             }
             RunLoop.main.add(timer, forMode: .common)
@@ -62,15 +45,15 @@ final class QAModel: ObservableObject {
 
     private func tick() {
         let elapsed = ProcessInfo.processInfo.systemUptime - startTime
-        let secondsLeft = max(0, Int(ceil(Double(phases.reduce(0) { $0 + $1.seconds }) - elapsed)))
-        if remaining != secondsLeft { remaining = secondsLeft }
-        guard let position = Phase.position(at: elapsed, phases: phases) else { finish(cancelled: false); return }
-        if phaseRemaining != position.remaining { phaseRemaining = position.remaining }
-        if position.index != phaseIndex {
-            phaseIndex = position.index
-            status = phases[phaseIndex].instruction
-            recorder?.changePhase(phases[phaseIndex])
-            speak(status)
+        if elapsedSeconds != Int(elapsed) { elapsedSeconds = Int(elapsed) }
+        // Only the explicit smoke-test mode has an automatic stop. User runs
+        // never advance an instruction or finish based on a countdown.
+        if RecordingPolicy.shouldFinish(elapsed: elapsed, smoke: smoke) { finish(cancelled: false); return }
+        let index = Int(elapsed / 20)
+        if index != captureIndex {
+            captureIndex = index
+            recorder?.changePhase(Phase(id: String(format: "observation-%04d", index),
+                title: "자유 측정", instruction: "User-controlled recording; no assumed action.", seconds: 10))
         }
     }
 
@@ -79,7 +62,6 @@ final class QAModel: ObservableObject {
         guard running else { then?(); return }
         stopped = then
         timer?.invalidate(); timer = nil
-        speech.stopSpeaking()
         running = false; saving = true
         status = "결과를 저장하고 있습니다…"
         let folder = recorder?.folder
@@ -88,7 +70,6 @@ final class QAModel: ObservableObject {
             self.output = folder; self.saving = false
             self.status = detail
             self.saveRatings()
-            self.speak(cancelled ? "진단을 중단했습니다. 결과는 저장했습니다." : "진단이 끝났습니다. QA 앱에서 버벅였던 구간을 표시해 주세요.")
             self.stopped?(); self.stopped = nil
         }
     }
@@ -115,7 +96,7 @@ final class QAModel: ObservableObject {
 
     func reset() {
         output = nil
-        status = "시작 후 ChatGPT로 돌아가 음성 안내를 따라주세요."
+        status = "원하는 만큼 사용한 뒤 측정 종료를 누르세요."
     }
 }
 
@@ -127,27 +108,26 @@ struct QAView: View {
                 Image(systemName: "waveform.path.ecg").font(.title).foregroundStyle(.blue)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("ChatGPT 끊김 진단").font(.title2.bold())
-                    Text("앱에서 시작하고, 음성 안내대로 재현하세요.").font(.caption).foregroundStyle(.secondary)
+                    Text("시작과 종료만 누르면, 조용히 기록합니다.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if model.running { Text("\(model.remaining)초").font(.title2.monospacedDigit().bold()) }
+                if model.running { Text("\(model.elapsedSeconds)초").font(.title2.monospacedDigit().bold()) }
             }
             Divider()
             if model.smoke { Text("자동 점검 모드 · 사용자 재현 결과가 아닙니다").font(.caption).foregroundStyle(.orange) }
             if model.running {
-                Text(Phase.standard[model.phaseIndex].title).font(.title3.bold())
+                Text("측정 중").font(.title3.bold())
                 Text(model.status).font(.body).fixedSize(horizontal: false, vertical: true)
                     .frame(minHeight: 58, alignment: .topLeading)
-                ProgressView(value: Double(80 - model.remaining), total: 80)
-                Text("이 구간 \(model.phaseRemaining)초 남음 · 메시지는 전송하지 마세요.").font(.caption).foregroundStyle(.secondary)
+                Text("자동으로 넘어가는 단계나 종료 시간은 없습니다.").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text("이 창은 옆으로 옮겨두셔도 됩니다.").font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("중단하고 저장") { model.finish(cancelled: true) }
+                    Button("측정 종료 · 저장") { model.finish(cancelled: false) }.buttonStyle(.borderedProminent)
                 }
             } else if model.output != nil {
                 Label(model.status, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
-                Text("어느 구간에서 버벅였나요?").font(.headline)
+                Text("어떤 동작에서 버벅였나요?").font(.headline)
                 ForEach(Phase.standard.filter { model.ratings[$0.id] != nil }, id: \.id) { phase in
                     HStack {
                         Text(phase.title).frame(width: 114, alignment: .leading)
@@ -169,23 +149,19 @@ struct QAView: View {
                     Button("다시 측정") { model.reset() }
                 }
             } else {
-                Text("80초 동안 안내에 맞춰 평소처럼 조작하면 됩니다.").font(.headline)
-                Text("대기 → 첫 입력 → 연속 입력 → 목록 이동 → 사진 첨부\n사진 한 장을 미리 준비해 주세요.")
+                Text("켜두고 평소처럼 사용하세요.").font(.headline)
+                Text("입력·목록 이동·사진 첨부를 원하는 순서와 속도로 해보세요.\n끝나면 돌아와 측정 종료를 누르면 됩니다.")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Picker("측정할 대화", selection: $model.context) {
                     Text("현재 긴 대화").tag("현재 긴 대화")
                     Text("짧은 기존 대화").tag("짧은 기존 대화")
                 }.pickerStyle(.segmented).disabled(model.saving)
-                HStack {
-                    Toggle("음성 안내", isOn: $model.voiceEnabled)
-                    Button("음성 확인") { model.speak("음성 안내가 준비되었습니다. 시작을 누르면 진단을 진행합니다.") }
-                }
                 Text(model.status).font(.caption).foregroundStyle(.secondary)
-                Button(model.saving ? "저장 중…" : "80초 진단 시작") { model.start() }
+                Button(model.saving ? "저장 중…" : "측정 시작") { model.start() }
                     .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.saving)
             }
             Spacer(minLength: 0)
-            Text("CPU · 구간별 호출 스택 · 오류 시각을 로컬에 저장합니다.\n화면 녹화, 키 입력 내용, 사진 내용은 수집하지 않습니다.")
+            Text("CPU · 주기적 호출 스택 · 오류 시각을 로컬에 저장합니다.\n화면 녹화, 키 입력 내용, 사진 내용은 수집하지 않습니다.")
                 .font(.caption2).foregroundStyle(.secondary)
         }.padding(22).frame(width: 490, height: 430)
     }

@@ -2,13 +2,12 @@ import XCTest
 @testable import LagQA
 
 final class ProtocolTests: XCTestCase {
-    func testPhaseBoundariesAndAutomaticEnd() {
-        let phases = Phase.standard
-        XCTAssertEqual(phases.reduce(0) { $0 + $1.seconds }, 80)
-        XCTAssertEqual(Phase.position(at: 7.9, phases: phases)?.index, 0)
-        XCTAssertEqual(Phase.position(at: 8, phases: phases)?.index, 1)
-        XCTAssertEqual(Phase.position(at: 40, phases: phases)?.index, 4)
-        XCTAssertNil(Phase.position(at: 80, phases: phases))
+    func testUserRecordingNeverFinishesOnOldTimerBoundaries() {
+        for elapsed in [0.0, 8, 12, 40, 80, 600, 3600] {
+            XCTAssertFalse(RecordingPolicy.shouldFinish(elapsed: elapsed, smoke: false))
+        }
+        XCTAssertFalse(RecordingPolicy.shouldFinish(elapsed: 11.9, smoke: true))
+        XCTAssertTrue(RecordingPolicy.shouldFinish(elapsed: 12, smoke: true))
     }
     func testCPUUsesElapsedCountersAndRejectsPIDReuse() {
         let old = CPUCounter(birth: 1, totalNanoseconds: 2_000_000_000, timestamp: 10)
