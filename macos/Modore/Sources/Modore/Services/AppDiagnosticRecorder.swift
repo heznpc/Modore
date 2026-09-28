@@ -17,6 +17,8 @@ actor AppDiagnosticRecorder {
     private var discoveryTruncated = false
     private var sampleProcess: Process?
     private var sampleCount = 0
+    private var automaticAttempts = 0
+    private var lastAutomaticAttempt = -30.0
     private var lastStack = -30.0
     private var hottest: Int32?
     private var file: FileHandle?
@@ -113,14 +115,29 @@ actor AppDiagnosticRecorder {
         frames.append(frame)
         do { try file?.write(contentsOf: JSONEncoder().encode(frame) + Data([10])) }
         catch { writeFailed = true; return (frame, "기록 저장 실패") }
+        if sampleCount < DiagnosticBudget.stacks,
+           seconds - lastStack >= 30,
+           let pid = DiagnosticSpikePolicy.target(frame: frame, count: automaticAttempts,
+                lastAttempt: lastAutomaticAttempt, sampling: sampleProcess?.isRunning == true) {
+            automaticAttempts += 1; lastAutomaticAttempt = seconds
+            _ = startStack(pid: pid, reason: "고부하 자동 포착")
+        }
         return (frame, nil)
     }
 
     func collectStack() -> String {
+        guard let pid = hottest else { return "대상 프로세스를 확인할 수 없습니다." }
+        return startStack(pid: pid, reason: "사용자 요청")
+    }
+
+    private func startStack(pid: Int32, reason: String) -> String {
         guard !finished, sampleCount < DiagnosticBudget.stacks else { return "스택 수집 한도에 도달했습니다." }
         guard sampleProcess?.isRunning != true, NativeCPUReader.continuousSeconds - clock - lastStack >= 30 else { return "스택 수집은 30초 간격으로 가능합니다." }
         guard let main = NativeCPUReader.read(target.pid), main.started == target.birth,
-              let pid = hottest, let known = previous[pid], NativeCPUReader.read(pid)?.started == known.started else { return "대상 프로세스를 확인할 수 없습니다." }
+              let known = previous[pid], NativeCPUReader.read(pid)?.started == known.started else {
+            mark("stack-failed", "\(reason) · 대상 프로세스 종료 또는 재시작")
+            return "대상 프로세스를 확인할 수 없습니다."
+        }
         do {
             let directory = folder.appendingPathComponent("native-private")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -131,16 +148,17 @@ actor AppDiagnosticRecorder {
             process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
             try process.run()
             sampleProcess = process; sampleCount += 1; lastStack = NativeCPUReader.continuousSeconds - clock
-            mark("stack-start", "사용자 요청 · 3초 native sample")
+            mark("stack-start", "\(reason) · PID \(pid) · \(path.lastPathComponent) · 3초 native sample")
             Task {
                 try? await Task.sleep(nanoseconds: 6_000_000_000)
                 self.completeStack(process)
             }
             return "3초 스택 수집을 시작했습니다."
-        } catch { mark("stack-failed", "스택 도구 실행 실패"); return "스택 도구를 실행하지 못했습니다." }
+        } catch { mark("stack-failed", "\(reason) · 스택 도구 실행 실패"); return "스택 도구를 실행하지 못했습니다." }
     }
 
     private func completeStack(_ process: Process) {
+        guard !finished else { return }
         if process.isRunning { process.terminate(); mark("stack-partial", "수집 시간 초과 · 부분 결과") }
         else { mark(process.terminationStatus == 0 ? "stack-saved" : "stack-failed", "스택 도구 종료") }
     }
@@ -155,7 +173,7 @@ actor AppDiagnosticRecorder {
         let result = DiagnosticResult(id: UUID(uuidString: folder.lastPathComponent)!, target: target,
             condition: condition, started: started, frames: frames, events: events,
             finishReason: writeFailed ? "기록 저장 실패 · 부분 결과" : reason,
-            timebaseNumer: NativeCPUReader.timebase.numer, timebaseDenom: NativeCPUReader.timebase.denom, schemaVersion: 2)
+            timebaseNumer: NativeCPUReader.timebase.numer, timebaseDenom: NativeCPUReader.timebase.denom, schemaVersion: 3)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(result).write(to: folder.appendingPathComponent("result.json"), options: .atomic)
         try result.report.write(to: folder.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)

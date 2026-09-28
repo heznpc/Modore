@@ -46,6 +46,59 @@ final class AppDiagnosticTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(DiagnosticBudget.delay(collectionSeconds: 0.1, thermal: 0), 4.9)
         XCTAssertGreaterThanOrEqual(DiagnosticBudget.delay(collectionSeconds: 0, thermal: 2), 2)
     }
+    private func timed(_ seconds: Double, cpu: Double, renderer: Double? = nil, missing: Int = 0, interval: Double = 1) -> DiagnosticFrame {
+        .init(seconds: seconds, interval: interval, targetCPU: cpu, observerCPU: 1, samplerCPU: nil,
+              residentBytes: 0, available: 1, unavailable: missing, collectionMilliseconds: 1, thermal: 0,
+              rendererCPU: renderer)
+    }
+    func testActionAnalysisFindsRecordedRiseWithoutClaimingInputLatency() {
+        let rows = (1...6).map { timed(Double($0), cpu: $0 <= 3 ? 30 : 215) }
+        let value = result(frames: rows, events: [.init(seconds: 3, kind: "manual", detail: "first-input")])
+        let action = value.actionAssessments[0]
+        XCTAssertTrue(action.rose)
+        XCTAssertEqual(action.before.mean, 30)
+        XCTAssertEqual(action.after.mean, 215)
+        XCTAssertTrue(value.report.contains("입력 지연 시간이나 인과관계를 증명하지 않습니다"))
+        XCTAssertTrue(value.report.contains("프로세스별 CPU를 저장하지 않아"))
+    }
+    func testMissingBaselineStillReportsObservedHighCPUButNotIncrease() {
+        let rows = (1...6).map { timed(Double($0), cpu: $0 <= 3 ? 30 : 215, missing: $0 == 2 ? 1 : 0) }
+        let value = result(frames: rows, events: [.init(seconds: 3, kind: "manual", detail: "first-input")])
+        XCTAssertTrue(value.actionAssessments[0].highCPU)
+        XCTAssertFalse(value.actionAssessments[0].rose)
+        XCTAssertTrue(value.diagnosticHeadline.contains("높은 CPU"))
+    }
+    func testBoundaryCrossingAndShortObservationCannotBecomeActionEvidence() {
+        let rows = [timed(2, cpu: 20), timed(3.5, cpu: 400), timed(4, cpu: 10, interval: 0.5)]
+        let action = result(frames: rows, events: [.init(seconds: 3, kind: "manual", detail: "sidebar")]).actionAssessments[0]
+        XCTAssertEqual(action.after.mean, 10)
+        XCTAssertFalse(action.after.complete)
+        XCTAssertFalse(action.highCPU)
+        XCTAssertFalse(action.rose)
+    }
+    func testWorkerLoadIsNotAttributedToRendererAndStackCollectionConfoundsIncrease() {
+        let rows = (1...6).map { timed(Double($0), cpu: 400, renderer: 10) }
+        let marker = DiagnosticEvent(seconds: 3, kind: "manual", detail: "attachment")
+        let value = result(frames: rows, events: [marker])
+        XCTAssertFalse(value.actionAssessments[0].highCPU)
+        XCTAssertEqual(value.actionAssessments[0].after.mean, 10)
+        XCTAssertTrue(value.diagnosticHeadline.contains("앱·작업 합산"))
+        let high = (1...6).map { timed(Double($0), cpu: $0 <= 3 ? 30 : 215) }
+        let sampled = result(frames: high, events: [marker, .init(seconds: 4, kind: "stack-start", detail: "sample")])
+        XCTAssertFalse(sampled.actionAssessments[0].rose)
+        XCTAssertTrue(sampled.actionAssessments[0].stacksOverlap)
+        let overlap = result(frames: high, events: [marker, .init(seconds: 4, kind: "manual", detail: "sidebar")])
+        XCTAssertFalse(overlap.actionAssessments[0].rose)
+    }
+    func testAutomaticStacksAreBoundedAndPreferBusyRendererOverWorker() {
+        var spike = timed(40, cpu: 600, renderer: 200)
+        spike.topProcesses = [.init(pid: 2, name: "worker", cpu: 400), .init(pid: 3, name: "App Renderer", cpu: 200)]
+        XCTAssertEqual(DiagnosticSpikePolicy.target(frame: spike, count: 0, lastAttempt: 0, sampling: false), 3)
+        XCTAssertNil(DiagnosticSpikePolicy.target(frame: spike, count: 2, lastAttempt: 0, sampling: false))
+        XCTAssertNil(DiagnosticSpikePolicy.target(frame: spike, count: 0, lastAttempt: 20, sampling: false))
+        XCTAssertNil(DiagnosticSpikePolicy.target(frame: spike, count: 0, lastAttempt: 0, sampling: true))
+        XCTAssertNil(DiagnosticSpikePolicy.target(frame: timed(40, cpu: 10), count: 0, lastAttempt: 0, sampling: false))
+    }
     func testPIDReuseAndMonitoringGapAreNotValidCPU() {
         let a = CPUProcessCounter(pid: 1, started: 1, name: "test", nanoseconds: 0)
         let b = CPUProcessCounter(pid: 1, started: 1, name: "test", nanoseconds: 1_000_000_000)

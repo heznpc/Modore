@@ -89,6 +89,7 @@ struct DiagnosticResult: Codable, Identifiable, Sendable {
             for process in processes { text += "- \(process.name) · PID \(process.pid): \(number(process.cpu))%\n" }
         }
         text += "관측 누락: \(incomplete ? "있음" : "없음") · Mach timebase \(timebaseNumer)/\(timebaseDenom)\n"
+        text += "\n" + assessmentReport
         text += "\n| 경과 초 | 종류 | 기록 |\n|---:|---|---|\n"
         for event in events { text += "| \(number(event.seconds)) | \(event.kind) | \(event.detail) |\n" }
         text += "\n100%는 코어 하나입니다. 합산 CPU에는 앱의 작업·도구 프로세스도 포함되며 UI 부하만을 뜻하지 않습니다. Renderer는 프로세스 이름으로 구분하며 지원하지 않는 앱에서는 미확인입니다. CPU는 동일 시점의 대상 앱과 자식 프로세스를 합산하고 시간 가중 평균을 냈습니다. RSS는 공유 메모리가 중복될 수 있습니다. 첫 표본·접근 실패·수집 중단 구간을 0으로 처리하지 않습니다.\n"
