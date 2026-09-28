@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct Phase: Codable, Equatable {
     let id: String
@@ -21,13 +22,33 @@ enum RecordingPolicy {
 
 struct CPUCounter {
     let birth: UInt64
-    let totalNanoseconds: UInt64
+    let totalTicks: UInt64
     let timestamp: Double
-    static func percent(previous: CPUCounter?, current: CPUCounter) -> Double? {
+    // proc_pid_rusage CPU times are Mach absolute ticks on this platform.
+    static let timebase: mach_timebase_info_data_t = {
+        var value = mach_timebase_info_data_t()
+        mach_timebase_info(&value)
+        return value
+    }()
+    static var nanosecondsPerTick: Double { Double(timebase.numer) / Double(timebase.denom) }
+
+    static func percent(previous: CPUCounter?, current: CPUCounter,
+                        nanosecondsPerTick: Double = CPUCounter.nanosecondsPerTick) -> Double? {
         guard let previous, previous.birth == current.birth,
               current.timestamp > previous.timestamp,
-              current.totalNanoseconds >= previous.totalNanoseconds else { return nil }
-        return Double(current.totalNanoseconds - previous.totalNanoseconds)
+              current.totalTicks >= previous.totalTicks else { return nil }
+        return Double(current.totalTicks - previous.totalTicks) * nanosecondsPerTick
             / ((current.timestamp - previous.timestamp) * 1_000_000_000) * 100
+    }
+}
+
+// A frame is one capture instant. Sum concurrent PIDs before averaging frames;
+// idle siblings must not dilute a busy renderer's CPU usage.
+struct CPUAggregates {
+    private(set) var values: [String: [Double]] = [:]
+    mutating func append(phase: String, samples: [(role: String, percent: Double)]) {
+        var frame: [String: Double] = [:]
+        for sample in samples { frame[sample.role, default: 0] += sample.percent }
+        for (role, percent) in frame { values[phase + "|" + role, default: []].append(percent) }
     }
 }

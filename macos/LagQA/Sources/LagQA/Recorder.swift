@@ -16,7 +16,7 @@ final class Recorder {
     private var ticks = 0
     private var logCursors: [URL: (identity: UInt64, offset: UInt64, partial: Data)] = [:]
     private var logEvents: [[String: String]] = []
-    private var aggregates: [String: [Double]] = [:]
+    private var aggregates = CPUAggregates()
     private var ended = false
     private let mainPID: Int32
     private let startedAt = Date()
@@ -110,6 +110,7 @@ final class Recorder {
                 guard parts.count == 3, let pid = Int32(parts[0]), let parent = Int32(parts[1]) else { continue }
                 let path = String(parts[2])
                 let name = URL(fileURLWithPath: path).lastPathComponent
+                guard name != "<defunct>" else { continue }
                 if pid == mainPID { next[pid] = "ChatGPT-main" }
                 else if parent == mainPID { next[pid] = name.contains("Renderer") ? "renderer" : name }
                 else if name == "WindowServer" { next[pid] = "WindowServer" }
@@ -127,14 +128,15 @@ final class Recorder {
         ticks += 1
         if ticks % 5 == 0 { discoverTargets() }
         let now = Date(), monotonic = ProcessInfo.processInfo.systemUptime
+        var frame: [(role: String, percent: Double)] = []
         for (pid, role) in targets.sorted(by: { $0.key < $1.key }) {
             var cpu = "", rss = "", status = "unavailable"
             if let value = usage(pid) {
                 let counter = CPUCounter(birth: value.ri_proc_start_abstime,
-                    totalNanoseconds: value.ri_user_time &+ value.ri_system_time, timestamp: monotonic)
+                    totalTicks: value.ri_user_time &+ value.ri_system_time, timestamp: monotonic)
                 if let percent = CPUCounter.percent(previous: previous[pid], current: counter) {
                     cpu = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), percent)
-                    aggregates[phase + "|" + role, default: []].append(percent)
+                    frame.append((role, percent))
                     status = "ok"
                 } else { status = "baseline" }
                 previous[pid] = counter
@@ -145,6 +147,7 @@ final class Recorder {
             do { try csv?.write(contentsOf: Data(line.utf8)); rows += 1 }
             catch { if !errors.contains("CPU recording failed") { errors.append("CPU recording failed") } }
         }
+        aggregates.append(phase: phase, samples: frame)
         readLogAppends(initial: false)
     }
 
@@ -217,11 +220,11 @@ final class Recorder {
             summary += self.smoke ? "자동 실행 점검 결과입니다. 사용자 동작을 재현한 측정이 아닙니다.\n\n" : "사용자가 시작과 종료를 선택한 자유 측정입니다. 관찰 구간은 실제 조작 종류나 시각을 의미하지 않습니다.\n\n"
             summary += "- 시작: \(self.iso.string(from: self.startedAt))\n- 결과: \(cancelled ? "중단됨" : "수집 종료")\n- CPU 레코드: \(self.rows)\n- 진단 로그 표식: \(self.logEvents.count)\n\n"
             summary += "| 구간 / 프로세스 | CPU 평균 % | CPU 최대 % | 표본 수 |\n|---|---:|---:|---:|\n"
-            for (key, values) in self.aggregates.sorted(by: { $0.key < $1.key }) {
+            for (key, values) in self.aggregates.values.sorted(by: { $0.key < $1.key }) {
                 summary += String(format: "| %@ | %.2f | %.2f | %d |\n", key.replacingOccurrences(of: "|", with: " / "),
                                   values.reduce(0, +) / Double(values.count), values.max() ?? 0, values.count)
             }
-            summary += "\nCPU는 프로세스 누적 실행시간 차이로 계산한 약 1초 평균입니다. 100%는 논리 코어 하나입니다. 같은 역할의 여러 PID는 개별 표본으로 집계하며 합산 CPU가 아닙니다. 접근 불가 프로세스는 cpu.csv에 unavailable로 기록합니다.\n\n"
+            summary += "\nCPU는 프로세스 누적 실행시간 차이로 계산한 약 1초 평균입니다. 100%는 논리 코어 하나입니다. Mach 시간 단위를 나노초로 변환합니다. 같은 역할의 여러 PID는 같은 수집 시점별로 합산한 뒤 평균·최댓값을 계산합니다. 접근 불가 프로세스는 cpu.csv에 unavailable로 기록합니다.\n\n"
             summary += "## 해석 한계\n\n키 입력·화면 프레임·첨부 내용은 수집하지 않습니다. 이 자료만으로 입력 지연 밀리초나 원인을 확정할 수 없습니다. 호출 스택은 관찰 구간별 native-private 폴더에 저장되며 불완전한 심볼과 로컬 경로를 포함할 수 있습니다. 공개 공유에는 이 요약과 markers.json을 우선 사용하세요. LagQA 및 sample 프로세스 자체도 관찰 부하를 만듭니다.\n"
             if !self.errors.isEmpty { summary += "\n## 수집 제한\n" + Set(self.errors).sorted().map { "- " + $0 }.joined(separator: "\n") + "\n" }
             do {
@@ -232,6 +235,10 @@ final class Recorder {
                     "appVersion": app?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
                     "appBuild": app?.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
                     "smokeTest": self.smoke, "cancelled": cancelled, "cpuRows": self.rows, "nativeSamples": samples.count,
+                    "cpuCalculationVersion": 2,
+                    "machTimebaseNumer": CPUCounter.timebase.numer,
+                    "machTimebaseDenom": CPUCounter.timebase.denom,
+                    "cpuAggregation": "sum concurrent PIDs by role, then mean/max over capture frames",
                     "errors": self.errors], "manifest.json")
                 try summary.write(to: self.folder.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
                 let limits = self.errors.isEmpty ? "" : " · 수집 제한 \(Set(self.errors).count)종"
