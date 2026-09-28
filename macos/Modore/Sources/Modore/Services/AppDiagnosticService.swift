@@ -14,6 +14,7 @@ final class AppDiagnosticService: ObservableObject {
     @Published private(set) var status = "앱을 선택하고 검사를 시작하세요."
     @Published private(set) var frame: DiagnosticFrame?
     @Published private(set) var results: [DiagnosticResult] = []
+    private(set) var presentations: [UUID: DiagnosticPresentation] = [:]
     @Published var baselineID: UUID?
     @Published private(set) var output: URL?
     let replay = AppDiagnosticReplay()
@@ -40,21 +41,22 @@ final class AppDiagnosticService: ObservableObject {
         let saved = await Task.detached(priority: .utility) {
             let directories = ((try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
                 .sorted { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) > ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
-            return directories.prefix(20).compactMap { folder -> DiagnosticResult? in
+            let results = directories.prefix(20).compactMap { folder -> DiagnosticResult? in
                 let url = folder.appendingPathComponent("result.json")
                 guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size < 4_000_000,
                       let data = try? Data(contentsOf: url) else { return nil }
                 return try? JSONDecoder().decode(DiagnosticResult.self, from: data)
             }
+            return (results, Dictionary(uniqueKeysWithValues: results.map { ($0.id, DiagnosticPresentation($0)) }))
         }.value
-        if !active { results = saved.sorted { $0.started > $1.started } }
+        if !active { presentations = saved.1; results = saved.0.sorted { $0.started > $1.started } }
     }
     func start() {
         guard !active, !saving, let target = selected else { return }
         do {
             let recorder = try AppDiagnosticRecorder(target: target, condition: condition)
             self.recorder = recorder; active = true; output = nil; frame = nil
-            status = "검사 중 · 자유롭게 조작하고 표식을 남기세요. 최대 5분 후 부분 결과를 저장합니다."
+            status = "검사 중 · 고부하 스택은 자동 보존합니다. 동작 표식을 남기면 전후 부하를 비교합니다. 최대 5분입니다."
             collectionTask = Task { [weak self] in
                 while !Task.isCancelled {
                     let (frame, reason) = await recorder.capture()
@@ -103,9 +105,11 @@ final class AppDiagnosticService: ObservableObject {
         replay.cancelRegistration()
         do {
             let result = try await recorder.finish(reason)
+            presentations[result.id] = DiagnosticPresentation(result)
             results.insert(result, at: 0); results = Array(results.prefix(20))
+            presentations = presentations.filter { id, _ in results.contains { $0.id == id } }
             output = recorder.folder
-            status = "저장됨 · \(result.frames.count)표본 · 화면 지연 원인은 아직 미확정"
+            status = "저장됨 · \(result.diagnosticHeadline)"
         } catch { status = "결과 저장 실패: \(error.localizedDescription)" }
         self.recorder = nil; active = false; saving = false
         panel?.close(); panel = nil

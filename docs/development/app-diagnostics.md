@@ -3,7 +3,8 @@
 Open **앱 재현 검사** from the Modore window toolbar. Select a running app,
 label the condition (for example long conversation vs short conversation), and
 start. A nonactivating floating controller provides manual markers, an explicit
-3-second stack capture, and stop/save. No TTS or timed instruction stages run.
+3-second stack capture, and stop/save. High CPU also triggers bounded automatic
+stack capture, disclosed before starting. No TTS or timed instruction stages run.
 The five-minute collection limit is shown before starting.
 
 ## Architecture and limits
@@ -18,8 +19,12 @@ The five-minute collection limit is shown before starting.
 - Samples begin at a 0.5-second interval, back off with measured collection cost
   and thermal state, and stop at 300 seconds / 600 frames. Events cap at 300.
   The existing CPU observer pauses and invalidates continuity during a run.
-- The only optional child tool is `/usr/bin/sample`: explicit user request,
-  3 seconds, at most three times, at least 30 seconds apart, with a watchdog.
+- The only child tool is `/usr/bin/sample`: a renderer at >=150% or aggregate
+  target CPU at >=200% triggers up to two automatic attempts. A busy renderer
+  is preferred; otherwise the hottest target process is sampled. Manual and
+  automatic captures share a three-capture limit, 30-second cooldown, 3-second
+  duration and watchdog. Failed automatic attempts also consume the two-attempt
+  budget; serious/critical thermal states suppress automatic capture.
   Stop/quit terminates owned sampling and preserves partial results.
 - CPU totals sum concurrent target descendants, then use elapsed-time weighting.
   Renderer CPU (name-based) and the top eight processes at each frame are retained
@@ -31,6 +36,26 @@ The five-minute collection limit is shown before starting.
 - Results persist under `~/Library/Application Support/Modore/AppDiagnostics/`.
   Only the newest 20 result files are loaded (each capped at 4 MB); nothing is
   automatically deleted. Private native stacks may contain paths.
+
+## Result interpretation
+
+Schema 3 reports analyze existing recordings as well as new ones. Each manual or
+automatic-start marker gets a three-second before/after window. Only samples
+entirely inside a window are included; at least 75% duration coverage and no
+unavailable processes are required to call a comparison complete. An observed
+peak >=150% is reported even with missing baseline data, but a rise requires a
+complete baseline/response, a peak >=2x baseline and >=75 percentage points above
+baseline, and no overlapping action or stack capture. These are evidence triage
+thresholds, not a claim of abnormality or causation. Renderer values are used
+when available; legacy aggregate-only recordings explicitly lack attribution.
+
+The history page caches presentation analysis at load/save time, avoiding a
+full history rescan on every live 0.5-second update. No fixed "cause unknown"
+status replaces recorded findings. Low CPU is never interpreted as absence of
+UI latency. System memory pressure, disk wait and display latency are not
+measured by this recorder. Stack capture can perturb the observed interval and
+is marked accordingly; a stack is evidence for inspection, not an automatic
+root-cause determination.
 
 ## Automatic replay
 
@@ -69,6 +94,11 @@ field refusal, target changes, and persistence after Modore relaunch.
 - Strict-concurrency release build and signed bundle verification passed.
 - Installed app launch and toolbar entry verified through native UI tooling.
 - User completed a 125-frame ChatGPT run and exported its report from Modore.
+- Follow-up analysis/spike changes: 19 focused diagnostic/CPU tests passed.
+  A separate bounded native load fixture reached about 295% CPU; the production
+  recorder automatically saved one nonempty native stack, persisted schema 3
+  results, and respected the cooldown. Existing schema 1 data was reanalyzed
+  with the same production model without another user reproduction.
 - Automated replay end-to-end validation remains pending: the native UI tool
   disconnected while opening the diagnostic window (`native pipe closed before
   response`). No successful keyboard/hover replay is claimed from that run.

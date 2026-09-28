@@ -20,6 +20,7 @@ struct AppDiagnosticPage: View {
                         }
                         TextField("조건 메모 · 예: 긴 대화 / 새 대화", text: $service.condition).textFieldStyle(.roundedBorder).disabled(service.active)
                         Text("메모는 로컬 결과에만 저장합니다. 대화·키 입력 내용·사진은 수집하지 않습니다.").font(.caption).foregroundStyle(.secondary)
+                        Text("고부하가 발생하면 원인 추적용 스택을 자동 보존합니다(3초씩 최대 2회). 스택은 로컬 경로를 포함할 수 있으며 비공개 폴더에 저장됩니다.").font(.caption).foregroundStyle(.secondary)
                         HStack {
                             if service.active {
                                 Button("작은 컨트롤러 표시") { service.showController() }
@@ -60,7 +61,7 @@ struct AppDiagnosticPage: View {
                     }
                 }
                 history
-                Text("검사는 최대 5분입니다. 수집 부담이나 발열이 커지면 간격을 늘립니다. 스택은 요청할 때만 최대 3회 수집합니다. 자동 재현 상태 확인은 실제 화면 지연 측정이 아니며, 낮은 CPU만으로 문제가 해결됐다고 판정하지 않습니다.").font(.caption).foregroundStyle(.secondary)
+                Text("검사는 최대 5분입니다. 수집 부담이나 발열이 커지면 간격을 늘립니다. 고부하 스택은 자동 최대 2회, 수동 포함 총 3회, 30초 이상 간격으로 수집하며 발열이 높을 때는 자동 수집을 건너뜁니다. 낮은 CPU만으로 문제가 해결됐다고 판정하지 않습니다.").font(.caption).foregroundStyle(.secondary)
             }.padding(24)
         }
         .task { service.refreshApps(); await service.loadHistory() }
@@ -87,6 +88,12 @@ struct AppDiagnosticPage: View {
                             Button("결과 폴더") { service.openResult(result) }
                         }
                         Text("평균 \(result.meanCPU.map { String(format: "%.1f%%", $0) } ?? "—") · 최대 \(result.peakCPU.map { String(format: "%.1f%%", $0) } ?? "—") · \(result.finishReason)")
+                        if let presentation = service.presentations[result.id] {
+                            Text(presentation.headline).font(.callout.bold())
+                            ForEach(Array(presentation.actions.enumerated()), id: \.offset) { _, text in
+                                Text(text).font(.callout).textSelection(.enabled)
+                            }
+                        }
                         if let baseline = service.baseline, baseline.id != result.id {
                             if let warning = result.comparisonWarning(baseline) { Text(warning).foregroundStyle(.orange).font(.caption) }
                             if let before = baseline.meanCPU, let after = result.meanCPU {
