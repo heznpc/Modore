@@ -2,7 +2,9 @@ import ModoreDomain
 import SwiftUI
 
 enum AppDestination: String, CaseIterable, Identifiable, Hashable {
+    case start
     case health
+    case appDiagnostic
     case status
     case storage
     case security
@@ -13,7 +15,9 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
-        case .health: return L10n.text("대시보드")
+        case .start: return L10n.text("시작")
+        case .health: return L10n.text("Mac 상태")
+        case .appDiagnostic: return L10n.text("앱 버벅임 진단")
         case .status: return L10n.text("문제 점검")
         case .storage: return L10n.text("저장공간")
         case .security: return L10n.text("권한·자동 실행 점검")
@@ -28,7 +32,9 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
     var symbol: String {
         switch self {
+        case .start: return "house"
         case .health: return "heart.text.clipboard"
+        case .appDiagnostic: return "cursorarrow.motionlines"
         case .status: return "waveform.path.ecg"
         case .storage: return "internaldrive"
         case .security: return "lock.shield"
@@ -43,11 +49,16 @@ struct ModernRootView: View {
     @EnvironmentObject private var model: ScanModel
     @EnvironmentObject private var monitor: CPUWatchService
     @EnvironmentObject private var quotaWork: QuotaWorkModel
-    @State private var selection: AppDestination = .health
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var selection: AppDestination = .start
     @State private var storageSection: StorageWorkspaceSection = .overview
 
     var body: some View {
-        NavigationStack {
+        NavigationSplitView {
+            ModernSidebar(selection: selection, onSelect: navigate)
+                .navigationSplitViewColumnWidth(min: 185, ideal: 215, max: 260)
+        } detail: {
+          NavigationStack {
             VStack(spacing: 0) {
                 if let freeSpace = model.liveState.freeSpace,
                    freeSpace.value.pressure.needsRecovery,
@@ -59,42 +70,35 @@ struct ModernRootView: View {
                     Divider()
                 }
 
-                ModernDetailView(
-                    destination: selection,
-                    storageSection: $storageSection,
-                    onOpenStorage: openStorage,
-                    onNavigate: navigate
-                )
+                ZStack {
+                    ModernDetailView(
+                        destination: selection,
+                        storageSection: $storageSection,
+                        onOpenStorage: openStorage,
+                        onNavigate: navigate
+                    )
+                    .id(selection)
+                    .transition(.opacity)
+                }
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: selection)
             }
             .navigationTitle(selection.title)
             .toolbar {
-                ToolbarItem(placement:.navigation) {
-                    Button { navigate(to:.health) } label: { Label(L10n.text("대시보드"),systemImage:"square.grid.2x2") }.disabled(selection == .health)
-                }
-                ToolbarItem(placement:.automatic) {
-                    Menu {
-                        ForEach(AppDestination.allCases.filter { $0 != .health }) { destination in
-                            Button(destination.title) { navigate(to: destination) }
+                if [.health, .status, .storage, .security].contains(selection) {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            performPrimaryAction()
+                        } label: {
+                            Label(primaryActionTitle, systemImage: primaryActionSymbol)
+                            .labelStyle(.titleAndIcon)
                         }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "ellipsis.circle")
-                            Text(L10n.text("다른 작업"))
-                        }
+                        .buttonStyle(.bordered)
+                        .disabled(primaryActionDisabled)
+                        .help(primaryActionHelp)
                     }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        performPrimaryAction()
-                    } label: {
-                        Label(primaryActionTitle, systemImage: primaryActionSymbol)
-                        .labelStyle(.titleAndIcon)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(primaryActionDisabled)
-                    .help(primaryActionHelp)
                 }
             }
+          }
         }
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         .onOpenURL(perform: openURL)
@@ -251,9 +255,16 @@ struct ModernSidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             List(selection: nativeSelection) {
-                ForEach(AppDestination.allCases) { destination in
-                    SidebarDestinationRow(destination: destination)
-                        .tag(destination)
+                SidebarDestinationRow(destination: .start).tag(AppDestination.start)
+                Section("할 일") {
+                    ForEach([AppDestination.appDiagnostic, .storage, .work]) { destination in
+                        SidebarDestinationRow(destination: destination).tag(destination)
+                    }
+                }
+                Section("Mac 관리") {
+                    ForEach([AppDestination.health, .status, .security, .activity]) { destination in
+                        SidebarDestinationRow(destination: destination).tag(destination)
+                    }
                 }
             }
             .listStyle(.sidebar)
@@ -414,8 +425,18 @@ struct ModernDetailView: View {
 
     var body: some View {
         switch destination {
+        case .start:
+            ModoreStartPage(onNavigate: onNavigate, onOpenStorage: onOpenStorage)
+        case .appDiagnostic:
+            AppDiagnosticPage()
         case .health:
-            HealthContextView(openRecovery: { onOpenStorage(.goal) }, openWork: { onNavigate(.work) }, openStorageOverview: { onOpenStorage(.overview) }, openDiagnosis:{onNavigate(.status)}, openSecurity:{onNavigate(.security)})
+            HealthContextView(
+                openRecovery: { onOpenStorage(.goal) },
+                openWork: { onNavigate(.work) },
+                openStorageOverview: { onOpenStorage(.overview) },
+                openDiagnosis: { onNavigate(.status) },
+                openSecurity: { onNavigate(.security) }
+            )
         case .status:
             StatusPage(
                 onOpenStorage: onOpenStorage,

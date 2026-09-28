@@ -1,11 +1,16 @@
 # Native app reproduction diagnostics
 
-Open **앱 재현 검사** from the Modore window toolbar. Select a running app,
-label the condition (for example long conversation vs short conversation), and
-start. A nonactivating floating controller provides manual markers, an explicit
+Start at **무엇을 해결할까요? → 앱이 버벅여요**, or choose **앱 버벅임 진단**
+in the visible sidebar. The same main window guides app selection, recording,
+and results. Select a running app, optionally label the condition, then start.
+Advanced replay registration, previous comparisons and collector details are
+collapsed until needed. Page/stage changes use a 160ms opacity transition and
+respect Reduce Motion. A nonactivating floating controller provides markers,
 3-second stack capture, and stop/save. High CPU also triggers bounded automatic
 stack capture, disclosed before starting. No TTS or timed instruction stages run.
 The five-minute collection limit is shown before starting.
+Starting activates the selected target app; explicit user stop returns to the
+Modore window that started the recording. Automatic timeout never steals focus.
 
 ## Architecture and limits
 
@@ -94,6 +99,12 @@ field refusal, target changes, and persistence after Modore relaunch.
 - Strict-concurrency release build and signed bundle verification passed.
 - Installed app launch and toolbar entry verified through native UI tooling.
 - User completed a 125-frame ChatGPT run and exported its report from Modore.
+- Guided UI follow-up: installed signed app verified with native UI tooling.
+  Start goal to embedded diagnostic, Mac status to Start navigation, and a
+  separately labeled Calculator fixture's start/marker/stop/result flow passed
+  (15 frames, about 7.5 seconds). Preparation/result pages showed no clipping.
+  The floating controller's own layout was not separately inspected. No ChatGPT
+  reproduction or latency improvement is claimed from this UI check.
 - Follow-up analysis/spike changes: 19 focused diagnostic/CPU tests passed.
   A separate bounded native load fixture reached about 295% CPU; the production
   recorder automatically saved one nonempty native stack, persisted schema 3
