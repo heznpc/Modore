@@ -102,7 +102,6 @@ struct ModoreApp: App {
     var body: some Scene {
         Window("Modore", id: "main") {
             ContentView()
-                .toolbar { ToolbarItem(placement: .automatic) { AppDiagnosticLauncher() } }
                 .environment(\.layoutDirection, .leftToRight)
                 .environmentObject(cpuWatch)
                 .environmentObject(quotaWork)
