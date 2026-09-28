@@ -112,6 +112,16 @@ struct CPUAlertPolicy {
     }
 }
 
+struct CPUSamplingCadence {
+    // Detailed live view gets fast updates. Background observation should not
+    // keep the machine busy; expensive samples receive additional recovery time.
+    static func delay(visible: Bool, thermalPressure: Int, collectionSeconds: Double) -> Double {
+        let base = thermalPressure >= 2 ? 20.0 : (visible ? 2.0 : 10.0)
+        let measured = collectionSeconds.isFinite ? max(0, collectionSeconds) : 0
+        return min(20, max(base, measured * 99))
+    }
+}
+
 @MainActor
 final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var enabled: Bool
@@ -182,10 +192,15 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         detail = L10n.text("CPU 사용량을 관찰하는 중입니다.")
         task = Task { [weak self] in
             while !Task.isCancelled {
+                let started = ProcessInfo.processInfo.systemUptime
                 let sample = await Task.detached(priority: .utility) { await CPUSample.captureWithSystemProcesses() }.value
                 guard !Task.isCancelled else { return }
                 await self?.receive(sample)
-                do { try await Task.sleep(nanoseconds: 2_000_000_000) }
+                let delay = CPUSamplingCadence.delay(
+                    visible: self?.showHealth == true && NSApp.isActive,
+                    thermalPressure: sample.thermalPressure,
+                    collectionSeconds: ProcessInfo.processInfo.systemUptime - started)
+                do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
                 catch { return }
             }
         }

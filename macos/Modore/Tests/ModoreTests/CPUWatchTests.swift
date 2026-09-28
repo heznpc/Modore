@@ -4,6 +4,14 @@ import XCTest
 @testable import Modore
 
 final class CPUWatchTests: XCTestCase {
+    func testBackgroundSamplingSlowsDownAndExpensiveCollectionGetsRecoveryTime() {
+        XCTAssertEqual(CPUSamplingCadence.delay(visible: false, thermalPressure: 0, collectionSeconds: 0.01), 10)
+        XCTAssertEqual(CPUSamplingCadence.delay(visible: true, thermalPressure: 0, collectionSeconds: 0.01), 2)
+        XCTAssertEqual(CPUSamplingCadence.delay(visible: true, thermalPressure: 2, collectionSeconds: 0.01), 20)
+        XCTAssertEqual(CPUSamplingCadence.delay(visible: true, thermalPressure: 0, collectionSeconds: 0.15), 14.85, accuracy: 0.001)
+        XCTAssertEqual(CPUSamplingCadence.delay(visible: false, thermalPressure: 0, collectionSeconds: 2), 20)
+    }
+
     private func sample(_ time: Double, thermal: Int = 0, counters: [CPUProcessCounter] = []) -> CPUSample {
         CPUSample(uptime: time, counters: counters, thermalPressure: thermal, cores: 8)
     }
