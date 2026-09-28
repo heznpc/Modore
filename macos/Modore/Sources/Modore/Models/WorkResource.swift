@@ -4,6 +4,14 @@ struct WorkResourceSnapshot: Decodable {
     let resources: [WorkResource]
     let warnings: [String]
     let coverage: String
+    let hookStatus: [WorkResourceHookStatus]?
+}
+struct WorkResourceHookStatus: Decodable, Identifiable {
+    var id: String { provider }
+    let provider: String
+    let configured, disabled, recentlyObserved: Bool
+    let lastObservedAt: Double?
+    let lastEvent, error: String?
 }
 struct WorkResource: Decodable, Identifiable {
     let id, kind, name, runtime, deviceType, state, path, fingerprint: String

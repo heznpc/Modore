@@ -70,10 +70,7 @@ struct WorkResourceView: View {
         .onChange(of: model.sessionIndex) { _ in updateWorkspaces() }
         .onChange(of: service.snapshot?.observedAt) { _ in updateAssignments() }
         .task {
-            while !Task.isCancelled {
-                await service.refresh(root: model.projectRoot)
-                do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch { return }
-            }
+            await service.refresh(root: model.projectRoot)
         }
         .navigationDestination(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
         .sheet(item: $detail) { r in ResourceDetailSheet(resource: resources.first { $0.id == r.id } ?? r) }
@@ -109,7 +106,7 @@ struct WorkResourceView: View {
                     if projects.isEmpty { Text(L10n.text("연결을 확인하면\n프로젝트가 여기에 표시됩니다.")).font(.caption).foregroundStyle(.secondary).padding(10) }
                 }
             }
-            Text(L10n.text("10초마다 자동 갱신")).font(.caption).foregroundStyle(.secondary).padding(10)
+            Text(L10n.text("마지막 조회 기준 · 새로고침으로 갱신")).font(.caption).foregroundStyle(.secondary).padding(10)
         }.padding(12).frame(maxHeight: .infinity, alignment: .top).background(.regularMaterial)
     }
     private func nav(_ label: String, icon: String, key: String, count: Int) -> some View {
@@ -130,6 +127,28 @@ struct WorkResourceView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(title).font(.system(size: 25, weight: .semibold))
                     Text(L10n.text("기기 상태와 연결된 작업을 확인하고 관리하세요.")).foregroundStyle(.secondary)
+                }
+                if let hooks = service.snapshot?.hookStatus {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(L10n.text("AI 세션 자동 연결")).font(.headline)
+                        ForEach(hooks) { hook in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label {
+                                    Text(hook.provider == "codex" ? "Codex" : "Claude")
+                                    Text(hookConnectionLabel(hook))
+                                } icon: {
+                                    Image(systemName: hook.recentlyObserved ? "checkmark.circle" : "exclamationmark.circle")
+                                        .foregroundStyle(hook.recentlyObserved ? Color.green : Color.orange)
+                                }
+                                if let at = hook.lastObservedAt {
+                                    Text(L10n.format("마지막 실행 수신: %@", Date(timeIntervalSince1970: at).formatted(date: .abbreviated, time: .shortened)))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        Text(L10n.text("최근 15분의 연결 실행 기록입니다. 기록이 없으면 자동 관리를 확인할 수 없습니다. Codex는 /hooks에서 등록된 Modore 연결을 검토·신뢰해야 실행됩니다."))
+                            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }.padding(14).background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
                 }
                 HStack(spacing: 12) {
                     ResourceSummaryTile(title: L10n.text("실행 중"), value: resources.filter { $0.kind == "simulator" && $0.isRunning }.count, icon: "iphone", color: .green)
@@ -168,6 +187,12 @@ struct WorkResourceView: View {
                 }
             }.padding(26)
         }
+    }
+    private func hookConnectionLabel(_ hook: WorkResourceHookStatus) -> String {
+        if let error = hook.error { return L10n.message(error) }
+        if hook.disabled { return L10n.text("연결 실행이 꺼져 있습니다") }
+        if !hook.configured { return L10n.text("자동 연결 미설정") }
+        return hook.recentlyObserved ? L10n.text("최근 연결 실행 수신") : L10n.text("설정 있음 · 최근 실행 미확인")
     }
     private func resourceCard(_ r: WorkResource) -> some View {
         VStack(alignment: .leading, spacing: 16) {

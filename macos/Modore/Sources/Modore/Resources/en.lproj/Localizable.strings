@@ -2059,3 +2059,14 @@
 "종료된 PR · 복구 판정 제외" = "Closed PR · not a verified recovery";
 
 "최근 조회 범위 밖 · 상태 미확인" = "Outside the latest window · status unknown";
+
+// Verified session connection status
+"마지막 조회 기준 · 새로고침으로 갱신" = "As last checked · refresh to update";
+"AI 세션 자동 연결" = "Automatic AI session connection";
+"마지막 실행 수신: %@" = "Last invocation received: %@";
+"최근 15분의 연결 실행 기록입니다. 기록이 없으면 자동 관리를 확인할 수 없습니다. Codex는 /hooks에서 등록된 Modore 연결을 검토·신뢰해야 실행됩니다." = "Shows connection invocations received in the last 15 minutes. Without a record, automatic management is unverified. Codex requires reviewing and trusting the registered Modore hooks in /hooks.";
+"연결 실행이 꺼져 있습니다" = "Connection execution is disabled";
+"자동 연결 미설정" = "Automatic connection not configured";
+"최근 연결 실행 수신" = "Recent connection invocation received";
+"설정 있음 · 최근 실행 미확인" = "Configured · recent execution unverified";
+"연결 설정을 읽지 못했습니다." = "Could not read connection settings.";
