@@ -27,7 +27,6 @@ struct CPUSample: Sendable {
     static func capture() -> CPUSample {
         var timebase = mach_timebase_info_data_t()
         mach_timebase_info(&timebase)
-        let nanosecondsPerTick = Double(timebase.numer) / Double(timebase.denom)
         let capacity = max(128, Int(proc_listallpids(nil, 0)) + 128)
         var pids = [Int32](repeating: 0, count: capacity)
         let count = pids.withUnsafeMutableBytes { buffer in
@@ -35,19 +34,7 @@ struct CPUSample: Sendable {
         }
         var counters: [CPUProcessCounter] = []
         for pid in pids.prefix(max(0, min(Int(count), capacity))) where pid > 0 {
-            var usage = rusage_info_v2()
-            let status = withUnsafeMutableBytes(of: &usage) { bytes in
-                proc_pid_rusage(pid, RUSAGE_INFO_V2, bytes.baseAddress!.assumingMemoryBound(to: rusage_info_t?.self))
-            }
-            guard status == 0 else { continue }
-            var name = [CChar](repeating: 0, count: 256)
-            guard proc_name(pid, &name, UInt32(name.count)) > 0 else { continue }
-            var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-            let label = proc_pidpath(pid, &path, UInt32(path.count)) > 0
-                ? URL(fileURLWithPath: String(cString: path)).lastPathComponent : String(cString: name)
-            counters.append(CPUProcessCounter(pid: pid, started: usage.ri_proc_start_abstime,
-                                             name: label,
-                                             nanoseconds: UInt64(Double(usage.ri_user_time &+ usage.ri_system_time) * nanosecondsPerTick), residentBytes: usage.ri_resident_size))
+            if let counter = NativeCPUReader.read(pid) { counters.append(counter) }
         }
         // Continuous time includes sleep, unlike ProcessInfo.systemUptime.
         let continuousSeconds = Double(mach_continuous_time()) * Double(timebase.numer)
@@ -192,6 +179,16 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         detail = L10n.text("CPU 사용량을 관찰하는 중입니다.")
         task = Task { [weak self] in
             while !Task.isCancelled {
+                if AppDiagnosticService.shared.active {
+                    if self?.previous != nil {
+                        self?.previous = nil
+                        self?.cpuHighSince = nil
+                        self?.journal.resume()
+                        self?.persist()
+                    }
+                    do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+                    continue
+                }
                 let started = ProcessInfo.processInfo.systemUptime
                 let sample = await Task.detached(priority: .utility) { await CPUSample.captureWithSystemProcesses() }.value
                 guard !Task.isCancelled else { return }

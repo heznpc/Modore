@@ -18,6 +18,13 @@ final class PCHealthCheckApplicationDelegate: NSObject, NSApplicationDelegate {
         guard let model else { return .terminateNow }
 
         var deferredConditions = 0
+        if AppDiagnosticService.shared.active {
+            deferredConditions += 1
+            Task {
+                await AppDiagnosticService.shared.stop("앱 종료 · 부분 결과")
+                self.finishTerminationCondition(sender: sender)
+            }
+        }
         if model.cancelApplicationTasksForTermination(completion: { [weak self] in
             self?.finishTerminationCondition(sender: sender)
         }) {
@@ -95,6 +102,7 @@ struct ModoreApp: App {
     var body: some Scene {
         Window("Modore", id: "main") {
             ContentView()
+                .toolbar { ToolbarItem(placement: .automatic) { AppDiagnosticLauncher() } }
                 .environment(\.layoutDirection, .leftToRight)
                 .environmentObject(cpuWatch)
                 .environmentObject(quotaWork)
@@ -145,6 +153,10 @@ struct ModoreApp: App {
                 .disabled(!model.hasAnyReport)
             }
         }
+
+        Window("앱 재현 검사", id: "app-diagnostic") {
+            AppDiagnosticPage().frame(minWidth: 820, minHeight: 650)
+        }.defaultSize(width: 960, height: 780)
 
         Settings {
             StorageWatchSettingsView()
