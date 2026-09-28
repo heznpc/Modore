@@ -574,6 +574,8 @@ def test_storage_watch_reserves_rows_for_transient_workspaces(project_root, tmp_
         directory = snapshot_root / f"persistent-{index}"
         directory.mkdir(parents=True)
         (directory / "payload.bin").write_bytes(b"p" * (1024 * 1024))
+    for label in ("npm 캐시", "pnpm 저장소", "Playwright 브라우저"):
+        (snapshot_root / label).mkdir()
 
     env = os.environ.copy()
     env.update(
@@ -606,6 +608,8 @@ def test_storage_watch_reserves_rows_for_transient_workspaces(project_root, tmp_
         .splitlines()
     ]
     assert len(rows) == 12
+    assert sum(row[3] == "npm 캐시" for row in rows) == 1
+    assert sum(row[3] in {"pnpm 저장소", "Playwright 브라우저"} for row in rows) == 1
     assert sum(row[3] == "Claude 임시 작업" for row in rows) == 1
     retained_transient = {
         row[4]
@@ -2273,6 +2277,48 @@ def test_minute_watch_escalates_and_repeats_critical_pressure(project_root, tmp_
     result, _, _ = _run_watch_with_stubbed_notifiers(
         project_root, {**env, "PCH_TEST_FREE_KB": str(2 * 1024 * 1024)}, tmp_path, open_ack=True)
     assert parse_protocol(result.stdout)["notificationResult"] == "accepted"
+
+
+def test_healthy_space_gradual_loss_gets_bounded_attribution(project_root, tmp_path):
+    state_dir = tmp_path / 'state'
+    state_dir.mkdir(mode=0o700)
+    roots = tmp_path / 'roots'
+    (roots / 'cache').mkdir(parents=True)
+    now = int(time.time())
+    gib = 1024 * 1024
+    state_file = state_dir / 'storage-watch.tsv'
+    state_file.write_text(f'freeKB\t{47 * gib}\nstatus\tnormal\nlastSnapshot\t{now - 33000}\n')
+    # Four GiB over eight hours: never reaches the eight-GiB/hour warning.
+    (state_dir / 'storage-samples.tsv').write_text(
+        f'old\t{50 * gib}\t0\tnormal\t{now - 28800}\n'
+        f'recent\t{47 * gib}\t0\tnormal\t{now - 60}\n')
+    env = {**os.environ, 'PCH_TEST_MODE': '1', 'PCH_STATE_DIR': str(state_dir),
+           'PCH_WATCH_NOTIFY': '0', 'PCH_WATCH_SNAPSHOT_ROOT': str(roots)}
+    def run(free):
+        result = subprocess.run([str(project_root / 'scripts/storage_watch.sh')],
+                                capture_output=True, text=True, timeout=15,
+                                env={**env, 'PCH_TEST_FREE_KB': str(free * gib)})
+        assert result.returncode == 0, result.stderr
+        return parse_protocol(result.stdout)
+    first = run(46)
+    assert first['status'] == 'normal'
+    assert first['snapshotReason'] == 'cumulative-drop'
+    assert first['cumulativeDropKB'] == str(4 * gib)
+    assert int(first['snapshotRows']) == 1
+    assert first['attributionBaselineKB'] == str(46 * gib)
+    # Even another two GiB does not cause another tree walk inside the cooldown.
+    cooled = run(44)
+    assert cooled['snapshotReason'] == ''
+    assert cooled['lastSnapshotReason'] == 'cumulative-drop'
+    # Freed space becomes the high-water baseline, not a negative drop.
+    freed = run(51)
+    assert freed['attributionBaselineKB'] == str(51 * gib)
+    assert freed['cumulativeDropKB'] == '0'
+    state = parse_protocol(state_file.read_text())
+    state['lastSnapshot'] = str(now - 7201)
+    state_file.write_text(''.join(f'{k}\t{v}\n' for k, v in state.items()))
+    assert run(50)['snapshotReason'] == ''
+    assert run(49)['snapshotReason'] == 'cumulative-drop'
 
 
 def test_minute_watch_detects_cumulative_hour_drop(project_root, tmp_path):

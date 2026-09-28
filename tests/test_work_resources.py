@@ -17,6 +17,39 @@ def fixture():
         'ios-b': [{'udid': '3', 'name': 'shared', 'state': 'Shutdown', 'isAvailable': True, 'deviceTypeIdentifier': 'phone', 'dataPath': '/c'}]}})
 
 class ResourceTests(unittest.TestCase):
+    def test_configuration_is_not_execution_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            m.install_hooks('codex', home=home, root=home / 'registry')
+            self.assertTrue(m.hook_status({}, home)[0]['configured'])
+            self.assertFalse(m.hook_status({}, home)[0]['recentlyObserved'])
+            event = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'a',
+                     'turn_id': 'b', 'cwd': tmp, 'prompt': 'private text must not be retained'}
+            m.turn_hook('codex', event, home / 'registry')
+            with m.registry(home / 'registry') as state:
+                self.assertTrue(m.hook_status(state, home)[0]['recentlyObserved'])
+                self.assertNotIn('private text', json.dumps(state))
+                future = m.time.time() + 901
+                self.assertFalse(m.hook_status(state, home, future)[0]['recentlyObserved'])
+                path = home / '.codex/hooks.json'
+                import os
+                os.utime(path, (future, future))
+                self.assertFalse(m.hook_status(state, home)[0]['recentlyObserved'])
+
+    def test_disabled_or_malformed_hook_settings_are_not_healthy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            m.install_hooks('claude', home=home, root=home / 'registry')
+            path = home / '.claude/settings.json'
+            config = json.loads(path.read_text())
+            config['disableAllHooks'] = True
+            path.write_text(json.dumps(config))
+            result = m.hook_status({}, home)[1]
+            self.assertTrue(result['disabled'])
+            self.assertFalse(result['recentlyObserved'])
+            path.write_text('[]')
+            self.assertIsNotNone(m.hook_status({}, home)[1]['error'])
+
     def test_duplicate_identity_uses_runtime_and_type_not_name(self):
         rows = fixture(); self.assertEqual(rows[0]['duplicates'], ['2']); self.assertEqual(rows[2]['duplicates'], [])
     def test_reuse_booted_and_never_create_for_missing_runtime(self):

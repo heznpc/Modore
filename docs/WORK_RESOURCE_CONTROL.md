@@ -46,6 +46,19 @@ Application Support/Modore/work-resources.
 
 ## Existing-feature audit rule
 
+Hook registration and hook execution are separate states. `resources status`
+returns `hookStatus` for Codex and Claude: configuration presence, disabled
+state, and the latest lifecycle invocation received. Only a receipt within
+15 minutes and after the configuration's last change is marked recent. Older
+registrations without receipts stay unverified; they are not inferred from
+transcripts or resource leases. Codex hook trust is controlled by Codex, not
+granted by Modore. This status does not certify that every session or tool call
+is protected by the separate CLI guard.
+
+The native work-environment screen shows these states. It queries when opened,
+on explicit refresh, and after an action, instead of spawning an inventory
+process every ten seconds while the page is visible.
+
 Before claiming a capability is missing, follow its existing collector, stored
 result, UI and executor. Full storage collection already exists in
 scripts/modules/macos/storage.sh; a bounded storage-watch status is not a

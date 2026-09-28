@@ -585,6 +585,8 @@ PREVIOUS_STATUS="normal"
 LAST_NOTIFY=0
 LAST_NOTIFY_LEVEL=0
 LAST_SNAPSHOT=0
+LAST_SNAPSHOT_REASON=""
+ATTRIBUTION_BASELINE_KB=0
 SNAPSHOT_COMPLETENESS="unknown"
 EVIDENCE_POINTER_VERSION=""
 LAST_EVIDENCE_AT=""
@@ -597,6 +599,8 @@ if [[ -f "$STATE_FILE" ]]; then
     LAST_NOTIFY="$(/usr/bin/awk -F '\t' '$1 == "lastNotify" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_NOTIFY_LEVEL="$(/usr/bin/awk -F '\t' '$1 == "lastNotifiedLevel" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_SNAPSHOT="$(/usr/bin/awk -F '\t' '$1 == "lastSnapshot" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
+    LAST_SNAPSHOT_REASON="$(/usr/bin/awk -F '\t' '$1 == "lastSnapshotReason" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
+    ATTRIBUTION_BASELINE_KB="$(/usr/bin/awk -F '\t' '$1 == "attributionBaselineKB" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     SNAPSHOT_COMPLETENESS="$(/usr/bin/awk -F '\t' '$1 == "snapshotCompleteness" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     EVIDENCE_POINTER_VERSION="$(/usr/bin/awk -F '\t' '$1 == "evidencePointerVersion" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_EVIDENCE_AT="$(/usr/bin/awk -F '\t' '$1 == "lastEvidenceAt" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
@@ -622,6 +626,23 @@ normalize_past_epoch() {
 LAST_NOTIFY="$(normalize_past_epoch "$LAST_NOTIFY")"
 case "$LAST_NOTIFY_LEVEL" in 0|1|2|3|4) ;; *) LAST_NOTIFY_LEVEL=0 ;; esac
 LAST_SNAPSHOT="$(normalize_past_epoch "$LAST_SNAPSHOT")"
+case "$LAST_SNAPSHOT_REASON" in
+    rapid-drop|entered-low-free|pressure-drop|incomplete-pressure-evidence|missing-pressure-evidence|still-low-free|cumulative-drop) ;;
+    *) LAST_SNAPSHOT_REASON="" ;;
+esac
+case "$ATTRIBUTION_BASELINE_KB" in ''|*[!0-9]*) ATTRIBUTION_BASELINE_KB=0 ;; esac
+[[ "${#ATTRIBUTION_BASELINE_KB}" -le 15 ]] || ATTRIBUTION_BASELINE_KB=0
+# Upgrade from the minute-only watcher using recent samples since the last
+# capture. This is a free-space baseline, never a historical path measurement.
+if [[ "$ATTRIBUTION_BASELINE_KB" -eq 0 && -f "$HISTORY_FILE" ]]; then
+    ATTRIBUTION_BASELINE_KB="$(/usr/bin/awk -F '\t' -v now="$NOW_EPOCH" -v since="$LAST_SNAPSHOT" '
+        NF >= 5 && $5 ~ /^[0-9]+$/ && $5 >= now-86400 && $5 >= since && $5 <= now \
+            && $2 ~ /^[0-9]+$/ && length($2) <= 15 { if ($2 > peak) peak=$2 }
+        END { printf "%.0f", peak }
+    ' "$HISTORY_FILE")"
+fi
+[[ "$ATTRIBUTION_BASELINE_KB" -ge "$FREE_KB" ]] || ATTRIBUTION_BASELINE_KB="$FREE_KB"
+CUMULATIVE_DROP_KB=$((ATTRIBUTION_BASELINE_KB - FREE_KB))
 case "$SNAPSHOT_COMPLETENESS" in complete|partial|unknown) ;; *) SNAPSHOT_COMPLETENESS="unknown" ;; esac
 [[ "$EVIDENCE_POINTER_VERSION" == "2" ]] || EVIDENCE_POINTER_VERSION=""
 case "$LAST_EVIDENCE_AT" in
@@ -985,9 +1006,12 @@ capture_drop_snapshot() {
         simulator_fast_candidates+=("Simulator 공유 dyld 캐시"$'\t'"/Library/Developer/CoreSimulator/Caches/dyld")
         candidates+=("Codex 로컬 데이터"$'\t'"$HOME_ROOT/.codex")
         candidates+=("Claude 로컬 에이전트"$'\t'"$HOME_ROOT/Library/Application Support/Claude")
-        candidates+=("Playwright 브라우저"$'\t'"$HOME_ROOT/Library/Caches/ms-playwright")
-        candidates+=("npm 캐시"$'\t'"$HOME_ROOT/.npm")
-        candidates+=("pnpm 저장소"$'\t'"$HOME_ROOT/Library/pnpm")
+        # Measure install caches before slow temporary/agent roots can consume
+        # the event's budget. They are often smaller, but directly actionable.
+        candidates=("npm 캐시"$'\t'"$HOME_ROOT/.npm" \
+            "pnpm 저장소"$'\t'"$HOME_ROOT/Library/pnpm" \
+            "Playwright 브라우저"$'\t'"$HOME_ROOT/Library/Caches/ms-playwright" \
+            "${candidates[@]}")
         candidates+=("Xcode 개발 데이터"$'\t'"$HOME_ROOT/Library/Developer/Xcode")
         candidates+=("사용자 캐시"$'\t'"$HOME_ROOT/Library/Caches")
         # Devices is the slowest known root on a machine with many simulators.
@@ -1235,11 +1259,16 @@ capture_drop_snapshot() {
 
     # Reserve category slots inside the twelve-row event. Transient workspaces
     # retain four slots, every installed runtime retains one, and device/dyld
-    # each retain one. This
+    # each retain one. npm retains one and pnpm/browser caches share one, so
+    # smaller install caches cannot disappear behind large persistent roots. This
     # keeps the fast runtime/cache facts visible even when the Devices walk is
     # slow or a broad persistent root is larger.
     : > "$metadata_tmp" || return 1
     {
+        /usr/bin/awk -F '\t' '$4 == "npm 캐시"' "$event_tmp" \
+            | /usr/bin/head -n 1
+        /usr/bin/awk -F '\t' '$4 == "pnpm 저장소" || $4 == "Playwright 브라우저"' "$event_tmp" \
+            | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 1
         /usr/bin/awk -F '\t' '$4 == "Claude 임시 작업"' "$event_tmp" \
             | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 1
         /usr/bin/awk -F '\t' \
@@ -1334,6 +1363,10 @@ capture_drop_snapshot() {
 # it re-captures only after the cooldown, or after losing another
 # threshold's worth of space.
 SNAPSHOT_COOLDOWN_SECONDS=21600
+# Track gradual growth even while free space remains healthy. A bounded capture
+# at most once per two hours is separate from warning/notification thresholds.
+CUMULATIVE_DROP_THRESHOLD_KB=$((2 * 1024 * 1024))
+CUMULATIVE_CAPTURE_COOLDOWN_SECONDS=7200
 SNAPSHOT_REASON=""
 if [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" || ( "$HOUR_DROP_KB" -ge "$DROP_THRESHOLD_KB" \
     && $((NOW_EPOCH - LAST_SNAPSHOT)) -ge 300 ) ]]; then
@@ -1360,6 +1393,11 @@ elif [[ "$STATUS" == "warning" && "$FREE_KB" -lt "$FREE_THRESHOLD_KB" ]]; then
     elif [[ $((NOW_EPOCH - LAST_SNAPSHOT)) -ge "$SNAPSHOT_COOLDOWN_SECONDS" ]]; then
         SNAPSHOT_REASON="still-low-free"
     fi
+fi
+if [[ -z "$SNAPSHOT_REASON" && "$STATUS" == "normal" \
+    && "$CUMULATIVE_DROP_KB" -ge "$CUMULATIVE_DROP_THRESHOLD_KB" \
+    && $((NOW_EPOCH - LAST_SNAPSHOT)) -ge "$CUMULATIVE_CAPTURE_COOLDOWN_SECONDS" ]]; then
+    SNAPSHOT_REASON="cumulative-drop"
 fi
 
 # Notifications must remain under Modore's identity. `osascript display
@@ -1469,6 +1507,7 @@ fi
 if [[ -n "$SNAPSHOT_REASON" ]]; then
     if capture_drop_snapshot; then
         LAST_SNAPSHOT="$NOW_EPOCH"
+        LAST_SNAPSHOT_REASON="$SNAPSHOT_REASON"
         if [[ "$SNAPSHOT_CAPTURED" -gt 0 || "$SIGNALS_CAPTURED" -gt 0 ]]; then
             PREVIOUS_EVIDENCE_AT="$LAST_EVIDENCE_AT"
             LAST_EVIDENCE_AT="$EVENT_ISO"
@@ -1476,6 +1515,7 @@ if [[ -n "$SNAPSHOT_REASON" ]]; then
         if [[ "$SNAPSHOT_CAPTURED" -gt 0 ]]; then
             PREVIOUS_PATH_EVIDENCE_AT="$LAST_PATH_EVIDENCE_AT"
             LAST_PATH_EVIDENCE_AT="$EVENT_ISO"
+            ATTRIBUTION_BASELINE_KB="$FREE_KB"
         fi
     fi
 fi
@@ -1499,8 +1539,11 @@ trap cleanup EXIT
     /usr/bin/printf 'lastNotifiedLevel\t%s\n' "$LAST_NOTIFY_LEVEL"
     /usr/bin/printf 'pressureLevel\t%s\n' "$PRESSURE_LEVEL"
     /usr/bin/printf 'hourDropKB\t%s\n' "$HOUR_DROP_KB"
+    /usr/bin/printf 'cumulativeDropKB\t%s\n' "$CUMULATIVE_DROP_KB"
+    /usr/bin/printf 'attributionBaselineKB\t%s\n' "$ATTRIBUTION_BASELINE_KB"
     /usr/bin/printf 'notificationResult\t%s\n' "$NOTIFICATION_RESULT"
     /usr/bin/printf 'lastSnapshot\t%s\n' "$LAST_SNAPSHOT"
+    /usr/bin/printf 'lastSnapshotReason\t%s\n' "$LAST_SNAPSHOT_REASON"
     /usr/bin/printf 'snapshotCompleteness\t%s\n' "$SNAPSHOT_COMPLETENESS"
     /usr/bin/printf 'evidencePointerVersion\t%s\n' "$EVIDENCE_POINTER_VERSION"
     /usr/bin/printf 'lastEvidenceAt\t%s\n' "$LAST_EVIDENCE_AT"
@@ -1537,8 +1580,11 @@ emit "previousEvidenceAt" "$PREVIOUS_EVIDENCE_AT"
 emit "lastPathEvidenceAt" "$LAST_PATH_EVIDENCE_AT"
 emit "previousPathEvidenceAt" "$PREVIOUS_PATH_EVIDENCE_AT"
 emit "snapshotReason" "$SNAPSHOT_REASON"
+emit "lastSnapshotReason" "$LAST_SNAPSHOT_REASON"
 emit "message" "$MESSAGE"
 
 emit "pressureLevel" "$PRESSURE_LEVEL"
 emit "hourDropKB" "$HOUR_DROP_KB"
+emit "cumulativeDropKB" "$CUMULATIVE_DROP_KB"
+emit "attributionBaselineKB" "$ATTRIBUTION_BASELINE_KB"
 emit "notificationResult" "$NOTIFICATION_RESULT"

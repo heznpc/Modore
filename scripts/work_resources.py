@@ -148,6 +148,46 @@ def unresolved_leases(state, rid):
     return [x for x in state['leases'] if x['resourceID'] == rid and not x.get('releasedAt')]
 
 
+def hook_status(state, home=None, now=None):
+    """Configuration is not execution evidence. Read only bounded hook metadata."""
+    home = Path.home() if home is None else Path(home)
+    now = time.time() if now is None else now
+    result = []
+    for provider, filename in [('codex', '.codex/hooks.json'), ('claude', '.claude/settings.json')]:
+        path = home / filename
+        configured, disabled, changed_at, error = False, False, 0, None
+        try:
+            if path.exists():
+                if path.is_symlink() or path.parent.is_symlink() or path.stat().st_size > 1_048_576:
+                    raise ValueError('설정 파일을 안전하게 확인할 수 없습니다.')
+                config = json.loads(path.read_text())
+                changed_at = path.stat().st_mtime
+                disabled = bool(config.get('disableAllHooks'))
+                def registered(event):
+                    for group in config.get('hooks', {}).get(event, []):
+                        for hook in group.get('hooks', []):
+                            if hook.get('type') != 'command':
+                                continue
+                            words = shlex.split(hook.get('command', ''))
+                            if (len(words) == 5 and Path(words[0]).name == 'modore'
+                                    and words[1:] == ['resources', 'hook', '--provider', provider]):
+                                return True
+                    return False
+                configured = all(registered(event) for event in ('UserPromptSubmit', 'Stop'))
+        except (OSError, ValueError, TypeError, AttributeError):
+            error = '연결 설정을 읽지 못했습니다.'
+        receipt = state.get('hookObservations', {}).get(provider, {})
+        observed_at = receipt.get('observedAt')
+        if not isinstance(observed_at, (int, float)) or not 0 < observed_at <= now:
+            observed_at = None
+        recent = (configured and not disabled and error is None and observed_at is not None
+                  and observed_at >= changed_at and now - observed_at <= 900)
+        result.append({'provider': provider, 'configured': configured, 'disabled': disabled,
+                       'lastObservedAt': observed_at, 'lastEvent': receipt.get('event'),
+                       'recentlyObserved': bool(recent), 'error': error})
+    return result
+
+
 def snapshot(root=ROOT, observe=True):
     warnings = []
     try: rows = devices()
@@ -163,7 +203,9 @@ def snapshot(root=ROOT, observe=True):
             r['preferred'] = r['id'] in state['preferred'].values()
             r['managedTest'] = state.get('testRuns', {}).get(r['id'])
         browser_runs = list(state.get('browserRuns', {}).values())
+        hooks = hook_status(state)
     return {'observedAt': time.time(), 'resources': rows, 'browsers': browser_runs, 'warnings': warnings,
+            'hookStatus': hooks,
             'coverage': '프로세스 연결은 열린 파일 관찰, 세션 연결은 명시적 사용 등록입니다. 미등록 세션의 소속은 알 수 없습니다.'}
 
 
@@ -491,6 +533,7 @@ def turn_hook(provider, payload, root=ROOT):
     if provider == 'codex' and (not isinstance(wire_turn, str) or not wire_turn or len(wire_turn) > 256):
         raise ValueError('Codex turn_id가 없어 자동 처리를 보류합니다.')
     with registry(root) as state:
+        state.setdefault('hookObservations', {})[provider] = {'event': event, 'observedAt': time.time()}
         turns = state.setdefault('turns', {})
         old = turns.get(key)
         if event == 'UserPromptSubmit':
