@@ -33,6 +33,8 @@ usage() {
         '  modore resources begin-test|hold --provider codex|claude --session ID --turn ID [options]' \
         '  modore resources begin-browser-test --provider codex|claude --session ID --project PATH --turn ID --url URL [--headed]' \
         '  modore resources install-hooks --provider codex|claude' \
+        '  modore tools status|resolve PACKAGE[@VERSION]' \
+        '  modore tools run PACKAGE[@VERSION] -- [arguments]' \
         '  modore storage status' \
         '  modore storage recovery' \
         '  modore cleanup list' \
@@ -88,6 +90,9 @@ COMMAND="${1:-help}"
 [[ "$#" -eq 0 ]] || shift
 
 case "$COMMAND" in
+    tools)
+        exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/tool_reuse.py" "$@"
+        ;;
     ci)
         exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/ci_watch.py" "$@"
         ;;

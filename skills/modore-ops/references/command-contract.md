@@ -54,10 +54,11 @@ modore resources hold --id <UDID> --provider <provider> --session <ID> --turn <t
 modore resources release --id <UDID> --provider <provider> --session <ID>
 ```
 
-The installer merges two synchronous lifecycle hooks into the selected user's
+The installer merges two synchronous lifecycle hooks and a Vercel CLI reuse
+`PreToolUse` guard into the selected user's
 configuration and backs up existing JSON under Modore's work-resource directory.
-It preserves other hooks and does not grant trust. Codex requires review of both
-definitions in `/hooks`; existing sessions may need a configuration refresh.
+It preserves other hooks and does not grant trust. Codex requires review of the
+lifecycle hooks and CLI guard in `/hooks`; existing sessions may need a refresh.
 
 `UserPromptSubmit` records metadata and supplies the turn token. `Stop` explicitly
 ends that turn's managed test use. Codex matches `turn_id`; Claude uses a generated
@@ -95,6 +96,32 @@ cleanup require a separate explicit diagnosis.
 
 References: [Codex hooks](https://learn.chatgpt.com/docs/hooks),
 [Claude Code hooks](https://code.claude.com/docs/en/hooks).
+
+## Installed CLI reuse
+
+```bash
+modore tools status vercel
+modore tools resolve vercel@1.2.3
+modore tools run vercel@1.2.3 -- --version
+```
+
+The version above is illustrative; use an exact version returned by status.
+Only bounded package manifests and entrypoints are inspected, without walking
+node_modules or querying a registry. Identical installed versions resolve to
+one deterministic existing path across callers. No package is downloaded or
+copied. Missing, ambiguous, or non-exact versions fail instead of silently
+installing or substituting a different version. The child CLI retains its usual
+behavior, including any network/build operations explicitly requested in its
+arguments. This is a source-checkout CLI, not a new native app screen.
+
+The synchronous guard catches common direct `npx vercel` and `npm exec` forms
+when an installed version is available. It returns a deny decision with a
+reuse command, not an allow decision or a rewritten deployment. It does not
+intercept arbitrary scripts, enforce an OS-wide package policy, or serialize
+first installations outside Modore. A `latest` tag requires checking whether
+an upgrade is needed; an existing package is not proof of the registry latest.
+Configuration and direct adapter tests do not prove host-side hook execution.
+See [Codex hook trust and tool coverage](https://learn.chatgpt.com/docs/hooks).
 
 ## Agent access
 

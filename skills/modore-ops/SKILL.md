@@ -1,6 +1,6 @@
 ---
 name: modore-ops
-description: Use Modore for explicit local AI-session continuity and Mac storage diagnosis or recovery. Applies to finding, searching, backing up, or restoring Claude/Codex sessions and explaining or reclaiming local disk; do not use it for generic repo status, next-work choices, PRs, shipping, or multi-repo maps. Also applies to simulator reuse, project/session resource connections, and external SSD occupancy/ejection.
+description: Use Modore for explicit local AI-session continuity and Mac storage diagnosis or recovery. Applies to finding, searching, backing up, or restoring Claude/Codex sessions and explaining or reclaiming local disk; do not use it for generic repo status, next-work choices, PRs, shipping, or multi-repo maps. Also applies to reusing installed deployment CLIs before npx, simulator reuse, project/session resource connections, and external SSD occupancy/ejection.
 ---
 
 # Modore
@@ -36,6 +36,22 @@ Read [references/command-contract.md](references/command-contract.md) when an
 exact command or privacy boundary matters.
 
 ## Work resources: discover before creating
+
+Before installing a deployment CLI, run `modore tools status vercel` and reuse
+an exact installed version with `modore tools run vercel@<version> -- <arguments>`.
+The command reads bounded package metadata and runs the existing entrypoint;
+it never invokes npm/npx or downloads packages. `latest` is not an identity:
+different request spellings can install the same resolved version twice.
+Do not reuse an incompatible version or merge project dependencies/lockfiles.
+Multiple installed versions require an explicit choice of version.
+
+`resources install-hooks` also registers a Vercel `PreToolUse` guard. It detects
+common direct npx/npm-exec invocations and blocks them when an installed CLI
+can be reused, with the exact replacement command. It is not an OS-wide install
+interceptor: indirect scripts, missing versions and simultaneous first installs
+remain outside coverage. Hook configuration is not evidence of execution;
+Codex requires review/trust in `/hooks`. Never programmatically grant trust or
+claim automatic prevention in a session without a verified hook invocation.
 
 For simulator, development environment, or external SSD work, first run
 `modore resources status`. This reports live devices, OS versions, open-file

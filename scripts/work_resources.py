@@ -511,7 +511,11 @@ def turn_hook(provider, payload, root=ROOT):
                        'It starts isolated Chromium, returns cwd/argv for all subsequent Playwright actions, reuses it within the turn, '
                        'and closes it normally on Stop. Test cookies and transient UI state end with it. '
                        'Use resources hold with its returned id only when the user needs a running preview after the response. '
-                       'It does not close ordinary Chrome, external browser tools, or unregistered browsers.')
+                       'It does not close ordinary Chrome, external browser tools, or unregistered browsers. '
+                       'Before installing a deployment CLI, run modore tools status vercel. '
+                       'Reuse the exact installed version with modore tools run vercel@<version> -- <arguments>; '
+                       'do not create another npx cache for the same version via latest or another spelling. '
+                       'This command never installs packages. Project node_modules and lockfiles remain project-specific.')
             return {'hookSpecificOutput': {'hookEventName': event, 'additionalContext': context}}
         if not old or old['project'] != project or (provider == 'codex' and old['token'] != wire_turn):
             return {}
@@ -537,7 +541,7 @@ def turn_hook(provider, payload, root=ROOT):
 
 
 def install_hooks(provider, root=ROOT, home=None, executable=None):
-    """Merge only our two handlers. Never grant Codex hook trust programmatically."""
+    """Merge our lifecycle and CLI guard handlers; never grant Codex hook trust."""
     turn_key(provider, 'install')
     home = Path.home() if home is None else Path(home)
     executable = Path(__file__).resolve().parents[1] / 'bin/modore' if executable is None else Path(executable)
@@ -558,6 +562,10 @@ def install_hooks(provider, root=ROOT, home=None, executable=None):
         expected = {'hooks': [{'type': 'command', 'command': command_text, 'timeout': 60}]}
         if expected not in groups:
             groups.append(expected)
+    guard = {'matcher': '^Bash$', 'hooks': [{'type': 'command',
+             'command': shlex.quote(str(executable)) + ' tools hook', 'timeout': 5}]}
+    if guard not in hooks.setdefault('PreToolUse', []):
+        hooks['PreToolUse'].append(guard)
     changed = not before or json.loads(before) != config
     backup = None
     if changed:
@@ -570,7 +578,7 @@ def install_hooks(provider, root=ROOT, home=None, executable=None):
             atomic(path, config)
     return {'config': str(path), 'changed': changed, 'backup': str(backup) if backup else None,
             'reviewRequired': provider == 'codex',
-            'instruction': 'Codex /hooks에서 두 Modore 훅을 검토·신뢰해야 실행됩니다.' if provider == 'codex' else '새 턴에서 훅 적용을 확인하세요. 실행 중 세션은 훅 설정 새로고침이 필요할 수 있습니다.'}
+            'instruction': 'Codex /hooks에서 Modore 수명주기 훅과 CLI 재사용 훅을 검토·신뢰해야 실행됩니다. 설정 저장은 실행 확인이 아닙니다.' if provider == 'codex' else '새 턴에서 훅 적용을 확인하세요. 실행 중 세션은 훅 설정 새로고침이 필요할 수 있습니다.'}
 
 
 def mutate(req, root=ROOT):

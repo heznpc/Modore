@@ -256,6 +256,11 @@ class TurnResourceTests(unittest.TestCase):
             self.assertEqual(new['custom'],previous['custom'])
             self.assertEqual(new['hooks']['Stop'][0],previous['hooks']['Stop'][0])
             self.assertEqual(len(new['hooks']['Stop']),2)
+            guards = [g for g in new['hooks']['PreToolUse']
+                      if any(h['command'].endswith(' tools hook') for h in g['hooks'])]
+            self.assertEqual(len(guards), 1)
+            self.assertEqual(guards[0]['matcher'], '^Bash$')
+            self.assertNotIn('state', new['hooks'])
             self.assertNotIn('trusted_hash',path.read_text())
             self.assertEqual(json.loads(Path(result['backup']).read_text()),previous)
 
