@@ -82,7 +82,7 @@ final class SessionRecoveryModelsTests: XCTestCase {
         let manager = FileManager.default
         let root = manager.temporaryDirectory.appendingPathComponent("modore-resume-alias-\(UUID())")
         try manager.createDirectory(at: root.appendingPathComponent("workspace"), withIntermediateDirectories: true)
-        try manager.createDirectory(at: root.appendingPathComponent("home/user-home"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: root.appendingPathComponent("provider-home/user-home"), withIntermediateDirectories: true)
         defer { try? manager.removeItem(at: root) }
         let physicalRoot = try XCTUnwrap(realpath(root.path, nil))
         defer { free(physicalRoot) }
@@ -92,16 +92,16 @@ final class SessionRecoveryModelsTests: XCTestCase {
         XCTAssertTrue(path.hasPrefix("/private/var/"))
         let plan = SessionResumePlan(provider: "codex", sessionId: "123",
             argv: ["/usr/local/bin/codex", "resume", "123"],
-            environment: ["CODEX_HOME": path + "/home", "HOME": path + "/home/user-home"],
+            environment: ["CODEX_HOME": path + "/provider-home", "HOME": path + "/provider-home/user-home"],
             workingDirectory: path + "/workspace", status: "ready_to_try", limitations: [],
-            providerHome: path + "/home", sourcePaths: [], preparedPaths: [], cliVersion: nil)
+            providerHome: path + "/provider-home", sourcePaths: [], preparedPaths: [], cliVersion: nil)
         for prefix in [path, String(path.dropFirst("/private".count))] {
             XCTAssertTrue(plan.matches(session,
                 workspace: URL(fileURLWithPath: prefix + "/workspace"),
-                home: URL(fileURLWithPath: prefix + "/home")))
+                home: URL(fileURLWithPath: prefix + "/provider-home")))
         }
         XCTAssertFalse(plan.matches(session,
             workspace: URL(fileURLWithPath: path + "/other-workspace"),
-            home: URL(fileURLWithPath: path + "/home")))
+            home: URL(fileURLWithPath: path + "/provider-home")))
     }
 }
