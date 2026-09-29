@@ -54,6 +54,18 @@ Every app build embeds an explicit runtime allowlist under `Contents/Resources/r
   verifies it, and restores only into a new directory. It never registers the result with a
   provider, follows selected workspace folders, or authorizes cleanup.
 
+Explicit conversation search processes at most 128 physical artifacts per isolated
+reader process, preserving the existing global deadline and per-file byte bounds.
+Each completed artifact is streamed to the parent before the next is opened, so
+an unreadable or stalled later artifact cannot erase earlier results. The reader
+stops at the first hit or the remaining match limit when requested; artifact and
+logical-session coverage stay distinct. Candidate filtering first checks raw
+case-folded text, then decodes JSON escapes only where a semantic match may need
+them. Valid escape runs use the standard JSON decoder; split Unicode surrogate
+pairs retain overlap handling. Final matches still come only from canonical
+visible turns, with the existing masking and coverage contract. Search retains
+no query, transcript copy, result cache or persistent index.
+
 The native **Work** page is the composition boundary: Swift groups scree sessions, Mothball's
 read-only repository assessment, and discovered worktrees by canonical workspace. Mothball's
 archive/trash API remains unreachable without Modore's approval-token boundary. QuotaPie remains

@@ -1449,7 +1449,7 @@ else:
 
 
 @pytest.mark.parametrize(
-    "mode", ["worktree", "sessions", "workspace", "content", "auxiliary"])
+    "mode", ["worktree", "sessions", "workspace", "content", "search-batch", "auxiliary"])
 def test_isolated_post_fork_setup_failure_closes_pipe_and_reaps_worker(
         tmp_path, monkeypatch, mode):
     real_pipe = os.pipe
@@ -1495,6 +1495,11 @@ def test_isolated_post_fork_setup_failure_closes_pipe_and_reaps_worker(
             time.monotonic() + 2, lambda: {"ok": True})
         assert payload is None
         assert status == "unreadable"
+    elif mode == "search-batch":
+        rows = scree._search_batch_isolated(
+            [str(tmp_path / "unused")], "needle", raw=False, home=tmp_path,
+            deadline=time.monotonic() + 2, match_budget=0, first=False)
+        assert rows == [([], "unreadable", 0)]
     else:
         receipts, observations, coverage = (
             scree._read_evidence_auxiliary_isolated(
@@ -7405,3 +7410,81 @@ def test_backup_cli_round_trip_and_failure_receipts(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["fileCount"] == 6
     assert scree.main(["backup-restore", str(archive), "--out", str(tmp_path / "restored")]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "restored"
+
+
+@pytest.mark.parametrize("chunk_size", [7, 31, 65536])
+@pytest.mark.parametrize("text", [
+    'literal 한글 and Straße',
+    'slashes /tmp/project and quoted "word"',
+    'backslash \\ and tab\twith newline\n',
+    'emoji \U0001f680 and pair \U0001f600',
+])
+def test_search_probe_keeps_semantic_matches_across_escape_and_chunk_forms(
+        monkeypatch, chunk_size, text):
+    monkeypatch.setattr(scree, "SEARCH_IO_CHUNK_BYTES", chunk_size)
+    # Standard literal/ASCII-escaped JSON and a fully escaped string must all
+    # admit the same decoded words, even across tiny input windows.
+    fully_escaped = ''.join(
+        ''.join('\\u%04x' % unit for unit in (
+            [ord(c)] if ord(c) <= 0xffff else
+            [0xd800 + ((ord(c) - 0x10000) >> 10),
+             0xdc00 + ((ord(c) - 0x10000) & 1023)]))
+        for c in text)
+    for encoded in (json.dumps(text), json.dumps(text, ensure_ascii=False),
+                    '"' + fully_escaped + '"'):
+        payload = ('{"content":' + encoded + '}').encode('utf-8')
+        for word in text.split():
+            assert scree._file_might_contain_handle(
+                io.BytesIO(payload), scree._search_probes(word.casefold())) == (True, "ok")
+
+
+@pytest.mark.parametrize("first,match_budget", [(True, 0), (False, 1)])
+def test_search_batch_does_not_open_past_first_or_match_limit(
+        tmp_path, monkeypatch, first, match_budget):
+    marker = tmp_path / "opened"
+    def read(source, *_args, **_kwargs):
+        with marker.open('a') as handle:
+            handle.write(str(source) + '\n')
+        return ([{"snippet": "needle"}], "ok", 0)
+    monkeypatch.setattr(scree, "_search_one_session_bounded", read)
+    result = scree._search_batch_isolated(
+        ["first", "must-not-open"], "needle", raw=False, home=tmp_path,
+        deadline=time.monotonic() + 3, first=first, match_budget=match_budget)
+    assert result == [([{"snippet": "needle"}], "ok", 0)]
+    assert marker.read_text().splitlines() == ["first"]
+
+
+def test_search_retains_prior_hits_when_later_artifact_blocks(tmp_path, monkeypatch):
+    fast = _stored_session(tmp_path, "fast", ("user", "needle survives timeout"))
+    blocked = _stored_session(tmp_path, "blocked", ("user", "unread body"))
+    os.utime(fast, (1700000100, 1700000100))
+    os.utime(blocked, (1700000000, 1700000000))
+    index = scree.build_sessions(tmp_path)
+    monkeypatch.setattr(scree, "_build_sessions_isolated", lambda *_: index)
+    original = scree._open_regular_nofollow
+    def blocked_open(source, *args, **kwargs):
+        if source == blocked:
+            time.sleep(5)
+        return original(source, *args, **kwargs)
+    monkeypatch.setattr(scree, "_open_regular_nofollow", blocked_open)
+    started = time.monotonic()
+    result = scree.build_search("needle", tmp_path, budget_seconds=0.3)
+    assert time.monotonic() - started < 1.5
+    assert result["scannedSessions"] == 2
+    assert result["scannedArtifacts"] == 2
+    assert len(result["matches"]) == 1
+    assert result["matches"][0]["source"] == str(fast)
+    assert result["truncatedReason"] == "time"
+    assert not result["definitive"]
+
+
+def test_search_batch_retains_prefix_on_worker_error(tmp_path, monkeypatch):
+    def read(source, *_args, **_kwargs):
+        if str(source) == "broken":
+            raise OSError("private error must not reach output")
+        return ([{"snippet": "needle"}], "ok", 0)
+    monkeypatch.setattr(scree, "_search_one_session_bounded", read)
+    result = scree._search_batch_isolated(
+        ["good", "broken"], "needle", raw=False, home=tmp_path,
+        deadline=time.monotonic() + 3, first=False, match_budget=0)
+    assert result == [([{"snippet": "needle"}], "ok", 0), ([], "unreadable", 0)]

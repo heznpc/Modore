@@ -9873,9 +9873,14 @@ def _isolated_content_json(deadline: float, producer: Callable[[], dict]
     eof = reaped = success = oversized = False
     try:
         while time.monotonic() < deadline and not (eof and reaped):
+            # EOF means the owned child has closed its result pipe and is
+            # exiting. Waiting another 50 ms here for every transcript made a
+            # large search spend seconds doing no I/O. Keep exit reaping
+            # bounded, with a short poll only after all output has arrived.
+            poll_seconds = 0.001 if eof else 0.05
             ready = select.select(
                 [read_descriptor] if not eof else [], [], [],
-                min(0.05, max(0.0, deadline - time.monotonic())))[0]
+                min(poll_seconds, max(0.0, deadline - time.monotonic())))[0]
             if ready:
                 try:
                     chunk = os.read(read_descriptor, 65536)
@@ -9939,6 +9944,137 @@ def _search_one_session_isolated(
             or type(omitted) is not int or omitted < 0):
         return ([], "unreadable", 0)
     return (hits, status, omitted)
+
+
+SEARCH_ARTIFACTS_PER_WORKER = 128
+
+
+def _search_batch_isolated(
+        sources: list[str], needle: str, *, raw: bool, home: Path,
+        deadline: float, match_budget: int, first: bool,
+        ) -> list[tuple[list[dict], str, int]]:
+    """Stream bounded artifact results from one owned reader process.
+
+    Each row is committed to the pipe before opening the next source. A stuck
+    later file cannot erase earlier hits. The child stops at the first hit or
+    remaining match budget, so batching does not read past an explicit stop.
+    No query, transcript, result, or search index is persisted.
+    """
+    if not sources:
+        return []
+    if time.monotonic() >= deadline:
+        return [([], "time", 0)]
+    try:
+        read_descriptor, write_descriptor = os.pipe()
+        pid = os.fork()
+    except OSError:
+        for descriptor in (locals().get("read_descriptor", -1),
+                           locals().get("write_descriptor", -1)):
+            if descriptor >= 0:
+                os.close(descriptor)
+        return [([], "unreadable", 0)]
+    if pid == 0:
+        try:
+            os.close(read_descriptor)
+            emitted_hits = 0
+            for source in sources:
+                result = _search_one_session_bounded(
+                    Path(source), needle, raw=raw, home=home, deadline=deadline)
+                encoded = (json.dumps(result, ensure_ascii=True,
+                                      separators=(",", ":")) + "\n").encode("utf-8")
+                if len(encoded) > SESSION_CONTENT_ISOLATION_MAX_BYTES:
+                    break
+                offset = 0
+                while offset < len(encoded):
+                    offset += os.write(write_descriptor, encoded[offset:])
+                emitted_hits += len(result[0])
+                if (result[1] == "time" or (first and emitted_hits)
+                        or (match_budget > 0 and emitted_hits >= match_budget)):
+                    break
+        except BaseException:
+            pass
+        finally:
+            os.close(write_descriptor)
+        os._exit(0)
+
+    if not _prepare_isolated_reader(read_descriptor, write_descriptor, pid):
+        return [([], "unreadable", 0)]
+    results: list[tuple[list[dict], str, int]] = []
+    buffer = b""
+    total = 0
+    eof = reaped = success = False
+    failure: Optional[str] = None
+    try:
+        while time.monotonic() < deadline and not (eof and reaped):
+            ready = select.select(
+                [read_descriptor] if not eof else [], [], [],
+                min(0.001 if eof else 0.05,
+                    max(0.0, deadline - time.monotonic())))[0]
+            if ready:
+                try:
+                    chunk = os.read(read_descriptor, 65536)
+                except BlockingIOError:
+                    chunk = None
+                if chunk == b"":
+                    eof = True
+                elif chunk:
+                    total += len(chunk)
+                    if total > SESSION_CONTENT_ISOLATION_MAX_BYTES:
+                        failure = "unreadable"
+                        break
+                    buffer += chunk
+                    while b"\n" in buffer:
+                        line, buffer = buffer.split(b"\n", 1)
+                        try:
+                            row = json.loads(line)
+                        except JSON_PARSE_ERRORS:
+                            failure = "unreadable"
+                            break
+                        if (not isinstance(row, list) or len(row) != 3
+                                or not isinstance(row[0], list)
+                                or not all(isinstance(hit, dict) for hit in row[0])
+                                or not isinstance(row[1], str)
+                                or type(row[2]) is not int or row[2] < 0
+                                or len(results) >= len(sources)):
+                            failure = "unreadable"
+                            break
+                        results.append((row[0], row[1], row[2]))
+                    if failure:
+                        break
+            if not reaped:
+                try:
+                    waited, wait_status = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    waited, wait_status = pid, None
+                if waited == pid:
+                    reaped = True
+                    success = (wait_status is not None
+                               and os.WIFEXITED(wait_status)
+                               and os.WEXITSTATUS(wait_status) == 0)
+        if not reaped:
+            if not _terminate_worktree_worker(pid):
+                failure = "worker-leaked"
+            reaped = True
+        hits = sum(len(row[0]) for row in results)
+        expected_stop = (len(results) == len(sources)
+                         or (results and results[-1][1] == "time")
+                         or (first and hits > 0)
+                         or (match_budget > 0 and hits >= match_budget))
+        if failure is None and not (eof and success and expected_stop and not buffer):
+            failure = "time" if time.monotonic() >= deadline else "unreadable"
+        if failure:
+            if len(results) < len(sources):
+                results.append(([], failure, 0))
+            elif results:
+                found, _, omitted = results[-1]
+                results[-1] = (found, failure, omitted)
+        return results
+    except BaseException:
+        if not reaped:
+            _terminate_worktree_worker(pid)
+        raise
+    finally:
+        os.close(read_descriptor)
 
 
 def _session_evidence_isolated(
@@ -10013,8 +10149,10 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     match_ids: set[tuple] = set()
     scanned = unreadable = parse_errors = leaked_workers = truncated_sessions = 0
     scanned_artifacts = 0
-    total_artifacts = sum(
-        len(_session_artifact_sources(session)) for session in sessions)
+    artifact_sources = [source for session in sessions
+                        for source in _session_artifact_sources(session)]
+    total_artifacts = len(artifact_sources)
+    pending_results: list[tuple[list[dict], str, int]] = []
     matches_omitted_at_least = 0
     sessions_skipped_by_limit = 0
     truncated_reason: Optional[str] = (
@@ -10024,19 +10162,23 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         if len(matches) >= limit > 0:
             truncated_reason = "limit"
             break
-        if time.monotonic() >= deadline:
+        if not pending_results and time.monotonic() >= deadline:
             truncated_reason = "time"
             break
         session_unreadable = session_parse = session_leaked = session_truncated = False
         session_timed_out = False
         for artifact_source in _session_artifact_sources(session):
-            if time.monotonic() >= deadline:
+            if not pending_results and time.monotonic() >= deadline:
                 session_truncated = session_timed_out = True
                 truncated_reason = "time"
                 break
-            found, read_status, session_omitted = _search_one_session_isolated(
-                Path(artifact_source), needle, raw=raw, home=home,
-                deadline=deadline)
+            if not pending_results:
+                pending_results = _search_batch_isolated(
+                    artifact_sources[scanned_artifacts:
+                                     scanned_artifacts + SEARCH_ARTIFACTS_PER_WORKER],
+                    needle, raw=raw, home=home, deadline=deadline,
+                    match_budget=max(0, limit - len(matches)), first=first)
+            found, read_status, session_omitted = pending_results.pop(0)
             scanned_artifacts += 1
             if read_status == "time":
                 session_truncated = session_timed_out = True
@@ -10172,7 +10314,38 @@ def _search_probes(needle: str) -> tuple[tuple[str, ...], ...]:
     return tuple(groups)
 
 
+# Match runs, not individual characters: the regular expression skips plain
+# text in C and json.loads decodes consecutive escapes in C. A Python loop over
+# every character used to spend the entire search budget on negative files.
+_JSON_ESCAPE = r'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})'
+_JSON_ESCAPE_RUN = re.compile(
+    _JSON_ESCAPE + r'(?:[^"\\\x00-\x1f]+|' + _JSON_ESCAPE + r')*')
+
+
 def _json_text_projection(text: str) -> str:
+    """Project escapes without a Python per-character walk over the corpus.
+
+    This remains a conservative candidate gate, not a transcript parser. JSON
+    punctuation is retained; only valid escape runs are decoded. Lone surrogate
+    escapes can straddle I/O windows, so preserve them exactly as the existing
+    bounded scanner does until an overlapping window contains the whole pair.
+    """
+    if "\\" not in text:
+        return text
+
+    def decode_run(match: re.Match) -> str:
+        escaped = match.group(0)
+        decoded = json.loads('"' + escaped + '"')
+        try:
+            decoded.encode("utf-8")
+        except UnicodeEncodeError:
+            return _project_incomplete_json_escapes(escaped)
+        return decoded
+
+    return _JSON_ESCAPE_RUN.sub(decode_run, text)
+
+
+def _project_incomplete_json_escapes(text: str) -> str:
     """Project JSON escapes to their semantic characters without parsing.
 
     The raw search gate is allowed to over-admit a file, but it must never
@@ -10264,11 +10437,25 @@ def _file_might_contain_handle(
             return (False, "ok")
         consumed += len(chunk)
         window = carry + chunk
-        folded = _json_text_projection(
-            window.decode("utf-8", errors="replace")).casefold()
+        text = window.decode("utf-8", errors="replace")
+        folded = text.casefold()
         for position in tuple(outstanding):
             if any(probe in folded for probe in probes[position]):
                 outstanding.discard(position)
+        # Raw positives may over-admit, which the visible-turn parser checks.
+        # Only Unicode escapes can introduce letters absent from the raw text.
+        # Simple JSON escapes introduce punctuation/control characters, so an
+        # ordinary word cannot need them. Most transcripts contain many \n
+        # escapes but no Unicode escapes; do not decode gigabytes of those
+        # merely to establish that a normal word is absent.
+        if outstanding and ("\\u" in text or any(
+                any(character in probes[position][0]
+                    for character in '\\"/\b\f\n\r\t')
+                for position in outstanding)):
+            projected = _json_text_projection(text).casefold()
+            for position in tuple(outstanding):
+                if any(probe in projected for probe in probes[position]):
+                    outstanding.discard(position)
         if not outstanding:
             return (True, "ok")
         carry = window[-overlap:]
