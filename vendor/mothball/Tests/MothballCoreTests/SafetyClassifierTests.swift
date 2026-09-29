@@ -36,7 +36,7 @@ final class SafetyClassifierTests: XCTestCase {
     func test_recentActivity_isAlwaysUnsafe() {
         let v = classifier.classify(repo(daysAgo: 5), now: now)
         XCTAssertEqual(v.tier, .unsafe)
-        XCTAssertEqual(v.reasons, [.recentActivity(daysAgo: 5)])
+        XCTAssertEqual(v.reasons, [.recentActivity(daysAgo: 5), .fullyPushed])
     }
 
     func test_recentActivity_overridesOtherwiseSafeRepo() {
@@ -46,13 +46,30 @@ final class SafetyClassifierTests: XCTestCase {
     }
 
     func test_recentActivity_overridesNoRemote() {
-        // Recent-activity check fires before we even look at remote state.
+        // Recent activity must not hide local-only recovery risks.
         let v = classifier.classify(
             repo(daysAgo: 10, hasRemote: false, hasUpstream: false),
             now: now
         )
         XCTAssertEqual(v.tier, .unsafe)
-        XCTAssertEqual(v.reasons.count, 1)  // only recentActivity
+        XCTAssertEqual(v.reasons, [.recentActivity(daysAgo: 10), .noRemoteConfigured])
+    }
+
+    func test_recentActivity_preservesDirtyAndUnpushedEvidence() {
+        let v = classifier.classify(repo(daysAgo: 1, isDirty: true, ahead: 3), now: now)
+        XCTAssertEqual(v.tier, .unsafe)
+        XCTAssertTrue(v.reasons.contains(.dirtyWorkingTree))
+        XCTAssertTrue(v.reasons.contains(.unpushedCommits(count: 3)))
+        XCTAssertFalse(v.reasons.contains(.fullyPushed))
+    }
+
+    func test_noRemote_preservesDirtyEvidence() {
+        let v = classifier.classify(
+            repo(daysAgo: 365, isDirty: true, hasRemote: false, hasUpstream: false), now: now
+        )
+        XCTAssertEqual(v.tier, .unsafe)
+        XCTAssertTrue(v.reasons.contains(.noRemoteConfigured))
+        XCTAssertTrue(v.reasons.contains(.dirtyWorkingTree))
     }
 
     // MARK: - No remote means unsafe

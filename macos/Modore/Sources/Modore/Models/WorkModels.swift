@@ -124,7 +124,7 @@ struct WorkProject: Identifiable {
             switch reason {
             case .dormant(let days): return L10n.format("%@일간 미사용", String(describing: days))
             case .recentActivity(let days): return L10n.format("최근 활동 %@일 전", String(describing: days))
-            case .fullyPushed: return L10n.text("원격에 모두 반영됨")
+            case .fullyPushed: return L10n.text("현재 브랜치: 미푸시 커밋 없음")
             default: return nil
             }
         }

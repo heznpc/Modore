@@ -478,6 +478,10 @@ RUNTIME_FILES=(
     "scripts/storage_watch.sh"
     "scripts/schedule.sh"
     "scripts/scree.py"
+    "scripts/session_recovery.py"
+    "scripts/session_resume.py"
+    "scripts/backup_reclaim.py"
+    "scripts/path_reconnect.py"
     "scripts/asset_retirement.py"
     "scripts/work_resources.py"
     "scripts/ci_watch.py"
@@ -744,6 +748,19 @@ if ! run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B -c \
     /usr/bin/printf 'ERROR: embedded Python session-index smoke returned an invalid payload.\n' >&2
     exit 1
 fi
+
+# Recovery must work with the bundled interpreter on a replacement Mac,
+# including SQLite's online backup API; a developer's Python is not evidence.
+run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B -c \
+    'import sqlite3; source=sqlite3.connect(":memory:"); destination=sqlite3.connect(":memory:"); source.backup(destination); assert destination.execute("PRAGMA integrity_check").fetchone()[0] == "ok"'
+run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B \
+    "$RUNTIME_DIR/scripts/session_recovery.py" --help > /dev/null
+run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B \
+    "$RUNTIME_DIR/scripts/session_resume.py" --help > /dev/null
+run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B \
+    "$RUNTIME_DIR/scripts/backup_reclaim.py" --help > /dev/null
+run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B \
+    "$RUNTIME_DIR/scripts/path_reconnect.py" --help > /dev/null
 
 runtime_hash="$({
     cd "$RUNTIME_DIR"
