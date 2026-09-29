@@ -89,4 +89,45 @@ final class CPUWatchTests: XCTestCase {
         XCTAssertGreaterThan(own?.percent ?? 0, 1)
         XCTAssertFalse(own?.name.isEmpty ?? true)
     }
+    // Opt-in runtime cost evidence; normal test runs never wait for this probe.
+    func testObserverCostProbeWhenRequested() async throws {
+        guard let destination = ProcessInfo.processInfo.environment["MODORE_CPU_WATCH_PROBE"] else {
+            throw XCTSkip("Set MODORE_CPU_WATCH_PROBE to a local JSON path for six background samples")
+        }
+        func cpuSeconds(_ who: Int32) -> Double {
+            var value = rusage()
+            getrusage(who, &value)
+            return Double(value.ru_utime.tv_sec + value.ru_stime.tv_sec)
+                + Double(value.ru_utime.tv_usec + value.ru_stime.tv_usec) / 1_000_000
+        }
+        let ownStart = cpuSeconds(RUSAGE_SELF)
+        let childStart = cpuSeconds(RUSAGE_CHILDREN)
+        let started = ProcessInfo.processInfo.systemUptime
+        var prior: CPUSample?
+        var durations: [Double] = []
+        for _ in 0..<6 {
+            let begin = ProcessInfo.processInfo.systemUptime
+            let sample = await CPUSample.captureWithSystemProcesses()
+            let usage = prior.map { sample.usage(since: $0) } ?? []
+            let health = HealthSnapshot.capture(sample: sample, usage: usage, cpuElevated: false)
+            XCTAssertNotNil(health.freeBytes)
+            XCTAssertFalse(sample.systemProcesses.isEmpty)
+            prior = sample
+            let elapsed = ProcessInfo.processInfo.systemUptime - begin
+            durations.append(elapsed)
+            let delay = CPUSamplingCadence.delay(visible: false, thermalPressure: sample.thermalPressure,
+                                                collectionSeconds: elapsed)
+            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        }
+        let wall = ProcessInfo.processInfo.systemUptime - started
+        let ownCPU = cpuSeconds(RUSAGE_SELF) - ownStart
+        let childCPU = cpuSeconds(RUSAGE_CHILDREN) - childStart
+        let result: [String: Any] = ["wallSeconds": wall, "samples": durations.count,
+            "collectionSeconds": durations, "selfCPUSeconds": ownCPU,
+            "childCPUSeconds": childCPU, "oneCoreCPUPercent": (ownCPU + childCPU) / wall * 100,
+            "scope": "CPU sampler and health snapshot at background cadence; excludes UI, notifications and journal persistence"]
+        try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+            .write(to: URL(fileURLWithPath: destination), options: .atomic)
+    }
+
 }

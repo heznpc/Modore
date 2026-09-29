@@ -17,6 +17,12 @@ import tempfile
 import time
 import uuid
 
+# Native execution injects the sealed companion; direct CLI execution imports
+# only from this resolved repository-controlled directory in isolated mode.
+if 'tool_reuse' not in globals():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import tool_reuse
+
 ROOT = Path.home() / 'Library/Application Support/Modore/work-resources'
 
 
@@ -156,6 +162,7 @@ def hook_status(state, home=None, now=None):
     for provider, filename in [('codex', '.codex/hooks.json'), ('claude', '.claude/settings.json')]:
         path = home / filename
         configured, disabled, changed_at, error = False, False, 0, None
+        guard_configured = False
         try:
             if path.exists():
                 if path.is_symlink() or path.parent.is_symlink() or path.stat().st_size > 1_048_576:
@@ -174,6 +181,16 @@ def hook_status(state, home=None, now=None):
                                 return True
                     return False
                 configured = all(registered(event) for event in ('UserPromptSubmit', 'Stop'))
+                for group in config.get('hooks', {}).get('PreToolUse', []):
+                    if group.get('matcher') not in ('^Bash$', 'Bash', '*', '', None):
+                        continue
+                    for handler in group.get('hooks', []):
+                        words = shlex.split(handler.get('command', ''))
+                        if (handler.get('type') == 'command' and len(words) in (3, 5)
+                                and Path(words[0]).name == 'modore'
+                                and words[1:] in (['tools', 'hook'], ['tools', 'hook', '--provider', provider])
+                                and not handler.get('async', False)):
+                            guard_configured = True
         except (OSError, ValueError, TypeError, AttributeError):
             error = '연결 설정을 읽지 못했습니다.'
         receipt = state.get('hookObservations', {}).get(provider, {})
@@ -182,7 +199,10 @@ def hook_status(state, home=None, now=None):
             observed_at = None
         recent = (configured and not disabled and error is None and observed_at is not None
                   and observed_at >= changed_at and now - observed_at <= 900)
-        result.append({'provider': provider, 'configured': configured, 'disabled': disabled,
+        guard = tool_reuse.hook_receipt(provider, home, now, changed_at)
+        guard['configured'] = guard_configured
+        guard['recentlyObserved'] = bool(guard['recentlyObserved'] and guard_configured and not disabled and error is None)
+        result.append({'guard': guard, 'provider': provider, 'configured': configured, 'disabled': disabled,
                        'lastObservedAt': observed_at, 'lastEvent': receipt.get('event'),
                        'recentlyObserved': bool(recent), 'error': error})
     return result
@@ -606,7 +626,11 @@ def install_hooks(provider, root=ROOT, home=None, executable=None):
         if expected not in groups:
             groups.append(expected)
     guard = {'matcher': '^Bash$', 'hooks': [{'type': 'command',
-             'command': shlex.quote(str(executable)) + ' tools hook', 'timeout': 5}]}
+             'command': shlex.quote(str(executable)) + ' tools hook --provider ' + provider, 'timeout': 5}]}
+    # Migrate only our exact legacy registration; preserve all foreign handlers.
+    old_guard = {'matcher': '^Bash$', 'hooks': [{'type': 'command',
+                 'command': shlex.quote(str(executable)) + ' tools hook', 'timeout': 5}]}
+    hooks['PreToolUse'] = [group for group in hooks.get('PreToolUse', []) if group != old_guard]
     if guard not in hooks.setdefault('PreToolUse', []):
         hooks['PreToolUse'].append(guard)
     changed = not before or json.loads(before) != config
@@ -621,7 +645,7 @@ def install_hooks(provider, root=ROOT, home=None, executable=None):
             atomic(path, config)
     return {'config': str(path), 'changed': changed, 'backup': str(backup) if backup else None,
             'reviewRequired': provider == 'codex',
-            'instruction': 'Codex /hooks에서 Modore 수명주기 훅과 CLI 재사용 훅을 검토·신뢰해야 실행됩니다. 설정 저장은 실행 확인이 아닙니다.' if provider == 'codex' else '새 턴에서 훅 적용을 확인하세요. 실행 중 세션은 훅 설정 새로고침이 필요할 수 있습니다.'}
+            'instruction': 'Codex CLI에서는 /hooks로 변경된 훅 정의를 검토·신뢰하세요. 데스크톱 적용은 해당 호스트에서 실제 호출과 차단을 확인해야 합니다. 설정 저장은 실행 확인이 아닙니다.' if provider == 'codex' else '새 턴에서 훅 적용을 확인하세요. 실행 중 세션은 훅 설정 새로고침이 필요할 수 있습니다.'}
 
 
 def mutate(req, root=ROOT):
@@ -681,6 +705,16 @@ def mutate(req, root=ROOT):
 def dispatch(req, root=ROOT):
     action = req.get('action', 'status')
     if action == 'status': return snapshot(root)
+    if action == 'hooks-status':
+        # Read bounded metadata only: no simctl, lsof or registry writes.
+        path = root / 'leases.json'
+        if path.is_symlink() or root.is_symlink():
+            raise ValueError('Unsafe registry path')
+        if path.exists() and path.stat().st_size > 2_097_152:
+            raise ValueError('Registry metadata too large')
+        state = json.loads(path.read_text()) if path.exists() else {}
+        return {'hookStatus': hook_status(state),
+                'configurationScope': 'user hooks.json / settings.json only; inline, project, managed policy and trust are not inferred'}
     if action in ('acquire', 'claim'): return register(req, root)
     if action == 'begin-test': return begin_test(req, root)
     if action == 'begin-browser-test': return begin_browser_test(req, root)

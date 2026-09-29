@@ -2365,3 +2365,48 @@ def test_pressure_notice_precedes_slow_path_measurement(project_root, tmp_path):
     calls = log.read_text().splitlines()
     assert "du" in calls
     assert calls[0] == "open"
+
+
+@pytest.mark.parametrize('prior_reason', ['cumulative-drop', 'incomplete-cumulative-evidence'])
+def test_partial_cumulative_capture_retries_without_further_growth(project_root, tmp_path, prior_reason):
+    state_dir = tmp_path / 'state'; state_dir.mkdir(mode=0o700)
+    roots = tmp_path / 'roots'; (roots / 'npm 캐시').mkdir(parents=True)
+    state_file = state_dir / 'storage-watch.tsv'
+    now = int(time.time()); free = 45 * 1024 * 1024
+    def seed(age):
+        state_file.write_text(f'freeKB\t{free}\nstatus\tnormal\nlastSnapshot\t{now-age}\n'
+                             f'lastSnapshotReason\t{prior_reason}\nsnapshotCompleteness\tpartial\n'
+                             f'attributionBaselineKB\t{free}\nlastPathEvidenceAt\told\n')
+    env = {**os.environ, 'PCH_TEST_MODE': '1', 'PCH_STATE_DIR': str(state_dir),
+           'PCH_WATCH_NOTIFY': '0', 'PCH_WATCH_SNAPSHOT_ROOT': str(roots), 'PCH_TEST_FREE_KB': str(free)}
+    def run():
+        result = subprocess.run([str(project_root/'scripts/storage_watch.sh')], capture_output=True,
+                                text=True, env=env, timeout=15)
+        assert result.returncode == 0, result.stderr
+        return parse_protocol(result.stdout)
+    seed(7190)
+    assert run()['snapshotReason'] == ''
+    seed(7201)
+    result = run()
+    assert result['snapshotReason'] == 'incomplete-cumulative-evidence'
+    assert result['cumulativeDropKB'] == '0'
+    state = parse_protocol(state_file.read_text())
+    assert state['lastPathEvidenceAt'] != 'old'
+    assert state['snapshotCompleteness'] == 'complete'
+    assert run()['snapshotReason'] == ''
+
+
+def test_npm_cache_survives_twelve_row_selection(project_root, tmp_path):
+    roots = tmp_path / 'roots'; roots.mkdir()
+    for i in range(14):
+        p = roots / f'large-{i}'; p.mkdir(); (p/'data').write_bytes(b'x'*8192)
+    (roots / 'npm 캐시').mkdir()
+    state_dir = tmp_path / 'state'
+    result = subprocess.run([str(project_root/'scripts/storage_watch.sh')], capture_output=True, text=True,
+        env={**os.environ, 'PCH_TEST_MODE': '1', 'PCH_STATE_DIR': str(state_dir),
+             'PCH_WATCH_NOTIFY': '0', 'PCH_TEST_FREE_KB': str(10*1024*1024),
+             'PCH_WATCH_SNAPSHOT_ROOT': str(roots), 'PCH_WATCH_SNAPSHOT_TOTAL_SECONDS': '15'}, timeout=20)
+    assert result.returncode == 0, result.stderr
+    rows = [line.split('\t') for line in (state_dir/'storage-watch-paths.tsv').read_text().splitlines()]
+    assert len(rows) == 12
+    assert any(row[3] == 'npm 캐시' for row in rows)
