@@ -14,12 +14,17 @@ final class Recorder {
     private var rows = 0
     private var errors: [String] = []
     private var ticks = 0
+    private var lastCapture: Double?
+    private var targetBirths: [Int32: UInt64] = [:]
+    private var mainBirth: UInt64?
+    private var missingRows = 0
     private var logCursors: [URL: (identity: UInt64, offset: UInt64, partial: Data)] = [:]
     private var logEvents: [[String: String]] = []
     private var aggregates = CPUAggregates()
     private var ended = false
     private let mainPID: Int32
     private let startedAt = Date()
+    private let clock = CPUCounter.continuousSeconds
     private let smoke: Bool
     private let iso = ISO8601DateFormatter()
 
@@ -33,7 +38,7 @@ final class Recorder {
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("native-private"), withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
         let path = folder.appendingPathComponent("cpu.csv")
-        FileManager.default.createFile(atPath: path.path, contents: Data("time,phase,pid,role,cpu_percent,rss_bytes,status\n".utf8),
+        FileManager.default.createFile(atPath: path.path, contents: Data("time,phase,pid,role,cpu_percent,rss_bytes,status,elapsed_seconds,interval_seconds\n".utf8),
             attributes: [.posixPermissions: 0o600])
         csv = try FileHandle(forWritingTo: path)
         try csv?.seekToEnd()
@@ -41,9 +46,10 @@ final class Recorder {
 
     func start() {
         queue.async {
+            self.mainBirth = self.usage(self.mainPID)?.ri_proc_start_abstime
             self.discoverTargets()
             self.readLogAppends(initial: true)
-            self.events.append(["time": self.iso.string(from: self.startedAt), "event": "start", "smokeTest": self.smoke])
+            self.events.append(["time": self.iso.string(from: self.startedAt), "seconds": CPUCounter.continuousSeconds - self.clock, "event": "start", "smokeTest": self.smoke])
             let timer = DispatchSource.makeTimerSource(queue: self.queue)
             timer.schedule(deadline: .now(), repeating: 1)
             timer.setEventHandler { self.capture() }
@@ -56,7 +62,8 @@ final class Recorder {
         queue.async {
             guard !self.ended else { return }
             self.phase = phase.id
-            self.events.append(["time": self.iso.string(from: Date()), "event": "phase", "id": phase.id,
+            self.previous.removeAll(); self.lastCapture = nil
+            self.events.append(["time": self.iso.string(from: Date()), "seconds": CPUCounter.continuousSeconds - self.clock, "event": "phase", "id": phase.id,
                                 "instruction": phase.instruction, "plannedSeconds": phase.seconds])
             for process in self.samplers where !process.isRunning && process.terminationStatus != 0 {
                 self.errors.append("native sample exited with status \(process.terminationStatus); see native-private diagnostics")
@@ -105,21 +112,39 @@ final class Recorder {
             let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             process.waitUntilExit()
             var next: [Int32: String] = [:]
+            guard let mainBirth, usage(mainPID)?.ri_proc_start_abstime == mainBirth else {
+                targets = [:]; previous = [:]
+                errors.append("target exited or restarted; no replacement PID is measured")
+                return
+            }
+            var processRows: [(pid: Int32, parent: Int32, name: String)] = []
             for line in text.split(separator: "\n") {
                 let parts = line.split(maxSplits: 2, omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)
                 guard parts.count == 3, let pid = Int32(parts[0]), let parent = Int32(parts[1]) else { continue }
                 let path = String(parts[2])
                 let name = URL(fileURLWithPath: path).lastPathComponent
                 guard name != "<defunct>" else { continue }
+                processRows.append((pid, parent, name))
                 if pid == mainPID { next[pid] = "ChatGPT-main" }
-                else if parent == mainPID { next[pid] = name.contains("Renderer") ? "renderer" : name }
                 else if name == "WindowServer" { next[pid] = "WindowServer" }
                 else if name == "Modore" || name == "QuotaPie" || name == "bun" { next[pid] = name }
                 else if pid == getpid() { next[pid] = "LagQA-observer" }
                 else if parent == getpid() { next[pid] = "LagQA-" + name }
             }
-            targets = next
-            previous = previous.filter { next[$0.key] != nil }
+            var descendants: Set<Int32> = [mainPID]
+            for _ in 0..<16 {
+                let expanded = descendants.union(processRows.filter { descendants.contains($0.parent) }.map(\.pid))
+                if expanded == descendants { break }
+                descendants = expanded
+            }
+            for row in processRows where descendants.contains(row.pid) && row.pid != mainPID {
+                next[row.pid] = row.name.contains("Renderer") ? "renderer" : "target-work:" + row.name
+            }
+            if next.count > 64 { errors.append("process coverage truncated to 64") }
+            let selected = [mainPID] + next.keys.filter { $0 != mainPID }.sorted().prefix(63)
+            targets = Dictionary(uniqueKeysWithValues: selected.compactMap { pid in next[pid].map { (pid, $0) } })
+            targetBirths = Dictionary(uniqueKeysWithValues: selected.compactMap { pid in usage(pid).map { (pid, $0.ri_proc_start_abstime) } })
+            previous = previous.filter { targets[$0.key] != nil }
         } catch { errors.append("process discovery failed") }
     }
 
@@ -127,27 +152,31 @@ final class Recorder {
         guard !ended else { return }
         ticks += 1
         if ticks % 5 == 0 { discoverTargets() }
-        let now = Date(), monotonic = ProcessInfo.processInfo.systemUptime
+        let now = Date(), monotonic = CPUCounter.continuousSeconds
+        let interval = lastCapture.map { monotonic - $0 } ?? 0
+        lastCapture = monotonic
         var frame: [(role: String, percent: Double)] = []
         for (pid, role) in targets.sorted(by: { $0.key < $1.key }) {
             var cpu = "", rss = "", status = "unavailable"
-            if let value = usage(pid) {
+            if let value = usage(pid), value.ri_proc_start_abstime == targetBirths[pid] {
                 let counter = CPUCounter(birth: value.ri_proc_start_abstime,
                     totalTicks: value.ri_user_time &+ value.ri_system_time, timestamp: monotonic)
                 if let percent = CPUCounter.percent(previous: previous[pid], current: counter) {
                     cpu = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), percent)
                     frame.append((role, percent))
                     status = "ok"
-                } else { status = "baseline" }
+                } else { status = interval == 0 ? "baseline" : "discontinuity" }
                 previous[pid] = counter
                 rss = String(value.ri_resident_size)
             }
+            if status == "unavailable" { previous.removeValue(forKey: pid) }
+            if status == "unavailable" || status == "discontinuity" { missingRows += 1 }
             let safeRole = role.replacingOccurrences(of: ",", with: "_")
-            let line = "\(iso.string(from: now)),\(phase),\(pid),\(safeRole),\(cpu),\(rss),\(status)\n"
+            let line = "\(iso.string(from: now)),\(phase),\(pid),\(safeRole),\(cpu),\(rss),\(status),\(monotonic - clock),\(interval)\n"
             do { try csv?.write(contentsOf: Data(line.utf8)); rows += 1 }
             catch { if !errors.contains("CPU recording failed") { errors.append("CPU recording failed") } }
         }
-        aggregates.append(phase: phase, samples: frame)
+        aggregates.append(phase: phase, samples: frame, interval: interval)
         readLogAppends(initial: false)
     }
 
@@ -212,7 +241,7 @@ final class Recorder {
             }
             self.samplers.filter(\.isRunning).forEach { $0.terminate() }
             try? self.csv?.close(); self.csv = nil
-            self.events.append(["time": self.iso.string(from: Date()), "event": cancelled ? "cancelled" : "finished"])
+            self.events.append(["time": self.iso.string(from: Date()), "seconds": CPUCounter.continuousSeconds - self.clock, "event": cancelled ? "cancelled" : "finished"])
             let samples = ((try? FileManager.default.contentsOfDirectory(at: self.folder.appendingPathComponent("native-private"), includingPropertiesForKeys: nil)) ?? [])
                 .filter { $0.lastPathComponent.hasSuffix(".sample.txt") }
             if samples.isEmpty { self.errors.append("no native samples saved; CPU and timeline are available") }
@@ -222,9 +251,9 @@ final class Recorder {
             summary += "| 구간 / 프로세스 | CPU 평균 % | CPU 최대 % | 표본 수 |\n|---|---:|---:|---:|\n"
             for (key, values) in self.aggregates.values.sorted(by: { $0.key < $1.key }) {
                 summary += String(format: "| %@ | %.2f | %.2f | %d |\n", key.replacingOccurrences(of: "|", with: " / "),
-                                  values.reduce(0, +) / Double(values.count), values.max() ?? 0, values.count)
+                                  self.aggregates.mean(key) ?? 0, values.max() ?? 0, values.count)
             }
-            summary += "\nCPU는 프로세스 누적 실행시간 차이로 계산한 약 1초 평균입니다. 100%는 논리 코어 하나입니다. Mach 시간 단위를 나노초로 변환합니다. 같은 역할의 여러 PID는 같은 수집 시점별로 합산한 뒤 평균·최댓값을 계산합니다. 접근 불가 프로세스는 cpu.csv에 unavailable로 기록합니다.\n\n"
+            summary += "\nCPU는 프로세스 누적 실행시간 차이로 계산한 약 1초 평균입니다. 100%는 논리 코어 하나입니다. Mach 시간 단위를 나노초로 변환합니다. 같은 역할의 여러 PID는 같은 수집 시점별로 합산한 뒤 경과 시간으로 가중 평균·최댓값을 계산합니다. 구간 전환 경계와 10초 초과 관측 공백은 평균에서 제외합니다. 접근 불가·PID 교체·관측 공백은 cpu.csv에 unavailable/discontinuity로 기록하며 0으로 대체하지 않습니다. 누락 CPU 행 \(self.missingRows)개. 누락이 있으면 역할 합계는 실제 부하보다 작을 수 있습니다.\n\n"
             summary += "## 해석 한계\n\n키 입력·화면 프레임·첨부 내용은 수집하지 않습니다. 이 자료만으로 입력 지연 밀리초나 원인을 확정할 수 없습니다. 호출 스택은 관찰 구간별 native-private 폴더에 저장되며 불완전한 심볼과 로컬 경로를 포함할 수 있습니다. 공개 공유에는 이 요약과 markers.json을 우선 사용하세요. LagQA 및 sample 프로세스 자체도 관찰 부하를 만듭니다.\n"
             if !self.errors.isEmpty { summary += "\n## 수집 제한\n" + Set(self.errors).sorted().map { "- " + $0 }.joined(separator: "\n") + "\n" }
             do {
@@ -235,10 +264,11 @@ final class Recorder {
                     "appVersion": app?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
                     "appBuild": app?.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
                     "smokeTest": self.smoke, "cancelled": cancelled, "cpuRows": self.rows, "nativeSamples": samples.count,
-                    "cpuCalculationVersion": 2,
+                    "cpuCalculationVersion": 3,
+                    "missingCPURows": self.missingRows,
                     "machTimebaseNumer": CPUCounter.timebase.numer,
                     "machTimebaseDenom": CPUCounter.timebase.denom,
-                    "cpuAggregation": "sum concurrent PIDs by role, then mean/max over capture frames",
+                    "cpuAggregation": "sum concurrent PIDs by role, then elapsed-time weighted mean/max over capture frames",
                     "errors": self.errors], "manifest.json")
                 try summary.write(to: self.folder.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
                 let limits = self.errors.isEmpty ? "" : " · 수집 제한 \(Set(self.errors).count)종"

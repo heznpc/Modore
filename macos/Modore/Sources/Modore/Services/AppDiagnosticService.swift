@@ -85,8 +85,13 @@ final class AppDiagnosticService: ObservableObject {
     }
     func mark(_ action: String) {
         guard active, !saving else { return }
+        let timestamp = NativeCPUReader.continuousSeconds
+        let recorder = recorder
         Task {
-            await recorder?.mark("manual", action)
+            guard await recorder?.mark("manual", action, at: timestamp) == true else {
+                lastMarker = "표식을 저장하지 못했습니다 · 기록 한도 또는 저장 상태를 확인하세요."
+                return
+            }
             let names = ["first-input": "첫 입력", "sidebar": "목록 이동", "attachment": "사진 첨부", "stutter": "끊김 발생"]
             lastMarker = "\(names[action] ?? action) · 표식 저장됨"
         }
@@ -101,7 +106,7 @@ final class AppDiagnosticService: ObservableObject {
         replayTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await replay.run(target: target, repeats: repeats) { kind, detail in await recorder.mark(kind, detail) }
+                try await replay.run(target: target, repeats: repeats) { kind, detail in _ = await recorder.mark(kind, detail) }
                 status = "자동 재현 종료 · 검사 기록은 계속됩니다."
             } catch {
                 let detail = error is CancellationError ? "사용자가 자동 재현을 중단했습니다." : error.localizedDescription

@@ -30,12 +30,14 @@ struct CPUCounter {
         mach_timebase_info(&value)
         return value
     }()
+    static var continuousSeconds: Double { Double(mach_continuous_time()) * nanosecondsPerTick / 1_000_000_000 }
     static var nanosecondsPerTick: Double { Double(timebase.numer) / Double(timebase.denom) }
 
     static func percent(previous: CPUCounter?, current: CPUCounter,
                         nanosecondsPerTick: Double = CPUCounter.nanosecondsPerTick) -> Double? {
         guard let previous, previous.birth == current.birth,
-              current.timestamp > previous.timestamp,
+              current.timestamp.isFinite, previous.timestamp.isFinite,
+              current.timestamp > previous.timestamp, current.timestamp - previous.timestamp <= 10,
               current.totalTicks >= previous.totalTicks else { return nil }
         return Double(current.totalTicks - previous.totalTicks) * nanosecondsPerTick
             / ((current.timestamp - previous.timestamp) * 1_000_000_000) * 100
@@ -46,9 +48,19 @@ struct CPUCounter {
 // idle siblings must not dilute a busy renderer's CPU usage.
 struct CPUAggregates {
     private(set) var values: [String: [Double]] = [:]
-    mutating func append(phase: String, samples: [(role: String, percent: Double)]) {
+    private(set) var durations: [String: [Double]] = [:]
+    func mean(_ key: String) -> Double? {
+        guard let values = values[key], let durations = durations[key] else { return nil }
+        let span = durations.reduce(0, +)
+        return span > 0 ? zip(values, durations).reduce(0) { $0 + $1.0 * $1.1 } / span : nil
+    }
+    mutating func append(phase: String, samples: [(role: String, percent: Double)], interval: Double = 1) {
+        guard interval.isFinite, interval > 0, interval <= 10 else { return }
         var frame: [String: Double] = [:]
         for sample in samples { frame[sample.role, default: 0] += sample.percent }
-        for (role, percent) in frame { values[phase + "|" + role, default: []].append(percent) }
+        for (role, percent) in frame {
+            values[phase + "|" + role, default: []].append(percent)
+            durations[phase + "|" + role, default: []].append(interval)
+        }
     }
 }

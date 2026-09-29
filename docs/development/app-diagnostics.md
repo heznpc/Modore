@@ -16,13 +16,18 @@ Modore window that started the recording. Automatic timeout never steals focus.
 
 - `NativeCPUReader` is shared by the existing health observer and this feature.
   It converts Mach CPU ticks with the host timebase and rejects PID reuse and
-  long observation gaps. An OS `getrusage` regression test checks real units.
+  nonfinite/long observation gaps. Membership keeps the discovered birth time
+  until the next tree refresh, so a reused child PID cannot rejoin on the second
+  sample unless it is still in the target tree. An OS `getrusage` regression
+  test checks real units.
 - `AppDiagnosticRecorder` is an actor. Native libproc calls are serialized;
   no Python, shell, `ps`, or recurring external process powers this recording.
   The process tree is refreshed every four seconds; at most 64 target processes
   are included. Truncation/missing measurements are explicit.
 - Samples begin at a 0.5-second interval, back off with measured collection cost
-  and thermal state, and stop at 300 seconds / 600 frames. Events cap at 300.
+  and thermal state, and stop at 300 seconds / 600 frames. Events cap at 300, reserving six
+  slots for stack evidence. Rejected or failed manual marker writes are shown
+  as failures rather than saved markers.
   The existing CPU observer pauses and invalidates continuity during a run.
 - The only child tool is `/usr/bin/sample`: a renderer at >=150% or aggregate
   target CPU at >=200% triggers up to two automatic attempts. A busy renderer
@@ -30,11 +35,19 @@ Modore window that started the recording. Automatic timeout never steals focus.
   automatic captures share a three-capture limit, 30-second cooldown, 3-second
   duration and watchdog. Failed automatic attempts also consume the two-attempt
   budget; serious/critical thermal states suppress automatic capture.
-  Stop/quit terminates owned sampling and preserves partial results.
+  Stop/quit terminates owned sampling and preserves partial results. Schema 4
+  stack start/terminal events share a capture ID and file name; successful
+  completion requires a nonempty file. The terminal event uses actual process
+  completion, with the six-second watchdog retained for stalled samplers.
+  Older stack events without IDs conservatively retain the six-second window.
 - CPU totals sum concurrent target descendants, then use elapsed-time weighting.
   Renderer CPU (name-based) and the top eight processes at each frame are retained
   separately so worker/tool descendants cannot be mistaken for UI-only CPU.
-  Modore's own CPU and sampler CPU are separate. RSS can double-count shared pages.
+  Modore's own CPU and sampler CPU are separate. The displayed native query time
+  includes discovery and counter reads, but excludes JSON/report writing and
+  stack launch; Modore CPU includes all in-process work. Partial aggregates are
+  explicitly labeled and may underestimate actual load. The first zero-length
+  baseline is not a measured CPU interval. RSS can double-count shared pages.
 - Frames and events stream to private local files. Normal finish writes a bounded
   `result.json` and `report.md`. Abrupt process death leaves partial JSONL data;
   incomplete runs are not presented as complete history entries.
@@ -44,7 +57,7 @@ Modore window that started the recording. Automatic timeout never steals focus.
 
 ## Result interpretation
 
-Schema 3 reports analyze existing recordings as well as new ones. Each manual or
+Schema 4 reports analyze existing recordings as well as new ones. Each manual or
 automatic-start marker gets a three-second before/after window. Only samples
 entirely inside a window are included; at least 75% duration coverage and no
 unavailable processes are required to call a comparison complete. An observed
@@ -79,37 +92,39 @@ cannot be confirmed, inspect the target draft. Some apps expose no usable AX fie
 and can only use manual recording. Image attachment is a manual marker, not an
 automated attachment test. Unicode injection is not an IME-composition test.
 
-The recorder does not measure input-to-display latency. `auto-verified` means the
+The recorder measures neither input-handler duration nor input-to-display
+latency. CPU percentages are averages over each collection interval; 100% is
+one logical core, not the whole machine. Manual marker timestamps originate
+at the button action, before the recorder actor queue. Two markers at the same
+time remain overlapping actions. `auto-verified` means the
 AX value matched the fixed string, not that a frame rendered on time. Comparisons
-flag mismatched/incomplete action sequences and stack-collection settings and do
-not declare a performance fix based on CPU reduction alone.
+flag mismatched/incomplete action sequences and stack-collection settings.
+They require verified cleanup for every replay repetition and do not declare a
+performance fix based on CPU reduction alone.
 
 ## Validation
 
-`swift test --package-path macos/Modore -j 2 --filter 'AppDiagnosticTests|CPUWatchTests|HealthContextTests'`
+`swift test --package-path macos/Modore -j 2 --filter 'AppDiagnosticTests|CPUWatchTests'`
+
+`swift test --package-path macos/LagQA -j 2`
+
+The diagnostic tests exercise a bounded child workload against POSIX
+`getrusage`, real native stack completion/cancellation, target exit, private
+result persistence and history presentation models. Set
+`MODORE_DIAGNOSTIC_EVIDENCE` to an existing/private output directory to retain
+these fixture results and their reference CPU values. Tests without that
+variable remove only their own temporary fixture output.
+
+LagQA calculation version 3 weights concurrent role totals by elapsed time,
+invalidates counters after failed reads, rejects gaps over ten seconds and
+preserves PID birth identity between discovery passes. Phase changes prime a
+new baseline rather than attributing the previous interval to the new phase.
+Its CSV retains monotonic elapsed/interval seconds alongside wall-clock labels,
+marks unavailable/discontinuous rows, and its report counts missing rows.
+LagQA remains a legacy recorder; use the Modore page for the guided workflow.
 
 `Tests/Fixtures/DiagnosticFixture.swift` is a separate offline AppKit fixture for
 end-to-end field registration and replay. Compile it as an app with an explicit
 macOS 13 deployment target and launch through Launch Services. This is not part
 of the shipping executable. Test ordinary completion, Esc cancellation, nonempty
 field refusal, target changes, and persistence after Modore relaunch.
-
-## Local validation record (2026-09-28)
-
-- Strict-concurrency release build and signed bundle verification passed.
-- Installed app launch and toolbar entry verified through native UI tooling.
-- User completed a 125-frame ChatGPT run and exported its report from Modore.
-- Guided UI follow-up: installed signed app verified with native UI tooling.
-  Start goal to embedded diagnostic, Mac status to Start navigation, and a
-  separately labeled Calculator fixture's start/marker/stop/result flow passed
-  (15 frames, about 7.5 seconds). Preparation/result pages showed no clipping.
-  The floating controller's own layout was not separately inspected. No ChatGPT
-  reproduction or latency improvement is claimed from this UI check.
-- Follow-up analysis/spike changes: 19 focused diagnostic/CPU tests passed.
-  A separate bounded native load fixture reached about 295% CPU; the production
-  recorder automatically saved one nonempty native stack, persisted schema 3
-  results, and respected the cooldown. Existing schema 1 data was reanalyzed
-  with the same production model without another user reproduction.
-- Automated replay end-to-end validation remains pending: the native UI tool
-  disconnected while opening the diagnostic window (`native pipe closed before
-  response`). No successful keyboard/hover replay is claimed from that run.

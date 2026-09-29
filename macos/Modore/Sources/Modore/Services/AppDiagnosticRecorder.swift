@@ -10,12 +10,14 @@ actor AppDiagnosticRecorder {
     private let clock = NativeCPUReader.continuousSeconds
     private var lastTime: Double?
     private var previous: [Int32: CPUProcessCounter] = [:]
-    private var members: Set<Int32> = []
+    private var members: [Int32: UInt64] = [:]
     private var frames: [DiagnosticFrame] = []
     private var events: [DiagnosticEvent] = []
     private var lastDiscovery = -10.0
     private var discoveryTruncated = false
     private var sampleProcess: Process?
+    private var stackFile: URL?
+    private var activeStackID: Int?
     private var sampleCount = 0
     private var automaticAttempts = 0
     private var lastAutomaticAttempt = -30.0
@@ -44,12 +46,16 @@ actor AppDiagnosticRecorder {
         try metadata.write(to: folder.appendingPathComponent("target.json"), options: .atomic)
     }
 
-    func mark(_ kind: String, _ detail: String) {
-        guard !finished, events.count < DiagnosticBudget.events else { return }
-        let event = DiagnosticEvent(seconds: NativeCPUReader.continuousSeconds - clock, kind: kind, detail: detail)
+    @discardableResult
+    func mark(_ kind: String, _ detail: String, at timestamp: Double? = nil, stackID: Int? = nil, processID: Int32? = nil, samplerPID: Int32? = nil, stackFile: String? = nil) -> Bool {
+        // Keep room for the terminal evidence of every bounded stack capture.
+        let limit = stackID == nil ? DiagnosticBudget.events - DiagnosticBudget.stacks * 2 : DiagnosticBudget.events
+        guard !finished, events.count < limit else { return false }
+        let event = DiagnosticEvent(seconds: max(0, (timestamp ?? NativeCPUReader.continuousSeconds) - clock), kind: kind, detail: detail, stackID: stackID, processID: processID, samplerPID: samplerPID, stackFile: stackFile)
         events.append(event)
         do { try eventFile?.write(contentsOf: JSONEncoder().encode(event) + Data([10])) }
-        catch { writeFailed = true }
+        catch { writeFailed = true; return false }
+        return true
     }
 
     private func discover() {
@@ -69,9 +75,15 @@ actor AppDiagnosticRecorder {
             if next == found { break }
             found = next
         }
-        discoveryTruncated = found.count > DiagnosticBudget.processes
-        members = Set(found.subtracting([target.pid]).sorted().prefix(DiagnosticBudget.processes - 1))
-        members.insert(target.pid)
+        discoveryTruncated = found.count > DiagnosticBudget.processes || count <= 0 ||
+            parents.contains { found.contains($0.value) && !found.contains($0.key) }
+        let selected = [target.pid] + found.subtracting([target.pid]).sorted().prefix(DiagnosticBudget.processes - 1)
+        members = Dictionary(uniqueKeysWithValues: selected.compactMap { pid in
+            NativeCPUReader.read(pid).map { (pid, $0.started) }
+        })
+        // A failed discovery/read cannot silently reduce the expected population.
+        discoveryTruncated = discoveryTruncated || members.count < selected.count || Int(count) >= capacity
+        members[target.pid] = target.birth
     }
 
     func capture() -> (DiagnosticFrame?, String?) {
@@ -86,8 +98,8 @@ actor AppDiagnosticRecorder {
         var next: [Int32: CPUProcessCounter] = [:]
         var usages: [(Int32, Double)] = []
         var rss: UInt64 = 0, unavailable = discoveryTruncated ? 1 : 0
-        for pid in members {
-            guard let counter = NativeCPUReader.read(pid) else { unavailable += 1; continue }
+        for (pid, birth) in members {
+            guard let counter = NativeCPUReader.read(pid), counter.started == birth else { unavailable += 1; continue }
             next[pid] = counter; rss &+= counter.residentBytes
             if let value = NativeCPUReader.percent(before: previous[pid], after: counter, elapsed: elapsed) {
                 usages.append((pid, value))
@@ -147,8 +159,14 @@ actor AppDiagnosticRecorder {
             process.arguments = [String(pid), "3", "20", "-file", path.path]
             process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
             try process.run()
-            sampleProcess = process; sampleCount += 1; lastStack = NativeCPUReader.continuousSeconds - clock
-            mark("stack-start", "\(reason) · PID \(pid) · \(path.lastPathComponent) · 3초 native sample")
+            sampleProcess = process; stackFile = path; activeStackID = sampleCount
+            sampleCount += 1; lastStack = NativeCPUReader.continuousSeconds - clock
+            mark("stack-start", "\(reason) · PID \(pid) · \(path.lastPathComponent) · 3초 native sample",
+                 stackID: activeStackID, processID: pid, samplerPID: process.processIdentifier, stackFile: path.lastPathComponent)
+            process.terminationHandler = { [weak self] process in
+                let completedAt = NativeCPUReader.continuousSeconds
+                Task { await self?.completeStack(process, at: completedAt) }
+            }
             Task {
                 try? await Task.sleep(nanoseconds: 6_000_000_000)
                 self.completeStack(process)
@@ -157,23 +175,33 @@ actor AppDiagnosticRecorder {
         } catch { mark("stack-failed", "\(reason) · 스택 도구 실행 실패"); return "스택 도구를 실행하지 못했습니다." }
     }
 
-    private func completeStack(_ process: Process) {
-        guard !finished else { return }
-        if process.isRunning { process.terminate(); mark("stack-partial", "수집 시간 초과 · 부분 결과") }
-        else { mark(process.terminationStatus == 0 ? "stack-saved" : "stack-failed", "스택 도구 종료") }
+    private func completeStack(_ process: Process, at timestamp: Double? = nil) {
+        guard !finished, sampleProcess === process else { return }
+        let path = stackFile
+        let kind: String
+        if process.isRunning { process.terminate(); kind = "stack-partial" }
+        else {
+            let size = (try? path?.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            kind = process.terminationStatus == 0 && size > 0 ? "stack-saved" : "stack-failed"
+        }
+        mark(kind, kind == "stack-partial" ? "수집 시간 초과 · 부분 결과" : "스택 도구 종료",
+             at: timestamp, stackID: activeStackID, samplerPID: process.processIdentifier, stackFile: path?.lastPathComponent)
+        sampleProcess = nil; stackFile = nil; activeStackID = nil
     }
 
     func finish(_ reason: String) throws -> DiagnosticResult {
         if sampleProcess?.isRunning == true {
-            sampleProcess?.terminate(); mark("stack-partial", "검사 종료로 스택 수집 중단")
-        }
+            sampleProcess?.terminate()
+            mark("stack-partial", "검사 종료로 스택 수집 중단", stackID: activeStackID, stackFile: stackFile?.lastPathComponent)
+            sampleProcess = nil; stackFile = nil; activeStackID = nil
+        } else if let process = sampleProcess { completeStack(process) }
         finished = true
         try file?.close(); file = nil
         try eventFile?.close(); eventFile = nil
         let result = DiagnosticResult(id: UUID(uuidString: folder.lastPathComponent)!, target: target,
             condition: condition, started: started, frames: frames, events: events,
             finishReason: writeFailed ? "기록 저장 실패 · 부분 결과" : reason,
-            timebaseNumer: NativeCPUReader.timebase.numer, timebaseDenom: NativeCPUReader.timebase.denom, schemaVersion: 3)
+            timebaseNumer: NativeCPUReader.timebase.numer, timebaseDenom: NativeCPUReader.timebase.denom, schemaVersion: 4)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(result).write(to: folder.appendingPathComponent("result.json"), options: .atomic)
         try result.report.write(to: folder.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
