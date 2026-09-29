@@ -58,4 +58,20 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(converted, referenceAfter - referenceBefore, accuracy: 0.01)
     }
 
+
+    func testElapsedWeightingDoesNotTreatUnevenSamplesAsEqual() {
+        var aggregates = CPUAggregates()
+        aggregates.append(phase: "load", samples: [("renderer", 100), ("renderer", 100)], interval: 1)
+        aggregates.append(phase: "load", samples: [("renderer", 20)], interval: 3)
+        XCTAssertEqual(aggregates.mean("load|renderer"), 65)
+        aggregates.append(phase: "load", samples: [("renderer", 900)], interval: 11)
+        XCTAssertEqual(aggregates.mean("load|renderer"), 65)
+    }
+    func testObservationGapsAndNonfiniteTimesRemainUnknown() {
+        let old = CPUCounter(birth: 1, totalTicks: 0, timestamp: 1)
+        for timestamp in [12.0, Double.infinity, Double.nan] {
+            XCTAssertNil(CPUCounter.percent(previous: old,
+                current: .init(birth: 1, totalTicks: 1_000_000_000, timestamp: timestamp)))
+        }
+    }
 }

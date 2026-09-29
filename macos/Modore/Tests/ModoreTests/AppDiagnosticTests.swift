@@ -13,7 +13,7 @@ final class AppDiagnosticTests: XCTestCase {
               finishReason: "test", timebaseNumer: 125, timebaseDenom: 3, schemaVersion: 1)
     }
     func testTimeWeightedCPUAndMissingData() {
-        let value = result(frames: [frame(cpu: nil), frame(cpu: 100, interval: 1), frame(cpu: 20, interval: 3)])
+        let value = result(frames: [frame(cpu: nil, interval: 0), frame(cpu: 100, interval: 1), frame(cpu: 20, interval: 3)])
         XCTAssertEqual(value.meanCPU, 40)
         XCTAssertEqual(value.peakCPU, 100)
         XCTAssertFalse(value.incomplete)
@@ -35,7 +35,7 @@ final class AppDiagnosticTests: XCTestCase {
     }
     func testComparisonRejectsDifferentOrInterruptedActions() {
         let start = DiagnosticEvent(seconds: 0, kind: "auto-start", detail: "first-input")
-        let complete = result(frames: [frame(cpu: 100)], events: [start])
+        let complete = result(frames: [frame(cpu: 100)], events: [start, .init(seconds: 1, kind: "auto-finished", detail: "cleanup")])
         XCTAssertNil(complete.comparisonWarning(complete))
         XCTAssertNotNil(complete.comparisonWarning(result(frames: [frame(cpu: 100)])))
         XCTAssertNotNil(complete.comparisonWarning(result(frames: [frame(cpu: 100)], events: [start, .init(seconds: 1, kind: "auto-stopped", detail: "stop")])))
@@ -138,5 +138,186 @@ final class AppDiagnosticTests: XCTestCase {
         let reused = try AppDiagnosticRecorder(target: .init(pid: getpid(), birth: current.started + 1, name: "fixture", bundleID: "app.fixture", version: "1"), condition: "", root: root)
         let invalid = await reused.capture(); XCTAssertNotNil(invalid.1); XCTAssertNil(invalid.0)
         _ = try await reused.finish("test")
+    }
+
+    func testInvalidCounterIntervalsAndCounterResetsRemainUnknown() {
+        let before = CPUProcessCounter(pid: 1, started: 1, name: "fixture", nanoseconds: 1_000_000_000)
+        let after = CPUProcessCounter(pid: 1, started: 1, name: "fixture", nanoseconds: 3_000_000_000)
+        XCTAssertEqual(NativeCPUReader.percent(before: before, after: after, elapsed: 1), 200)
+        for elapsed in [0.0, -1, .nan, .infinity, 10.01] {
+            XCTAssertNil(NativeCPUReader.percent(before: before, after: after, elapsed: elapsed))
+        }
+        XCTAssertNil(NativeCPUReader.percent(before: after, after: before, elapsed: 1))
+        XCTAssertNil(NativeCPUReader.percent(before: nil, after: after, elapsed: 1))
+        XCTAssertNil(NativeCPUReader.percent(before: before,
+            after: .init(pid: 2, started: 1, name: "fixture", nanoseconds: 3_000_000_000), elapsed: 1))
+    }
+
+    func testSimultaneousMarkersCannotBeAttributedToOneAction() {
+        let rows = (1...6).map { timed(Double($0), cpu: $0 <= 3 ? 30 : 215) }
+        let value = result(frames: rows, events: [
+            .init(seconds: 3, kind: "manual", detail: "first-input"),
+            .init(seconds: 3, kind: "manual", detail: "stutter")])
+        XCTAssertTrue(value.actionAssessments.allSatisfy(\.otherActionOverlaps))
+        XCTAssertFalse(value.actionAssessments.contains(where: \.rose))
+    }
+
+    func testStackOverlapUsesMatchingTerminalEvent() {
+        let rows = (1...10).map { timed(Double($0), cpu: $0 <= 7 ? 30 : 215) }
+        let events: [DiagnosticEvent] = [
+            .init(seconds: 1, kind: "stack-start", detail: "sample", stackID: 0),
+            .init(seconds: 3, kind: "stack-saved", detail: "saved", stackID: 0),
+            .init(seconds: 7, kind: "manual", detail: "first-input")]
+        XCTAssertFalse(result(frames: rows, events: events).actionAssessments[0].stacksOverlap)
+        var unmatched = events
+        unmatched[1] = .init(seconds: 3, kind: "stack-saved", detail: "other sample", stackID: 1)
+        XCTAssertTrue(result(frames: rows, events: unmatched).actionAssessments[0].stacksOverlap)
+    }
+
+    func testPartialCoverageAndUnfinishedReplayAreExplicit() {
+        let value = result(frames: [frame(cpu: nil, interval: 0, missing: 1), frame(cpu: 40, missing: 1)],
+            events: [.init(seconds: 1, kind: "auto-start", detail: "first-input")])
+        XCTAssertTrue(value.incomplete)
+        XCTAssertTrue(value.coverageDescription.contains("누락 표본 1개"))
+        XCTAssertTrue(value.report.contains("실제 부하보다 낮을 수"))
+        XCTAssertFalse(value.replayCompleted)
+        XCTAssertNotNil(value.comparisonWarning(value))
+        XCTAssertTrue(value.report.contains("입력 처리 시간과 입력→프레임 지연은 수집하지 않습니다"))
+    }
+
+    private func sleepingTarget() throws -> (Process, DiagnosticTarget) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["20"]
+        try process.run()
+        let counter = try XCTUnwrap(NativeCPUReader.read(process.processIdentifier))
+        return (process, .init(pid: counter.pid, birth: counter.started, name: "Sleep fixture", bundleID: "app.fixture.sleep", version: "1"))
+    }
+
+    private func evidenceRoot() -> URL {
+        let path = ProcessInfo.processInfo.environment["MODORE_DIAGNOSTIC_EVIDENCE"]
+        return path.map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("diagnostic-runtime-" + UUID().uuidString)
+    }
+
+    func testRuntimeStackCancellationAndTargetExitRetainPartialResult() async throws {
+        let (process, target) = try sleepingTarget()
+        defer { if process.isRunning { process.terminate() } }
+        let root = evidenceRoot()
+        defer { if ProcessInfo.processInfo.environment["MODORE_DIAGNOSTIC_EVIDENCE"] == nil { try? FileManager.default.removeItem(at: root) } }
+        let recorder = try AppDiagnosticRecorder(target: target, condition: "cancel fixture", root: root)
+        _ = await recorder.capture()
+        let pressed = NativeCPUReader.continuousSeconds
+        try await Task.sleep(nanoseconds: 100_000_000)
+        await recorder.mark("manual", "stutter", at: pressed)
+        _ = await recorder.capture()
+        let message = await recorder.collectStack()
+        XCTAssertTrue(message.contains("시작"))
+        let saved = try await recorder.finish("fixture cancel")
+        XCTAssertLessThan(saved.events[0].seconds, saved.frames[1].seconds - 0.05)
+        let start = try XCTUnwrap(saved.events.first { $0.kind == "stack-start" })
+        let partial = try XCTUnwrap(saved.events.first { $0.kind == "stack-partial" })
+        let samplerPID = try XCTUnwrap(start.samplerPID)
+        for _ in 0..<20 {
+            if kill(samplerPID, 0) != 0 { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertEqual(kill(samplerPID, 0), -1, "Cancelled native sampler must actually exit")
+        XCTAssertEqual(errno, ESRCH)
+        XCTAssertEqual(start.stackID, partial.stackID)
+        XCTAssertEqual(start.stackFile, partial.stackFile)
+        let folder = await recorder.folder
+        let disk = try JSONDecoder().decode(DiagnosticResult.self, from: Data(contentsOf: folder.appendingPathComponent("result.json")))
+        XCTAssertEqual(disk.schemaVersion, 4)
+        XCTAssertEqual(disk.events.count, saved.events.count)
+        let presentation = DiagnosticPresentation(disk)
+        XCTAssertFalse(presentation.headline.isEmpty)
+        XCTAssertEqual(presentation.actions.count, 1)
+        let stopped = await recorder.capture()
+        XCTAssertNil(stopped.0)
+        let exited = try AppDiagnosticRecorder(target: target, condition: "exit fixture", root: root)
+        _ = await exited.capture()
+        process.terminate(); process.waitUntilExit()
+        let ended = await exited.capture()
+        XCTAssertNil(ended.0)
+        XCTAssertEqual(ended.1, "대상 앱 종료 또는 재시작")
+        _ = try await exited.finish(try XCTUnwrap(ended.1))
+    }
+
+    func testRuntimeCompletedStackHasFileAndActualTerminalTimestamp() async throws {
+        let (process, target) = try sleepingTarget()
+        defer { if process.isRunning { process.terminate() } }
+        let root = evidenceRoot()
+        defer { if ProcessInfo.processInfo.environment["MODORE_DIAGNOSTIC_EVIDENCE"] == nil { try? FileManager.default.removeItem(at: root) } }
+        let recorder = try AppDiagnosticRecorder(target: target, condition: "saved stack fixture", root: root)
+        _ = await recorder.capture()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        _ = await recorder.capture()
+        _ = await recorder.collectStack()
+        for _ in 0..<9 {
+            try await Task.sleep(nanoseconds: 500_000_000)
+            _ = await recorder.capture()
+        }
+        let saved = try await recorder.finish("fixture complete")
+        let start = try XCTUnwrap(saved.events.first { $0.kind == "stack-start" })
+        let end = try XCTUnwrap(saved.events.first { $0.kind == "stack-saved" })
+        XCTAssertEqual(start.stackID, end.stackID)
+        XCTAssertEqual(start.stackFile, end.stackFile)
+        XCTAssertLessThan(end.seconds - start.seconds, 6)
+        let folder = await recorder.folder
+        let path = folder.appendingPathComponent("native-private").appendingPathComponent(try XCTUnwrap(end.stackFile))
+        XCTAssertGreaterThan(try Data(contentsOf: path).count, 0)
+        XCTAssertFalse(saved.incomplete)
+    }
+
+    func testRecorderIntegratedCPUAgainstChildGetrusage() async throws {
+        let process = Process(), input = Pipe(), output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-u", "-c", "import sys,time,resource\nprint('ready',flush=True)\nsys.stdin.readline()\nr=resource.getrusage(resource.RUSAGE_SELF); before=r.ru_utime+r.ru_stime\nt=time.process_time()\nwhile time.process_time()-t<0.25: pass\nr=resource.getrusage(resource.RUSAGE_SELF)\nprint(r.ru_utime+r.ru_stime-before,flush=True)\nsys.stdin.readline()"]
+        process.standardInput = input; process.standardOutput = output
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+        func line() throws -> String {
+            var data = Data()
+            while let byte = try output.fileHandleForReading.read(upToCount: 1), !byte.isEmpty {
+                if byte == Data([10]) { break }; data.append(byte)
+            }
+            return String(decoding: data, as: UTF8.self)
+        }
+        XCTAssertEqual(try line(), "ready")
+        let counter = try XCTUnwrap(NativeCPUReader.read(process.processIdentifier))
+        let root = evidenceRoot()
+        defer { if ProcessInfo.processInfo.environment["MODORE_DIAGNOSTIC_EVIDENCE"] == nil { try? FileManager.default.removeItem(at: root) } }
+        let recorder = try AppDiagnosticRecorder(target: .init(pid: counter.pid, birth: counter.started, name: "CPU fixture", bundleID: "app.fixture.cpu", version: "1"), condition: "getrusage reference", root: root)
+        _ = await recorder.capture()
+        try input.fileHandleForWriting.write(contentsOf: Data("go\n".utf8))
+        let reference = try XCTUnwrap(Double(try line()))
+        let (frame, reason) = await recorder.capture()
+        XCTAssertNil(reason)
+        let measured = try XCTUnwrap(frame)
+        XCTAssertEqual(try XCTUnwrap(measured.targetCPU) * measured.interval / 100, reference, accuracy: 0.025)
+        let saved = try await recorder.finish("fixture reference")
+        let folder = await recorder.folder
+        let evidence: [String: Double] = ["getrusageCPUSeconds": reference, "recordedCPUSeconds": try XCTUnwrap(saved.meanCPU) * measured.interval / 100,
+            "collectorMilliseconds": measured.collectionMilliseconds, "observerCPUPercent": measured.observerCPU ?? -1]
+        try JSONEncoder().encode(evidence).write(to: folder.appendingPathComponent("reference.json"))
+    }
+
+    func testMarkerLimitIsReportedAndLeavesRoomForStackEvidence() async throws {
+        let current = try XCTUnwrap(NativeCPUReader.read(getpid()))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("diagnostic-limit-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recorder = try AppDiagnosticRecorder(target: .init(pid: getpid(), birth: current.started, name: "fixture", bundleID: "app.fixture", version: "1"), condition: "", root: root)
+        for _ in 0..<(DiagnosticBudget.events - DiagnosticBudget.stacks * 2) {
+            let accepted = await recorder.mark("manual", "stutter")
+            XCTAssertTrue(accepted)
+        }
+        let rejected = await recorder.mark("manual", "stutter")
+        XCTAssertFalse(rejected)
+        let terminal = await recorder.mark("stack-partial", "fixture", stackID: 0, stackFile: "stack-0.txt")
+        XCTAssertTrue(terminal)
+        _ = try await recorder.finish("fixture")
+        let afterFinish = await recorder.mark("manual", "stutter")
+        XCTAssertFalse(afterFinish)
     }
 }
