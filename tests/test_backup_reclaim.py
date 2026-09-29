@@ -212,3 +212,27 @@ def test_rename_race_never_deletes_unverified_replacement(folders, monkeypatch):
     assert len(recovered) == 1
     assert recovered[0].read_bytes() == b"new content must survive"
     assert backup.read_bytes() == b"retained work"
+
+
+@pytest.mark.parametrize("change", ["backup-parent", "backup-file", "staged-content"])
+def test_final_journal_write_cannot_hide_changed_backup_or_source(folders, change):
+    local, backup = pair(folders)
+    proof = preview(folders)["rows"][0]
+
+    def event(kind, **values):
+        if kind != "verified-delete-intent":
+            return
+        if change == "backup-parent":
+            backup.parent.rename(backup.parent.with_name("retained-backup"))
+            backup.parent.mkdir()
+        elif change == "backup-file":
+            backup.rename(backup.with_name("retained-original"))
+            backup.write_bytes(b"replacement is not the backup")
+        else:
+            Path(values["stagingPath"]).write_bytes(b"new work during journal flush")
+
+    with pytest.raises((OSError, reclaim.ReclaimError)):
+        reclaim.delete_one(local, backup, proof, set(), event)
+    assert local.is_file()
+    assert local.read_bytes() == (b"new work during journal flush"
+                                  if change == "staged-content" else b"retained work")

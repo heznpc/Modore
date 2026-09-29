@@ -310,6 +310,7 @@ def prepare_resume_plan(restored_root: str | Path, provider: str, session_id: st
             if "--no-daemon" in probe["help"]:
                 argv.append("--no-daemon")
             plan["limitations"].append("Codex 앱의 SQLite 색인·UI 상태·다른 세션은 옮기지 않습니다. CLI가 이 로그 형식을 읽을 수 있는지는 실제 재개 시 확인합니다.")
+            plan["limitations"].append("Codex 첨부·업로드·이미지는 복원 폴더에만 보존하며 재개용 홈으로 복사하지 않습니다. 기록 속 첨부 경로를 다시 연결하기 전에는 첨부를 사용할 수 없을 수 있습니다.")
             if len(session["sourcePaths"]) > 1:
                 plan["limitations"].append("동일 ID의 다중 기록 조각을 모두 보존했지만, 제공사 앱의 조각 결합과 전체 문맥 재개는 미검증입니다.")
         else:

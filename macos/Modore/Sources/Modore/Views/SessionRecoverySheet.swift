@@ -25,6 +25,8 @@ struct SessionRecoverySheet: View {
                         .font(.callout).foregroundStyle(.secondary)
                     Text(L10n.text("프로젝트 코드·Git 저장소·미커밋 변경은 별도 백업이 필요합니다."))
                         .font(.callout).foregroundStyle(.secondary)
+                    Text(L10n.text("앱 전체 복원이나 대화 재개 성공을 보장하지 않습니다. Codex·Claude Code는 별도 CLI 재개 준비를 지원합니다."))
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button(L10n.text("닫기")) { dismiss() }

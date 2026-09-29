@@ -389,7 +389,18 @@ def delete_one(local, backup, proof, opened, event):
                 if stamp(os.fstat(fd)) != ls or stamp(os.fstat(saved)) != rs or stamp(os.stat(local.name, dir_fd=stage, follow_symlinks=False)) != ls:
                     raise ReclaimError("최종 검사 중 파일이 변경됐습니다.")
                 event("verified-delete-intent", stagingPath=str(staging_path), sha256=left)
-                os.unlink(local.name, dir_fd=stage)
+                # The durable journal write above may block. An open backup fd
+                # alone does not prove its selected pathname still exists (its
+                # containing directory may have been replaced or disconnected).
+                # Reopen the namespace and check both files after that last I/O.
+                with regular(backup) as (current_saved, _, _):
+                    if (root_identity(local.parent) != identity(os.fstat(parent))
+                            or stamp(os.fstat(current_saved)) != rs
+                            or stamp(os.fstat(saved)) != rs
+                            or stamp(os.fstat(fd)) != ls
+                            or stamp(os.stat(local.name, dir_fd=stage, follow_symlinks=False)) != ls):
+                        raise ReclaimError("삭제 직전 원본 또는 선택한 백업 경로가 변경됐습니다.")
+                    os.unlink(local.name, dir_fd=stage)
                 moved = False
                 event("deleted", bytes=current.st_size)
                 return current.st_size
