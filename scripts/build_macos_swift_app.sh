@@ -484,6 +484,7 @@ RUNTIME_FILES=(
     "scripts/path_reconnect.py"
     "scripts/asset_retirement.py"
     "scripts/work_resources.py"
+    "scripts/tool_reuse.py"
     "scripts/ci_watch.py"
     "scripts/environment_retirement.py"
     "scripts/app_registrations.py"
