@@ -11,6 +11,7 @@ struct HealthContextView: View {
     let openStorageOverview: () -> Void
     let openDiagnosis: () -> Void
     let openSecurity: () -> Void
+    let openRecheck: () -> Void
     @State private var copied = false
     @State private var query = ""
     @State private var environmentRoute: HealthWorkbenchRoute?
@@ -33,6 +34,7 @@ struct HealthContextView: View {
                     Spacer()
                     if !monitor.enabled { Button(L10n.text("관찰 켜기")) { Task { await monitor.setEnabled(true) } } }
                     HStack(spacing:10) {
+                        Button(L10n.text("Mac 재점검"), action: openRecheck)
                         Button(copied ? L10n.text("복사됨") : L10n.text("상황 설명 복사")) { copyContext() }.disabled(monitor.snapshot == nil)
                         Button(L10n.text("조치 전 상태 기록")) { monitor.markAction(L10n.text("사용자가 조치 전 상태 기록")) }
                         Button(L10n.text("활동 모니터")) { NSWorkspace.shared.open(URL(fileURLWithPath:"/System/Applications/Utilities/Activity Monitor.app")) }
