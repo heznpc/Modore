@@ -30,7 +30,7 @@ enum NativeCPUReader {
 
     static func percent(before: CPUProcessCounter?, after: CPUProcessCounter, elapsed: Double) -> Double? {
         guard let before, before.pid == after.pid, before.started == after.started,
-              elapsed > 0, elapsed <= 10, after.nanoseconds >= before.nanoseconds else { return nil }
+              elapsed.isFinite, elapsed > 0, elapsed <= 10, after.nanoseconds >= before.nanoseconds else { return nil }
         return Double(after.nanoseconds - before.nanoseconds) / elapsed / 10_000_000
     }
 }

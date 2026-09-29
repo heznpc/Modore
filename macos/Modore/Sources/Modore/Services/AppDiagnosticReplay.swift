@@ -148,7 +148,8 @@ final class AppDiagnosticReplay: ObservableObject {
             } catch {
                 // Never overwrite an intervening user edit or send keyboard shortcuts to an unknown responder.
                 if !typed.isEmpty, value(input) == typed {
-                    _ = AXUIElementSetAttributeValue(input, kAXValueAttribute as CFString, "" as CFString)
+                    guard AXUIElementSetAttributeValue(input, kAXValueAttribute as CFString, "" as CFString) == .success,
+                          value(input) == "" else { throw ReplayError.cleanup }
                 }
                 throw error
             }
