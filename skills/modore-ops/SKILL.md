@@ -50,8 +50,9 @@ common direct npx/npm-exec invocations and blocks them when an installed CLI
 can be reused, with the exact replacement command. It is not an OS-wide install
 interceptor: indirect scripts, missing versions and simultaneous first installs
 remain outside coverage. Hook configuration is not evidence of execution;
-Codex requires review/trust in `/hooks`. Never programmatically grant trust or
-claim automatic prevention in a session without a verified hook invocation.
+Codex CLI requires review/trust in `/hooks`; desktop invocation needs
+verification in the actual host. Never programmatically grant trust or claim
+automatic prevention in a session without a verified hook invocation.
 
 For simulator, development environment, or external SSD work, first run
 `modore resources status`. This reports live devices, OS versions, open-file

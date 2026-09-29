@@ -27,3 +27,9 @@ folders are larger. `lastSnapshotReason` survives subsequent no-capture ticks.
 
 Regression coverage exercises gradual loss below the warning thresholds,
 capture cooldown, baseline advancement, and recovery after freeing space.
+
+A partial normal-state cumulative capture now retries after two hours even
+if some path rows already advanced the free-space baseline and no further
+space was lost. The retry reason is `incomplete-cumulative-evidence`; after a
+complete capture it stops. Path timestamps describe the rows actually saved,
+not complete attribution. The retry uses the same bounded collection budget.

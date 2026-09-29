@@ -290,7 +290,7 @@ class TurnResourceTests(unittest.TestCase):
             self.assertEqual(new['hooks']['Stop'][0],previous['hooks']['Stop'][0])
             self.assertEqual(len(new['hooks']['Stop']),2)
             guards = [g for g in new['hooks']['PreToolUse']
-                      if any(h['command'].endswith(' tools hook') for h in g['hooks'])]
+                      if any(h['command'].endswith(' tools hook --provider ' + provider) for h in g['hooks'])]
             self.assertEqual(len(guards), 1)
             self.assertEqual(guards[0]['matcher'], '^Bash$')
             self.assertNotIn('state', new['hooks'])
@@ -409,4 +409,55 @@ class BrowserTurnTests(unittest.TestCase):
         self.assertEqual(receipt['survivingChildren'], ['200'])
 
 
-if __name__=='__main__':unittest.main()
+
+
+class ToolGuardConnectionTests(unittest.TestCase):
+    def test_guard_migration_is_idempotent_and_preserves_foreign_handlers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp); root = home / 'registry'
+            executable = Path(m.__file__).resolve().parents[1] / 'bin/modore'
+            import shlex
+            path = home / '.codex/hooks.json'; path.parent.mkdir()
+            old = {'matcher': '^Bash$', 'hooks': [{'type': 'command',
+                   'command': shlex.quote(str(executable)) + ' tools hook', 'timeout': 5}]}
+            other = {'matcher': '*', 'hooks': [{'type': 'command', 'command': 'other'}]}
+            path.write_text(json.dumps({'hooks': {'PreToolUse': [old, other]}}))
+            self.assertTrue(m.install_hooks('codex', root, home, executable)['changed'])
+            config = json.loads(path.read_text())
+            self.assertNotIn(old, config['hooks']['PreToolUse'])
+            self.assertIn(other, config['hooks']['PreToolUse'])
+            self.assertFalse(m.install_hooks('codex', root, home, executable)['changed'])
+            self.assertTrue(m.hook_status({}, home)[0]['guard']['configured'])
+            self.assertFalse(m.hook_status({}, home)[0]['guard']['recentlyObserved'])
+            m.tool_reuse.record_hook('codex', {'hook_event_name': 'PreToolUse', 'tool_name': 'Bash'}, {}, home)
+            self.assertTrue(m.hook_status({}, home)[0]['guard']['recentlyObserved'])
+            self.assertFalse(m.hook_status({}, home)[0]['recentlyObserved'])
+
+    def test_hooks_status_does_not_scan_or_write_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'missing'
+            with patch.object(m, 'devices', side_effect=AssertionError('scan')), patch.object(m, 'volumes', side_effect=AssertionError('scan')):
+                result = m.dispatch({'action': 'hooks-status'}, root)
+            self.assertIn('hookStatus', result)
+            self.assertFalse(root.exists())
+
+
+    def test_native_wrapper_uses_sealed_companion_under_isolated_python(self):
+        import subprocess, sys
+        root = Path(m.__file__).resolve().parents[1]
+        source = (root / 'macos/Modore/Sources/Modore/Services/WorkResourceService.swift').read_text()
+        wrapper = source.split('let wrapper = """', 1)[1].split('"""', 1)[0]
+        import textwrap
+        wrapper = textwrap.dedent(wrapper)
+        with tempfile.TemporaryDirectory() as tmp:
+            request = Path(tmp) / 'request.json'
+            request.write_text(json.dumps({'action': 'hooks-status'}))
+            result = subprocess.run([sys.executable, '-I', '-B', '-c', wrapper,
+                str(root / 'scripts/work_resources.py'), str(root / 'scripts/tool_reuse.py'),
+                '--request-file', str(request)], cwd=tmp, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('hookStatus', json.loads(result.stdout))
+
+
+if __name__ == '__main__':
+    unittest.main()
