@@ -207,7 +207,7 @@ final class ScreeModelsTests: XCTestCase {
         let rebuildableItem = try XCTUnwrap(report.worktreeItems.first { $0.verdict == "rebuildable" })
         XCTAssertEqual(protectedItem.verdictLabel, "보호 대상")
         XCTAssertEqual(protectedItem.verdictSymbolName, "lock.fill")
-        XCTAssertEqual(rebuildableItem.verdictLabel, "재구축 가능")
+        XCTAssertEqual(rebuildableItem.verdictLabel, "Git 복제 근거 있음")
         XCTAssertEqual(rebuildableItem.verdictSymbolName, "arrow.triangle.2.circlepath")
     }
 
