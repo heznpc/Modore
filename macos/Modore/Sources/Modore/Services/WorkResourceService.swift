@@ -9,14 +9,25 @@ final class WorkResourceService: ObservableObject {
             RuntimeWorkspace.prepareExecution(projectRoot: root)
         }).value,
         let invocation = execution.pinnedInvocation(relativePath: "scripts/work_resources.py", name: "resources"),
+        let guardInvocation = execution.pinnedInvocation(relativePath: "scripts/tool_reuse.py", name: "tool_reuse"),
         let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
             throw RetirementError(L10n.text("작업 자원 런타임을 준비하지 못했습니다."))
         }
         var pinned = invocation.files
+        pinned.merge(guardInvocation.files) { current, _ in current }
         pinned["request"] = try JSONSerialization.data(withJSONObject: request)
-        let wrapper = "import sys; source=open(sys.argv[1],'rb').read(); sys.argv=['work_resources.py']+sys.argv[2:]; exec(compile(source,'work_resources.py','exec'),{'__name__':'__main__'})"
+        let wrapper = """
+        import sys, types, hashlib
+        source = open(sys.argv[1], 'rb').read()
+        guard_source = open(sys.argv[2], 'rb').read()
+        adapter = types.ModuleType('tool_reuse')
+        adapter.__dict__.update(__file__='tool_reuse.py', _ADAPTER_SHA256=hashlib.sha256(guard_source).hexdigest())
+        exec(compile(guard_source, 'tool_reuse.py', 'exec'), adapter.__dict__)
+        sys.argv = ['work_resources.py'] + sys.argv[3:]
+        exec(compile(source, 'work_resources.py', 'exec'), {'__name__':'__main__', '__file__':'scripts/work_resources.py', 'tool_reuse':adapter})
+        """
         let result = await LocalProcessRunner.capture(executable: python,
-            arguments: ["-I", "-B", "-c", wrapper, invocation.argument, "--request-file", "@pch-pinned:request"],
+            arguments: ["-I", "-B", "-c", wrapper, invocation.argument, guardInvocation.argument, "--request-file", "@pch-pinned:request"],
             currentDirectory: execution.runtimeRoot, expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
             expectedSignedBundleURL: execution.signedBundleURL, pinnedFiles: pinned, timeout: 90,
             maxOutputBytes: 8_000_000, waitForCleanupOnStop: true)

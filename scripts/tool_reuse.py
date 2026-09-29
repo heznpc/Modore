@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Reuse installed npm CLIs without invoking an installer or scanning file trees."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shlex
 import sys
+import tempfile
+import time
 
 PACKAGE = re.compile(r'^(?P<name>(?:@[a-z0-9._-]+/)?[a-z0-9._-]+)(?:@(?P<version>[^/\s]+))?$')
 EXACT = re.compile(r'^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$')
@@ -25,7 +28,8 @@ def inventory(spec, home=None, global_roots=None):
     home = Path.home() if home is None else Path(home)
     roots = [Path(p) for p in (global_roots if global_roots is not None else
                               ['/opt/homebrew/lib/node_modules', '/usr/local/lib/node_modules'])]
-    cache = home / '.npm/_npx'
+    cache_root = os.environ.get('npm_config_cache') if home == Path.home() else None
+    cache = (Path(cache_root).expanduser() if cache_root else home / '.npm') / '_npx'
     warnings = []
     entries = []
     if cache.is_dir():
@@ -146,23 +150,36 @@ def invocation_specs(command):
             args = args[2:]
         else:
             continue
-        while args and args[0] in ('--yes', '-y', '--no', '--', '--offline', '--no-install'):
-            args = args[1:]
-        # Explicit package selection is a common npm exec spelling.
-        if args and args[0].startswith('--package='):
-            candidate = args[0].partition('=')[2]
-        elif len(args) > 1 and args[0] in ('--package', '-p'):
-            candidate = args[1]
-        elif args:
-            candidate = args[0]
-        else:
-            continue
-        if candidate == 'vercel' or candidate.startswith('vercel@'):
-            try:
-                split_spec(candidate)
-                found.append(candidate)
-            except ValueError:
-                pass
+        candidates = []
+        while args:
+            word, args = args[0], args[1:]
+            if word in ('--yes', '-y', '--no', '--offline', '--no-install') or word.startswith('--yes='):
+                continue
+            if word.startswith('--package='):
+                candidates.append(word.partition('=')[2])
+                continue
+            if word in ('--package', '-p') and args:
+                candidates.append(args.pop(0))
+                continue
+            if word in ('--cache', '--registry', '--userconfig') and args:
+                args.pop(0)
+                continue
+            if word.startswith(('--cache=', '--registry=', '--userconfig=')):
+                continue
+            if word == '--':
+                if args and not candidates:
+                    candidates.append(args[0])
+                break
+            if not word.startswith('-') and not candidates:
+                candidates.append(word)
+            break
+        for candidate in candidates:
+            if candidate == 'vercel' or candidate.startswith('vercel@'):
+                try:
+                    split_spec(candidate)
+                    found.append(candidate)
+                except ValueError:
+                    pass
     return found
 
 
@@ -193,6 +210,68 @@ def guard(payload, home=None, global_roots=None):
     return {}
 
 
+def adapter_sha256():
+    # The native service supplies the digest of its sealed companion bytes.
+    return globals().get('_ADAPTER_SHA256') or hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def receipt_path(provider, home=None):
+    home = Path.home() if home is None else Path(home)
+    return home / 'Library/Application Support/Modore/work-resources' / ('tool-guard-' + provider + '.json')
+
+
+def record_hook(provider, payload, result, home=None, now=None):
+    """Adapter observation, never an assertion that the host enforced a denial.
+
+    No command text, arguments, cwd, session ID or transcript is retained.
+    """
+    if provider not in ('codex', 'claude') or payload.get('hook_event_name') != 'PreToolUse':
+        return
+    if payload.get('tool_name') not in ('Bash', 'exec_command'):
+        return
+    path = receipt_path(provider, home)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.parent.is_symlink() or path.is_symlink():
+        raise ValueError('Unsafe receipt path')
+    value = {'observedAt': time.time() if now is None else now,
+             'event': 'PreToolUse', 'tool': payload['tool_name'],
+             'outcome': 'deny' if result.get('hookSpecificOutput', {}).get('permissionDecision') == 'deny' else 'pass',
+             'adapterSHA256': adapter_sha256(),
+             'hostEnforcementVerified': False}
+    fd, name = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(value, f); f.flush()
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def hook_receipt(provider, home=None, now=None, changed_at=0):
+    now = time.time() if now is None else now
+    result = {'recentlyObserved': False, 'lastObservedAt': None, 'outcome': None,
+              'hostEnforcementVerified': False}
+    path = receipt_path(provider, home)
+    try:
+        if not path.exists():
+            return result
+        if path.is_symlink() or path.parent.is_symlink() or path.stat().st_size > 4096:
+            raise ValueError('Unsafe receipt')
+        value = json.loads(path.read_text())
+        at = value.get('observedAt')
+        if not isinstance(at, (int, float)) or not 0 < at <= now:
+            raise ValueError('Invalid receipt timestamp')
+        if value.get('outcome') not in ('deny', 'pass'):
+            raise ValueError('Invalid receipt outcome')
+        current = value.get('adapterSHA256') == adapter_sha256()
+        result.update(lastObservedAt=at, outcome=value['outcome'],
+                      recentlyObserved=current and at >= changed_at and now - at <= 900)
+    except (OSError, ValueError, TypeError, AttributeError):
+        result['error'] = 'CLI reuse receipt unavailable'
+    return result
+
+
 def node_binary():
     for p in [Path('/opt/homebrew/bin/node'), Path('/usr/local/bin/node')]:
         if p.is_file() and os.access(p, os.X_OK):
@@ -201,21 +280,33 @@ def node_binary():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'resolve', 'run', 'hook'])
-    parser.add_argument('package', nargs='?', default='vercel')
-    parser.add_argument('arguments', nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
-    if args.action == 'hook':
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ['hook']:
+        hook_parser = argparse.ArgumentParser(description='Receive a PreToolUse event on stdin')
+        hook_parser.add_argument('--provider', choices=['codex', 'claude'])
+        hook_args = hook_parser.parse_args(argv[1:])
         try:
             raw = sys.stdin.buffer.read(2_097_153)
             if len(raw) > 2_097_152:
                 raise ValueError('hook payload too large')
-            result = guard(json.loads(raw))
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError('hook payload must be an object')
+            result = guard(payload)
+            try:
+                record_hook(hook_args.provider, payload, result)
+            except (OSError, ValueError):
+                # Observability failure must never erase a computed denial.
+                result['systemMessage'] = 'Modore: CLI guard receipt could not be saved.'
         except Exception:
             result = {'systemMessage': 'Modore: CLI reuse check unavailable; duplicate-install protection is unverified.'}
         print(json.dumps(result, ensure_ascii=False))
         return 0
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['status', 'resolve', 'run'])
+    parser.add_argument('package', nargs='?', default='vercel')
+    parser.add_argument('arguments', nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
     try:
         if args.action == 'status':
             result = inventory(args.package)
