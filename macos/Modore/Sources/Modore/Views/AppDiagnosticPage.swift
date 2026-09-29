@@ -132,16 +132,20 @@ struct AppDiagnosticPage: View {
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let frame = service.frame {
+                if frame.unavailable > 0 || frame.targetCPU == nil {
+                    Text(frame.interval == 0 ? "기준 표본 수집 중 · 다음 표본부터 CPU를 계산합니다." : "CPU 관측 누락 또는 범위 제한 · 표시값은 일부 프로세스의 합계일 수 있습니다.")
+                        .font(.callout).foregroundStyle(.orange)
+                }
                 HStack(spacing: 28) {
                     metric("앱·작업 합산 CPU", frame.targetCPU)
-                    metric("화면 처리 CPU", frame.rendererCPU)
+                    metric("Renderer CPU (이름 기준)", frame.rendererCPU)
                 }
                 DisclosureGroup("수집 상태 자세히", isExpanded: $showMetrics) {
                     HStack(spacing: 24) {
                         metric("Modore 전체 CPU", frame.observerCPU)
                         metric("스택 도구 CPU", frame.samplerCPU)
                         VStack(alignment: .leading) {
-                            Text("수집 비용").font(.caption)
+                            Text("네이티브 조회 시간").font(.caption)
                             Text(String(format: "%.1f ms", frame.collectionMilliseconds)).monospacedDigit()
                         }
                     }.padding(.top, 8)
@@ -174,11 +178,13 @@ struct AppDiagnosticPage: View {
                         Text("동작 표식이 없어 검사 전체의 부하를 요약했습니다.").font(.callout).foregroundStyle(.secondary)
                     }
                 }
+                Text(result.finishReason + " · " + result.coverageDescription)
+                    .font(.callout).foregroundStyle(result.incomplete ? Color.orange : Color.secondary)
                 HStack(spacing: 30) {
-                    metric("평균 CPU", result.meanCPU)
-                    metric("최고 CPU", result.peakCPU)
+                    metric("앱·작업 합산 평균 CPU", result.meanCPU)
+                    metric("앱·작업 합산 최고 CPU", result.peakCPU)
                 }
-                Text("CPU 기록은 앱이 바빴던 구간을 보여줍니다. 화면 지연 시간이나 근본 원인을 단독으로 확정하는 결과는 아닙니다.")
+                Text("100%는 코어 하나입니다. CPU는 수집 간격의 평균이며 입력 처리 시간과 입력→프레임 지연은 미측정입니다. CPU 기록은 앱이 바빴던 구간을 보여줍니다. 화면 지연 시간이나 근본 원인을 단독으로 확정하는 결과는 아닙니다.")
                     .font(.caption).foregroundStyle(.secondary)
                 Divider()
                 HStack {
@@ -275,7 +281,7 @@ struct AppDiagnosticPage: View {
     private func metric(_ title: String, _ value: Double?) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value.map { String(format: "%.1f%%", $0) } ?? "—").font(.title3.weight(.semibold)).monospacedDigit()
+            Text(value.map { String(format: "%.1f%%", $0) } ?? "미측정").font(.title3.weight(.semibold)).monospacedDigit()
         }
     }
 }

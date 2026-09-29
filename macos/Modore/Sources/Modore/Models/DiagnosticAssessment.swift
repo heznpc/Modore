@@ -43,7 +43,7 @@ struct DiagnosticActionAssessment: Sendable {
     var description: String {
         func number(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? "미확인" }
         let metric = after.renderer ? "Renderer" : "앱·작업 합산"
-        var text = "\(event.detail) (+\(number(event.seconds))초): \(metric) CPU, 표식 전 평균 \(number(before.mean))% → 표식 후 평균 \(number(after.mean))%"
+        var text = "\(event.displayDetail) (+\(number(event.seconds))초): \(metric) CPU, 표식 전 평균 \(number(before.mean))% → 표식 후 평균 \(number(after.mean))%"
         if let peak = after.peak {
             text += ", 최고 \(number(after.value(peak)))% (표식 후 \(number(peak.seconds - event.seconds))초 표본)."
         } else { text += "." }
@@ -62,14 +62,20 @@ struct DiagnosticActionAssessment: Sendable {
 extension DiagnosticResult {
     var actionAssessments: [DiagnosticActionAssessment] {
         let actions = events.filter { $0.kind == "manual" || $0.kind == "auto-start" }
-        return actions.map { event in
+        return actions.enumerated().map { index, event in
             // Legacy recordings have aggregate CPU only. Do not invent renderer attribution.
             let renderer = frames.contains { $0.rendererCPU != nil && abs($0.seconds - event.seconds) <= 3 }
             return DiagnosticActionAssessment(event: event,
                 before: DiagnosticWindow(frames: frames, start: event.seconds - 3, end: event.seconds, renderer: renderer),
                 after: DiagnosticWindow(frames: frames, start: event.seconds, end: event.seconds + 3, renderer: renderer),
-                stacksOverlap: events.contains { $0.kind == "stack-start" && $0.seconds <= event.seconds + 3 && $0.seconds + 6 >= event.seconds - 3 },
-                otherActionOverlaps: actions.contains { $0.seconds != event.seconds && abs($0.seconds - event.seconds) < 3 })
+                stacksOverlap: events.contains { stack in
+                    guard stack.kind == "stack-start" else { return false }
+                    let end = stack.stackID.flatMap { id in
+                        events.first { $0.stackID == id && ["stack-saved", "stack-failed", "stack-partial"].contains($0.kind) }?.seconds
+                    } ?? (stack.seconds + 6)
+                    return stack.seconds <= event.seconds + 3 && end >= event.seconds - 3
+                },
+                otherActionOverlaps: actions.enumerated().contains { $0.offset != index && abs($0.element.seconds - event.seconds) < 3 })
         }
     }
     var diagnosticHeadline: String {
