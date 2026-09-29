@@ -5,9 +5,10 @@ description: Use Modore for explicit local AI-session continuity and Mac storage
 
 # Modore
 
-Use Modore as the single product surface for local AI work continuity and
-storage recovery. Do not route these requests through a portfolio control
-plane.
+Use Modore for independent local work preservation, recovery and cleanup.
+Taxi is the integrated AI work environment and may reuse Modore capabilities
+without requiring the Modore app. Maintenance ownership and UI location are
+separate; a metadata handoff does not transfer execution ownership.
 
 ## Boundaries
 
@@ -34,6 +35,18 @@ plane.
 
 Read [references/command-contract.md](references/command-contract.md) when an
 exact command or privacy boundary matters.
+
+## Metadata catalog handoff
+
+Use the repository's `python3 -I -B scripts/session_catalog.py --out <private-path>`
+for an explicitly requested metadata catalog. Consume the returned `outputPath`;
+existing files are never overwritten. Preserve schema version, observation time,
+unknown profile values and scan limitations. Exit 1 means an incomplete but
+written catalog. Additional Codex roots require explicit `--codex-profile KEY ROOT`.
+Never call title/search/inspect to enrich this catalog, infer running/completed
+from file activity, or treat imported sessions as executable ownership. Store real
+catalogs privately, never as committed fixtures. The exact contract is in the
+repository's `docs/SESSION_CATALOG_V1.md`.
 
 ## Work resources: discover before creating
 
@@ -99,7 +112,13 @@ and the same project/session arguments. Refresh a lease every five minutes with
 A lease expires after fifteen minutes and remains visible as stale evidence;
 expiry does not authorize automatic shutdown. A released lease requires a new
 acquire/claim rather than heartbeat to become active again.
-All state and receipts belong to Modore; no Taxi dependency.
+Existing Modore-managed registrations, hooks, runs and receipts remain owned
+by their current Modore executor. Future test-resource execution moves to Taxi;
+Modore observes connections and preserves recovery evidence. Do not transfer
+live runs, modify installed hooks or user profiles, or remove existing CLI
+routes merely because of this direction. Each execution needs one explicit
+owner. Standalone Modore remains usable without Taxi. See the repository
+`docs/PRODUCT_BOUNDARIES.md` for the compatibility transition.
 
 Before changing a feature, inspect its existing UI, collector, persisted results,
 and tests. Report whether the failure is collection, stale results, presentation,

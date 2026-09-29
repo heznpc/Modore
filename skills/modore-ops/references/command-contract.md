@@ -27,6 +27,20 @@ Backup, verification, restore, and detailed inspection remain available through
 the Modore app and `scripts/scree.py`. Those operations require an exact named
 source or archive; do not infer one from a transcript.
 
+## Metadata catalog
+
+From a source checkout, run
+`python3 -I -B scripts/session_catalog.py --out <private-path>`.
+The v1 catalog reuses scree discovery and emits only allowlisted metadata.
+No conversation-title lookup, body search, credentials, commands, inferred
+lifecycle or execution ownership are included. Optional explicit Codex profiles
+use `--codex-profile KEY ROOT`. Unknown profiles remain null and storage scopes
+stay distinct. The default discovery budget is 30 seconds; scan errors and
+limits remain visible. Exit 0 is complete, 1 is incomplete but written, and 2
+is an argument/output failure. With `--out`, consume the receipt's actual
+`outputPath`: a collision creates a new 0600 sibling instead of replacing data.
+See the repository's `docs/SESSION_CATALOG_V1.md` for the exact wire contract.
+
 ## Storage
 
 ```bash
@@ -44,6 +58,12 @@ route: the former would collect unrelated security metadata, while the latter
 would mint a live destructive approval token.
 
 ## Turn test resources
+
+These commands, hooks and registry records remain the current compatibility
+executor. Future test-resource execution belongs to Taxi; Modore's continuing
+role is observation and preservation. Do not move existing runs or install/change
+hooks as a side effect of importing catalog metadata. The repository's
+`docs/PRODUCT_BOUNDARIES.md` defines this staged transition.
 
 ```bash
 modore resources install-hooks --provider claude
