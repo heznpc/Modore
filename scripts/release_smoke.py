@@ -356,7 +356,6 @@ SWIFT_FILES = sorted(
 MODORE_SOURCE_CHECKOUT_FILES = [
     "bin/modore",
     "scripts/bounded_exec.py",
-    "scripts/tool_reuse.py",
     "skills/modore-ops/SKILL.md",
     "skills/modore-ops/agents/openai.yaml",
     "skills/modore-ops/references/command-contract.md",
