@@ -129,9 +129,107 @@ python3 scripts/scree.py backup-restore <backup.zip> --out <new-directory>
 
 **Design intent:** inspect what matters, preserve original evidence, and test
 restoration before deciding how to manage local storage. **Non-goals:** automatic
-deletion, full machine backup, provider migration, or a guarantee that a provider
+deletion, full machine backup, or a guarantee that a provider
 can resume an archived session. A successful byte comparison is not a cleanup
 authorization.
+
+### Clean up local copies after backup
+
+**Currently implemented:** **저장공간 → 환경 정리 → 백업 중복 정리** compares
+an explicitly chosen local folder with its corresponding folder on a different
+volume. Matching relative paths are checked with SHA-256, permissions, ACLs and
+extended attributes; provenance, quarantine and last-used metadata are excluded
+from the match. Hidden entries are included in the report. AI conversation and
+app stores, hidden configuration, Git workspaces, app packages, databases,
+build-tool dependency/cache directories, credential/key files, symlinks and hardlinks are protected.
+A matching file is not automatically selected.
+
+Select ordinary files, review their local-path impact, and confirm deletion in
+the app. The app checks both copies again and consumes a one-use comparison
+plan. Changed, open or unverifiable files are skipped. The retained backup is
+never modified. Each file is staged by rename and checked before deletion;
+interruption restores it without overwriting an existing path, or records its
+recovery location. Local receipts distinguish deleted file sizes from measured
+disk free space. Comparisons are bounded to 5,000 reported entries and three
+minutes; a partial scan is labeled, and up to 1,000 files can be selected per run.
+
+**Design intent:** keep Codex usable by retaining its JSONL transcripts, state,
+settings and attachments locally. A deleted personal file may still be needed
+by an app or script; open-file observation is not proof of future independence.
+**Non-goals:** finding renamed duplicates, deleting protected app data, pruning
+Git branches/worktrees, or proving another app can resume from the backup.
+
+### Reconnect an old local path to SSD work
+
+**저장공간 → 환경 정리 → SSD 경로 재연결** restores access through an old,
+missing local file or project-folder path by linking it to an existing SSD
+working copy. Prepare the working copy outside the archival backup first:
+opening or editing through the old path reads or changes that SSD target.
+Known backup locations are rejected to keep the recovery snapshot separate
+from ongoing work.
+
+Preview records the exact original path, target identity and, for files,
+content hash. Connecting checks them again and never replaces an existing
+local entry. Saved mappings can be checked for an unavailable SSD, changed
+target or conflicting local path. Undo removes only the recorded link and
+retains the SSD data. Previous duplicate-cleanup receipts provide missing-path
+candidates; they do not automatically connect the archival copy.
+
+This compatibility layer does not rewrite provider JSONL/JSON/SQLite stores,
+restore an app's session list, grant folder permissions, or repair linked Git
+worktree metadata. Codex, Claude and Kiro may still need their own resume or
+workspace selection step. Provider homes and app-managed stores remain
+protected; a successful path check is not proof of a successful app resume.
+
+### Session recovery on another Mac
+
+**작업 → 백업·이전…** prepares a recovery bundle independently of any one
+project or currently selected session. Choose an external disk or parent folder;
+Modore creates a new `Backup/YYYY-MM-DD/Modore-<id>` directory beneath it.
+The preview lists discovered stores, sizes, and Git-linked, folder-linked, or
+unassigned records. A Git relationship never means that the conversation was
+pushed to a remote repository.
+
+The bundle contains selected Codex current and archived transcripts, owned
+attachments, indices and consistent SQLite snapshots; Claude Code records and
+owned sidecars; and supported local Claude Desktop Code conversation stores.
+Hidden files inside these supported stores are considered too. Credentials,
+settings, runtime caches, external symlink targets, and cloud-only conversations
+are excluded. Raw conversation content can itself contain secrets: these bundles
+are local, unmasked and unencrypted.
+
+Verification checks every manifest entry against its SHA-256 digest. Restore
+creates a new isolated directory and works without the original Mac or source
+paths. From that restored copy, select a Codex or Claude Code session, connect
+its new project directory, and prepare an isolated provider home plus a resume
+command. This leaves live provider stores alone and does not run a model or
+mark the session as resumed. Install the provider CLI and sign in within that
+provider home before using the command.
+
+| Recovery evidence | What it establishes |
+| --- | --- |
+| Verified bundle / restored files | The included bytes match their recorded hashes. |
+| Prepared Codex / Claude Code session | Selected local records are staged and a provider resume command is available; actual continuation remains unverified until the provider opens it. |
+| Claude Desktop, Cowork, Gemini, IDE state | Native application import/resume is not guaranteed; only the explicitly supported local stores above are copied. |
+| Workspace relationship | Identifies the associated folder; it is not a backup of that folder. |
+
+**The session bundle does not contain project code or general user files.** A
+replacement Mac also needs a separate verified copy of project files, local Git
+history, uncommitted and untracked work, required ignored files, and user-created
+assets. A remote clone covers only what was pushed. Live process memory, unsaved
+editor changes, data already missing before backup, and changes after backup
+cannot be recovered from this bundle. Provider stores are captured sequentially;
+for the final recovery copy, finish active sessions and repeat the backup.
+
+The bundled backend is also available for explicit local use:
+
+```bash
+python3 scripts/session_recovery.py plan
+python3 scripts/session_recovery.py backup --destination /path/to/Backup/new-bundle --items-json '["codex.sessions","codex.archived","claude.projects"]' --include-sensitive
+python3 scripts/session_recovery.py verify /path/to/Backup/new-bundle
+python3 scripts/session_recovery.py restore /path/to/Backup/new-bundle --destination /path/to/new-restore
+python3 scripts/session_resume.py --help
+```
 
 The operator-friction audit reads the same session stores for a different question: where did the user stop or correct the agent? Its CLI entry point is:
 
