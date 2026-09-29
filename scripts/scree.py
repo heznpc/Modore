@@ -1525,10 +1525,12 @@ def collect_claude_desktop_sessions(home: Path) -> list[dict]:
     return _collect_claude_desktop_sessions_with_coverage(home)[0]
 
 
-def collect_codex(home: Path) -> tuple[list[dict], dict]:
+def collect_codex(home: Path, *, store_root: Optional[Path] = None
+                  ) -> tuple[list[dict], dict]:
     records: list[dict] = []
     unrecognized = 0
-    roots = [home / ".codex" / "sessions", home / ".codex" / "archived_sessions"]
+    codex_root = store_root if store_root is not None else home / ".codex"
+    roots = [codex_root / "sessions", codex_root / "archived_sessions"]
     seen_root = False
     root_statuses: list[str] = []
     for root in roots:
@@ -3768,6 +3770,20 @@ def build_current_session(home: Path, *,
     }
 
 
+def collect_session_metadata(home: Path) -> tuple[list[dict], list[dict]]:
+    """Shared physical session/workspace inventory, before identity grouping.
+
+    Catalog consumers need physical sources to separate profile namespaces.
+    Reuse these collectors; never obtain listing titles through body readers.
+    """
+    shared, stores = collect_all(home)
+    chats, chat_store = _collect_gemini_chats_with_coverage(home)
+    return (
+        [item for item in shared if item["tool"] != "Gemini"] + chats,
+        [entry for entry in stores if entry["store"] != "Gemini"] + [chat_store],
+    )
+
+
 def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
     """Every session this build can see, as metadata, most recent first.
 
@@ -3787,11 +3803,7 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
     # lineage want; the browser wants the chats, which live elsewhere. So
     # the shared walk supplies everything except Gemini, whose registry
     # records are dropped in favour of the conversations themselves.
-    shared, store_coverage = collect_all(home)
-    records = [item for item in shared if item["tool"] != "Gemini"]
-    gemini_chats, gemini_chat_coverage = (
-        _collect_gemini_chats_with_coverage(home))
-    records += gemini_chats
+    records, store_coverage = collect_session_metadata(home)
     artifact_total = sum(
         1 for item in records
         if item.get("kind") in ("session", "workspace_state")
@@ -3881,9 +3893,8 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
             "count": entry["count"],
             "unrecognized": entry.get("unrecognized", 0),
         }
-        for entry in store_coverage if entry["store"] != "Gemini"
+        for entry in store_coverage
     ]
-    coverage_stores.append(gemini_chat_coverage)
     unresolved_workspaces = sum(
         value is None for value in workspace_status.values())
     coverage_stores.append({
@@ -9770,9 +9781,17 @@ def _session_artifact_sources(session: dict) -> list[str]:
     return [source] if isinstance(source, str) and source else []
 
 
-def _isolated_content_json(deadline: float, producer: Callable[[], dict]
-                           ) -> tuple[Optional[dict], str]:
-    """Run one transcript reader behind a hard process deadline."""
+def _isolated_content_json(
+        deadline: float, producer: Callable[[], dict], *,
+        max_bytes: Optional[int] = None,
+        ) -> tuple[Optional[dict], str]:
+    """Run a caller-selected JSON producer behind a hard process deadline.
+
+    This transport reads no provider data itself. Metadata catalog callers use
+    the index byte bound; content callers retain the smaller default bound.
+    """
+    if max_bytes is None:
+        max_bytes = SESSION_CONTENT_ISOLATION_MAX_BYTES
     if time.monotonic() >= deadline:
         return (None, "time")
     try:
@@ -9793,7 +9812,7 @@ def _isolated_content_json(deadline: float, producer: Callable[[], dict]
             encoded = json.dumps(
                 producer(), ensure_ascii=True,
                 separators=(",", ":")).encode("utf-8")
-            if len(encoded) <= SESSION_CONTENT_ISOLATION_MAX_BYTES:
+            if len(encoded) <= max_bytes:
                 offset = 0
                 while offset < len(encoded):
                     offset += os.write(write_descriptor, encoded[offset:])
@@ -9827,7 +9846,7 @@ def _isolated_content_json(deadline: float, producer: Callable[[], dict]
                 elif chunk:
                     total += len(chunk)
                     oversized = (oversized
-                                 or total > SESSION_CONTENT_ISOLATION_MAX_BYTES)
+                                 or total > max_bytes)
                     if not oversized:
                         chunks.append(chunk)
             if not reaped:

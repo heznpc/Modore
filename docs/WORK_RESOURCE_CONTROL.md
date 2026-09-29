@@ -1,8 +1,11 @@
 # Work resource control
 
 The owner's unit is a working environment: an existing simulator, project/session,
-and an external SSD with its actual users. Modore owns the inventory, resource
-leases, actions and receipts. Taxi is not required.
+and an external SSD with its actual users. The current compatibility implementation
+keeps its inventory, resource leases, actions and receipts in Modore. Taxi is not
+required for these existing routes. Future test execution belongs to Taxi while
+Modore observes and preserves evidence; see [product boundaries](PRODUCT_BOUNDARIES.md).
+This transition does not move active registrations, change hooks, or remove CLI routes.
 
 ## Entry points
 

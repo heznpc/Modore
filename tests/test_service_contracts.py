@@ -459,6 +459,10 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     modore_source_checkout = {
         "bin/modore",
         "scripts/bounded_exec.py",
+        "scripts/tool_reuse.py",
+        "scripts/session_catalog.py",
+        "docs/SESSION_CATALOG_V1.md",
+        "docs/PRODUCT_BOUNDARIES.md",
         "skills/modore-ops/SKILL.md",
         "skills/modore-ops/agents/openai.yaml",
         "skills/modore-ops/references/command-contract.md",
@@ -729,6 +733,8 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
         # bin/modore entry point. The installed app does not invoke that shell
         # command and therefore must not gain an unreachable Python helper.
         "scripts/bounded_exec.py",
+        "scripts/tool_reuse.py",
+        "scripts/session_catalog.py",
     }
     non_shell_expected = {
         f"data/{path.name}" for path in (project_root / "data").glob("*.json")

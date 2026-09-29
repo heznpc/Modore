@@ -2,6 +2,11 @@
 
 Modore is an evidence-first local diagnostic tool with two OS-specific runtimes under one product promise. It does not attempt to hide the collectors behind a shared cross-platform abstraction when the operating systems expose different evidence.
 
+The [product boundaries](PRODUCT_BOUNDARIES.md) distinguish Modore's independent
+preservation/recovery/cleanup role from Taxi's integrated AI work environment.
+[Session catalog v1](SESSION_CATALOG_V1.md) reuses scree metadata discovery for
+explicit file exchange without sharing execution authority or requiring the app.
+
 ## Trust boundaries
 
 1. **Collect** OS facts with readable PowerShell on Windows or Bash/JXA on macOS.
