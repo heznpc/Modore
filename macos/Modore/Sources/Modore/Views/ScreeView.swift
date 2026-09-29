@@ -303,6 +303,27 @@ struct ScreeWorktreeSection: View {
                         .foregroundStyle(Color.secondary)
                 }
             }
+            if !discovery.branches.isEmpty {
+                DisclosureGroup(L10n.format("로컬 브랜치 %@개 · 회수 용량 미측정", String(discovery.branches.count))) {
+                    Text(L10n.text("브랜치 수 감소와 디스크 회수량은 별개입니다. 로컬 원격 참조는 실제 원격보다 오래되었을 수 있습니다."))
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(discovery.branches) { branch in
+                        VStack(alignment: .leading) {
+                            Text(branch.branch).font(.body.weight(.medium))
+                            Text(branch.repo).font(.caption).textSelection(.enabled)
+                            Text(branch.reasonText).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            if !discovery.errors.isEmpty {
+                DisclosureGroup(L10n.text("수집 실패 근거")) {
+                    ForEach(Array(discovery.errors.enumerated()), id: \.offset) { _, failure in
+                        Text("\(failure.path) · \(failure.label)")
+                            .font(.caption).textSelection(.enabled)
+                    }
+                }
+            }
             ForEach(registeredMissing) { missing in
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "exclamationmark.triangle")
@@ -311,12 +332,12 @@ struct ScreeWorktreeSection: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(missing.displayLabel)
                             .font(.body.weight(.medium))
-                        Text(L10n.text("git 등록 기록은 남았지만 작업 경로가 사라졌습니다."))
+                        Text(L10n.text("Git 등록 경로를 찾지 못했습니다. 이동 여부를 확인해야 합니다."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text(L10n.text("경로 소멸"))
+                    Text(L10n.text("경로 확인 필요"))
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
@@ -324,10 +345,10 @@ struct ScreeWorktreeSection: View {
         } header: {
             let missingText = registeredMissing.isEmpty
                 ? ""
-                : L10n.format(" · 경로 소멸 %@", String(describing: registeredMissing.count))
+                : L10n.format(" · 경로 확인 필요 %@", String(describing: registeredMissing.count))
             NativeSectionHeader(
                 title: L10n.text("에이전트 워크트리"),
-                subtitle: L10n.format("git 증거(dirty·미푸시 커밋)만으로 판정한 미리보기 등급입니다. %@", String(describing: discovery.coverageText)),
+                subtitle: L10n.format("Git·ignored 자료·세션 참조를 표시합니다. 현재 사용 여부와 삭제 가능 여부는 확인되지 않았습니다. %@", String(describing: discovery.coverageText)),
                 value: items.isEmpty && registeredMissing.isEmpty
                     ? ""
                     : L10n.format("보호 %@/%@%@", String(describing: protectedCount), String(describing: items.count), String(describing: missingText))

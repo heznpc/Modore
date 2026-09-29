@@ -90,7 +90,7 @@ import sys
 import time
 import unicodedata
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import unquote, urlparse
@@ -1957,13 +1957,19 @@ WORKTREE_GIT_BUDGET_SECONDS = 8.0
 WORKTREE_GIT_COMMAND_TIMEOUT_SECONDS = 0.75
 WORKTREE_DISCOVERY_ISOLATION_SECONDS = 10.0
 WORKTREE_DISCOVERY_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+WORKTREE_VOLUME_ROOT = Path("/Volumes")
+_WORKTREE_GIT_ERROR = None
+_WORKTREE_PROGRESS = None
 
 
 def _git(args: list[str], cwd: Path, *,
          timeout: float = WORKTREE_GIT_COMMAND_TIMEOUT_SECONDS) -> Optional[str]:
+    global _WORKTREE_GIT_ERROR
+    _WORKTREE_GIT_ERROR = None
     try:
         cwd_fd = _open_directory_nofollow(cwd)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as error:
+        _WORKTREE_GIT_ERROR = _worktree_error_reason(error)
         return None
     try:
         before = os.fstat(cwd_fd)
@@ -1982,7 +1988,8 @@ def _git(args: list[str], cwd: Path, *,
             preexec_fn=chdir_to_verified_directory,
             capture_output=True, text=True, timeout=timeout,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        _WORKTREE_GIT_ERROR = _worktree_error_reason(error)
         return None
     finally:
         os.close(cwd_fd)
@@ -1992,11 +1999,26 @@ def _git(args: list[str], cwd: Path, *,
             current = os.fstat(current_fd)
         finally:
             os.close(current_fd)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as error:
+        _WORKTREE_GIT_ERROR = _worktree_error_reason(error)
         return None
     if (current.st_dev, current.st_ino) != before_identity:
+        _WORKTREE_GIT_ERROR = "path_changed"
         return None
-    return proc.stdout if proc.returncode == 0 else None
+    if proc.returncode != 0:
+        message = proc.stderr.lower()
+        if "not a git repository" in message:
+            _WORKTREE_GIT_ERROR = "invalid_git_checkout"
+        elif "permission denied" in message or "operation not permitted" in message:
+            _WORKTREE_GIT_ERROR = "permission_denied"
+        elif "dubious ownership" in message:
+            _WORKTREE_GIT_ERROR = "ownership_rejected"
+        elif "bad revision" in message or "unknown revision" in message:
+            _WORKTREE_GIT_ERROR = "revision_unavailable"
+        else:
+            _WORKTREE_GIT_ERROR = "git_exit_" + str(proc.returncode)
+        return None
+    return proc.stdout
 
 
 def _lexical_abspath(value: str) -> Path:
@@ -2363,26 +2385,44 @@ def _relative_below_aliases(path: str, parents: set[Path]) -> Optional[str]:
 
 
 def _has_worktree_registry_nofollow(repo: Path) -> bool:
-    """Whether an exact candidate repo has a local linked-worktree registry."""
+    """An exact .git directory OR linked-worktree file is an inventory anchor."""
     try:
         repo_fd = _open_directory_nofollow(repo)
     except (OSError, ValueError):
         return False
     try:
-        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        git_fd = os.open(".git", flags, dir_fd=repo_fd)
+        info = os.stat(".git", dir_fd=repo_fd, follow_symlinks=False)
+        return stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
     except (OSError, ValueError):
         return False
     finally:
         os.close(repo_fd)
+
+
+def _worktree_error_reason(error: BaseException) -> str:
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "command_timeout"
+    if isinstance(error, PermissionError):
+        return "permission_denied"
+    if isinstance(error, FileNotFoundError):
+        return "path_missing"
+    return "io_error"
+
+
+def _worktree_path_state(path: Path) -> str:
     try:
-        registry_fd = os.open("worktrees", flags, dir_fd=git_fd)
-    except (OSError, ValueError):
-        return False
-    finally:
-        os.close(git_fd)
-    os.close(registry_fd)
-    return True
+        fd = _open_directory_nofollow(path)
+        os.close(fd)
+        return "present"
+    except FileNotFoundError:
+        if _path_is_below(str(path), WORKTREE_VOLUME_ROOT):
+            relative = path.relative_to(WORKTREE_VOLUME_ROOT)
+            volume = WORKTREE_VOLUME_ROOT / relative.parts[0]
+            if not os.path.ismount(volume):
+                return "volume_unavailable"
+        return "path_missing"
+    except (OSError, ValueError) as error:
+        return _worktree_error_reason(error)
 
 
 @dataclass
@@ -2391,20 +2431,27 @@ class _WorktreeGitBudget:
 
     deadline: float
     exhausted: bool = False
+    errors: list[dict] = field(default_factory=list)
 
     @classmethod
     def start(cls) -> "_WorktreeGitBudget":
         return cls(time.monotonic() + max(0.0, WORKTREE_GIT_BUDGET_SECONDS))
 
     def run(self, args: list[str], cwd: Path) -> Optional[str]:
+        global _WORKTREE_GIT_ERROR
+        _WORKTREE_GIT_ERROR = None
         remaining = self.deadline - time.monotonic()
         if self.exhausted or remaining <= 0.001:
             self.exhausted = True
+            self.errors.append({"path": str(cwd), "operation": args[0], "reason": "budget_exhausted"})
             return None
         output = _git(
             args, cwd,
             timeout=min(WORKTREE_GIT_COMMAND_TIMEOUT_SECONDS, remaining),
         )
+        if output is None:
+            self.errors.append({"path": str(cwd), "operation": args[0],
+                                "reason": _WORKTREE_GIT_ERROR or "git_failed"})
         if time.monotonic() >= self.deadline:
             # The completed command's output is still valid, but no later
             # command may extend the report beyond the shared budget.
@@ -2512,193 +2559,158 @@ def _dedupe_registered_missing(entries: list[dict]) -> list[dict]:
     return result
 
 
-def collect_worktrees(home: Path, records: Optional[list[dict]] = None) -> dict:
-    """Anchor judgment for agent-created git worktrees, via read-only git queries.
+def _worktree_registry(porcelain: str) -> list[dict]:
+    """NUL framing preserves paths with spaces, quotes and newlines."""
+    entries = []
+    for block in porcelain.split("\0\0"):
+        entry = {}
+        for line in block.split("\0"):
+            key, _, value = line.partition(" ")
+            if key:
+                entry[key] = value
+        if "worktree" in entry:
+            entries.append(entry)
+    return entries
 
-    A worktree is unique work ("protected") while it is dirty or carries commits
-    unreachable from every remote; only a clean, fully pushed worktree is judged
-    "rebuildable". Registration in the parent repo and registry entries whose
-    directory disappeared are reported as anchor breaks. Discovery is deliberately
-    partial: only workspaces recorded by a local agent store are observed. ``home``
-    is retained for API compatibility and to make that scope explicit; it is never
-    recursively enumerated.
-    """
+
+def _worktree_item(path: Path, repo: Path, registered: Optional[bool],
+                   budget: _WorktreeGitBudget, records: list[dict], **extra) -> dict:
+    start = len(budget.errors)
+    state = _worktree_path_state(path)
+    if state == "present" and not _has_worktree_registry_nofollow(path):
+        state = "not_git_checkout"
+    status = budget.run(["status", "--porcelain", "-z", "--untracked-files=all"], path) if state == "present" else None
+    unpushed_raw = budget.run(["rev-list", "--count", "HEAD", "--not", "--remotes"], path) if state == "present" else None
+    ignored = budget.run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], path) if state == "present" else None
+    branch = budget.run(["rev-parse", "--abbrev-ref", "HEAD"], path) if state == "present" else None
+    commit = budget.run(["log", "-1", "--format=%ct"], path) if state == "present" else None
+    dirty = bool(status) if status is not None else None
+    unpushed = int(unpushed_raw.strip()) if unpushed_raw and unpushed_raw.strip().isdigit() else None
+    ignored_paths = [value for value in (ignored or "").split("\0") if value]
+    verdict = _worktree_verdict(dirty, unpushed)
+    if ignored_paths or extra.get("locked"):
+        verdict = "protected"
+    elif ignored is None and verdict == "rebuildable":
+        verdict = "unreadable"
+    references = sum(1 for record in records if isinstance(record.get("workspace"), str)
+                     and (str(_lexical_abspath(record["workspace"])) == str(path)
+                          or _path_is_below(str(_lexical_abspath(record["workspace"])), path)))
+    errors = budget.errors[start:]
+    if state != "present":
+        errors = [{"path": str(path), "operation": "open", "reason": state}]
+    item = {
+        "path": str(path), "repo": str(repo), "registered": registered,
+        "branch": branch.strip() if branch else None,
+        "dirty": dirty, "unpushed_commits": unpushed,
+        "ignored_entries": len(ignored_paths) if ignored is not None else None,
+        "ignored_samples": ignored_paths[:5],
+        "last_commit": time.strftime("%Y-%m-%d", time.localtime(int(commit.strip()))) if commit and commit.strip().isdigit() else None,
+        "verdict": verdict, "evidence": "preview", "path_state": state,
+        "errors": errors, "session_references": references,
+        "live_usage": "unverified", "cleanup_allowed": False,
+        "remote_evidence": "local_tracking_refs_only", **extra,
+    }
+    if verdict == "rebuildable":
+        item["requires_revalidation"] = True
+    return item
+
+
+def _worktree_branches(repo: Path, entries: list[dict], budget: _WorktreeGitBudget,
+                       *, registry_readable: bool) -> list[dict]:
+    raw = budget.run(["for-each-ref", "--format=%(refname)%00%(symref)", "refs/heads", "refs/remotes"], repo)
+    if raw is None:
+        return []
+    refs = dict(line.split("\0", 1) for line in raw.splitlines() if "\0" in line)
+    default = refs.get("refs/remotes/origin/HEAD")
+    base = default if default and default in refs else next(
+        (ref for ref in ("refs/remotes/origin/main", "refs/remotes/origin/master") if ref in refs), None)
+    merged_raw = budget.run(["for-each-ref", "--format=%(refname)", "--merged=" + base, "refs/heads"], repo) if base else None
+    merged = set(merged_raw.splitlines()) if merged_raw is not None else None
+    checked_out = {entry.get("branch"): entry["worktree"] for entry in entries if entry.get("branch")}
+    return [{
+        "repo": str(repo), "branch": ref.removeprefix("refs/heads/"),
+        "checked_out_path": checked_out.get(ref), "merge_base": base,
+        "checkout_state": "registered" if ref in checked_out else "unregistered" if registry_readable else "unknown",
+        "merge_state": "ancestor_confirmed" if merged is not None and ref in merged else "not_ancestor_merge_unknown" if merged is not None else "unknown",
+        "cleanup_allowed": False,
+    } for ref in refs if ref.startswith("refs/heads/")]
+
+
+def collect_worktrees(home: Path, records: Optional[list[dict]] = None) -> dict:
+    """Bounded, read-only evidence. No row authorizes branch/anchor deletion."""
     del home
     records = records or []
-    candidates, observed_workspaces, probe_truncated, metadata_children = (
-        _worktree_containers_from_records(records)
-    )
-    containers, discovery_unreadable, container_aliases = (
-        _existing_worktree_containers(candidates)
-    )
-    metadata_children = _remap_metadata_children(metadata_children, container_aliases)
-    aliases_by_container = _container_aliases_by_representative(container_aliases)
-    # A repo-root session can outlive its entire `.claude/worktrees` directory.
-    # Its exact `.git` anchor still lets `git worktree list` recover registered
-    # children, so do not require the container itself to remain readable.
-    registry_candidates = {
-        container_aliases.get(candidate, candidate)
-        for candidate in candidates
-        if _has_worktree_registry_nofollow(candidate.parent.parent)
-    }
-    container_paths = sorted(
-        set(containers) | set(metadata_children) | registry_candidates, key=str,
-    )
-    readable_containers = set(containers)
+    candidates, observed, probe_truncated, metadata = _worktree_containers_from_records(records)
+    containers, discovery_unreadable, aliases = _existing_worktree_containers(candidates)
+    metadata = _remap_metadata_children(metadata, aliases)
+    anchors = {aliases.get(candidate, candidate).parent.parent for candidate in candidates
+               if _has_worktree_registry_nofollow(candidate.parent.parent)}
+    # Conventional orphan directories remain visible even without a Git anchor.
+    anchors.update(container.parent.parent for container in set(containers) | set(metadata))
     budget = _WorktreeGitBudget.start()
-    registry_unreadable = 0
-    items: list[dict] = []
-    registered_missing: list[dict] = []
-    for container in container_paths:
-        container_spellings = aliases_by_container.get(container, {container})
-        repo = container.parent.parent
-        # The primary checkout itself can be stranded on a non-default branch by
-        # an agent session that never opened a PR — the same unique-work risk as
-        # a worktree, but invisible to worktree listing. Judge it with the same
-        # protected/rebuildable rules and mark it stray_checkout.
-        repo_branch_raw = budget.run(["symbolic-ref", "--short", "HEAD"], repo)
-        repo_branch = repo_branch_raw.strip() if repo_branch_raw else None
-        if repo_branch and repo_branch not in ("main", "master"):
-            status = budget.run(["status", "--porcelain"], repo)
-            unpushed_raw = budget.run(
-                ["rev-list", "--count", "HEAD", "--not", "--remotes"], repo)
-            commit_raw = budget.run(["log", "-1", "--format=%ct"], repo)
-            dirty = bool(status.strip()) if status is not None else None
-            unpushed = None
-            if unpushed_raw and unpushed_raw.strip().isdigit():
-                unpushed = int(unpushed_raw.strip())
-            verdict = _worktree_verdict(dirty, unpushed)
-            last_commit = None
-            if commit_raw and commit_raw.strip().isdigit():
-                last_commit = time.strftime("%Y-%m-%d",
-                                            time.localtime(int(commit_raw.strip())))
-            stray = {
-                "path": str(repo),
-                "repo": str(repo),
-                "branch": repo_branch,
-                "registered": True,
-                "dirty": dirty,
-                "unpushed_commits": unpushed,
-                "last_commit": last_commit,
-                "verdict": verdict,
-                "evidence": "preview",
-                "stray_checkout": True,
-            }
-            if verdict == "rebuildable":
-                stray["requires_revalidation"] = True
-            items.append(stray)
-        porcelain = budget.run(["worktree", "list", "--porcelain"], repo)
-        listed: Optional[set[str]] = None
-        registered_children: set[Path] = set()
-        unreadable_registered_children: set[Path] = set()
-        if porcelain is not None:
-            listed = set()
-            for line in porcelain.splitlines():
-                if line.startswith("worktree "):
-                    listed.add(_normalized_git_path(line.split(" ", 1)[1]))
-            for path in sorted(listed):
-                relative = _relative_below_aliases(path, container_spellings)
-                if relative is None:
-                    continue
-                is_direct_child = os.sep not in relative and relative not in (".", "..")
-                canonical_child = container / relative
-                if is_direct_child:
-                    # The registry itself establishes this worktree even when
-                    # its directory later vanished or became unreadable.
-                    registered_children.add(canonical_child)
-                try:
-                    registered_fd = _open_directory_nofollow(Path(path))
-                except FileNotFoundError:
-                    registered_missing.append(
-                        {"repo": str(repo), "path": str(canonical_child)})
-                    if is_direct_child:
-                        unreadable_registered_children.add(canonical_child)
-                except (OSError, ValueError):
-                    discovery_unreadable += 1
-                    if is_direct_child:
-                        unreadable_registered_children.add(canonical_child)
-                else:
-                    os.close(registered_fd)
-        else:
-            registry_unreadable += 1
+    result = {"items": [], "registered_missing": [], "branches": [], "errors": [],
+              "scope": "session-metadata", "global_complete": False,
+              "observed_workspaces": observed, "unreadable": discovery_unreadable,
+              "truncated": probe_truncated, "worker_leaked": False,
+              "reclaimed_bytes": None, "branch_count": 0}
 
-        if container in readable_containers:
-            children, readable = _direct_worktree_children(container)
-            if not readable:
-                discovery_unreadable += 1
-        else:
-            children, readable = [], False
-        # A registry entry is already a known worktree. If directory enumeration
-        # races or is unreadable, retain that known item instead of silently
-        # dropping it; the git signals below will make it unreadable as needed.
-        observed_children = set(children) | registered_children
-        metadata_only_children = metadata_children.get(container, set()) - observed_children
-        unreadable_children = metadata_only_children | unreadable_registered_children
-        children = sorted(
-            observed_children | metadata_children.get(container, set()), key=str,
-        )
-        for worktree in children:
-            status = budget.run(["status", "--porcelain"], worktree)
-            unpushed_raw = budget.run(
-                ["rev-list", "--count", "HEAD", "--not", "--remotes"], worktree)
-            branch_raw = budget.run(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
-            commit_raw = budget.run(["log", "-1", "--format=%ct"], worktree)
-            dirty = bool(status.strip()) if status is not None else None
-            unpushed = None
-            if unpushed_raw and unpushed_raw.strip().isdigit():
-                unpushed = int(unpushed_raw.strip())
-            verdict = _worktree_verdict(dirty, unpushed)
-            last_commit = None
-            if commit_raw and commit_raw.strip().isdigit():
-                last_commit = time.strftime("%Y-%m-%d",
-                                            time.localtime(int(commit_raw.strip())))
-            item = {
-                "path": str(worktree),
-                "repo": str(repo),
-                "branch": branch_raw.strip() if branch_raw else None,
-                # A failed/budgeted registry query establishes neither true nor
-                # false. ``null`` keeps that uncertainty intact for consumers.
-                "registered": (
-                    True if worktree in unreadable_registered_children
-                    else None if worktree in metadata_only_children or listed is None
-                    else worktree in registered_children
-                ),
-                "dirty": dirty,
-                "unpushed_commits": unpushed,
-                "last_commit": last_commit,
-                "verdict": verdict,
-                "evidence": "preview",
-            }
-            if worktree in unreadable_children:
-                # Never allow stale git output from a raced path to upgrade a
-                # metadata/registry-known but unreadable item.
-                item.update({
-                    "branch": None,
-                    "dirty": None,
-                    "unpushed_commits": None,
-                    "last_commit": None,
-                    "verdict": "unreadable",
-                })
-            if item["verdict"] == "rebuildable":
-                item["requires_revalidation"] = True
-            items.append(item)
-    items = _dedupe_worktree_items(items)
-    registered_missing = _dedupe_registered_missing(registered_missing)
-    items.sort(key=lambda w: (w["verdict"], w["last_commit"] or "", w["path"]))
-    item_unreadable = sum(
-        1 for item in items
-        if item["verdict"] == "unreadable" or item.get("registered") is None
-    )
-    return {
-        "items": items,
-        "registered_missing": registered_missing,
-        "scope": "session-metadata",
-        "global_complete": False,
-        "observed_workspaces": observed_workspaces,
-        "unreadable": item_unreadable + discovery_unreadable + registry_unreadable,
-        "truncated": probe_truncated or budget.exhausted,
-        "worker_leaked": False,
-    }
+    def checkpoint():
+        result["truncated"] = probe_truncated or budget.exhausted
+        result["errors"] = list(budget.errors)
+        result["branch_count"] = len(result["branches"])
+        if _WORKTREE_PROGRESS:
+            _WORKTREE_PROGRESS(result)
+
+    seen_repos = set()
+    for anchor in sorted(anchors, key=str):
+        raw = budget.run(["worktree", "list", "--porcelain", "-z"], anchor)
+        entries = _worktree_registry(raw) if raw is not None else []
+        repo = Path(entries[0]["worktree"]) if entries else anchor
+        identity = _worktree_item_identity({"path": str(repo)})
+        if identity in seen_repos:
+            continue
+        seen_repos.add(identity)
+        known = {Path(entry["worktree"]): entry for entry in entries[1:]}
+        if raw is None and _has_worktree_registry_nofollow(anchor):
+            # A failed registry must not erase the exact Git anchor named by metadata.
+            known[anchor] = {}
+        primary = entries[0] if entries else {}
+        primary_branch = primary.get("branch", "").removeprefix("refs/heads/")
+        if primary_branch and primary_branch not in ("main", "master"):
+            known[repo] = {**primary, "stray_checkout": True}
+        for container in set(containers) | set(metadata):
+            if container.parent.parent not in (anchor, repo):
+                continue
+            children, _ = _direct_worktree_children(container) if container in containers else ([], False)
+            for child in set(children) | metadata.get(container, set()):
+                known.setdefault(child, {})
+        # Publish discovered identities before the first potentially slow status query.
+        placeholders = [{"path": str(path), "repo": str(repo), "registered": True if entry else None,
+                         "verdict": "unreadable", "last_commit": None, "evidence": "preview",
+                         "errors": [{"operation": "inspect", "reason": "not_scanned"}],
+                         "cleanup_allowed": False, "live_usage": "unverified"}
+                        for path, entry in sorted(known.items(), key=lambda pair: str(pair[0]))]
+        first = len(result["items"])
+        result["items"].extend(placeholders)
+        checkpoint()
+        result["branches"].extend(_worktree_branches(repo, entries, budget, registry_readable=raw is not None))
+        checkpoint()
+        for offset, (path, entry) in enumerate(sorted(known.items(), key=lambda pair: str(pair[0]))):
+            registered = True if entry else False if raw is not None else None
+            item = _worktree_item(path, repo, registered, budget, records,
+                                  stray_checkout=bool(entry.get("stray_checkout")),
+                                  checked_out=bool(entry), locked="locked" in entry,
+                                  prunable="prunable" in entry)
+            result["items"][first + offset] = item
+            if registered and item["path_state"] == "path_missing":
+                result["registered_missing"].append({"repo": str(repo), "path": str(path)})
+            checkpoint()
+    result["items"] = _dedupe_worktree_items(result["items"])
+    result["registered_missing"] = _dedupe_registered_missing(result["registered_missing"])
+    result["unreadable"] += sum(1 for item in result["items"] if item["verdict"] == "unreadable" or item.get("registered") is None)
+    result["unreadable"] += len({(e["path"], e["operation"]) for e in budget.errors})
+    checkpoint()
+    return result
 
 
 def _metadata_worktree_fallback(records: list[dict]) -> dict:
@@ -2718,6 +2730,8 @@ def _metadata_worktree_fallback(records: list[dict]) -> dict:
         "last_commit": None,
         "verdict": "unreadable",
         "evidence": "preview",
+        "cleanup_allowed": False, "live_usage": "unverified",
+        "errors": [{"operation": "inspect", "reason": "not_scanned"}],
     } for container, child in sorted(known.values(), key=lambda pair: str(pair[1]))]
     return {
         "items": items,
@@ -3005,11 +3019,32 @@ def collect_worktrees_isolated(
                     signal.SIG_SETMASK, setup_signal_mask)
                 setup_sigterm_blocked = False
             os.close(read_fd)
+            def send_frame(value):
+                payload = (json.dumps(value, ensure_ascii=False) + "\n").encode("utf-8")
+                offset = 0
+                while offset < len(payload):
+                    offset += os.write(write_fd, payload[offset:])
+
+            sent_items = {}
+            sent_metadata = {}
+
+            def progress(value):
+                changed = []
+                for item in value["items"]:
+                    if sent_items.get(item["path"]) != item:
+                        changed.append(item)
+                        sent_items[item["path"]] = dict(item)
+                metadata = {}
+                for key, entry in value.items():
+                    if key != "items" and sent_metadata.get(key) != entry:
+                        metadata[key] = entry
+                        sent_metadata[key] = list(entry) if isinstance(entry, list) else entry
+                send_frame({"progress": {**metadata, "items": changed}})
+
+            global _WORKTREE_PROGRESS
+            _WORKTREE_PROGRESS = progress
             result = collect_worktrees(home, records)
-            payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
-            offset = 0
-            while offset < len(payload):
-                offset += os.write(write_fd, payload[offset:])
+            send_frame({"result": result})
         except BaseException:
             pass
         finally:
@@ -3038,7 +3073,8 @@ def collect_worktrees_isolated(
             read_fd = write_fd = -1
             return fallback
         write_fd = -1
-        chunks: list[bytes] = []
+        pending = b""
+        completed_result = None
         total_bytes = 0
         eof = False
         child_status: Optional[int] = None
@@ -3070,6 +3106,8 @@ def collect_worktrees_isolated(
             if remaining <= 0:
                 fallback["worker_leaked"] = not _terminate_worktree_worker(
                     pid, process_group=process_group)
+                fallback["stop_reason"] = "worker_timeout"
+                fallback["unreadable"] = max(1, sum(item.get("verdict") == "unreadable" for item in fallback["items"]))
                 return fallback
             ready, _, _ = select.select([read_fd], [], [], min(0.05, remaining))
             if ready:
@@ -3085,8 +3123,24 @@ def collect_worktrees_isolated(
                         fallback["worker_leaked"] = not (
                             _terminate_worktree_worker(
                                 pid, process_group=process_group))
+                        fallback["stop_reason"] = "output_limit"
                         return fallback
-                    chunks.append(chunk)
+                    pending += chunk
+                    while b"\n" in pending:
+                        frame, pending = pending.split(b"\n", 1)
+                        try:
+                            message = json.loads(frame.decode("utf-8"))
+                        except (ValueError, UnicodeDecodeError):
+                            continue
+                        if isinstance(message.get("progress"), dict):
+                            progress = message["progress"]
+                            items = {item["path"]: item for item in fallback["items"]}
+                            items.update({item["path"]: item for item in progress.get("items", [])})
+                            fallback.update(progress)
+                            fallback["items"] = list(items.values())
+                            fallback["truncated"] = True
+                        if isinstance(message.get("result"), dict):
+                            completed_result = message["result"]
                 else:
                     eof = True
             if child_status is None:
@@ -3109,10 +3163,9 @@ def collect_worktrees_isolated(
 
     if child_status is None or not os.WIFEXITED(child_status):
         return fallback
-    try:
-        result = json.loads(b"".join(chunks).decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return fallback
+    result = completed_result
+    if result is None:
+        fallback["stop_reason"] = "worker_failed"
     required = {
         "items": list,
         "registered_missing": list,
@@ -5567,8 +5620,8 @@ def render_report(scree: dict, limit: int) -> str:
         lines.append("")
         lines.append("worktree anchor judgment (git registry · push state, read-only)")
         strays = [i for i in items if i.get("stray_checkout")]
-        lines.append(f"  total {len(items)} — protected (sole-copy) {counts.get('protected', 0)}"
-                     f" · rebuildable {counts.get('rebuildable', 0)}"
+        lines.append(f"  total {len(items)} — protected (local material or lock) {counts.get('protected', 0)}"
+                     f" · Git copy evidence {counts.get('rebuildable', 0)}"
                      f" · unreadable {counts.get('unreadable', 0)}"
                      f" · unregistered {sum(1 for i in items if i['registered'] is False)}"
                      f" · registration unknown {sum(1 for i in items if i['registered'] is None)}"
@@ -5579,7 +5632,13 @@ def render_report(scree: dict, limit: int) -> str:
         if worktrees["registered_missing"]:
             lines.append(f"  registry orphans (registered but vanished on disk) {len(worktrees['registered_missing'])}")
         for item in [i for i in items if i["verdict"] == "rebuildable"][:6]:
-            lines.append(f"    rebuildable: {item['path']} (last commit {item['last_commit'] or '?'})")
+            lines.append(f"    Git copy evidence: {item['path']} (last commit {item['last_commit'] or '?'})")
+        lines.append("  live usage unverified; no cleanup authorized; disk reclaim not measured")
+        for item in items:
+            for error in item.get("errors", []):
+                lines.append(f"    {item['path']}: {error['operation']} · {error['reason']}")
+        if worktrees.get("truncated"):
+            lines.append("  partial inventory; completed evidence retained")
     return "\n".join(lines)
 
 

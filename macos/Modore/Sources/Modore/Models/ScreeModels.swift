@@ -53,6 +53,9 @@ struct ScreeWorktreeDiscovery: Equatable {
     let observedWorkspaces: Int
     let unreadable: Int
     let truncated: Bool
+    let branches: [ScreeBranchEvidence]
+    let errors: [ScreeGitFailure]
+    let stopReason: String
 
     init(json: [String: Any]) {
         scope = JsonRead.string(json, "scope", "unspecified")
@@ -60,6 +63,9 @@ struct ScreeWorktreeDiscovery: Equatable {
         observedWorkspaces = JsonRead.int(json, "observed_workspaces")
         unreadable = JsonRead.int(json, "unreadable")
         truncated = JsonRead.bool(json, "truncated") ?? false
+        branches = ((json["branches"] as? [[String: Any]]) ?? []).map(ScreeBranchEvidence.init)
+        errors = ((json["errors"] as? [[String: Any]]) ?? []).map(ScreeGitFailure.init)
+        stopReason = JsonRead.string(json, "stop_reason")
     }
 
     var emptyStateText: String {
@@ -81,7 +87,75 @@ struct ScreeWorktreeDiscovery: Equatable {
         if truncated {
             text += L10n.text(" 시간 또는 수량 한도에서 확인을 멈췄습니다.")
         }
+        if stopReason == "worker_timeout" {
+            text += L10n.text(" 수집 시간 초과 전 확인한 결과를 유지했습니다.")
+        }
         return text
+    }
+}
+
+struct ScreeGitFailure: Equatable {
+    let path: String
+    let operation: String
+    let reason: String
+
+    init(json: [String: Any]) {
+        path = JsonRead.string(json, "path")
+        operation = JsonRead.string(json, "operation")
+        reason = JsonRead.string(json, "reason")
+    }
+
+    var label: String {
+        let detail: String
+        switch reason {
+        case "command_timeout": detail = L10n.text("Git 명령 시간 초과")
+        case "budget_exhausted": detail = L10n.text("수집 시간 한도 도달")
+        case "permission_denied": detail = L10n.text("경로 접근 권한 없음")
+        case "volume_unavailable": detail = L10n.text("외장 볼륨 연결 확인 필요")
+        case "path_missing": detail = L10n.text("경로 확인 불가 · 이동 여부 확인 필요")
+        case "path_changed": detail = L10n.text("검사 중 경로 변경됨")
+        case "not_git_checkout", "invalid_git_checkout": detail = L10n.text("Git 체크아웃 연결 확인 실패")
+        case "ownership_rejected": detail = L10n.text("Git 소유권 확인 거부")
+        case "revision_unavailable": detail = L10n.text("커밋 참조 확인 실패")
+        case "not_scanned": detail = L10n.text("아직 검사하지 못함")
+        default: detail = L10n.text("Git 확인 실패") + " (\(reason))"
+        }
+        return operation.isEmpty ? detail : "\(operation): \(detail)"
+    }
+}
+
+struct ScreeBranchEvidence: Equatable, Identifiable {
+    var id: String { "\(repo)\n\(branch)" }
+    let repo: String
+    let branch: String
+    let checkedOutPath: String
+    let checkoutState: String
+    let mergeBase: String
+    let mergeState: String
+
+    init(json: [String: Any]) {
+        repo = JsonRead.string(json, "repo")
+        branch = JsonRead.string(json, "branch")
+        checkedOutPath = JsonRead.string(json, "checked_out_path")
+        checkoutState = JsonRead.string(json, "checkout_state", checkedOutPath.isEmpty ? "unknown" : "registered")
+        mergeBase = JsonRead.string(json, "merge_base")
+        mergeState = JsonRead.string(json, "merge_state", "unknown")
+    }
+
+    var reasonText: String {
+        var parts: [String] = []
+        switch checkoutState {
+        case "registered": parts.append(L10n.text("체크아웃 등록됨 · 보존"))
+        case "unregistered": parts.append(L10n.text("체크아웃 등록 없음"))
+        default: parts.append(L10n.text("체크아웃 여부 미검증"))
+        }
+        switch mergeState {
+        case "ancestor_confirmed": parts.append(L10n.text("기준 브랜치에 커밋 포함"))
+        case "not_ancestor_merge_unknown": parts.append(L10n.text("ancestor 아님 · squash 병합 여부 미검증"))
+        default: parts.append(L10n.text("병합 여부 미검증"))
+        }
+        if !mergeBase.isEmpty { parts.append(mergeBase) }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -165,8 +239,8 @@ struct ScreeWorktreeItem: Identifiable {
     /// `nil` means the registry query failed or exhausted its shared budget.
     /// Unknown must not collapse to the same value as a confirmed anchor break.
     let registered: Bool?
-    let dirty: Bool
-    let unpushedCommits: Int
+    let dirty: Bool?
+    let unpushedCommits: Int?
     let lastCommit: String
     let verdict: String
     let evidence: String
@@ -178,18 +252,28 @@ struct ScreeWorktreeItem: Identifiable {
     /// section header that says "agent worktrees", even though it's the
     /// user's actual repo directory, not a spare copy of it.
     let strayCheckout: Bool
+    let ignoredEntries: Int?
+    let sessionReferences: Int
+    let checkedOut: Bool
+    let locked: Bool
+    let failures: [ScreeGitFailure]
 
     init(json: [String: Any]) {
         path = JsonRead.string(json, "path")
         repo = JsonRead.string(json, "repo")
         branch = JsonRead.string(json, "branch")
         registered = JsonRead.bool(json, "registered")
-        dirty = JsonRead.bool(json, "dirty") ?? false
-        unpushedCommits = JsonRead.int(json, "unpushed_commits")
+        dirty = JsonRead.bool(json, "dirty")
+        unpushedCommits = json["unpushed_commits"] as? Int
         lastCommit = JsonRead.string(json, "last_commit")
         verdict = JsonRead.string(json, "verdict", "unknown")
         evidence = JsonRead.string(json, "evidence")
         strayCheckout = JsonRead.bool(json, "stray_checkout") ?? false
+        ignoredEntries = json["ignored_entries"] as? Int
+        sessionReferences = JsonRead.int(json, "session_references")
+        checkedOut = JsonRead.bool(json, "checked_out") ?? false
+        locked = JsonRead.bool(json, "locked") ?? false
+        failures = ((json["errors"] as? [[String: Any]]) ?? []).map(ScreeGitFailure.init)
     }
 
     var pathLastComponent: String {
@@ -202,34 +286,35 @@ struct ScreeWorktreeItem: Identifiable {
         strayCheckout ? L10n.format("메인 체크아웃 · %@", String(describing: pathLastComponent)) : pathLastComponent
     }
 
-    /// scree.py sends dirty/unpushed_commits as null when the git call for
-    /// that specific signal failed -- JsonRead.bool/int already collapse
-    /// that null to false/0 on decode, so by the time reasonText would
-    /// normally build its "dirty"/"unpushed N"/"clean" phrase from those
-    /// two fields, the failure is indistinguishable from a real, confirmed
-    /// clean/pushed state. verdict is already the authoritative unreadable
-    /// signal (see _worktree_verdict in scripts/scree.py); defer to it here
-    /// instead of re-deriving a second, less honest description from
-    /// already-collapsed booleans.
     var reasonText: String {
-        if verdict == "unreadable" {
-            return registered == false
-                ? L10n.text("git 확인 실패 · 등록 끊김 · 재검사 필요")
-                : L10n.text("git 확인 실패 · 재검사 필요")
-        }
         var parts: [String] = []
-        if dirty { parts.append("dirty") }
-        if unpushedCommits > 0 { parts.append("unpushed \(unpushedCommits)") }
-        if parts.isEmpty { parts.append("clean") }
+        if dirty == true { parts.append(L10n.text("미커밋·미추적 변경 있음")) }
+        if let count = unpushedCommits, count > 0 {
+            parts.append(L10n.format("로컬 원격 참조에 없는 커밋 %@개", String(count)))
+        }
+        if let ignoredEntries, ignoredEntries > 0 {
+            parts.append(L10n.format("ignored 파일·폴더 %@개 · 고유 자료 여부 확인 필요", String(ignoredEntries)))
+        }
+        if dirty == false && unpushedCommits == 0 && verdict != "unreadable" {
+            parts.append(L10n.text("Git 변경 없음 · 로컬 원격 참조에 포함"))
+        }
+        parts.append(contentsOf: failures.map(\.label))
+        if verdict == "unreadable" && failures.isEmpty { parts.append(L10n.text("git 확인 실패 · 재검사 필요")) }
         if registered == nil { parts.append(L10n.text("등록 여부 확인 실패")) }
         if registered == false { parts.append(L10n.text("등록 끊김")) }
+        if checkedOut { parts.append(L10n.text("체크아웃 등록됨")) }
+        if locked { parts.append(L10n.text("Git 잠금 있음")) }
+        if sessionReferences > 0 {
+            parts.append(L10n.format("세션 기록 참조 %@개", String(sessionReferences)))
+        }
+        parts.append(L10n.text("현재 사용 여부 미검증 · 삭제 판단 보류"))
         return parts.joined(separator: " · ")
     }
 
     var verdictLabel: String {
         switch verdict {
         case "protected": return L10n.text("보호 대상")
-        case "rebuildable": return L10n.text("재구축 가능")
+        case "rebuildable": return L10n.text("Git 복제 근거 있음")
         default: return L10n.text("확인 불가")
         }
     }
