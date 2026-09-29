@@ -5,6 +5,7 @@ struct StatusPage: View {
     let onOpenStorage: (StorageWorkspaceSection) -> Void
     let onOpenSecurity: () -> Void
     let onOpenActivity: () -> Void
+    let onOpenRecheck: () -> Void
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -18,6 +19,7 @@ struct StatusPage: View {
             if let storage = model.storage {
                 Form {
                     StatusLiveStateSection()
+                    MacRecheckEntrySection(onOpen: onOpenRecheck)
                     DeepScanFailureSection()
 
                     Section {
@@ -117,6 +119,7 @@ struct StatusPage: View {
             } else if model.summary != nil {
                 Form {
                     StatusLiveStateSection()
+                    MacRecheckEntrySection(onOpen: onOpenRecheck)
                     DeepScanFailureSection()
 
                     Section {
@@ -167,6 +170,7 @@ struct StatusPage: View {
             } else {
                 Form {
                     StatusLiveStateSection()
+                    MacRecheckEntrySection(onOpen: onOpenRecheck)
                     DeepScanFailureSection()
                     Section(L10n.text("최근 정밀 검사")) {
                         StatusNoticeRow(
@@ -187,6 +191,27 @@ struct StatusPage: View {
             content: model.deepScanSnapshot,
             storageChange: model.storageChange
         )
+    }
+}
+
+private struct MacRecheckEntrySection: View {
+    let onOpen: () -> Void
+
+    var body: some View {
+        Section(L10n.text("백업과 하드웨어 재점검")) {
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n.text("갑자기 느려지거나 기기에 이상이 생겼나요?"))
+                        .font(.body.weight(.medium))
+                    Text(L10n.text("백업 설정, Apple 진단, 결과 기록과 공간 확보를 순서대로 안내합니다."))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                Button(L10n.text("재점검 안내 열기"), action: onOpen)
+                    .buttonStyle(.bordered)
+            }
+        }
     }
 }
 
