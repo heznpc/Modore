@@ -94,3 +94,35 @@ remain visible in the registry and receipts. Other browsers are not adopted.
 `resources status` exposes these runs in `browsers`; native resource cards remain
 limited to simulators and volumes. The hook and ops skill guide new test turns
 through the managed launch command; bypassing it is still outside this coverage.
+
+## CLI guard evidence
+
+`modore resources hooks-status` reads only the bounded connection metadata;
+it does not enumerate devices or processes. `hookStatus[].guard` reports CLI
+handler registration and the most recent adapter receipt separately from
+lifecycle receipts. Receipts contain time, verdict and adapter hash, never
+shell text, session identifiers or credentials. A changed adapter or hook
+configuration invalidates recency. Receipt writes cannot cancel a denial.
+An adapter receipt (including a manually supplied event) does not establish
+that the host enforced the decision: `hostEnforcementVerified` stays false.
+The registration check covers user JSON files, not merged inline, project or
+managed configuration or host trust. Missing receipts do not identify which
+of trust, refresh, policy, tool coverage or delivery failed.
+
+Re-running `resources install-hooks --provider codex` migrates Modore's exact
+legacy guard to `tools hook --provider codex`, without changing other handlers
+or granting trust. Changed definitions require review. Official documentation
+specifies `/hooks` for the **CLI**; desktop execution must be checked in the
+actual host. [Codex hook contract](https://learn.chatgpt.com/docs/hooks) and
+[supported runtime surfaces](https://learn.chatgpt.com/docs/plugins) describe
+Codex and ChatGPT Work support, not ordinary Chat execution.
+
+Direct Vercel npx/npm-exec spellings, package-option order and explicit cache
+options are recognized. Inventory honors `npm_config_cache` in the Modore
+process environment; per-command config files and inline cache overrides are
+not evaluated as shell code. Indirect scripts, shell aliases/functions,
+interactive `write_stdin`, other tools and uninstalled versions remain outside
+coverage. Concurrent `tools run` calls with no installed version all fail
+without installing; this does not serialize external simultaneous first
+installs. Reuse uses an exact installed version, never silently substitutes a
+registry tag, dependency range or project dependency.

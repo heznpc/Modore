@@ -58,7 +58,8 @@ The installer merges two synchronous lifecycle hooks and a Vercel CLI reuse
 `PreToolUse` guard into the selected user's
 configuration and backs up existing JSON under Modore's work-resource directory.
 It preserves other hooks and does not grant trust. Codex requires review of the
-lifecycle hooks and CLI guard in `/hooks`; existing sessions may need a refresh.
+lifecycle hooks and CLI guard in CLI `/hooks`; desktop invocation needs separate
+host verification and existing sessions may need a refresh.
 
 `UserPromptSubmit` records metadata and supplies the turn token. `Stop` explicitly
 ends that turn's managed test use. Codex matches `turn_id`; Claude uses a generated

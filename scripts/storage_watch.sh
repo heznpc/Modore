@@ -627,7 +627,7 @@ LAST_NOTIFY="$(normalize_past_epoch "$LAST_NOTIFY")"
 case "$LAST_NOTIFY_LEVEL" in 0|1|2|3|4) ;; *) LAST_NOTIFY_LEVEL=0 ;; esac
 LAST_SNAPSHOT="$(normalize_past_epoch "$LAST_SNAPSHOT")"
 case "$LAST_SNAPSHOT_REASON" in
-    rapid-drop|entered-low-free|pressure-drop|incomplete-pressure-evidence|missing-pressure-evidence|still-low-free|cumulative-drop) ;;
+    rapid-drop|entered-low-free|pressure-drop|incomplete-pressure-evidence|missing-pressure-evidence|still-low-free|cumulative-drop|incomplete-cumulative-evidence) ;;
     *) LAST_SNAPSHOT_REASON="" ;;
 esac
 case "$ATTRIBUTION_BASELINE_KB" in ''|*[!0-9]*) ATTRIBUTION_BASELINE_KB=0 ;; esac
@@ -1398,6 +1398,14 @@ if [[ -z "$SNAPSHOT_REASON" && "$STATUS" == "normal" \
     && "$CUMULATIVE_DROP_KB" -ge "$CUMULATIVE_DROP_THRESHOLD_KB" \
     && $((NOW_EPOCH - LAST_SNAPSHOT)) -ge "$CUMULATIVE_CAPTURE_COOLDOWN_SECONDS" ]]; then
     SNAPSHOT_REASON="cumulative-drop"
+fi
+# A partial cumulative capture must get another bounded attempt even after its
+# first path rows reset the baseline. Keep the same two-hour I/O cooldown.
+if [[ -z "$SNAPSHOT_REASON" && "$STATUS" == "normal" \
+    && "$SNAPSHOT_COMPLETENESS" == "partial" \
+    && ( "$LAST_SNAPSHOT_REASON" == "cumulative-drop" || "$LAST_SNAPSHOT_REASON" == "incomplete-cumulative-evidence" ) \
+    && $((NOW_EPOCH - LAST_SNAPSHOT)) -ge "$CUMULATIVE_CAPTURE_COOLDOWN_SECONDS" ]]; then
+    SNAPSHOT_REASON="incomplete-cumulative-evidence"
 fi
 
 # Notifications must remain under Modore's identity. `osascript display

@@ -12,6 +12,16 @@ struct WorkResourceHookStatus: Decodable, Identifiable {
     let configured, disabled, recentlyObserved: Bool
     let lastObservedAt: Double?
     let lastEvent, error: String?
+    let guardStatus: ToolGuardStatus?
+    enum CodingKeys: String, CodingKey {
+        case provider, configured, disabled, recentlyObserved, lastObservedAt, lastEvent, error
+        case guardStatus = "guard"
+    }
+}
+struct ToolGuardStatus: Decodable {
+    let configured, recentlyObserved: Bool
+    let lastObservedAt: Double?
+    let outcome: String?
 }
 struct WorkResource: Decodable, Identifiable {
     let id, kind, name, runtime, deviceType, state, path, fingerprint: String

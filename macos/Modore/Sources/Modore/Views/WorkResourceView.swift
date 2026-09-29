@@ -140,13 +140,21 @@ struct WorkResourceView: View {
                                     Image(systemName: hook.recentlyObserved ? "checkmark.circle" : "exclamationmark.circle")
                                         .foregroundStyle(hook.recentlyObserved ? Color.green : Color.orange)
                                 }
+                                if let guardStatus = hook.guardStatus {
+                                    Text(guardConnectionLabel(guardStatus))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    if let at = guardStatus.lastObservedAt {
+                                        Text(L10n.format("마지막 검사 수신: %@", Date(timeIntervalSince1970: at).formatted(date: .abbreviated, time: .shortened)))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
                                 if let at = hook.lastObservedAt {
                                     Text(L10n.format("마지막 실행 수신: %@", Date(timeIntervalSince1970: at).formatted(date: .abbreviated, time: .shortened)))
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                         }
-                        Text(L10n.text("최근 15분의 연결 실행 기록입니다. 기록이 없으면 자동 관리를 확인할 수 없습니다. Codex는 /hooks에서 등록된 Modore 연결을 검토·신뢰해야 실행됩니다."))
+                        Text(L10n.text("최근 15분의 연결·검사 수신 기록입니다. Codex CLI는 /hooks에서 변경된 정의를 검토·신뢰합니다. 데스크톱은 해당 호스트에서 실제 호출과 차단을 확인해야 합니다."))
                             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }.padding(14).background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
                 }
@@ -187,6 +195,12 @@ struct WorkResourceView: View {
                 }
             }.padding(26)
         }
+    }
+    private func guardConnectionLabel(_ status: ToolGuardStatus) -> String {
+        if !status.configured { return L10n.text("CLI 재사용 훅 미설정") }
+        return status.recentlyObserved
+            ? L10n.text("CLI 재사용 검사 수신 · 호스트 차단 여부는 별도 확인")
+            : L10n.text("CLI 재사용 설정 있음 · 최근 검사 미확인")
     }
     private func hookConnectionLabel(_ hook: WorkResourceHookStatus) -> String {
         if let error = hook.error { return L10n.message(error) }
