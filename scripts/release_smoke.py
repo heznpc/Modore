@@ -374,6 +374,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/session_resume.py",
     "scripts/backup_reclaim.py",
     "scripts/path_reconnect.py",
+    "scripts/tool_reuse.py",
     "scripts/friction.py",
     "scripts/moraine.py",
     "scripts/hfscan.py",
