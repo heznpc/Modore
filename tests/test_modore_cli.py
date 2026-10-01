@@ -175,14 +175,14 @@ def test_agent_numeric_budgets_are_bounded(project_root):
         project_root,
         "search",
         "--budget-seconds",
-        "56",
+        "601",
         stdin="query",
     )
 
     assert sessions.returncode == 64
     assert "between 1 and 500" in sessions.stderr
     assert search.returncode == 64
-    assert "between 1 and 55" in search.stderr
+    assert "between 1 and 600" in search.stderr
 
 
 def test_bounded_exec_stops_a_spawned_process_group(project_root):
@@ -346,7 +346,7 @@ def test_agent_routes_have_outer_wall_clock_limits(project_root):
     assert '"$BOUNDED_EXEC" 30 --' in source
     assert '"$BOUNDED_EXEC" 60 --' in source
     assert "SEARCH_LIMIT=20" in source
-    assert "SEARCH_BUDGET_SECONDS=30" in source
+    assert "SEARCH_BUDGET_SECONDS=300" in source
     assert "--first" in source
 
 
@@ -362,3 +362,23 @@ def test_unknown_generic_status_route_is_rejected(project_root):
 
     assert result.returncode == 64
     assert "unknown command" in result.stderr
+
+
+def test_search_help_exposes_scoping_paging_and_inspection(project_root):
+    result = run_cli(project_root, "search", "--help")
+    assert result.returncode == 0
+    assert "--provider" in result.stdout
+    assert "--exclude-workspace" in result.stdout
+    assert "--offset" in result.stdout
+    assert "modore inspect" in result.stdout
+
+
+@pytest.mark.parametrize("args", [
+    ("search", "--offset", "-1"),
+    ("search", "--offset", "100001"),
+    ("inspect", "/tmp/source.jsonl", "--start", "-1"),
+    ("inspect", "/tmp/source.jsonl", "--turns", "501"),
+    ("inspect", "/tmp/source.jsonl", "--raw"),
+])
+def test_search_navigation_rejects_invalid_bounds(project_root, args):
+    assert run_cli(project_root, *args, stdin="needle").returncode == 64

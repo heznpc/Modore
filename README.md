@@ -51,6 +51,9 @@ recovery only; it does not route Git, PR, or multi-repository work.
 modore sessions current
 modore sessions --limit 50
 printf '%s' 'exact phrase' | modore search --first
+modore search --provider claude --exclude-workspace apply- --limit 20 # query on stdin
+modore search --provider claude --exclude-workspace apply- --offset 20 # same query/scope as page 1
+modore inspect /absolute/source/from/search.jsonl --start 40 --turns 12
 modore storage status
 modore cleanup list
 modore storage recovery
@@ -61,8 +64,18 @@ validates the matching JSONL metadata. It does not search conversation bodies.
 Codex rollout fragments with the same provider session ID are listed as one
 logical session while their physical sources remain available for backup and
 inspection.
-`search --first` stops at the newest matching turn; ordinary `search` keeps its
-full coverage contract for absence claims.
+`search --first` stops at the newest matching turn. Ordinary CLI search returns
+pages: use `nextOffset` with the same query and filters to reach older results.
+Provider/workspace filters apply before reading bodies, so recent application
+discussions need not crowd out original work. Pages rerun the bounded search;
+they are not timeout checkpoints. `hasMore: null` means unknown coverage, and
+absence still requires `definitive: true`. `inspect --start` reads the exact
+visible-turn position returned by search. The native app retains its existing
+search preview; these scope and paging controls are available in CLI/MCP.
+CLI/MCP search defaults to a 300-second budget (configurable up to 600 seconds),
+and its outer timeout follows that setting. JSONL search pages stream past the
+old 32 MiB file prefix while retaining a 16 MiB record bound and reporting any
+skips. Store discovery gaps are reported separately in `discoveryCoverage`.
 
 **Currently implemented — turn test resources:** opt-in Claude/Codex lifecycle
 hooks connect a completed response to simulator runs started by
