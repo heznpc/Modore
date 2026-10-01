@@ -525,7 +525,7 @@ def test_agent_session_search_delegates_query_over_stdin_and_forces_masking(monk
 
     argv = captured["argv"]
     assert argv[4:] == ["search", "--query-file", "/dev/fd/0", "--limit", "7",
-                        "--budget-seconds", "12"]
+                        "--budget-seconds", "12", "--offset", "0"]
     assert "storage pressure" not in argv
     assert "--raw" not in argv
     assert captured["kwargs"]["input"] == "storage pressure"
@@ -600,7 +600,7 @@ def test_agent_session_tools_delegate_end_to_end_without_unmasking(tmp_path, mon
     {"query": "x", "user_initiated": True, "limit": 0},
     {"query": "x", "user_initiated": True, "limit": 201},
     {"query": "x", "user_initiated": True, "budget_seconds": 0},
-    {"query": "x", "user_initiated": True, "budget_seconds": 61},
+    {"query": "x", "user_initiated": True, "budget_seconds": 601},
     {"query": "\x00", "user_initiated": True},
     {"query": "가" * 1366, "user_initiated": True},
 ])
@@ -927,3 +927,20 @@ def test_resource_inventory_is_fixed_read_only_status(monkeypatch):
     monkeypatch.setattr(mcp_server, "_run_json", lambda script, arguments, timeout: calls.append((script.name, arguments)) or {})
     _payload(_call("work_resource_status", {}))
     assert calls == [("work_resources.py", ["status"])]
+
+
+def test_session_search_forwards_scope_and_page(monkeypatch):
+    captured = {}
+    def run(script, argv, timeout, **kwargs):
+        captured["argv"] = argv
+        return dict(_SESSION_SEARCH_FIXTURE)
+    monkeypatch.setattr(mcp_server, "_run_json", run)
+    result = _call("agent_session_search", {
+        "query": "needle", "user_initiated": True, "offset": 60,
+        "provider": "claude", "workspace": "SkillBridge", "exclude_workspace": "apply-"})
+    assert not result.get("isError")
+    args = captured["argv"]
+    assert args[args.index("--offset") + 1] == "60"
+    assert args[args.index("--provider") + 1] == "claude"
+    assert args[args.index("--workspace") + 1] == "SkillBridge"
+    assert args[args.index("--exclude-workspace") + 1] == "apply-"

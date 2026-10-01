@@ -108,7 +108,7 @@ FILEACCESS = SCRIPT_DIR / "fileaccess.py"
 
 SCREE_TIMEOUT = 300
 SCREE_SESSION_LIST_TIMEOUT = 120
-SCREE_SEARCH_MAX_BUDGET_SECONDS = 60
+SCREE_SEARCH_MAX_BUDGET_SECONDS = 600
 SCREE_SEARCH_PROCESS_GRACE_SECONDS = 10
 MAX_SESSION_SEARCH_QUERY_BYTES = 4096
 FRICTION_TIMEOUT = 300
@@ -302,13 +302,21 @@ def tool_agent_session_search(args: dict) -> dict:
     query = _required_text_arg(
         args, "query", maximum_bytes=MAX_SESSION_SEARCH_QUERY_BYTES)
     limit = _int_arg(args, "limit", default=20, minimum=1, maximum=200)
+    offset = _int_arg(args, "offset", default=0, minimum=0, maximum=100000)
+    scope_args = ["--offset", str(offset)]
+    for field in ("provider", "workspace", "exclude_workspace"):
+        if field in args:
+            value = _required_text_arg(args, field, maximum_bytes=4096)
+            if field == "provider" and value not in ("claude", "claude-desktop", "codex", "gemini"):
+                raise ToolFailure("unsupported search provider")
+            scope_args.extend(["--" + field.replace("_", "-"), value])
     budget_seconds = _int_arg(
-        args, "budget_seconds", default=30, minimum=1,
+        args, "budget_seconds", default=300, minimum=1,
         maximum=SCREE_SEARCH_MAX_BUDGET_SECONDS)
     report = _run_json(
         SCREE,
         ["search", "--query-file", "/dev/fd/0", "--limit", str(limit),
-         "--budget-seconds", str(budget_seconds)],
+         "--budget-seconds", str(budget_seconds), *scope_args],
         budget_seconds + SCREE_SEARCH_PROCESS_GRACE_SECONDS,
         stdin_text=query)
     if not isinstance(report, dict) or not isinstance(report.get("matches"), list):
@@ -906,9 +914,16 @@ TOOLS: list[dict] = [
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200,
                           "default": 20,
                           "description": "Maximum masked matches returned."},
+                "offset": {"type": "integer", "minimum": 0, "maximum": 100000,
+                           "default": 0, "description": "Use nextOffset with the same query/scope; pages rerun search."},
+                "provider": {"type": "string", "enum": ["claude", "claude-desktop", "codex", "gemini"]},
+                "workspace": {"type": "string", "minLength": 1,
+                              "description": "Workspace path substring, case-insensitive."},
+                "exclude_workspace": {"type": "string", "minLength": 1,
+                                      "description": "Exclude workspace path substring, e.g. apply-."},
                 "budget_seconds": {"type": "integer", "minimum": 1,
                                    "maximum": SCREE_SEARCH_MAX_BUDGET_SECONDS,
-                                   "default": 30,
+                                   "default": 300,
                                    "description": ("Scree search time budget. The MCP "
                                                    "subprocess has a fixed 10-second grace.")},
             },

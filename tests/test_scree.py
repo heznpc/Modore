@@ -7488,3 +7488,107 @@ def test_search_batch_retains_prefix_on_worker_error(tmp_path, monkeypatch):
         ["good", "broken"], "needle", raw=False, home=tmp_path,
         deadline=time.monotonic() + 3, first=False, match_budget=0)
     assert result == [([{"snippet": "needle"}], "ok", 0), ([], "unreadable", 0)]
+
+
+def test_search_pages_reach_past_three_hits_and_sixty_results(tmp_path):
+    _stored_session(tmp_path, "dense", *[
+        ("user" if i % 2 == 0 else "assistant", f"needle item {i}")
+        for i in range(75)])
+    first = scree.build_search_page("needle", tmp_path, limit=60)
+    second = scree.build_search_page("needle", tmp_path, limit=60,
+                                     offset=first["nextOffset"])
+    assert len(first["matches"]) == 60
+    assert first["nextOffset"] == 60
+    assert first["hasMore"] is True
+    assert [hit["index"] for hit in second["matches"]] == list(range(60, 75))
+    assert second["hasMore"] is False
+    assert second["coverage"] == "complete"
+    assert second["nextOffset"] is None
+
+
+def test_search_scope_filters_before_recent_results_fill_limit(tmp_path, monkeypatch):
+    wanted = _stored_session(tmp_path, "original", ("user", "needle original"))
+    unwanted = _stored_session(tmp_path, "application", ("user", "needle application"))
+    catalog = scree.build_sessions(tmp_path)
+    for row in catalog["sessions"]:
+        row["workspace"] = "/work/SkillBridge" if row["source"] == str(wanted) else "/work/apply-zest"
+    original = next(row for row in catalog["sessions"] if row["source"] == str(wanted))
+    application = next(row for row in catalog["sessions"] if row["source"] == str(unwanted))
+    catalog["sessions"] = [{**application, "tool": "Codex"} for _ in range(80)] + [application, original]
+    monkeypatch.setattr(scree, "_build_sessions_isolated", lambda *_: catalog)
+    result = scree.build_search_page("needle", tmp_path, provider="claude",
+                                      exclude_workspace=("apply-",), limit=1)
+    assert [hit["source"] for hit in result["matches"]] == [str(wanted)]
+    assert result["scannedSessions"] == result["totalSessions"] == 1
+    assert result["discoveredSessions"] == 82
+    assert result["coverage"] == "complete"
+    result = scree.build_search_page("needle", tmp_path, workspace="SKILLBRIDGE", limit=1)
+    assert result["matches"][0]["source"] == str(wanted)
+
+
+def test_search_page_timeout_is_unknown_not_end_of_results(tmp_path):
+    _stored_session(tmp_path, "one", ("user", "needle"))
+    result = scree.build_search_page("needle", tmp_path, budget_seconds=0)
+    assert result["hasMore"] is None
+    assert result["definitive"] is False
+
+
+def test_inspect_opens_search_hit_in_middle_of_long_session(tmp_path):
+    source = _stored_session(tmp_path, "long", *[
+        ("user" if i % 2 == 0 else "assistant", f"turn {i}") for i in range(100)])
+    result = scree.build_inspect(source, tmp_path, start=40, turn_limit=3)
+    assert [turn["sourceIndex"] for turn in result["turns"]] == [40, 41, 42]
+    assert result["turns"][0]["text"] == "turn 40"
+    assert result["messageCount"] == 100
+    assert result["omittedTurns"] == 97
+
+
+@pytest.mark.parametrize("stored", [
+    '파이썬으로 검색하는것보다',
+    r'파\uc774썬으로 검색하는것보다',
+    r'\ud30c\uc774\uc36c으로 검색하는것보다',
+])
+def test_korean_byte_gate_preserves_literal_and_mixed_escapes(tmp_path, monkeypatch, stored):
+    monkeypatch.setattr(scree, "SEARCH_IO_CHUNK_BYTES", 7)
+    source = tmp_path / ".claude" / "projects" / "-tmp-work" / "korean.jsonl"
+    _write(source, '{"cwd":"/tmp/work"}\n{"message":{"role":"user","content":"' + stored + '"}}\n')
+    result = scree.build_search_page("파이썬으로 검색하는것보다", tmp_path)
+    assert len(result["matches"]) == 1
+    assert result["coverage"] == "complete"
+
+
+def test_search_page_first_returns_one_turn(tmp_path):
+    _stored_session(tmp_path, "many", ("user", "needle first"), ("assistant", "needle second"))
+    result = scree.build_search_page("needle", tmp_path, first=True)
+    assert len(result["matches"]) == 1
+    assert result["definitive"] is False
+
+
+def test_paged_search_and_inspect_keep_large_record_positions(tmp_path, monkeypatch):
+    monkeypatch.setattr(scree, "SESSION_CONTENT_MAX_BYTES", 1024)
+    monkeypatch.setattr(scree, "SEARCH_PROBE_MAX_BYTES", 1024)
+    source = _stored_session(tmp_path, "large",
+                             ("user", "padding " * 10000),
+                             ("assistant", "needle after large record"))
+    result = scree.build_search_page("needle", tmp_path)
+    assert result["coverage"] == "complete"
+    assert result["matches"][0]["index"] == 1
+    inspected = scree.build_inspect(source, tmp_path, full_content=True,
+                                     start=1, turn_limit=1)
+    assert inspected["status"] == "ok"
+    assert inspected["turns"][0]["sourceIndex"] == 1
+    assert inspected["turns"][0]["text"] == "needle after large record"
+
+
+def test_scoped_search_does_not_inherit_other_provider_discovery_gap(tmp_path, monkeypatch):
+    _stored_session(tmp_path, "claude", ("user", "needle"))
+    catalog = scree.build_sessions(tmp_path)
+    for store in catalog["coverage"]["stores"]:
+        if store["store"] == "Codex":
+            store["status"] = "truncated"
+    monkeypatch.setattr(scree, "_build_sessions_isolated", lambda *_: catalog)
+    scoped = scree.build_search_page("needle", tmp_path, provider="claude")
+    assert scoped["coverage"] == "complete"
+    assert scoped["discoveryCoverage"]["complete"] is True
+    assert [store["store"] for store in scoped["discoveryCoverage"]["stores"]] == ["Claude"]
+    assert scree.build_search_page("needle", tmp_path)["truncatedReason"] == "discovery"

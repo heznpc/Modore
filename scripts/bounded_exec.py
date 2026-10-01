@@ -67,7 +67,7 @@ def main(argv: list[str]) -> int:
     except ValueError:
         return _usage()
     command = argv[3:]
-    if not 1 <= timeout_seconds <= 300 or not os.path.isabs(command[0]):
+    if not 1 <= timeout_seconds <= 610 or not os.path.isabs(command[0]):
         return _usage()
 
     process: subprocess.Popen[bytes] | None = None

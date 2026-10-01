@@ -5777,7 +5777,8 @@ class _BoundedBinaryLines:
     """Iterate complete binary lines without ever allocating a giant line."""
 
     def __init__(self, handle, *, maximum_bytes: int,
-                 deadline: Optional[float] = None):
+                 deadline: Optional[float] = None, maximum_line_bytes: Optional[int] = None):
+        self.maximum_line_bytes = MAX_LINE_BYTES if maximum_line_bytes is None else maximum_line_bytes
         self.handle = handle
         self.maximum_bytes = maximum_bytes
         self.deadline = deadline
@@ -5804,7 +5805,7 @@ class _BoundedBinaryLines:
                 else:
                     self.reached_eof = True
                 return
-            line = self.handle.readline(min(MAX_LINE_BYTES + 1, remaining + 1))
+            line = self.handle.readline(min(self.maximum_line_bytes + 1, remaining + 1))
             if not line:
                 self.reached_eof = True
                 return
@@ -5812,7 +5813,7 @@ class _BoundedBinaryLines:
             if self.consumed > self.maximum_bytes:
                 self.truncated = True
                 return
-            oversized = len(line) > MAX_LINE_BYTES
+            oversized = len(line) > self.maximum_line_bytes
             if oversized:
                 self.truncated = True
             # readline(limit) returns a prefix when a line exceeds the cap.
@@ -5826,7 +5827,7 @@ class _BoundedBinaryLines:
                 if remaining <= 0:
                     self.truncated = True
                     return
-                line = self.handle.readline(min(MAX_LINE_BYTES + 1, remaining + 1))
+                line = self.handle.readline(min(self.maximum_line_bytes + 1, remaining + 1))
                 self.consumed += len(line)
                 if self.consumed > self.maximum_bytes:
                     self.truncated = True
@@ -5839,6 +5840,7 @@ class _BoundedBinaryLines:
 def _read_jsonl_turns(
         handle, *, deadline: Optional[float] = None,
         maximum_bytes: Optional[int] = None,
+        maximum_line_bytes: Optional[int] = None,
         ) -> tuple[list[VisibleTurn], bool, bool, bool, bool]:
     """Decode bounded visible records from an already-open binary stream."""
     turns: list[VisibleTurn] = []
@@ -5848,7 +5850,7 @@ def _read_jsonl_turns(
         handle,
         maximum_bytes=(SESSION_CONTENT_MAX_BYTES
                        if maximum_bytes is None else maximum_bytes),
-        deadline=deadline)
+        deadline=deadline, maximum_line_bytes=maximum_line_bytes)
     for line in lines:
         try:
             parsed = json.loads(line)
@@ -5868,7 +5870,7 @@ def _read_jsonl_turns(
 
 def _read_session_turns(
         source: Path, home: Optional[Path] = None, *,
-        deadline: Optional[float] = None,
+        deadline: Optional[float] = None, full_content: bool = False,
         ) -> tuple[list[VisibleTurn], str]:
     """`(turns, status)` for one session.
 
@@ -5893,7 +5895,8 @@ def _read_session_turns(
             with os.fdopen(os.dup(desktop_descriptor), "rb") as handle:
                 (turns, decoded_any, truncated, timed_out,
                  parse_failed) = _read_jsonl_turns(
-                    handle, deadline=deadline)
+                    handle, deadline=deadline, **({"maximum_bytes": sys.maxsize,
+                        "maximum_line_bytes": 16 * 1024 * 1024} if full_content else {}))
             after = os.fstat(desktop_descriptor)
         except OSError:
             return ([], "unreadable")
@@ -5959,7 +5962,8 @@ def _read_session_turns(
         with os.fdopen(os.dup(descriptor), "rb") as handle:
             (turns, decoded_any, truncated, timed_out,
              parse_failed) = _read_jsonl_turns(
-                handle, deadline=deadline)
+                handle, deadline=deadline, **({"maximum_bytes": sys.maxsize,
+                        "maximum_line_bytes": 16 * 1024 * 1024} if full_content else {}))
         after = os.fstat(descriptor)
     except OSError:
         return ([], "unreadable")
@@ -6001,7 +6005,7 @@ def _canonical_visible_turns(turns: list[VisibleTurn]) -> list[VisibleTurn]:
 
 def visible_turns(
         source: Path, home: Optional[Path] = None, *,
-        deadline: Optional[float] = None,
+        deadline: Optional[float] = None, full_content: bool = False,
         ) -> tuple[list[VisibleTurn], str]:
     """`(turns, status)` for one session, as a person would read it.
 
@@ -6024,7 +6028,8 @@ def visible_turns(
     not the conversation. They are the longest thing in a Codex rollout,
     and treating them as content pushes the actual exchange off screen.
     """
-    turns, status = _read_session_turns(source, home, deadline=deadline)
+    turns, status = _read_session_turns(source, home, deadline=deadline,
+                                        **({"full_content": True} if full_content else {}))
     if status not in ("ok", "truncated", "time", "parse"):
         return ([], status)
     return (_canonical_visible_turns(turns), status)
@@ -6214,7 +6219,8 @@ def _session_workspace(
 
 
 def build_inspect(source: Path, home: Path, *, raw: bool = False,
-                  turn_limit: int = INSPECT_DEFAULT_TURNS) -> dict:
+                  turn_limit: int = INSPECT_DEFAULT_TURNS,
+                  start: Optional[int] = None, full_content: bool = False) -> dict:
     """One session's conversation, prepared for display.
 
     The rules that make this safe to expose are the point, not the
@@ -6227,7 +6233,7 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
     its own explicit act.
     """
     provider = _session_provider(source, home)
-    turns, status = visible_turns(source, home)
+    turns, status = visible_turns(source, home, **({"full_content": True} if full_content else {}))
     return _inspect_payload(
         turns, status=status, provider=provider,
         session_id=_file_access_session_id(
@@ -6235,13 +6241,14 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
                                      CLAUDE_DESKTOP_PROVIDER) else "claude",
             source, home),
         workspace=_session_workspace(provider, source, home),
-        home=home, raw=raw, turn_limit=turn_limit)
+        home=home, raw=raw, turn_limit=turn_limit, start=start)
 
 
 def _inspect_payload(
         turns: list[VisibleTurn], *, status: str, provider: str,
         session_id: str, workspace: Optional[str], home: Path,
         raw: bool, turn_limit: int,
+        start: Optional[int] = None,
         ) -> dict:
     """Render already-resolved turns through inspect's one output contract."""
 
@@ -6255,7 +6262,8 @@ def _inspect_payload(
 
     first_user = next((clip(text) for role, text in turns
                        if _is_user_role(role) and text.strip()), None)
-    window = turns[-turn_limit:] if turn_limit > 0 else []
+    window_start = max(0, len(turns) - turn_limit) if start is None else max(0, start)
+    window = turns[window_start:window_start + turn_limit] if turn_limit > 0 else []
     return {
         # `ok` / `missing` / `unreadable` / `unrecognized`. A caller that
         # shows "no conversation" for anything but `ok` is telling
@@ -6272,7 +6280,9 @@ def _inspect_payload(
         # text -- collides on exactly the case the dedupe rule
         # deliberately preserves: the same person saying the same thing
         # twice with a reply in between.
-        "turns": [{"index": position, "role": turn.role, "text": clip(turn.text),
+        "windowStart": window_start,
+        "turns": [{"index": position, "sourceIndex": window_start + position,
+                   "role": turn.role, "text": clip(turn.text),
                    "at": turn.at, "eventId": turn.event_id}
                   for position, turn in enumerate(window) if turn.text.strip()],
         "omittedTurns": max(0, len(turns) - len(window)),
@@ -9952,6 +9962,7 @@ SEARCH_ARTIFACTS_PER_WORKER = 128
 def _search_batch_isolated(
         sources: list[str], needle: str, *, raw: bool, home: Path,
         deadline: float, match_budget: int, first: bool,
+        per_session_limit: Optional[int] = None,
         ) -> list[tuple[list[dict], str, int]]:
     """Stream bounded artifact results from one owned reader process.
 
@@ -9978,8 +9989,11 @@ def _search_batch_isolated(
             os.close(read_descriptor)
             emitted_hits = 0
             for source in sources:
+                extra = ({} if per_session_limit is None else
+                         {"match_limit": per_session_limit})
                 result = _search_one_session_bounded(
-                    Path(source), needle, raw=raw, home=home, deadline=deadline)
+                    Path(source), needle, raw=raw, home=home, deadline=deadline,
+                    **extra)
                 encoded = (json.dumps(result, ensure_ascii=True,
                                       separators=(",", ":")) + "\n").encode("utf-8")
                 if len(encoded) > SESSION_CONTENT_ISOLATION_MAX_BYTES:
@@ -10107,7 +10121,10 @@ def _session_evidence_isolated(
 def build_search(query: str, home: Path, *, raw: bool = False,
                  limit: int = SEARCH_DEFAULT_LIMIT,
                  first: bool = False,
-                 budget_seconds: float = SEARCH_DEFAULT_BUDGET_SECONDS) -> dict:
+                 budget_seconds: float = SEARCH_DEFAULT_BUDGET_SECONDS,
+                 provider: Optional[str] = None, workspace: Optional[str] = None,
+                 exclude_workspace: tuple[str, ...] = (),
+                 per_session_limit: Optional[int] = None) -> dict:
     """Find a phrase across every session on the machine.
 
     The one thing the owner kept leaving this app to do. Modore could
@@ -10145,6 +10162,27 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     session_index = _build_sessions_isolated(home, deadline)
     sessions, discovery_complete = _content_sessions_and_coverage(
         session_index)
+    discovered_sessions = len(sessions)
+    provider_names = {"claude": "Claude", "codex": "Codex",
+                      "claude-desktop": CLAUDE_DESKTOP_TOOL, "gemini": "Gemini"}
+    if provider is not None and provider not in provider_names:
+        raise ValueError("unsupported search provider")
+    discovery_stores = session_index["coverage"]["stores"]
+    if provider:
+        sessions = [s for s in sessions if s["tool"] == provider_names[provider]]
+        discovery_stores = [store for store in discovery_stores
+                            if store.get("store") == provider_names[provider]]
+        discovery_complete = bool(discovery_stores) and all(
+            store.get("status") in ("ok", "missing")
+            and int(store.get("unrecognized", 0)) == 0
+            for store in discovery_stores)
+    if workspace:
+        sessions = [s for s in sessions
+                    if workspace.casefold() in (s.get("workspace") or "").casefold()]
+    if exclude_workspace:
+        sessions = [s for s in sessions if not any(
+            term.casefold() in (s.get("workspace") or "").casefold()
+            for term in exclude_workspace)]
     matches: list[dict] = []
     match_ids: set[tuple] = set()
     scanned = unreadable = parse_errors = leaked_workers = truncated_sessions = 0
@@ -10177,7 +10215,9 @@ def build_search(query: str, home: Path, *, raw: bool = False,
                     artifact_sources[scanned_artifacts:
                                      scanned_artifacts + SEARCH_ARTIFACTS_PER_WORKER],
                     needle, raw=raw, home=home, deadline=deadline,
-                    match_budget=max(0, limit - len(matches)), first=first)
+                    match_budget=max(0, limit - len(matches)), first=first,
+                    **({} if per_session_limit is None else
+                       {"per_session_limit": per_session_limit}))
             found, read_status, session_omitted = pending_results.pop(0)
             scanned_artifacts += 1
             if read_status == "time":
@@ -10262,6 +10302,11 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         "scannedSessions": scanned,
         "scannedArtifacts": scanned_artifacts,
         "totalSessions": len(sessions),
+        "discoveredSessions": discovered_sessions,
+        "discoveryCoverage": {"complete": discovery_complete,
+                              "stores": discovery_stores},
+        "scope": {"provider": provider, "workspace": workspace,
+                  "excludeWorkspace": list(exclude_workspace)},
         "totalArtifacts": total_artifacts,
         "unreadableSessions": unreadable,
         "leakedWorkerSessions": leaked_workers,
@@ -10289,6 +10334,35 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         "evidenceKind": "conversation_mention",
         "masked": not raw,
     }
+
+
+def build_search_page(query: str, home: Path, *, limit: int = 20,
+                      offset: int = 0, **kwargs) -> dict:
+    """Page matching turns, including those beyond the legacy three-hit preview.
+
+    Offsets apply to the same query/scope on an unchanged corpus. No transcript
+    or query is persisted. A page reruns the bounded search, so a timeout is
+    never presented as the end of the corpus or as a resumable checkpoint.
+    """
+    if not 1 <= limit <= 200 or not 0 <= offset <= 100000:
+        raise ValueError("limit must be 1..200 and offset 0..100000")
+    if kwargs.get("first") and offset:
+        raise ValueError("--first cannot be combined with a nonzero --offset")
+    cap = 1 if kwargs.get("first") else offset + limit + 1
+    report = build_search(query, home, limit=cap,
+                          per_session_limit=cap, **kwargs)
+    matches = report["matches"]
+    has_more = len(matches) > offset + limit
+    report["matches"] = matches[offset:offset + limit]
+    report["offset"] = offset
+    report["nextOffset"] = offset + limit if has_more else None
+    report["hasMore"] = (True if has_more else
+                         False if report["coverage"] == "complete" else None)
+    if has_more:
+        report["coverage"] = "truncated"
+        report["truncatedReason"] = "limit"
+        report["definitive"] = False
+    return report
 
 
 def _search_probes(needle: str) -> tuple[tuple[str, ...], ...]:
@@ -10415,7 +10489,25 @@ def _file_might_contain_handle(
         return (False, "ok")
     if maximum_bytes is None:
         maximum_bytes = SEARCH_PROBE_MAX_BYTES
+    # A long literal Korean word is already a selective necessary condition.
+    # Probe it once per window instead of scanning the same negative bytes for
+    # every word of a sentence. The visible-turn matcher still checks the full
+    # phrase, so an admitted candidate is never itself a search result.
+    long_korean = [group for group in probes
+                   if re.fullmatch(r"[\uac00-\ud7a3]{5,}", group[0])]
+    if long_korean:
+        probes = (max(long_korean, key=lambda group: len(group[0])),)
     outstanding = set(range(len(probes)))
+    # Hangul syllables have no case variants. Without a JSON Unicode escape,
+    # a required Hangul run must occur literally in UTF-8. Reject negative
+    # windows in bytes before decoding/casefolding multi-gigabyte transcripts
+    # (including base64 attachments). Escaped or mixed spellings still use the
+    # full semantic gate below; this optimization must never lose a match.
+    hangul_anchors = {}
+    for position, group in enumerate(probes):
+        runs = re.findall(r"[\uac00-\ud7a3]+", group[0])
+        if runs:
+            hangul_anchors[position] = max(runs, key=len).encode("utf-8")
     encoded_overlap = max(
         (len(probe.encode("utf-8")) for group in probes for probe in group),
         default=1,
@@ -10437,9 +10529,16 @@ def _file_might_contain_handle(
             return (False, "ok")
         consumed += len(chunk)
         window = carry + chunk
+        unicode_escaped = b"\\u" in window
+        candidates = [position for position in outstanding
+                      if position not in hangul_anchors or unicode_escaped
+                      or hangul_anchors[position] in window]
+        if not candidates:
+            carry = window[-overlap:]
+            continue
         text = window.decode("utf-8", errors="replace")
         folded = text.casefold()
-        for position in tuple(outstanding):
+        for position in candidates:
             if any(probe in folded for probe in probes[position]):
                 outstanding.discard(position)
         # Raw positives may over-admit, which the visible-turn parser checks.
@@ -10448,7 +10547,7 @@ def _file_might_contain_handle(
         # ordinary word cannot need them. Most transcripts contain many \n
         # escapes but no Unicode escapes; do not decode gigabytes of those
         # merely to establish that a normal word is absent.
-        if outstanding and ("\\u" in text or any(
+        if outstanding and (unicode_escaped or any(
                 any(character in probes[position][0]
                     for character in '\\"/\b\f\n\r\t')
                 for position in outstanding)):
@@ -10464,7 +10563,7 @@ def _file_might_contain_handle(
 
 def _file_might_contain(source: Path,
                         probes: tuple[tuple[str, ...], ...], *,
-                        deadline: Optional[float] = None) -> tuple[bool, str]:
+                        deadline: Optional[float] = None, full_content: bool = False) -> tuple[bool, str]:
     """`(worth_parsing, status)` from a bounded raw-byte scan.
 
     The cheap half of the search: a necessary condition, checked without
@@ -10479,7 +10578,8 @@ def _file_might_contain(source: Path,
     try:
         with os.fdopen(os.dup(descriptor), "rb") as handle:
             result = _file_might_contain_handle(
-                handle, probes, deadline=deadline)
+                handle, probes, deadline=deadline,
+                maximum_bytes=sys.maxsize if full_content else None)
         after = os.fstat(descriptor)
         if _stat_signature(before) != _stat_signature(after):
             return (False, "unreadable")
@@ -10493,6 +10593,7 @@ def _file_might_contain(source: Path,
 def _search_one_session_bounded(
         source: Path, needle: str, *, raw: bool,
         home: Optional[Path] = None, deadline: Optional[float] = None,
+        match_limit: Optional[int] = None,
         ) -> tuple[list[dict], str, int]:
     """Matching turns in one transcript, and whether it could be read.
 
@@ -10510,7 +10611,8 @@ def _search_one_session_bounded(
             probes = _search_probes(needle)
             with os.fdopen(os.dup(desktop_descriptor), "rb") as handle:
                 worth_parsing, probe_status = _file_might_contain_handle(
-                    handle, probes, deadline=deadline)
+                    handle, probes, deadline=deadline,
+                    maximum_bytes=sys.maxsize if match_limit is not None else None)
             if not worth_parsing:
                 if _stat_signature(before) != _stat_signature(
                         os.fstat(desktop_descriptor)):
@@ -10520,7 +10622,8 @@ def _search_one_session_bounded(
             with os.fdopen(os.dup(desktop_descriptor), "rb") as handle:
                 (turns, decoded_any, truncated, timed_out,
                  parse_failed) = _read_jsonl_turns(
-                    handle, deadline=deadline)
+                    handle, deadline=deadline, **({"maximum_bytes": sys.maxsize,
+                        "maximum_line_bytes": 16 * 1024 * 1024} if match_limit is not None else {}))
             after = os.fstat(desktop_descriptor)
             if (_stat_signature(before) != _stat_signature(after)
                     or (not decoded_any and before.st_size > 0)):
@@ -10536,13 +10639,15 @@ def _search_one_session_bounded(
     else:
         probes = _search_probes(needle)
         worth_parsing, probe_status = _file_might_contain(
-            source, probes, deadline=deadline)
+            source, probes, deadline=deadline,
+            **({"full_content": True} if match_limit is not None else {}))
         if probe_status not in ("ok", "truncated"):
             return ([], probe_status, 0)
         if not worth_parsing:
             return ([], probe_status, 0)
         turns, read_status = visible_turns(
-            source, home, deadline=deadline)
+            source, home, deadline=deadline,
+            **({"full_content": True} if match_limit is not None else {}))
         if read_status not in ("ok", "truncated", "time", "parse"):
             return ([], read_status, 0)
 
@@ -10555,7 +10660,7 @@ def _search_one_session_bounded(
         # query had its whitespace collapsed and the transcript did not.
         if needle not in " ".join(turn.text.split()).casefold():
             continue
-        if len(hits) >= SEARCH_MATCHES_PER_SESSION:
+        if len(hits) >= (SEARCH_MATCHES_PER_SESSION if match_limit is None else match_limit):
             omitted_at_least = 1
             break
         hits.append(_search_hit(
@@ -11512,6 +11617,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     inspect.add_argument("source", type=Path, help="session file path from a bind result")
     inspect.add_argument("--turns", type=int, default=INSPECT_DEFAULT_TURNS,
                          help="recent turns to include")
+    inspect.add_argument("--full-content", action="store_true",
+                         help="stream all JSONL bytes with a 16 MiB record bound")
+    inspect.add_argument("--start", type=int, default=None,
+                         help="zero-based visible turn index, as returned by search")
     inspect.add_argument("--raw", action="store_true",
                          help="disable masking (explicit opt-out, off by default)")
     inspect.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
@@ -11548,6 +11657,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="read the phrase from this file instead of the command line")
     search.add_argument("--limit", type=int, default=SEARCH_DEFAULT_LIMIT,
                          help="maximum matches to return")
+    search.add_argument("--offset", type=int, default=None,
+                        help="page matching turns; reuse nextOffset with the same query/scope")
+    search.add_argument("--provider", choices=("claude", "claude-desktop", "codex", "gemini"))
+    search.add_argument("--workspace", help="case-insensitive workspace path substring")
+    search.add_argument("--exclude-workspace", action="append", default=[],
+                        help="exclude workspace path substring; repeatable")
     search.add_argument("--first", action="store_true",
                         help="stop after the newest matching turn")
     search.add_argument("--budget-seconds", type=float,
@@ -11667,7 +11782,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.command == "inspect":
         try:
             payload = build_inspect(args.source, args.home, raw=args.raw,
-                                    turn_limit=args.turns)
+                                    turn_limit=args.turns, start=args.start, full_content=args.full_content)
         except OSError as exc:
             print(f"inspect: {exc}", file=sys.stderr)
             return 1
@@ -11761,11 +11876,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         # command whose contract is that it keeps nothing should not
         # leave the answer on disk to be tidied up afterwards -- a
         # `defer` does not run when the app is force quit.
-        _print_wire(json.dumps(
-            build_search(query, args.home, raw=args.raw, limit=args.limit,
-                         first=args.first,
-                         budget_seconds=args.budget_seconds),
-            ensure_ascii=False, indent=2))
+        search_builder = build_search if args.offset is None else build_search_page
+        try:
+            result = search_builder(
+                query, args.home, raw=args.raw, limit=args.limit,
+                first=args.first, budget_seconds=args.budget_seconds,
+                provider=args.provider, workspace=args.workspace,
+                exclude_workspace=tuple(args.exclude_workspace),
+                **({} if args.offset is None else {"offset": args.offset}))
+        except ValueError as exc:
+            print(f"search: {exc}", file=sys.stderr)
+            return 2
+        _print_wire(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "titles":

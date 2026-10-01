@@ -29,6 +29,9 @@ usage() {
         '  modore ci status|refresh [--discover] [--repo owner/name] [--project PATH]' \
         '  modore sessions current' \
         '  modore search [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
+        '    [--provider claude|claude-desktop|codex|gemini] [--workspace TEXT]' \
+        '    [--exclude-workspace TEXT] [--offset N]  # nextOffset continues results' \
+        '  modore inspect SOURCE [--start N] [--turns N]  # open a search hit' \
         '  modore resources status|hooks-status|acquire|claim|heartbeat|release [options]' \
         '  modore resources begin-test|hold --provider codex|claude --session ID --turn ID [options]' \
         '  modore resources begin-browser-test --provider codex|claude --session ID --project PATH --turn ID --url URL [--headed]' \
@@ -132,11 +135,22 @@ case "$COMMAND" in
             "$PYTHON" -I -B "$SCREE" sessions --limit "$SESSION_LIMIT"
         ;;
     search)
+        if [[ "${1:-}" == "--help" ]]; then usage; exit 0; fi
         [[ ! -t 0 ]] || fail_usage 'search reads an explicit user query from stdin, never argv.'
         SEARCH_LIMIT=20
-        SEARCH_BUDGET_SECONDS=30
+        SEARCH_BUDGET_SECONDS=300
+        SEARCH_SCOPE_ARGS=(--offset 0)
         while [[ "$#" -gt 0 ]]; do
             case "$1" in
+                --provider|--workspace|--exclude-workspace|--offset)
+                    [[ "$#" -ge 2 && -n "$2" ]] || fail_usage "$1 requires a value."
+                    if [[ "$1" == "--offset" ]]; then
+                        [[ "$2" == "0" ]] || bounded_positive_integer "$2" 100000 \
+                            || fail_usage '--offset must be between 0 and 100000.'
+                    fi
+                    SEARCH_SCOPE_ARGS+=("$1" "$2")
+                    shift 2
+                    ;;
                 --limit|--budget-seconds)
                     [[ "$#" -ge 2 ]] || fail_usage "$1 requires a value."
                     if [[ "$1" == "--limit" ]]; then
@@ -144,8 +158,8 @@ case "$COMMAND" in
                             || fail_usage '--limit must be between 1 and 200.'
                         SEARCH_LIMIT="$2"
                     else
-                        bounded_positive_integer "$2" 55 \
-                            || fail_usage '--budget-seconds must be between 1 and 55.'
+                        bounded_positive_integer "$2" 600 \
+                            || fail_usage '--budget-seconds must be between 1 and 600.'
                         SEARCH_BUDGET_SECONDS="$2"
                     fi
                     shift 2
@@ -154,14 +168,36 @@ case "$COMMAND" in
                     SEARCH_FIRST=1
                     shift
                     ;;
-                *) fail_usage 'search accepts only --first, --limit and --budget-seconds; send the query on stdin.' ;;
+                *) fail_usage 'unsupported search option; see modore search --help; send the query on stdin.' ;;
             esac
         done
         SEARCH_ARGS=(search --query-file /dev/stdin --limit "$SEARCH_LIMIT" \
-            --budget-seconds "$SEARCH_BUDGET_SECONDS")
+            --budget-seconds "$SEARCH_BUDGET_SECONDS" "${SEARCH_SCOPE_ARGS[@]}")
         [[ "${SEARCH_FIRST:-0}" == "0" ]] || SEARCH_ARGS+=(--first)
-        exec "$PYTHON" -I -B "$BOUNDED_EXEC" 60 -- \
+        exec "$PYTHON" -I -B "$BOUNDED_EXEC" "$((10#$SEARCH_BUDGET_SECONDS + 10))" -- \
             "$PYTHON" -I -B "$SCREE" "${SEARCH_ARGS[@]}"
+        ;;
+    inspect)
+        [[ "$#" -ge 1 && "$1" == /* ]] || fail_usage 'inspect requires an absolute source path returned by search.'
+        INSPECT_ARGS=(inspect "$1" --full-content)
+        shift
+        while [[ "$#" -gt 0 ]]; do
+            [[ "$#" -ge 2 ]] || fail_usage "$1 requires a value."
+            case "$1" in
+                --start)
+                    [[ "$2" == "0" ]] || bounded_positive_integer "$2" 999999 \
+                        || fail_usage '--start must be between 0 and 999999.'
+                    ;;
+                --turns)
+                    bounded_positive_integer "$2" 500 || fail_usage '--turns must be between 1 and 500.'
+                    ;;
+                *) fail_usage 'inspect accepts only --start and --turns.' ;;
+            esac
+            INSPECT_ARGS+=("$1" "$2")
+            shift 2
+        done
+        exec "$PYTHON" -I -B "$BOUNDED_EXEC" 60 -- \
+            "$PYTHON" -I -B "$SCREE" "${INSPECT_ARGS[@]}"
         ;;
     storage)
         SUBCOMMAND="${1:-}"
