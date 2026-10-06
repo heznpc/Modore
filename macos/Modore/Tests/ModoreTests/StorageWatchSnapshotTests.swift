@@ -318,7 +318,7 @@ final class StorageWatchSnapshotTests: XCTestCase {
         XCTAssertEqual(evidence?.signalEvents.flatMap(\.rows).map(\.label), ["committed"])
     }
 
-    func testStableEvidenceKeepsExactlyPreviousAndCurrentCommittedEvents() {
+    func testStableEvidenceKeepsHistoricalPathsButOnlyCommittedSignals() {
         let staleAt = Date(timeIntervalSince1970: 50)
         let previousAt = Date(timeIntervalSince1970: 100)
         let currentAt = Date(timeIntervalSince1970: 200)
@@ -346,7 +346,7 @@ final class StorageWatchSnapshotTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(evidence?.pathEvents.map(\.capturedAt), [previousAt, currentAt])
+        XCTAssertEqual(evidence?.pathEvents.map(\.capturedAt), [staleAt, previousAt, currentAt])
         XCTAssertEqual(evidence?.signalEvents.map(\.capturedAt), [previousAt, currentAt])
         XCTAssertEqual(evidence?.committedAt, currentAt)
         XCTAssertEqual(evidence?.pathCommittedAt, currentAt)
@@ -383,7 +383,7 @@ final class StorageWatchSnapshotTests: XCTestCase {
             }
         ))
 
-        XCTAssertEqual(evidence.pathEvents.map(\.capturedAt), [oldPathAt, newPathAt])
+        XCTAssertEqual(evidence.pathEvents.map(\.capturedAt), [Date(timeIntervalSince1970: 50), oldPathAt, newPathAt])
         XCTAssertEqual(
             evidence.signalEvents.map(\.capturedAt),
             [previousSignalAt, currentSignalAt]
@@ -395,9 +395,9 @@ final class StorageWatchSnapshotTests: XCTestCase {
             pathEvents: evidence.pathEvents,
             committedAt: evidence.committedAt
         ))
-        XCTAssertEqual(change.previousAt, oldPathAt)
+        XCTAssertEqual(change.previousAt, Date(timeIntervalSince1970: 50))
         XCTAssertEqual(change.currentAt, newPathAt)
-        XCTAssertEqual(change.growing.first?.deltaGB ?? 0, 1, accuracy: 0.000_001)
+        XCTAssertTrue(change.changes.isEmpty) // Returned to the original 2 GB baseline.
     }
 
     func testStableEvidenceAcceptsCommittedPathOnlyHistory() {
@@ -477,6 +477,25 @@ final class StorageWatchSnapshotTests: XCTestCase {
         XCTAssertEqual(summary.growing.first?.deltaGB ?? 0, 1.25, accuracy: 0.000_001)
     }
 
+    func testCumulativeGrowthSurvivesFlatSamplesAndTimeouts() throws {
+        let start = Date(timeIntervalSince1970: 100)
+        let events = [
+            StorageWatchPathEvent(capturedAt: start, rows: [
+                pathSnapshot(at: start, label: "Work", sizeGB: 1),
+            ]),
+            StorageWatchPathEvent(capturedAt: start.addingTimeInterval(3600), rows: [
+                pathSnapshot(at: start.addingTimeInterval(3600), label: "Work", sizeGB: 9),
+            ]),
+            StorageWatchPathEvent(capturedAt: start.addingTimeInterval(7200), rows: [
+                pathSnapshot(at: start.addingTimeInterval(7200), label: "Work", status: "timed_out"),
+            ]),
+        ]
+        let summary = try XCTUnwrap(StorageWatchPathChangeSummary.latest(
+            pathEvents: events, committedAt: events.last!.capturedAt
+        ))
+        XCTAssertEqual(summary.growing.first?.deltaGB, 8)
+    }
+
     func testPathChangeIgnoresFilesystemNoiseBelowIncidentThreshold() throws {
         let previousAt = Date(timeIntervalSince1970: 100)
         let currentAt = Date(timeIntervalSince1970: 200)
@@ -541,7 +560,7 @@ final class StorageWatchSnapshotTests: XCTestCase {
 
         XCTAssertEqual(pathReads, 2)
         XCTAssertEqual(evidence?.committedAt, newest)
-        XCTAssertEqual(evidence?.pathEvents.flatMap(\.rows).map(\.label), ["newest"])
+        XCTAssertEqual(evidence?.pathEvents.flatMap(\.rows).map(\.label), ["first", "newest"])
     }
 
     func testStableEvidenceReadIsBoundedWhenPointerNeverStabilizes() {

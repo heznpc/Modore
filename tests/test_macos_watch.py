@@ -607,9 +607,9 @@ def test_storage_watch_reserves_rows_for_transient_workspaces(project_root, tmp_
         .read_text(encoding="utf-8")
         .splitlines()
     ]
-    assert len(rows) == 12
+    assert len(rows) == 21
     assert sum(row[3] == "npm 캐시" for row in rows) == 1
-    assert sum(row[3] in {"pnpm 저장소", "Playwright 브라우저"} for row in rows) == 1
+    assert sum(row[3] in {"pnpm 저장소", "Playwright 브라우저"} for row in rows) == 2
     assert sum(row[3] == "Claude 임시 작업" for row in rows) == 1
     retained_transient = {
         row[4]
@@ -617,7 +617,7 @@ def test_storage_watch_reserves_rows_for_transient_workspaces(project_root, tmp_
         if row[3] in {"Modore 임시 작업", "사용자 임시 작업"}
     }
     assert retained_transient == {
-        str(modore_temps[-1]),
+        *(str(path) for path in modore_temps),
         *(str(path) for path in generic_temps),
     }
 
@@ -712,7 +712,7 @@ def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twic
         for line in (state_dir / "storage-watch-paths.tsv").read_text(encoding="utf-8").splitlines()
     ]
     latest = [row for row in rows if row[0] == second_state["lastEvidenceAt"]]
-    assert len(latest) == 12
+    assert len(latest) == 22
     assert {row[3] for row in latest if row[3].startswith("Simulator 런타임 · ")} == {
         label for label in labels if label.startswith("Simulator 런타임 · ")
     }
@@ -2365,3 +2365,90 @@ def test_pressure_notice_precedes_slow_path_measurement(project_root, tmp_path):
     calls = log.read_text().splitlines()
     assert "du" in calls
     assert calls[0] == "open"
+
+
+def test_partial_capture_preserves_baseline_and_rotates_deferred_roots(project_root, tmp_path):
+    state = tmp_path / 'state'
+    roots = tmp_path / 'roots'
+    (roots / 'a-slow').mkdir(parents=True)
+    (roots / 'z-fast').mkdir()
+    fake_du = tmp_path / 'du'
+    fake_du.write_text('#!/bin/bash\ntarget="${!#}"\n'
+                       'if [[ "$target" == */a-slow ]]; then exec /bin/sleep 30; fi\n'
+                       'exec /usr/bin/du -sk "$target"\n')
+    fake_du.chmod(0o755)
+    env = {**os.environ, 'PCH_TEST_MODE': '1', 'PCH_STATE_DIR': str(state),
+           'PCH_WATCH_NOTIFY': '0', 'PCH_WATCH_SNAPSHOT_ROOT': str(roots),
+           'PCH_TEST_WATCH_DU_BIN': str(fake_du),
+           'PCH_WATCH_SNAPSHOT_TOTAL_SECONDS': '1',
+           'PCH_WATCH_SNAPSHOT_ITEM_SECONDS': '1'}
+    def run(free):
+        result = subprocess.run([str(project_root / 'scripts/storage_watch.sh')],
+                                env={**env, 'PCH_TEST_FREE_KB': str(free * 1024 * 1024)},
+                                text=True, capture_output=True, timeout=15)
+        assert result.returncode == 0, result.stderr
+        return parse_protocol(result.stdout)
+    run(50)
+    first = run(40)
+    assert parse_protocol((state / 'storage-watch.tsv').read_text())['snapshotCompleteness'] == 'partial'
+    assert first['attributionBaselineKB'] == str(50 * 1024 * 1024)
+    assert '\tdeferred\tz-fast\t' in (state / 'storage-watch-paths.tsv').read_text()
+    run(30)
+    assert '\tok\tz-fast\t' in (state / 'storage-watch-paths.tsv').read_text()
+
+
+def test_hourly_path_baseline_survives_frequent_partial_retries(project_root, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    state = tmp_path / 'state'
+    state.mkdir(mode=0o700)
+    roots = tmp_path / 'roots'
+    (roots / 'cache').mkdir(parents=True)
+    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=4)
+    rows = []
+    for index in range(40):
+        stamp = (start + timedelta(minutes=index)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        status = 'ok' if index == 1 else 'timed_out'
+        rows.append(f'{stamp}\t1024\t{status}\tcache\t{roots / "cache"}\n')
+    history = state / 'storage-watch-paths.tsv'
+    history.write_text(''.join(rows))
+    history.chmod(0o600)
+    result = subprocess.run([str(project_root / 'scripts/storage_watch.sh')],
+                            capture_output=True, text=True, timeout=15,
+                            env={**os.environ, 'PCH_TEST_MODE': '1',
+                                 'PCH_STATE_DIR': str(state), 'PCH_WATCH_NOTIFY': '0',
+                                 'PCH_TEST_FREE_KB': str(19 * 1024 * 1024),
+                                 'PCH_WATCH_SNAPSHOT_ROOT': str(roots),
+                                 'PCH_WATCH_SNAPSHOT_EVENT_LIMIT': '1024'})
+    assert result.returncode == 0, result.stderr
+    kept = history.read_text()
+    assert rows[1] in kept  # First SUCCESS, not the first incomplete event.
+    assert rows[0] not in kept
+    assert rows[-1] in kept
+
+
+def test_raw_evidence_survives_display_eviction_and_denies_archive_symlinks(project_root, tmp_path):
+    state = tmp_path / 'state'
+    roots = tmp_path / 'roots'
+    (roots / 'cache').mkdir(parents=True)
+    env = {**os.environ, 'PCH_TEST_MODE': '1', 'PCH_STATE_DIR': str(state),
+           'PCH_WATCH_NOTIFY': '0', 'PCH_WATCH_SNAPSHOT_ROOT': str(roots),
+           'PCH_WATCH_SNAPSHOT_EVENT_LIMIT': '1'}
+    def run(free):
+        return subprocess.run([str(project_root / 'scripts/storage_watch.sh')],
+                              env={**env, 'PCH_TEST_FREE_KB': str(free * 1024 * 1024)},
+                              capture_output=True, text=True, timeout=15)
+    for free in [50, 40, 30]:
+        result = run(free)
+        assert result.returncode == 0, result.stderr
+    assert len((state / 'storage-watch-paths.tsv').read_text().splitlines()) == 1
+    archive = next(state.glob('storage-evidence-*.tsv'))
+    evidence = archive.read_text().splitlines()
+    assert sum(row.startswith('path\t') for row in evidence) == 2
+    assert sum(row.startswith('sample\t') for row in evidence) == 3
+    assert stat.S_IMODE(archive.stat().st_mode) == 0o600
+    archive.rename(state / 'saved-evidence.tsv')
+    victim = tmp_path / 'untouched'
+    victim.write_text('keep')
+    archive.symlink_to(victim)
+    assert run(20).returncode != 0
+    assert victim.read_text() == 'keep'
