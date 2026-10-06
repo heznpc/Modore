@@ -675,7 +675,7 @@ def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twic
         "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
         "PCH_WATCH_PRIVATE_TMP_ROOT": str(private_tmp),
         "PCH_TEST_WATCH_DU_BIN": str(fake_du),
-        "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "2",
+        "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "6",
         "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "1",
         "PCH_WATCH_SNAPSHOT_DEVICE_SECONDS": "3",
         "PCH_WATCH_SNAPSHOT_EVENT_LIMIT": "2",
@@ -2452,3 +2452,31 @@ def test_raw_evidence_survives_display_eviction_and_denies_archive_symlinks(proj
     archive.symlink_to(victim)
     assert run(20).returncode != 0
     assert victim.read_text() == 'keep'
+
+
+def test_timeout_gets_first_budget_when_attempt_timestamps_tie(project_root, tmp_path):
+    state = tmp_path / 'state'
+    state.mkdir(mode=0o700)
+    roots = tmp_path / 'roots'
+    for label in ['a-fast', 'z-slow']:
+        (roots / label).mkdir(parents=True)
+    history = state / 'storage-watch-paths.tsv'
+    history.write_text(''.join(
+        f'2026-01-01T00:00:00Z\t0\t{status}\t{label}\t{roots / label}\n'
+        for label, status in [('a-fast', 'ok'), ('z-slow', 'timed_out')]))
+    history.chmod(0o600)
+    log = tmp_path / 'calls'
+    du = tmp_path / 'du'
+    du.write_text('#!/bin/bash\ntarget="${!#}"\n'
+                  f'printf "%s\\n" "$target" >> "{log}"\n'
+                  'exec /usr/bin/du -sk "$target"\n')
+    du.chmod(0o755)
+    result = subprocess.run([str(project_root / 'scripts/storage_watch.sh')],
+                            capture_output=True, text=True, timeout=15,
+                            env={**os.environ, 'PCH_TEST_MODE': '1',
+                                 'PCH_STATE_DIR': str(state), 'PCH_WATCH_NOTIFY': '0',
+                                 'PCH_TEST_FREE_KB': str(19 * 1024 * 1024),
+                                 'PCH_WATCH_SNAPSHOT_ROOT': str(roots),
+                                 'PCH_TEST_WATCH_DU_BIN': str(du)})
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines()[0] == str(roots / 'z-slow')
