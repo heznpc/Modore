@@ -901,7 +901,7 @@ capture_drop_snapshot() {
     local swap_capture_status="ok" rss_capture_status="ok" capture_status=0
     local result_file error_file pid waited_ticks size_kb status modified_epoch command_status
     local priority_rows remaining_rows
-    local elapsed_ticks=0
+    local elapsed_ticks=0 capture_started_seconds=$SECONDS path_started_seconds=0
     local total_ticks=$((SNAPSHOT_TOTAL_SECONDS * 10))
     local item_ticks=$((SNAPSHOT_ITEM_SECONDS * 10))
     local device_ticks=$((SNAPSHOT_DEVICE_SECONDS * 10))
@@ -1066,11 +1066,14 @@ capture_drop_snapshot() {
         done < <(
             /usr/bin/awk -F '\t' '
                 FILENAME == ARGV[1] {
-                    if ($3 != "deferred") attempted[$5] = $1
+                    if ($3 != "deferred") {
+                        attempted[$5] = $1
+                        retry[$5] = ($3 == "timed_out" ? 0 : 1)
+                    }
                     next
                 }
-                { printf "%s\t%s\n", attempted[$2], $0 }
-            ' "$SNAPSHOT_FILE" "$metadata_tmp" | /usr/bin/sort -s -t $'\t' -k1,1 | /usr/bin/cut -f2-
+                { printf "%s\t%d\t%s\n", attempted[$2], retry[$2], $0 }
+            ' "$SNAPSHOT_FILE" "$metadata_tmp" | /usr/bin/sort -s -t $'\t' -k1,1 -k2,2n | /usr/bin/cut -f3-
         )
         candidates=("${ordered_candidates[@]}")
     fi
@@ -1085,9 +1088,11 @@ capture_drop_snapshot() {
         status="ok"
         size_kb=0
         command_status=0
+        elapsed_ticks=$(((SECONDS - capture_started_seconds) * 10))
         local is_simulator_device=0
         [[ "$label" != "Simulator 기기 데이터" ]] || is_simulator_device=1
-        if [[ "$is_simulator_device" -eq 0 && "$elapsed_ticks" -ge "$total_ticks" ]]; then
+        if [[ "$elapsed_ticks" -ge $((total_ticks + device_ticks)) \
+            || ( "$is_simulator_device" -eq 0 && "$elapsed_ticks" -ge "$total_ticks" ) ]]; then
             status="deferred"
         else
             local allowed_ticks="$item_ticks"
@@ -1101,6 +1106,9 @@ capture_drop_snapshot() {
             fi
             if [[ "$is_simulator_device" -eq 1 ]]; then
                 allowed_ticks="$device_ticks"
+                if [[ $((total_ticks + device_ticks - elapsed_ticks)) -lt "$allowed_ticks" ]]; then
+                    allowed_ticks=$((total_ticks + device_ticks - elapsed_ticks))
+                fi
             elif [[ $((total_ticks - elapsed_ticks)) -lt "$allowed_ticks" ]]; then
                 allowed_ticks=$((total_ticks - elapsed_ticks))
             fi
@@ -1113,8 +1121,9 @@ capture_drop_snapshot() {
                 "$DU_BIN" -sk "$path" > "$result_file" 2>"$error_file" &
                 pid=$!
                 waited_ticks=0
+                path_started_seconds=$SECONDS
                 while /bin/kill -0 "$pid" 2>/dev/null; do
-                    if [[ "$waited_ticks" -ge "$allowed_ticks" ]]; then
+                    if [[ $(((SECONDS - path_started_seconds) * 10)) -ge "$allowed_ticks" ]]; then
                         /bin/kill -9 "$pid" 2>/dev/null || true
                         wait "$pid" 2>/dev/null || true
                         status="timed_out"
@@ -1153,6 +1162,10 @@ capture_drop_snapshot() {
             /bin/rm -f "$event_tmp" "$sorted_tmp" "$signal_tmp" "$metadata_tmp"
             return 1
         }
+        # Persist each observation immediately, even if a later provider or
+        # process termination prevents the summary transaction from committing.
+        /usr/bin/printf '%s\t%s\t%s\t%s\t%s\n' "$EVENT_ISO" "$size_kb" "$status" "$label" "$path" \
+            | append_evidence_archive path /dev/stdin || return 1
         [[ "$status" == "ok" ]] || capture_is_complete=0
     done
 
@@ -1268,7 +1281,6 @@ capture_drop_snapshot() {
     fi
 
     # Archive before any display row selection or history compaction.
-    append_evidence_archive path "$event_tmp" || return 1
     append_evidence_archive signal "$signal_tmp" || return 1
     SIGNALS_CAPTURED="$(/usr/bin/wc -l < "$signal_tmp" | /usr/bin/tr -d ' ')"
     case "$SIGNALS_CAPTURED" in ''|*[!0-9]*) SIGNALS_CAPTURED=0 ;; esac
