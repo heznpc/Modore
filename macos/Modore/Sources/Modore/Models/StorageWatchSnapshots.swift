@@ -18,11 +18,13 @@ struct StorageWatchPathSnapshot: Identifiable, Equatable, Sendable {
         if measured {
             return String(format: "%.1fGB", sizeGB)
         }
+        if status == "permission_denied" { return L10n.text("폴더 접근 권한 필요") }
         if sizeGB > 0 {
             return sizeGB >= 0.1
                 ? String(format: L10n.text("최소 %.1fGB"), sizeGB)
                 : String(format: L10n.text("최소 %.1fMB"), sizeGB * 1_024)
         }
+        if status == "deferred" { return L10n.text("다음 수집 대기") }
         return status == "timed_out" ? L10n.text("시간 제한") : L10n.text("측정 실패")
     }
 }
@@ -63,22 +65,28 @@ struct StorageWatchPathChangeSummary: Equatable, Sendable {
         pathEvents: [StorageWatchPathEvent],
         committedAt: Date
     ) -> StorageWatchPathChangeSummary? {
+        // Keep a month of context. An intervening failed measurement must
+        // neither erase a valid baseline nor make accumulated growth vanish.
         let sorted = pathEvents
-            .filter { $0.capturedAt <= committedAt }
+            .filter { $0.capturedAt <= committedAt
+                && $0.capturedAt >= committedAt.addingTimeInterval(-30 * 86_400) }
             .sorted { $0.capturedAt < $1.capturedAt }
-        // `committedAt` is the latest overall evidence commit. A signal-only
-        // commit can be newer than the last path capture, so use the newest
-        // bounded path pair at or before it rather than requiring equality.
-        guard let current = sorted.last,
-              let previous = sorted.dropLast().last else {
-            return nil
+        guard let current = sorted.last, let previous = sorted.first,
+              previous.capturedAt < current.capturedAt else { return nil }
+        var before: [String: StorageWatchPathSnapshot] = [:]
+        var after: [String: StorageWatchPathSnapshot] = [:]
+        for event in sorted {
+            for (path, row) in measuredRows(in: event) {
+                if before[path] == nil { before[path] = row }
+                after[path] = row
+            }
         }
-
-        let before = measuredRows(in: previous)
-        let after = measuredRows(in: current)
         let sharedPaths = Set(before.keys).intersection(after.keys)
         let changes = sharedPaths.compactMap { path -> StorageWatchPathChange? in
-            guard let old = before[path], let new = after[path] else { return nil }
+            guard let old = before[path], let new = after[path],
+                  old.capturedAt < new.capturedAt,
+                  new.capturedAt >= current.capturedAt.addingTimeInterval(-86_400)
+            else { return nil }
             return StorageWatchPathChange(
                 label: new.label,
                 path: path,
@@ -330,10 +338,9 @@ enum StorageWatchEvidenceCommitStore {
 }
 
 enum StorageWatchSnapshotStore {
-    static let maximumBytes = 1 * 1_024 * 1_024
-    // The watcher retains up to twelve path rows per event: four transient
-    // workspaces, four Simulator runtimes, dyld, Devices, and two general roots.
-    static let maximumRows = 24 * 12
+    static let maximumBytes = 32 * 1_024 * 1_024
+    // Retain enough bounded path evidence for cumulative changes across weeks.
+    static let maximumRows = 1024 * 64
 
     static var snapshotURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -427,7 +434,7 @@ enum StorageWatchSnapshotStore {
     }
 
     private static let allowedStatuses: Set<String> = [
-        "ok", "timed_out", "unavailable",
+        "ok", "timed_out", "unavailable", "deferred", "permission_denied",
     ]
     private static let isoFormat = Date.ISO8601FormatStyle()
 }
@@ -591,11 +598,12 @@ enum StorageWatchEvidenceStore {
             let signalTimes = Set(
                 [commitBefore.previousAt, commitBefore.committedAt].compactMap { $0 }
             )
-            let pathTimes = Set(
-                [commitBefore.previousPathAt, commitBefore.pathCommittedAt].compactMap { $0 }
-            )
             let pathEvents = StorageWatchSnapshotStore.events(from: paths)
-                .filter { pathTimes.contains($0.capturedAt) }
+                .filter {
+                    guard let pathCommit = commitBefore.pathCommittedAt else { return false }
+                    return $0.capturedAt <= pathCommit
+                        && $0.capturedAt >= pathCommit.addingTimeInterval(-30 * 86_400)
+                }
             let signalEvents = StorageWatchSignalStore.events(from: signals)
                 .filter { signalTimes.contains($0.capturedAt) }
             // Legacy watchers could commit path-only or signal-only evidence.

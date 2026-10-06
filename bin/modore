@@ -169,7 +169,7 @@ case "$COMMAND" in
         case "$SUBCOMMAND" in
             status)
                 [[ "$#" -eq 0 ]] || fail_usage 'storage status accepts no additional arguments.'
-                "$PYTHON" -I -B "$BOUNDED_EXEC" 30 -- \
+                "$PYTHON" -I -B "$BOUNDED_EXEC" 60 -- \
                     /bin/bash -p "$STORAGE_WATCH" >/dev/null
                 WATCH_STATUS=$?
                 [[ "$WATCH_STATUS" == "0" || "$WATCH_STATUS" == "75" ]] \

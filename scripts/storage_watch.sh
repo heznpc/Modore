@@ -181,10 +181,10 @@ else
     APP_BUNDLE_PATH="${PCH_STORAGE_WATCH_APP_BUNDLE:-}"
     APP_EXECUTABLE_SHA256="${PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256:-}"
     SNAPSHOT_TEST_ROOT=""
-    SNAPSHOT_TOTAL_SECONDS=8
-    SNAPSHOT_ITEM_SECONDS=2
+    SNAPSHOT_TOTAL_SECONDS=30
+    SNAPSHOT_ITEM_SECONDS=8
     SNAPSHOT_DEVICE_SECONDS=15
-    SNAPSHOT_EVENT_LIMIT=24
+    SNAPSHOT_EVENT_LIMIT=1024
     PRIVATE_TMP_TEST_ROOT=""
     USER_TMP_TEST_ROOT=""
     SWAP_TEST_FILE=""
@@ -878,18 +878,34 @@ bounded_notification_command() (
     return "$command_status"
 )
 
+# Resource budgets constrain work per run, never the lifetime of evidence.
+# Monthly journals are not pruned automatically; bounded UI files below are
+# rebuildable working sets, not the only copy of an observation.
+append_evidence_archive() {
+    local kind="$1" input="$2" archive="storage-evidence-${EVENT_ISO:0:7}.tsv"
+    [[ "$archive" =~ ^storage-evidence-[0-9]{4}-[0-9]{2}\.tsv$ ]] || return 1
+    if [[ -e "$archive" || -L "$archive" ]]; then
+        [[ -f "$archive" && ! -L "$archive" \
+            && "$(path_owner_uid "$archive")" == "$(/usr/bin/id -u)" ]] || return 1
+    else
+        (set -C; : > "$archive") || return 1
+    fi
+    /bin/chmod 600 "$archive" || return 1
+    /usr/bin/awk -v kind="$kind" '{print kind "\t" $0}' "$input" >> "$archive"
+}
+
 capture_drop_snapshot() {
     local event_tmp sorted_tmp history_tmp candidate label path
     local signal_tmp signal_history_tmp metadata_tmp swap_input rss_input
     local swap_used_kb swap_allocated_kb rss_kb rss_pid rss_reference rss_label
     local swap_capture_status="ok" rss_capture_status="ok" capture_status=0
-    local result_file pid waited_ticks size_kb status modified_epoch command_status
+    local result_file error_file pid waited_ticks size_kb status modified_epoch command_status
     local priority_rows remaining_rows
     local elapsed_ticks=0
     local total_ticks=$((SNAPSHOT_TOTAL_SECONDS * 10))
     local item_ticks=$((SNAPSHOT_ITEM_SECONDS * 10))
     local device_ticks=$((SNAPSHOT_DEVICE_SECONDS * 10))
-    local maximum_rows=12
+    local maximum_rows=64
     local maximum_history_rows=$((SNAPSHOT_EVENT_LIMIT * maximum_rows))
     local maximum_rss_rows=3
     local maximum_signal_rows=$((maximum_rss_rows + 1))
@@ -928,7 +944,7 @@ capture_drop_snapshot() {
         fi
         # Random suffixes make lexical "first three" unrelated to the active
         # incident. Admit a bounded recent set and let the measured-size sort
-        # below decide which rows survive the twelve-row event cap.
+        # below decide which rows survive the bounded event cap.
         while IFS=$'\t' read -r _ path; do
             [[ -n "$path" ]] || continue
             candidates+=("Modore 임시 작업"$'\t'"$path")
@@ -1004,6 +1020,9 @@ capture_drop_snapshot() {
         simulator_fast_candidates+=("Simulator 런타임 · tvOS"$'\t'"/System/Volumes/Data/System/Library/AssetsV2/com_apple_MobileAsset_appleTVOSSimulatorRuntime")
         simulator_fast_candidates+=("Simulator 런타임 · xrOS"$'\t'"/System/Volumes/Data/System/Library/AssetsV2/com_apple_MobileAsset_xrOSSimulatorRuntime")
         simulator_fast_candidates+=("Simulator 공유 dyld 캐시"$'\t'"/Library/Developer/CoreSimulator/Caches/dyld")
+        candidates+=("ChatGPT 작업 폴더"$'\t'"$HOME_ROOT/Documents/ChatGPT")
+        candidates+=("Codex 작업 폴더"$'\t'"$HOME_ROOT/Documents/Codex")
+        candidates+=("개발 프로젝트"$'\t'"$HOME_ROOT/IdeaProjects")
         candidates+=("Codex 로컬 데이터"$'\t'"$HOME_ROOT/.codex")
         candidates+=("Claude 로컬 에이전트"$'\t'"$HOME_ROOT/Library/Application Support/Claude")
         # Measure install caches before slow temporary/agent roots can consume
@@ -1037,6 +1056,24 @@ capture_drop_snapshot() {
         /bin/rm -f "$event_tmp" "$sorted_tmp" "$signal_tmp"
         return 1
     }
+    # Oldest attempted roots go first. Budget-exhausted rows are deferred,
+    # not attempted: a slow root must not permanently starve later candidates.
+    if [[ -s "$SNAPSHOT_FILE" && -n "${candidates[*]-}" ]]; then
+        /usr/bin/printf '%s\n' "${candidates[@]}" > "$metadata_tmp"
+        local -a ordered_candidates=()
+        while IFS= read -r candidate; do
+            ordered_candidates+=("$candidate")
+        done < <(
+            /usr/bin/awk -F '\t' '
+                FILENAME == ARGV[1] {
+                    if ($3 != "deferred") attempted[$5] = $1
+                    next
+                }
+                { printf "%s\t%s\n", attempted[$2], $0 }
+            ' "$SNAPSHOT_FILE" "$metadata_tmp" | /usr/bin/sort -s -t $'\t' -k1,1 | /usr/bin/cut -f2-
+        )
+        candidates=("${ordered_candidates[@]}")
+    fi
     # Bash 3.2 treats an explicitly empty array as unset under `set -u`.
     for candidate in "${candidates[@]+"${candidates[@]}"}"; do
         result_file=""
@@ -1051,9 +1088,17 @@ capture_drop_snapshot() {
         local is_simulator_device=0
         [[ "$label" != "Simulator 기기 데이터" ]] || is_simulator_device=1
         if [[ "$is_simulator_device" -eq 0 && "$elapsed_ticks" -ge "$total_ticks" ]]; then
-            status="timed_out"
+            status="deferred"
         else
             local allowed_ticks="$item_ticks"
+            # A genuinely slow tree gets the remaining run budget on retry;
+            # oldest-attempt ordering lets other roots run in the next capture.
+            if [[ -s "$SNAPSHOT_FILE" && "$is_simulator_device" -eq 0 ]]; then
+                local previous_path_status
+                previous_path_status="$(/usr/bin/awk -F '\t' -v path="$path" \
+                    '$5 == path && $3 != "deferred" {status=$3} END {print status}' "$SNAPSHOT_FILE")"
+                [[ "$previous_path_status" != "timed_out" ]] || allowed_ticks="$total_ticks"
+            fi
             if [[ "$is_simulator_device" -eq 1 ]]; then
                 allowed_ticks="$device_ticks"
             elif [[ $((total_ticks - elapsed_ticks)) -lt "$allowed_ticks" ]]; then
@@ -1063,8 +1108,9 @@ capture_drop_snapshot() {
                 status="timed_out"
                 allowed_ticks=0
             }
+            error_file="$(/usr/bin/mktemp ./.storage-watch-du-error.XXXXXX)" || return 1
             if [[ "$allowed_ticks" -gt 0 ]]; then
-                "$DU_BIN" -sk "$path" > "$result_file" 2>/dev/null &
+                "$DU_BIN" -sk "$path" > "$result_file" 2>"$error_file" &
                 pid=$!
                 waited_ticks=0
                 while /bin/kill -0 "$pid" 2>/dev/null; do
@@ -1095,6 +1141,10 @@ capture_drop_snapshot() {
                     fi
                 fi
             fi
+            if /usr/bin/grep -qE 'Operation not permitted|Permission denied' "$error_file"; then
+                status="permission_denied"
+            fi
+            /bin/rm -f "$error_file"
             [[ -z "${result_file:-}" ]] || /bin/rm -f "$result_file"
             result_file=""
         fi
@@ -1217,6 +1267,9 @@ capture_drop_snapshot() {
         )
     fi
 
+    # Archive before any display row selection or history compaction.
+    append_evidence_archive path "$event_tmp" || return 1
+    append_evidence_archive signal "$signal_tmp" || return 1
     SIGNALS_CAPTURED="$(/usr/bin/wc -l < "$signal_tmp" | /usr/bin/tr -d ' ')"
     case "$SIGNALS_CAPTURED" in ''|*[!0-9]*) SIGNALS_CAPTURED=0 ;; esac
     if [[ "$SIGNALS_CAPTURED" -gt 0 ]]; then
@@ -1257,7 +1310,7 @@ capture_drop_snapshot() {
         }
     fi
 
-    # Reserve category slots inside the twelve-row event. Transient workspaces
+    # Reserve category slots inside the bounded event. Transient workspaces
     # retain four slots, every installed runtime retains one, and device/dyld
     # each retain one. npm retains one and pnpm/browser caches share one, so
     # smaller install caches cannot disappear behind large persistent roots. This
@@ -1318,13 +1371,30 @@ capture_drop_snapshot() {
                 if (!($1 in event_numbers)) {
                     event_count += 1
                     event_numbers[$1] = event_count
+                    hour = substr($1, 1, 13)
+                    if (!(hour in hour_numbers)) {
+                        hour_count += 1
+                        hour_numbers[hour] = hour_count
+                    }
+                }
+                hour = substr($1, 1, 13)
+                key = hour SUBSEP $5
+                if ($3 == "ok" && !(key in checkpoint)) {
+                    checkpoint[key] = NR
+                    checkpoint_hour[NR] = hour_numbers[hour]
                 }
             }
             END {
-                first_event = event_count - limit + 1
-                if (first_event < 1) first_event = 1
+                # Preserve the first successful measurement of EACH path/hour,
+                # plus the latest 24 events. Partial first captures must not
+                # erase successful measurements made later in that hour.
+                recent = (limit > 24 ? 24 : limit)
+                first_event = event_count - recent + 1
                 for (row = 1; row <= NR; row++) {
-                    if (event_numbers[timestamps[row]] >= first_event) print lines[row]
+                    stamp = timestamps[row]
+                    if (event_numbers[stamp] >= first_event ||
+                        (limit > 24 && row in checkpoint_hour &&
+                         checkpoint_hour[row] > hour_count - (limit - 24))) print lines[row]
                 }
             }
         ' | /usr/bin/tail -n "$maximum_history_rows" > "$history_tmp" || {
@@ -1515,8 +1585,14 @@ if [[ -n "$SNAPSHOT_REASON" ]]; then
         if [[ "$SNAPSHOT_CAPTURED" -gt 0 ]]; then
             PREVIOUS_PATH_EVIDENCE_AT="$LAST_PATH_EVIDENCE_AT"
             LAST_PATH_EVIDENCE_AT="$EVENT_ISO"
-            ATTRIBUTION_BASELINE_KB="$FREE_KB"
+            # Partial evidence does not explain the loss. Keep the baseline
+            # until every candidate was measured successfully.
+            if [[ "$SNAPSHOT_COMPLETENESS" == "complete" ]]; then
+                ATTRIBUTION_BASELINE_KB="$FREE_KB"
+            fi
         fi
+    else
+        exit 1
     fi
 fi
 TMP_FILE="$(/usr/bin/mktemp ./.storage-watch.XXXXXX)" || exit 1
@@ -1557,6 +1633,8 @@ trap cleanup EXIT
 /bin/mv "$TMP_FILE" "$STATE_FILE" || exit 1
 TMP_FILE=""
 
+/usr/bin/printf '%s\t%s\t%s\t%s\t%s\n' "$NOW_ISO" "$FREE_KB" "$DROP_KB" "$STATUS" "$NOW_EPOCH" \
+    | append_evidence_archive sample /dev/stdin || exit 1
 HISTORY_TMP="$(/usr/bin/mktemp ./.storage-samples.XXXXXX)" || exit 1
 {
     [[ -f "$HISTORY_FILE" ]] && /bin/cat "$HISTORY_FILE"
