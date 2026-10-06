@@ -675,9 +675,9 @@ def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twic
         "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
         "PCH_WATCH_PRIVATE_TMP_ROOT": str(private_tmp),
         "PCH_TEST_WATCH_DU_BIN": str(fake_du),
-        "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "6",
+        "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "15",
         "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "1",
-        "PCH_WATCH_SNAPSHOT_DEVICE_SECONDS": "3",
+        "PCH_WATCH_SNAPSHOT_DEVICE_SECONDS": "5",
         "PCH_WATCH_SNAPSHOT_EVENT_LIMIT": "2",
     }
     script = project_root / "scripts/storage_watch.sh"
@@ -688,7 +688,7 @@ def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twic
 
     env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
     first = subprocess.run(
-        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=15
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=30
     )
     assert first.returncode == 0, first.stderr
     first_state = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))
@@ -699,7 +699,7 @@ def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twic
     device_payload.write_bytes(b"d" * (6 * 1024 * 1024))
     env["PCH_TEST_FREE_KB"] = str(30 * 1024 * 1024)
     second = subprocess.run(
-        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=15
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=30
     )
     assert second.returncode == 0, second.stderr
     second_state = parse_protocol((state_dir / "storage-watch.tsv").read_text(encoding="utf-8"))

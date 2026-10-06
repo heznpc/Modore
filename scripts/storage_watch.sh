@@ -900,7 +900,6 @@ capture_drop_snapshot() {
     local swap_used_kb swap_allocated_kb rss_kb rss_pid rss_reference rss_label
     local swap_capture_status="ok" rss_capture_status="ok" capture_status=0
     local result_file error_file pid waited_ticks size_kb status modified_epoch command_status
-    local priority_rows remaining_rows
     local elapsed_ticks=0 capture_started_seconds=$SECONDS path_started_seconds=0
     local total_ticks=$((SNAPSHOT_TOTAL_SECONDS * 10))
     local item_ticks=$((SNAPSHOT_ITEM_SECONDS * 10))
@@ -1022,7 +1021,21 @@ capture_drop_snapshot() {
         simulator_fast_candidates+=("Simulator 공유 dyld 캐시"$'\t'"/Library/Developer/CoreSimulator/Caches/dyld")
         candidates+=("ChatGPT 작업 폴더"$'\t'"$HOME_ROOT/Documents/ChatGPT")
         candidates+=("Codex 작업 폴더"$'\t'"$HOME_ROOT/Documents/Codex")
-        candidates+=("개발 프로젝트"$'\t'"$HOME_ROOT/IdeaProjects")
+        # Inventory project roots separately: one enormous workspace must not
+        # prevent attribution for every other project on the machine.
+        for path in "$HOME_ROOT/IdeaProjects"/*; do
+            [[ -d "$path" && ! -L "$path" ]] || continue
+            case "${path##*/}" in
+                APP|MCP)
+                    local project_path
+                    for project_path in "$path"/*; do
+                        [[ -d "$project_path" && ! -L "$project_path" ]] || continue
+                        candidates+=("개발 프로젝트 · ${project_path##*/}"$'\t'"$project_path")
+                    done
+                    ;;
+                *) candidates+=("개발 프로젝트 · ${path##*/}"$'\t'"$path") ;;
+            esac
+        done
         candidates+=("Codex 로컬 데이터"$'\t'"$HOME_ROOT/.codex")
         candidates+=("Claude 로컬 에이전트"$'\t'"$HOME_ROOT/Library/Application Support/Claude")
         # Measure install caches before slow temporary/agent roots can consume
@@ -1322,50 +1335,9 @@ capture_drop_snapshot() {
         }
     fi
 
-    # Reserve category slots inside the bounded event. Transient workspaces
-    # retain four slots, every installed runtime retains one, and device/dyld
-    # each retain one. npm retains one and pnpm/browser caches share one, so
-    # smaller install caches cannot disappear behind large persistent roots. This
-    # keeps the fast runtime/cache facts visible even when the Devices walk is
-    # slow or a broad persistent root is larger.
-    : > "$metadata_tmp" || return 1
-    {
-        /usr/bin/awk -F '\t' '$4 == "npm 캐시"' "$event_tmp" \
-            | /usr/bin/head -n 1
-        /usr/bin/awk -F '\t' '$4 == "pnpm 저장소" || $4 == "Playwright 브라우저"' "$event_tmp" \
-            | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 1
-        /usr/bin/awk -F '\t' '$4 == "Claude 임시 작업"' "$event_tmp" \
-            | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 1
-        /usr/bin/awk -F '\t' \
-            '$4 == "Modore 임시 작업" || $4 == "사용자 임시 작업"' "$event_tmp" \
-            | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 3
-        /usr/bin/awk -F '\t' '$4 ~ /^Simulator 런타임 · /' "$event_tmp" \
-            | /usr/bin/sort -t $'\t' -k2,2nr
-        /usr/bin/awk -F '\t' '$4 == "Simulator 공유 dyld 캐시"' "$event_tmp" \
-            | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 1
-        /usr/bin/awk -F '\t' '$4 == "Simulator 기기 데이터"' "$event_tmp" \
-            | /usr/bin/sort -t $'\t' -k2,2nr | /usr/bin/head -n 1
-    } > "$metadata_tmp" || {
-        /bin/rm -f "$event_tmp" "$sorted_tmp" "$signal_tmp" "$metadata_tmp"
-        return 1
-    }
-    priority_rows="$(/usr/bin/wc -l < "$metadata_tmp" | /usr/bin/tr -d ' ')"
-    case "$priority_rows" in ''|*[!0-9]*) priority_rows=0 ;; esac
-    remaining_rows=$((maximum_rows - priority_rows))
-    {
-        /bin/cat "$metadata_tmp"
-        if [[ "$remaining_rows" -gt 0 ]]; then
-            /usr/bin/awk '
-                FILENAME == ARGV[1] { selected[$0] = 1; next }
-                !($0 in selected) { print }
-            ' "$metadata_tmp" "$event_tmp" \
-                | /usr/bin/sort -t $'\t' -k2,2nr \
-                | /usr/bin/head -n "$remaining_rows"
-        fi
-    } | /usr/bin/sort -t $'\t' -k2,2nr > "$sorted_tmp" || {
-        /bin/rm -f "$event_tmp" "$sorted_tmp" "$signal_tmp" "$metadata_tmp"
-        return 1
-    }
+    # Preserve every candidate in the working event as well as the archive.
+    # Only the historical UI working set is bounded, never category evidence.
+    /usr/bin/sort -t $'\t' -k2,2nr "$event_tmp" > "$sorted_tmp" || return 1
     SNAPSHOT_CAPTURED="$(/usr/bin/wc -l < "$sorted_tmp" | /usr/bin/tr -d ' ')"
     case "$SNAPSHOT_CAPTURED" in ''|*[!0-9]*) SNAPSHOT_CAPTURED=0 ;; esac
     if [[ "$SNAPSHOT_CAPTURED" -gt 0 ]]; then
