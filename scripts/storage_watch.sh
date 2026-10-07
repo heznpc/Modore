@@ -1231,7 +1231,7 @@ capture_drop_snapshot() {
         case "${swap_allocated_kb:-}${swap_used_kb:-}" in
             ''|*[!0-9]*) ;;
             *)
-                /usr/bin/printf '%s\tswap\t%s\t%s\t0\t%s\tmacOS 스왑\t/private/var/vm\n' \
+                /usr/bin/printf '%s\tswap\t%s\t%s\t0\t%s\tmacOS 스왑\t/System/Volumes/VM\n' \
                     "$EVENT_ISO" "$swap_used_kb" "$swap_allocated_kb" \
                     "$swap_capture_status" >> "$signal_tmp"
                 ;;
