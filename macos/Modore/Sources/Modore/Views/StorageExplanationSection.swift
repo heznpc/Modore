@@ -109,7 +109,7 @@ struct StorageExplanationSection: View {
         guard let execution = await Task.detached(priority: .utility, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: root)
         }).value,
-        let invocation = execution.pinnedInvocation(relativePath: "scripts/storage_explain.py", name: "storage-explain"),
+        let invocation = execution.pinnedInvocation(relativePath: "scripts/storage_explain.py", name: "storage_explain"),
         let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
             error = "저장공간 원인 분석 실행환경을 준비하지 못했습니다."; return
         }
