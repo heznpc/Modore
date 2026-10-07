@@ -1048,7 +1048,7 @@ apply_recipe_guidance() {
             ;;
     esac
     case "$recipe" in
-        npm_cache)
+        npm_cache|npm_download_cache)
             DESCRIPTION="npm이 내려받아 보관하는 패키지 압축본 캐시입니다. 프로젝트 소스와 node_modules는 대상이 아닙니다."
             AVOID_WHEN="네트워크가 느리거나, 오프라인에서 곧 npm install을 해야 한다면 두세요."
             ;;
@@ -1209,6 +1209,13 @@ define_recipe() {
     fi
 
     case "$recipe" in
+        npm_download_cache)
+            LABEL="npm download cache"
+            PROCESS_PATTERN='(^|/)(npm|npx)( |$)|/\.npm/_cacache|(^|/)npm-cli\.js( |$)|(^|/)npx-cli\.js( |$)'
+            PROCESS_NOTE="npm 패키지 설치가 실행 중이면 보존합니다."
+            WARNING="다음 설치 시 패키지를 다시 다운로드합니다. 실행 중인 도구가 있는 _npx는 보존합니다."
+            add_target_if_present "$HOME_ROOT/.npm/_cacache"
+            ;;
         npm_cache)
             LABEL="npm cache"
             # npm/npx는 거의 항상 shebang 스크립트라, 커널이 인터프리터를 앞에
@@ -1420,6 +1427,7 @@ allowed_target() {
         transient_workspace)
             [[ "$target" == "$TRANSIENT_WORKSPACE_TARGET" ]]
             ;;
+        npm_download_cache) [[ "$target" == "$HOME_ROOT/.npm/_cacache" ]] ;;
         npm_cache) [[ "$target" == "$HOME_ROOT/.npm" ]] ;;
         pnpm_store) [[ "$target" == "$HOME_ROOT/Library/pnpm" ]] ;;
         playwright_browsers) [[ "$target" == "$HOME_ROOT/Library/Caches/ms-playwright" ]] ;;

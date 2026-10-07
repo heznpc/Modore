@@ -110,7 +110,7 @@ struct ModoreApp: App {
                 .frame(minWidth: 900, minHeight: 640)
                 .onAppear {
                     cpuWatch.start()
-                    maintenance.start(model: model)
+                    maintenance.start(model: model, monitor: cpuWatch)
                     ciWatch.start(model: model)
                     applicationDelegate.bind(to: model)
                     model.setApplicationActive(scenePhase == .active)
@@ -159,6 +159,7 @@ struct ModoreApp: App {
 
         Settings {
             StorageWatchSettingsView()
+                .environmentObject(maintenance.recovery)
                 .environmentObject(cpuWatch)
                 .environmentObject(quotaWork)
                 .environmentObject(model)
@@ -173,6 +174,8 @@ struct StorageWatchSettingsView: View {
 
     var body: some View {
         Form {
+            AutomaticCacheRecoverySettings()
+
             Section(L10n.text("저장공간 급감 감시")) {
                 Toggle(
                     L10n.text("앱 종료 후에도 매분 여유 공간 확인"),
