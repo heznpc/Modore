@@ -26,4 +26,26 @@ final class AutomaticCacheRecoveryTests: XCTestCase {
                                          after: 2_000_000_000, evidence: "test")
         XCTAssertTrue(AutomaticCacheRecovery.summary(report).contains("−"))
     }
+
+    func testNoRepeatedWarningForSameUnchangedBlockers() {
+        var before = AutomaticCacheReport(date: Date(), before: 8_000_000_000,
+            after: 8_000_000_000, evidence: "old", outcomes: ["npm in use"], finished: true)
+        var next = before
+        next.after = 6_000_000_000
+        next.evidence = "new observation"
+        XCTAssertFalse(AutomaticCachePolicy.shouldNotify(next, previous: before))
+        next.after = 2_000_000_000
+        XCTAssertTrue(AutomaticCachePolicy.shouldNotify(next, previous: before))
+        before = next
+        XCTAssertFalse(AutomaticCachePolicy.shouldNotify(next, previous: before))
+        next.receipts = ["verified receipt"]
+        XCTAssertTrue(AutomaticCachePolicy.shouldNotify(next, previous: before))
+    }
+    func testManagedReminderDoesNotHideCriticalOrUnmanagedState() {
+        XCTAssertTrue(AutomaticCachePolicy.ownsStorageNotice(enabled: true, appRunning: true, free: 6_000_000_000))
+        XCTAssertFalse(AutomaticCachePolicy.ownsStorageNotice(enabled: true, appRunning: false, free: 6_000_000_000))
+        XCTAssertFalse(AutomaticCachePolicy.ownsStorageNotice(enabled: false, appRunning: true, free: 6_000_000_000))
+        XCTAssertFalse(AutomaticCachePolicy.ownsStorageNotice(enabled: true, appRunning: true, free: 2_000_000_000))
+        XCTAssertFalse(AutomaticCachePolicy.ownsStorageNotice(enabled: true, appRunning: true, free: nil))
+    }
 }

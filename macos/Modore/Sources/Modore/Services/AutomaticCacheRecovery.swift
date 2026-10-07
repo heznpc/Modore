@@ -5,6 +5,21 @@ import UserNotifications
 
 struct AutomaticCachePolicy {
     static let recipes = ["npm_download_cache", "pip_cache", "homebrew_cache"]
+    static func ownsStorageNotice(enabled: Bool, appRunning: Bool, free: Int64?) -> Bool {
+        guard enabled, appRunning, let free else { return false }
+        return free >= 3 * 1_073_741_824
+    }
+
+    static func shouldNotify(_ report: AutomaticCacheReport, previous: AutomaticCacheReport?) -> Bool {
+        if !report.receipts.isEmpty { return true }
+        guard let previous else { return true }
+        if report.finished != previous.finished { return true }
+        let meaningful = { (rows: [String]) in rows.filter { !$0.hasPrefix("경로별 원인 분석 저장:") } }
+        if meaningful(report.outcomes) != meaningful(previous.outcomes) { return true }
+        return HealthNoticePolicy.storageLevel(report.after) >= 4
+            && HealthNoticePolicy.storageLevel(previous.after) < 4
+    }
+
     static let target: Int64 = 20 * 1_073_741_824
 
     static func shouldRun(enabled: Bool, free: Int64?, lastRun: Date?, now: Date) -> Bool {
@@ -94,6 +109,7 @@ final class AutomaticCacheRecovery: ObservableObject {
         let fresh = snapshot.flatMap { Date().timeIntervalSince($0.date) < 60 ? $0 : nil }
         let top = fresh.flatMap { $0.cpuAvailable ? $0 : nil }?.processes.sorted { $0.cpu > $1.cpu }.prefix(3)
             .map { "\($0.name) \(Int($0.cpu))%" }.joined(separator: ", ") ?? "CPU 원인 미확인"
+        let previousReport = last
         var report = AutomaticCacheReport(date: Date(), before: before,
             evidence: "\(fresh?.summary ?? "최근 상태 표본 없음") · CPU 상위: \(top). 캐시 점유는 회수 후보이며 공간 감소 원인으로 확정한 값은 아닙니다.",
             attempted: last?.attempted ?? [:], analysisAt: last?.analysisAt)
@@ -180,6 +196,7 @@ final class AutomaticCacheRecovery: ObservableObject {
             try? save(report)
         }
         model.appendLog(detail)
+        guard AutomaticCachePolicy.shouldNotify(report, previous: previousReport) else { return }
         let content = UNMutableNotificationContent()
         content.title = detail
         content.body = report.outcomes.suffix(3).joined(separator: "\n") + "\n" + report.evidence
