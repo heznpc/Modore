@@ -36,6 +36,7 @@ usage() {
         '  modore tools status|resolve PACKAGE[@VERSION]' \
         '  modore tools run PACKAGE[@VERSION] -- [arguments]' \
         '  modore storage status' \
+        '  modore storage explain [--since ISO-TIMESTAMP]' \
         '  modore storage recovery' \
         '  modore cleanup list' \
         '  modore mcp tools'
@@ -167,6 +168,9 @@ case "$COMMAND" in
         SUBCOMMAND="${1:-}"
         [[ "$#" -eq 0 ]] || shift
         case "$SUBCOMMAND" in
+            explain)
+                exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/storage_explain.py" "$@"
+                ;;
             status)
                 [[ "$#" -eq 0 ]] || fail_usage 'storage status accepts no additional arguments.'
                 "$PYTHON" -I -B "$BOUNDED_EXEC" 60 -- \

@@ -6,6 +6,7 @@ struct CleanupWorkspaceList: View {
 
     var body: some View {
         List {
+            StorageExplanationSection()
             StorageIncidentCauseSection(evidence: model.latestStorageWatchEvidence)
             StorageIncidentTimelineSection()
             StorageIncidentContextSection()

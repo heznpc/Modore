@@ -5,6 +5,7 @@ struct ActivityPage: View {
 
     var body: some View {
         Form {
+            StorageExplanationSection()
             RecoveryHistorySection()
             StorageWatchActivitySection()
             ContinuousObservationSection()
