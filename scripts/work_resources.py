@@ -8,6 +8,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -156,6 +157,7 @@ def hook_status(state, home=None, now=None):
     for provider, filename in [('codex', '.codex/hooks.json'), ('claude', '.claude/settings.json')]:
         path = home / filename
         configured, disabled, changed_at, error = False, False, 0, None
+        simulator_configured = False
         try:
             if path.exists():
                 if path.is_symlink() or path.parent.is_symlink() or path.stat().st_size > 1_048_576:
@@ -174,6 +176,10 @@ def hook_status(state, home=None, now=None):
                                 return True
                     return False
                 configured = all(registered(event) for event in ('UserPromptSubmit', 'Stop'))
+                simulator_configured = any(
+                    shlex.split(hook.get('command', ''))[1:] == ['resources', 'guard', '--provider', provider]
+                    for group in config.get('hooks', {}).get('PreToolUse', [])
+                    for hook in group.get('hooks', []) if hook.get('type') == 'command')
         except (OSError, ValueError, TypeError, AttributeError):
             error = '연결 설정을 읽지 못했습니다.'
         receipt = state.get('hookObservations', {}).get(provider, {})
@@ -184,7 +190,10 @@ def hook_status(state, home=None, now=None):
                   and observed_at >= changed_at and now - observed_at <= 900)
         result.append({'provider': provider, 'configured': configured, 'disabled': disabled,
                        'lastObservedAt': observed_at, 'lastEvent': receipt.get('event'),
-                       'recentlyObserved': bool(recent), 'error': error})
+                       'recentlyObserved': bool(recent), 'error': error,
+                       'simulatorGuard': {'configured': simulator_configured and not disabled,
+                                          'hostEnforcementVerified': False,
+                                          'coverage': '직접 simctl create/clone 명령 검사. 간접 스크립트·외부 앱·호스트 미실행은 차단 보장 없음.'}})
     return result
 
 
@@ -583,6 +592,80 @@ def turn_hook(provider, payload, root=ROOT):
         return {'systemMessage': f'Modore: 테스트 실행 {stopped}개 종료 확인, {len(results) - stopped}개 유지/확인 필요. AI 세션과 시뮬레이터 기기는 보존됩니다.'}
 
 
+def simulator_creations(text):
+    """Recognize direct shell invocations; never execute or expand shell input."""
+    if not isinstance(text, str): return []
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=';&|()<>\n')
+    lexer.whitespace = ' \t\r'
+    lexer.whitespace_split = True
+    segments, part = [], []
+    for token in lexer:
+        if token and all(c in ';&|()<>\n' for c in token):
+            if part: segments.append(part)
+            part = []
+        else: part.append(token)
+    if part: segments.append(part)
+    found = []
+    for args in segments:
+        while args and (re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', args[0]) or
+                        args[0] in ('env', 'command', 'exec', 'sudo')):
+            args = args[1:]
+        if not args: continue
+        if Path(args[0]).name in ('sh', 'bash', 'zsh') and len(args) >= 3 and args[1] in ('-c', '-lc'):
+            found.extend(simulator_creations(args[2]))
+            continue
+        if Path(args[0]).name == 'xcrun':
+            args = args[1:]
+            while args and args[0].startswith('-'):
+                option = args.pop(0)
+                if option in ('--sdk', '-sdk', '--toolchain', '-toolchain') and args: args.pop(0)
+        if len(args) >= 2 and Path(args[0]).name == 'simctl' and args[1] in ('create', 'clone'):
+            found.append(args[1:])
+    return found
+
+
+def simulator_guard(provider, payload):
+    if payload.get('hook_event_name') != 'PreToolUse': return {}
+    if payload.get('tool_name') not in ('Bash', 'exec_command', 'functions.exec_command'): return {}
+    data = payload.get('tool_input') or {}
+    text = data.get('command', data.get('cmd', ''))
+    requests = simulator_creations(text)
+    if not requests: return {}
+    def deny(reason):
+        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
+                'permissionDecision': 'deny', 'permissionDecisionReason': reason}}
+    try:
+        inventory = json.loads(command(['/usr/bin/xcrun', 'simctl', 'list', '--json'], 8))
+        rows = simulator_rows(inventory)
+    except Exception:
+        return deny('Modore: 기존 시뮬레이터 조회에 실패해 중복 여부를 확인할 수 없습니다. resources status로 확인한 뒤 다시 시도하세요.')
+    for args in requests:
+        if args[0] == 'clone':
+            matches = [r for r in rows if r['id'] == args[1] or r['name'] == args[1]] if len(args) > 1 else []
+        else:
+            if len(args) < 3: continue  # simctl itself rejects missing arguments
+            kind = args[2]
+            kind = next((d['identifier'] for d in inventory.get('devicetypes', [])
+                         if kind in (d['identifier'], d['name'])), kind)
+            runtime = args[3] if len(args) > 3 else ''
+            runtime = next((r['identifier'] for r in inventory.get('runtimes', [])
+                            if runtime in (r['identifier'], r['name'], r.get('version'))), runtime)
+            # Without a runtime, require an explicit choice from existing configurations.
+            matches = [r for r in rows if r['available'] and r['deviceType'] == kind
+                       and (not runtime or r['runtime'] == runtime)]
+        if not matches: continue
+        details = '\n'.join(f"- {r['name']} | UDID {r['id']} | {r['runtime']} | {r['state']} | 경로 {r['path']}" for r in matches)
+        chosen = matches[0]
+        cli = str(Path(__file__).resolve().parents[1] / 'bin/modore')
+        reuse = [cli, 'resources', 'acquire', '--id', chosen['id'],
+                 '--project', payload.get('cwd') or '<project-path>',
+                 '--session', payload.get('session_id') or '<session-id>']
+        return deny('Modore: 동일 OS·기종이 이미 있어 중복 생성을 차단했습니다. 기존 기기:\n' + details +
+                    '\n먼저 resources status로 사용 등록과 점유를 확인하세요. 기존 기기 등록 명령: ' + shlex.join(reuse) +
+                    '\n턴 훅이 연결돼 있으면 resources begin-test를 사용하세요. 위 목록은 다른 세션이 사용하지 않는다는 보장이 아닙니다.')
+    return {}
+
+
 def install_hooks(provider, root=ROOT, home=None, executable=None):
     """Merge our lifecycle and CLI guard handlers; never grant Codex hook trust."""
     turn_key(provider, 'install')
@@ -609,6 +692,10 @@ def install_hooks(provider, root=ROOT, home=None, executable=None):
              'command': shlex.quote(str(executable)) + ' tools hook', 'timeout': 5}]}
     if guard not in hooks.setdefault('PreToolUse', []):
         hooks['PreToolUse'].append(guard)
+    simulator = {'matcher': '^(Bash|exec_command|functions\\.exec_command)$', 'hooks': [{'type': 'command',
+                 'command': shlex.quote(str(executable)) + ' resources guard --provider ' + provider, 'timeout': 15}]}
+    if simulator not in hooks['PreToolUse']:
+        hooks['PreToolUse'].append(simulator)
     changed = not before or json.loads(before) != config
     backup = None
     if changed:
@@ -729,6 +816,16 @@ def main():
     parser.add_argument('--headed', action='store_true')
     parser.add_argument('--request-file')
     args = vars(parser.parse_args())
+    if args['action'] == 'guard':
+        try:
+            raw = sys.stdin.buffer.read(2_097_153)
+            if len(raw) > 2_097_152: raise ValueError('hook input too large')
+            result = simulator_guard(args['provider'], json.loads(raw))
+        except Exception:
+            result = {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
+                      'permissionDecision': 'deny', 'permissionDecisionReason': 'Modore: 시뮬레이터 생성 검사 실패. 명령과 resources status를 확인하세요.'}}
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     if args['action'] == 'hook':
         # A hook must not continue, interrupt or block the AI session on failure.
         # In particular, never return exit 2 or a Stop decision field.
