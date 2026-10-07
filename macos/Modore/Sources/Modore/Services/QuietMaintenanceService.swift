@@ -14,9 +14,10 @@ enum LocalUserPresence {
 
 @MainActor
 final class QuietMaintenanceService: ObservableObject {
+    let recovery = AutomaticCacheRecovery()
     private var task: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
-    func start(model: ScanModel) {
+    func start(model: ScanModel, monitor: CPUWatchService) {
         guard task == nil else { return }
         let center = NSWorkspace.shared.notificationCenter
         observers.append(center.addObserver(forName:NSWorkspace.screensDidSleepNotification,object:nil,queue:.main) { _ in
@@ -37,6 +38,7 @@ final class QuietMaintenanceService: ObservableObject {
                     model.cleanupInFlight = false
                     model.finishDestructiveCleanupTransaction()
                 }
+                if let model { await self.recovery.runIfNeeded(model: model, snapshot: monitor.snapshot) }
                 do { try await Task.sleep(nanoseconds:60_000_000_000) } catch { return }
             }
         }

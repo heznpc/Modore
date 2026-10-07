@@ -2714,3 +2714,24 @@ def test_chrome_execution_removes_only_approved_idle_clone(project_root, tmp_pat
     assert parse_protocol(executed.stdout)["status"] == "complete", executed.stdout + executed.stderr
     assert not idle.exists()
     assert active.exists() and root.exists()
+
+
+def test_download_cache_preserves_npx_runtime_and_rejects_active_install(project_root, tmp_path):
+    home = tmp_path / 'home'
+    cache = home / '.npm' / '_cacache'
+    cache.mkdir(parents=True)
+    (cache / 'package').write_bytes(b'x' * 8192)
+    runtime = home / '.npm' / '_npx' / 'tool' / 'index.js'
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text('live tool')
+    blocked = run_cleanup(project_root, home, '--preview', 'npm_download_cache',
+                          processes='123 node /opt/bin/npm-cli.js install')
+    assert parse_protocol(blocked.stdout)['status'] != 'ready'
+    assert cache.exists()
+    preview = run_cleanup(project_root, home, '--preview', 'npm_download_cache')
+    payload = parse_protocol(preview.stdout)
+    assert payload['targets'] == [str(cache)]
+    result = run_cleanup_with_token_file(project_root, home, 'npm_download_cache', approval_token(payload))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not cache.exists()
+    assert runtime.read_text() == 'live tool'
