@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import signal
 import tempfile
 import time
 
@@ -96,6 +97,43 @@ def scan(label, path, since, now, seen=None):
                 status='measured' if errors==0 else 'partial',
                 candidates=sorted(buckets.values(), key=lambda x:x['createdBytes']+x['modifiedBytes'], reverse=True))
 
+def scan_isolated(label, path, since, now, seen, timeout=30):
+    """A stalled filesystem open must not discard evidence from other roots."""
+    with tempfile.TemporaryFile() as output:
+        pid = os.fork()
+        if pid == 0:
+            try:
+                before = set(seen)
+                row = scan(label, path, since, now, seen)
+                output.write(json.dumps([row, list(seen-before)]).encode())
+                output.flush()
+                os._exit(0)
+            except BaseException:
+                os._exit(1)
+        deadline = time.monotonic() + timeout
+        status = None
+        try:
+            while time.monotonic() < deadline:
+                done, status = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    if status == 0:
+                        output.seek(0)
+                        row, identities = json.load(output)
+                        seen.update(tuple(item) for item in identities)
+                        return row
+                    break
+                time.sleep(0.05)
+            else:
+                status = None
+        finally:
+            if status is None:
+                try: os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+                os.waitpid(pid, 0)
+        return dict(label=label, path=path, allocatedBytes=0, createdBytes=0,
+                    modifiedBytes=0, files=0, errors=1, complete=False,
+                    status='timeout' if status is None else 'failed', candidates=[])
+
 def past_measurements(state, since, max_age=300):
     found = {}
     # Only a contemporaneous successful baseline supports a measured growth claim.
@@ -141,7 +179,7 @@ def explain(home=Path.home(), state=STATE, since=None, targets=None):
     rows=[]; seen=set()
     selected = targets if targets is not None else roots(home)
     for label,path in selected:
-        row=scan(label,path,start,now,seen)
+        row=scan_isolated(label,path,start,now,seen)
         old=previous.get(os.path.realpath(path))
         latest=recent.get(os.path.realpath(path))
         row['previousMeasuredAt']=iso(latest[0]) if latest else None
