@@ -410,3 +410,56 @@ class BrowserTurnTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+class SimulatorGuardTests(unittest.TestCase):
+    def payload(self, command):
+        return {'hook_event_name': 'PreToolUse', 'tool_name': 'exec_command',
+                'tool_input': {'cmd': command}, 'cwd': '/tmp', 'session_id': 'test'}
+
+    def inventory(self):
+        return {'devices': {'ios-a': [{'udid': 'existing', 'name': 'Shared',
+                'state': 'Shutdown', 'isAvailable': True,
+                'deviceTypeIdentifier': 'phone', 'dataPath': '/devices/existing'}]},
+                'devicetypes': [{'identifier': 'phone', 'name': 'iPhone Test'}],
+                'runtimes': [{'identifier': 'ios-a', 'name': 'iOS Test', 'version': '26.5'}]}
+
+    def test_duplicate_aliases_wrappers_and_clone_return_reuse_path(self):
+        for command in [
+            'xcrun simctl create New phone ios-a',
+            '/usr/bin/xcrun simctl create New "iPhone Test" "iOS Test"',
+            'env FOO=bar xcrun --sdk iphonesimulator simctl create New phone 26.5',
+            'echo ready && xcrun simctl create New phone',
+            'bash -lc "xcrun simctl create New phone ios-a"',
+            'xcrun simctl clone existing Copy']:
+            with self.subTest(command=command), patch.object(m, 'command', return_value=json.dumps(self.inventory()).encode()):
+                output = m.simulator_guard('codex', self.payload(command))['hookSpecificOutput']
+                self.assertEqual(output['permissionDecision'], 'deny')
+                self.assertIn('/devices/existing', output['permissionDecisionReason'])
+                self.assertIn('--id existing', output['permissionDecisionReason'])
+
+    def test_non_creating_commands_do_not_query_devices(self):
+        for command in ['echo "xcrun simctl create New phone ios-a"',
+                        'xcrun simctl list devices', 'swift build']:
+            with patch.object(m, 'command') as run:
+                self.assertEqual(m.simulator_guard('codex', self.payload(command)), {})
+                run.assert_not_called()
+
+    def test_different_configuration_is_allowed(self):
+        with patch.object(m, 'command', return_value=json.dumps(self.inventory()).encode()):
+            self.assertEqual(m.simulator_guard('codex', self.payload('xcrun simctl create New phone ios-b')), {})
+
+    def test_failed_inventory_does_not_allow_blind_creation(self):
+        with patch.object(m, 'command', side_effect=ValueError('offline')):
+            output = m.simulator_guard('codex', self.payload('xcrun simctl create New phone ios-a'))
+            self.assertEqual(output['hookSpecificOutput']['permissionDecision'], 'deny')
+
+    def test_both_providers_install_simulator_guard_idempotently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            for provider, filename in [('codex', '.codex/hooks.json'), ('claude', '.claude/settings.json')]:
+                m.install_hooks(provider, root=home/'registry', home=home)
+                self.assertFalse(m.install_hooks(provider, root=home/'registry', home=home)['changed'])
+                config = json.loads((home/filename).read_text())
+                guards = [g for g in config['hooks']['PreToolUse'] if any('resources guard' in h['command'] for h in g['hooks'])]
+                self.assertEqual(len(guards), 1)
+                self.assertRegex('exec_command', guards[0]['matcher'])
