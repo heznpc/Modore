@@ -102,6 +102,16 @@ enum BackgroundNotifier {
         // `open -g -j` already skips activation; this additionally keeps a Dock
         // icon from ever appearing for what should be an invisible launch.
         NSApplication.shared.setActivationPolicy(.prohibited)
+        let otherAppRunning = NSRunningApplication.runningApplications(withBundleIdentifier: "me.heznpc.modore")
+            .contains { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+        if AutomaticCachePolicy.ownsStorageNotice(
+            enabled: UserDefaults.standard.bool(forKey: "automaticSafeCacheRecovery"),
+            appRunning: otherAppRunning, free: AutomaticCacheRecovery.freeSpace()) {
+            // The live app owns analysis and result delivery; acknowledge handling
+            // so the minute watcher does not spawn another duplicate reminder.
+            _ = acknowledgeAcceptedRequest(backgroundRequest, error: nil)
+            exit(0)
+        }
         let center = UNUserNotificationCenter.current()
         PressureNotification.register(on: center)
         let semaphore = DispatchSemaphore(value: 0)

@@ -260,6 +260,13 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         let changed = journal.observe(current)
         detail = current.summary
         if changed || Date().timeIntervalSince(lastSaved) >= 60 { persist() }
+        let managedStorage = AutomaticCachePolicy.ownsStorageNotice(
+            enabled: UserDefaults.standard.bool(forKey: "automaticSafeCacheRecovery"),
+            appRunning: true, free: current.freeBytes)
+        // Automatic recovery owns storage results. Continue distinct RAM/CPU notices.
+        guard !managedStorage || (current.memoryPressure ?? 0) >= 2
+            || current.cpuElevated || current.cpuBurst == true else { return }
+        let notifyStorage = lowStorage && !managedStorage
         guard enabled, noticePolicy.shouldSend(
             current, journalChanged: changed,
             userPresent: lowStorage || LocalUserPresence.allowsNotification, now: Date()
@@ -270,20 +277,20 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         }
         let content = UNMutableNotificationContent()
         content.title = current.issues.isEmpty ? L10n.text("부하가 낮아졌습니다") : (
-            (current.freeBytes ?? Int64.max) < 20 * 1_073_741_824
+            notifyStorage
                 ? L10n.format("공간 부족 · %@ 남음", String(describing: HealthSnapshot.bytes(current.freeBytes)))
                 : ((current.memoryPressure ?? 0) >= 2 ? L10n.text("RAM 사용을 줄여야 합니다") : (current.cpuElevated ? L10n.text("CPU 부하가 계속 높습니다") : L10n.text("CPU 순간 부하 감지"))))
         let topProcess = usage.first.map { "\(String($0.name.prefix(22))) CPU \(Int($0.percent))%" }
         let memory = (current.memoryPressure ?? 0) >= 2 ? L10n.text("RAM 주의") : nil
-        content.body = lowStorage
+        content.body = notifyStorage
             ? [current.summary, current.cpuElevated || current.cpuBurst == true ? topProcess : nil,
                L10n.text("공간 확보 또는 실행 중인 앱 확인을 여세요.")].compactMap { $0 }.joined(separator: "\n")
             : [topProcess, memory].compactMap { $0 }.joined(separator: " · ")
-        content.userInfo = ["modoreRoute": lowStorage ? "storage" : "health"]
-        if lowStorage { content.categoryIdentifier = PressureNotification.category }
+        content.userInfo = ["modoreRoute": notifyStorage ? "storage" : "health"]
+        if notifyStorage { content.categoryIdentifier = PressureNotification.category }
         do {
             try await UNUserNotificationCenter.current().add(UNNotificationRequest(
-                identifier: lowStorage ? PressureNotification.category : "modore-health", content: content, trigger: nil))
+                identifier: notifyStorage ? PressureNotification.category : "modore-health", content: content, trigger: nil))
             noticePolicy.didAttempt(current, accepted: true, now: Date())
             await refreshNotificationStatus()
         } catch {
