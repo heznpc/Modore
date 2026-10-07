@@ -223,7 +223,7 @@ struct StorageWatchSettingsView: View {
 
             Section(L10n.text("개인정보")) {
                 Label(L10n.text("기록은 이 Mac 안에만 저장합니다."), systemImage: "lock.shield")
-                Text(L10n.text("Mac 상태 감시는 공간·스왑·RAM 압박·CPU 상위 프로세스와 작업 경로를 이 Mac에 최대 40건 기록합니다. 매분 공간 감시는 시각·여유 공간을 기록하고, 용량 부족이나 급감 시 알려진 경로의 크기와 실행 상태를 제한된 시간 안에 측정합니다. 대화·파일 내용 수집과 자동 삭제는 하지 않습니다."))
+                Text(L10n.text("Mac 상태 감시는 공간·스왑·RAM 압박·CPU 상위 프로세스와 작업 경로를 이 Mac에 최대 40건 기록합니다. 매분 공간 감시는 시각·여유 공간을 기록하고, 용량 부족이나 급감 시 알려진 경로의 크기와 실행 상태를 제한된 시간 안에 측정합니다. 대화·파일 내용은 수집하지 않습니다. 자동 공간 확보를 켜면 위에 명시한 다운로드 캐시만 자동 정리합니다."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

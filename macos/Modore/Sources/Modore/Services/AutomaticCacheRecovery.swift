@@ -78,10 +78,10 @@ final class AutomaticCacheRecovery: ObservableObject {
 
     func revealReport() { NSWorkspace.shared.open(reportURL) }
 
-    func runIfNeeded(model: ScanModel, snapshot: HealthSnapshot?) async {
+    func runIfNeeded(model: ScanModel, snapshot: HealthSnapshot?, requestedNow: Bool = false) async {
         guard readable, !running, !model.cleanupInFlight, !model.isRunning,
               !model.applicationTerminationStarted,
-              AutomaticCachePolicy.shouldRun(enabled: enabled, free: Self.freeSpace(), lastRun: last?.date, now: Date()),
+              AutomaticCachePolicy.shouldRun(enabled: enabled, free: Self.freeSpace(), lastRun: requestedNow ? nil : last?.date, now: Date()),
               let before = Self.freeSpace() else { return }
         running = true
         model.cleanupInFlight = true
@@ -92,7 +92,7 @@ final class AutomaticCacheRecovery: ObservableObject {
             model.finishDestructiveCleanupTransaction()
         }
         let fresh = snapshot.flatMap { Date().timeIntervalSince($0.date) < 60 ? $0 : nil }
-        let top = fresh?.processes.sorted { $0.cpu > $1.cpu }.prefix(3)
+        let top = fresh.flatMap { $0.cpuAvailable ? $0 : nil }?.processes.sorted { $0.cpu > $1.cpu }.prefix(3)
             .map { "\($0.name) \(Int($0.cpu))%" }.joined(separator: ", ") ?? "CPU 원인 미확인"
         var report = AutomaticCacheReport(date: Date(), before: before,
             evidence: "\(fresh?.summary ?? "최근 상태 표본 없음") · CPU 상위: \(top). 캐시 점유는 회수 후보이며 공간 감소 원인으로 확정한 값은 아닙니다.",
@@ -140,12 +140,11 @@ final class AutomaticCacheRecovery: ObservableObject {
             // It records measured directory growth separately from file-age candidates.
             report.analysisAt = last?.analysisAt
             if enabled, !Task.isCancelled,
-               report.analysisAt.map({ Date().timeIntervalSince($0) >= 86400 }) ?? true {
+               requestedNow || report.analysisAt.map({ Date().timeIntervalSince($0) >= 86400 }) ?? true {
                 detail = "캐시 처리 후 남은 공간 감소 원인을 분석하는 중"
-                report.analysisAt = Date()
                 try save(report)
                 let execution = context.execution
-                if let invocation = execution.pinnedInvocation(relativePath: "scripts/storage_explain.py", name: "automatic-attribution"),
+                if let invocation = execution.pinnedInvocation(relativePath: "scripts/storage_explain.py", name: "automatic_attribution"),
                    let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) {
                     let wrapper = "import sys; source=open(sys.argv[1],'rb').read(); sys.argv=['storage_explain.py']; exec(compile(source,'storage_explain.py','exec'),{'__name__':'__main__'})"
                     let analysis = await LocalProcessRunner.capture(executable: python,
@@ -157,6 +156,7 @@ final class AutomaticCacheRecovery: ObservableObject {
                     if analysis.succeeded,
                        let object = try? JSONSerialization.jsonObject(with: Data(analysis.output.utf8)) as? [String: Any],
                        let rows = object["rows"] as? [[String: Any]] {
+                        report.analysisAt = Date()
                         let causes = rows.prefix(3).map { row -> String in
                             let label = row["label"] as? String ?? "경로"
                             if let delta = row["recentDeltaBytes"] as? Int64 {
