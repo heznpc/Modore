@@ -61,3 +61,28 @@ class ExplanationTests(unittest.TestCase):
             self.assertEqual(row['recentDeltaBytes'],row['measuredDeltaBytes'])
             self.assertIsNone(result['freeDropBytes'])
             self.assertTrue((state/'storage-explanation-progress.json').exists())
+
+
+class IsolatedScanTests(unittest.TestCase):
+    def test_stalled_root_is_partial_and_next_root_still_runs(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(m, 'scan', side_effect=lambda *args: time.sleep(2)):
+                row = m.scan_isolated('stalled', d, 0, time.time(), set(), timeout=0.1)
+            self.assertEqual(row['status'], 'timeout')
+            self.assertFalse(row['complete'])
+            Path(d, 'file').write_bytes(b'x' * 8192)
+            row = m.scan_isolated('next', d, 0, time.time(), set())
+            self.assertTrue(row['complete'])
+            self.assertGreater(row['allocatedBytes'], 0)
+
+    def test_hardlink_identity_survives_worker_boundary(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            a = Path(d, 'a'); b = Path(d, 'b'); a.mkdir(); b.mkdir()
+            (a/'file').write_bytes(b'x' * 8192); os.link(a/'file', b/'link')
+            seen=set()
+            first=m.scan_isolated('a',str(a),0,time.time(),seen)
+            second=m.scan_isolated('b',str(b),0,time.time(),seen)
+            self.assertGreater(first['allocatedBytes'], second['allocatedBytes'])
+            self.assertEqual(second['files'], 0)
