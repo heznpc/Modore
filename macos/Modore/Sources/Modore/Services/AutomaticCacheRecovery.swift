@@ -4,7 +4,31 @@ import Foundation
 import UserNotifications
 
 struct AutomaticCachePolicy {
-    static let recipes = ["npm_download_cache", "pip_cache", "homebrew_cache"]
+    static let revision = 3
+    static let recipes = [
+        "vscode_update_cache", "chrome_code_sign_clones", "playwright_unused_browsers",
+        "npm_download_cache", "pip_cache", "homebrew_cache", "uv_cache",
+        "gradle_cache", "cocoapods_cache", "swiftpm_cache", "xcode_derived_data",
+    ]
+
+    static func largestFirst(_ candidates: [AutomaticRecoveryCandidate]) -> [AutomaticRecoveryCandidate] {
+        candidates.filter { $0.ready && ($0.bytes ?? 0) >= 16 * 1_048_576 }
+            .sorted { ($0.bytes ?? 0) == ($1.bytes ?? 0)
+                ? $0.recipe < $1.recipe : ($0.bytes ?? 0) > ($1.bytes ?? 0) }
+    }
+
+    static func remainingBytes(after: Int64?) -> Int64? {
+        after.map { max(0, target - max(0, $0)) }
+    }
+
+    static func occupants(_ rows: [[String: Any]]) -> [AutomaticStorageOccupant] {
+        rows.compactMap { row -> AutomaticStorageOccupant? in
+            guard let label = row["label"] as? String, let path = row["path"] as? String,
+                  let bytes = row["allocatedBytes"] as? Int64, bytes >= 1_073_741_824 else { return nil }
+            return AutomaticStorageOccupant(label: label, path: path, bytes: bytes,
+                complete: row["complete"] as? Bool ?? false)
+        }.sorted { $0.bytes > $1.bytes }
+    }
     static func ownsStorageNotice(enabled: Bool, appRunning: Bool, free: Int64?) -> Bool {
         guard enabled, appRunning, let free else { return false }
         return free >= 3 * 1_073_741_824
@@ -14,7 +38,10 @@ struct AutomaticCachePolicy {
         if !report.receipts.isEmpty { return true }
         guard let previous else { return true }
         if report.finished != previous.finished { return true }
-        let meaningful = { (rows: [String]) in rows.filter { !$0.hasPrefix("경로별 원인 분석 저장:") } }
+        if (remainingBytes(after: report.after) == 0) != (remainingBytes(after: previous.after) == 0) { return true }
+        let meaningful = { (rows: [String]) in rows.filter {
+            !$0.hasPrefix("경로별 원인 분석 저장:") && !$0.hasPrefix("자동 정리로 목표에 도달하지 못했습니다.")
+        } }
         if meaningful(report.outcomes) != meaningful(previous.outcomes) { return true }
         return HealthNoticePolicy.storageLevel(report.after) >= 4
             && HealthNoticePolicy.storageLevel(previous.after) < 4
@@ -46,6 +73,23 @@ struct AutomaticCachePolicy {
     }
 }
 
+struct AutomaticRecoveryCandidate: Codable, Identifiable {
+    var recipe: String
+    var label: String
+    var bytes: Int64?
+    var ready: Bool
+    var reason: String
+    var id: String { recipe }
+}
+
+struct AutomaticStorageOccupant: Codable, Identifiable {
+    var label: String
+    var path: String
+    var bytes: Int64
+    var complete: Bool
+    var id: String { path }
+}
+
 struct AutomaticCacheReport: Codable {
     var id = UUID()
     var date: Date
@@ -57,6 +101,10 @@ struct AutomaticCacheReport: Codable {
     var attempted: [String: Date] = [:]
     var analysisAt: Date?
     var finished = false
+    // Optional for reports written by earlier app versions.
+    var policyRevision: Int?
+    var candidates: [AutomaticRecoveryCandidate]?
+    var occupants: [AutomaticStorageOccupant]?
 }
 
 /// Only explicit standing consent authorizes these fixed, regenerable caches.
@@ -71,7 +119,7 @@ final class AutomaticCacheRecovery: ObservableObject {
     @Published var enabled: Bool {
         didSet { defaults.set(enabled, forKey: "automaticSafeCacheRecovery") }
     }
-    private var last: AutomaticCacheReport?
+    @Published private(set) var last: AutomaticCacheReport?
     private var readable = true
 
     init(defaults: UserDefaults = .standard) {
@@ -87,7 +135,7 @@ final class AutomaticCacheRecovery: ObservableObject {
 
     var isDue: Bool {
         readable && AutomaticCachePolicy.shouldRun(enabled: enabled, free: Self.freeSpace(),
-            lastRun: last?.date, now: Date())
+            lastRun: last?.policyRevision == AutomaticCachePolicy.revision ? last?.date : nil, now: Date())
     }
 
     static func freeSpace() -> Int64? {
@@ -98,7 +146,9 @@ final class AutomaticCacheRecovery: ObservableObject {
     static func summary(_ report: AutomaticCacheReport) -> String {
         guard let after = report.after else { return "자동 관리 결과의 여유 공간을 확인하지 못했습니다." }
         let delta = after - report.before
-        return "자동 관리 후 여유 \(HealthSnapshot.bytes(after)) · 실제 변화 \(delta >= 0 ? "+" : "−")\(HealthSnapshot.bytes(abs(delta)))"
+        let remaining = AutomaticCachePolicy.remainingBytes(after: after) ?? 0
+        let state = remaining > 0 ? "공간 부족 지속 · 목표까지 \(HealthSnapshot.bytes(remaining)) 부족" : "공간 확보 목표 도달"
+        return "\(state) · 여유 \(HealthSnapshot.bytes(after)) · 실제 변화 \(delta >= 0 ? "+" : "−")\(HealthSnapshot.bytes(abs(delta)))"
     }
 
     private func save(_ report: AutomaticCacheReport) throws {
@@ -133,7 +183,7 @@ final class AutomaticCacheRecovery: ObservableObject {
         enabled = defaults.bool(forKey: "automaticSafeCacheRecovery")
         guard readable, !model.cleanupInFlight, !model.isRunning,
               !model.applicationTerminationStarted,
-              AutomaticCachePolicy.shouldRun(enabled: enabled, free: Self.freeSpace(), lastRun: requestedNow ? nil : last?.date, now: Date()),
+              AutomaticCachePolicy.shouldRun(enabled: enabled, free: Self.freeSpace(), lastRun: requestedNow || last?.policyRevision != AutomaticCachePolicy.revision ? nil : last?.date, now: Date()),
               let before = Self.freeSpace() else { return }
         running = true
         model.cleanupInFlight = true
@@ -149,7 +199,8 @@ final class AutomaticCacheRecovery: ObservableObject {
         let previousReport = last
         var report = AutomaticCacheReport(date: Date(), before: before,
             evidence: "\(fresh?.summary ?? "최근 상태 표본 없음") · CPU 상위: \(top). 캐시 점유는 회수 후보이며 공간 감소 원인으로 확정한 값은 아닙니다.",
-            attempted: last?.attempted ?? [:], analysisAt: last?.analysisAt)
+            attempted: last?.attempted ?? [:], analysisAt: last?.analysisAt,
+            policyRevision: AutomaticCachePolicy.revision, candidates: [], occupants: last?.occupants)
         detail = "사용 중인 작업을 확인하고 다운로드 캐시를 분석하는 중"
         do {
             // Persist intent first: an app restart cannot immediately repeat deletion.
@@ -157,23 +208,48 @@ final class AutomaticCacheRecovery: ObservableObject {
             guard let context = await CleanupExecutionService.prepare(projectRoot: model.projectRoot) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
+            // Survey every supported regenerable category before deciding order.
+            // Never let a small cache consume the run while GB-sized candidates
+            // remain undiscovered. A preview is repeated immediately before deletion.
             for recipe in AutomaticCachePolicy.recipes {
-                guard enabled, defaults.bool(forKey: "automaticSafeCacheRecovery"), !Task.isCancelled, !model.applicationTerminationStarted,
-                      let available = Self.freeSpace(), available < AutomaticCachePolicy.target else { break }
-                // Avoid repeatedly deleting a cache that a workflow is rebuilding.
+                guard enabled, defaults.bool(forKey: "automaticSafeCacheRecovery"),
+                      !Task.isCancelled, !model.applicationTerminationStarted else { break }
                 if let attempted = report.attempted[recipe], Date().timeIntervalSince(attempted) < 86400 {
-                    report.outcomes.append("\(recipe): 최근 처리한 캐시로 보존"); continue
+                    report.candidates?.append(AutomaticRecoveryCandidate(recipe: recipe, label: recipe,
+                        ready: false, reason: "최근 처리 후 재생성된 항목 · 반복 삭제 보류"))
+                    continue
                 }
+                detail = "정리 가능한 용량 측정 중 · \(recipe)"
                 let result = await CleanupExecutionService.preview(recipeID: recipe, using: context)
-                guard let preview = CleanupPreview(protocolText: result.output), result.endState == .exited,
-                      preview.recipeID == recipe, preview.operation == "preview" else {
-                    report.outcomes.append("\(recipe): 분석 실패 · 보존"); continue
+                guard let preview = CleanupExecutionService.validatedPreview(result, recipeID: recipe) else {
+                    let blocked = CleanupPreview(protocolText: result.output)
+                    report.candidates?.append(AutomaticRecoveryCandidate(recipe: recipe,
+                        label: blocked?.label ?? recipe, bytes: blocked?.estimateMeasured == true ? blocked?.estimatedBytes : nil, ready: false,
+                        reason: (blocked?.blockedReason.isEmpty == false ? blocked!.blockedReason : "사용 여부·용량 측정 미완료")
+                            + (blocked?.runningProcesses.isEmpty == false ? " · " + blocked!.runningProcesses : "")))
+                    try save(report)
+                    continue
                 }
-                guard result.succeeded, preview.canExecute else {
-                    report.outcomes.append("\(preview.label): \(preview.blockedReason.isEmpty ? preview.statusText : preview.blockedReason)"); continue
-                }
-                guard let size = preview.estimatedBytes, size >= 16 * 1_048_576 else {
-                    report.outcomes.append("\(preview.label): 작은 캐시로 보존"); continue
+                report.candidates?.append(AutomaticRecoveryCandidate(recipe: recipe, label: preview.label,
+                    bytes: preview.estimateMeasured ? preview.estimatedBytes : nil, ready: preview.canExecute,
+                    reason: preview.canExecute ? "정리 가능" : (preview.blockedReason.isEmpty ? preview.statusText : preview.blockedReason)))
+                try save(report)
+            }
+            for candidate in AutomaticCachePolicy.largestFirst(report.candidates ?? []) {
+                let recipe = candidate.recipe
+                guard enabled, defaults.bool(forKey: "automaticSafeCacheRecovery"),
+                      !Task.isCancelled, !model.applicationTerminationStarted,
+                      let available = Self.freeSpace(), available < AutomaticCachePolicy.target else { break }
+                detail = "큰 항목부터 정리 중 · \(candidate.label)"
+                let refreshed = await CleanupExecutionService.preview(recipeID: recipe, using: context)
+                guard let preview = CleanupExecutionService.validatedPreview(refreshed, recipeID: recipe),
+                      preview.canExecute, let size = preview.estimatedBytes, size >= 16 * 1_048_576 else {
+                    report.outcomes.append("\(candidate.label): 사용 상태 또는 크기가 바뀌어 보존")
+                    if let index = report.candidates?.firstIndex(where: { $0.recipe == recipe }) {
+                        report.candidates?[index].ready = false
+                        report.candidates?[index].reason = "사용 상태 또는 크기가 바뀌어 보존"
+                    }
+                    continue
                 }
                 guard enabled, defaults.bool(forKey: "automaticSafeCacheRecovery"), preview.approvalIsFresh(), model.persistCleanupMutationIntent() else { break }
                 report.attempted[recipe] = Date()
@@ -193,7 +269,12 @@ final class AutomaticCacheRecovery: ObservableObject {
                     report.outcomes.append("\(recipe): 실행 결과 미확인 · 재실행 중단"); break
                 }
                 if !outcome.receipt.isEmpty { report.receipts.append(outcome.receipt) }
-                report.outcomes.append("\(outcome.label): \(execution.succeeded && outcome.isComplete ? "정리 확인" : outcome.failureMessage)")
+                let resultText = execution.succeeded && outcome.isComplete ? "정리 확인" : outcome.failureMessage
+                report.outcomes.append("\(outcome.label): \(resultText)")
+                if let index = report.candidates?.firstIndex(where: { $0.recipe == recipe }) {
+                    report.candidates?[index].ready = false
+                    report.candidates?[index].reason = resultText
+                }
                 try save(report)
                 if !execution.succeeded || !outcome.isComplete { break }
             }
@@ -201,7 +282,7 @@ final class AutomaticCacheRecovery: ObservableObject {
             // It records measured directory growth separately from file-age candidates.
             report.analysisAt = last?.analysisAt
             if enabled, !Task.isCancelled,
-               requestedNow || report.analysisAt.map({ Date().timeIntervalSince($0) >= 86400 }) ?? true {
+               requestedNow || report.occupants == nil || !report.receipts.isEmpty || report.analysisAt.map({ Date().timeIntervalSince($0) >= 86400 }) ?? true {
                 detail = "캐시 처리 후 남은 공간 감소 원인을 분석하는 중"
                 try save(report)
                 let execution = context.execution
@@ -218,6 +299,7 @@ final class AutomaticCacheRecovery: ObservableObject {
                        let object = try? JSONSerialization.jsonObject(with: Data(analysis.output.utf8)) as? [String: Any],
                        let rows = object["rows"] as? [[String: Any]] {
                         report.analysisAt = Date()
+                        report.occupants = AutomaticCachePolicy.occupants(rows)
                         let causes = AutomaticCachePolicy.evidenceLines(rows)
                         report.evidence += "\n" + causes.joined(separator: " · ")
                         report.outcomes.append("경로별 원인 분석 저장: 조치 기록 → 공간 확보 이후 무엇이 생겼나")
@@ -226,6 +308,9 @@ final class AutomaticCacheRecovery: ObservableObject {
             }
             report.after = Self.freeSpace()
             report.finished = true
+            if let missing = AutomaticCachePolicy.remainingBytes(after: report.after), missing > 0 {
+                report.outcomes.append("자동 정리로 목표에 도달하지 못했습니다. 추가 필요: \(HealthSnapshot.bytes(missing)). 남은 큰 항목은 확보 계획에서 확인할 수 있습니다.")
+            }
             try save(report)
             detail = Self.summary(report)
         } catch {

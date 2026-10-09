@@ -403,6 +403,43 @@ regex_escape_ere() {
     /usr/bin/printf '%s' "$1" | /usr/bin/sed 's/[][(){}.^$*+?|\\]/\\&/g'
 }
 
+# An idle browser can still be required by an installed Playwright package.
+# Preserve every linked revision (including platform overrides); malformed
+# registration data is unknown, never evidence that a version is disposable.
+playwright_version_is_unreferenced() {
+    local target="$1" links="$HOME_ROOT/Library/Caches/ms-playwright/.links"
+    local link package manifest index name revision overrides browser_name
+    browser_name="${target##*/}"
+    [[ -d "$links" && ! -L "$links" && -x /usr/bin/plutil ]] || return 1
+    for link in "$links"/* "$links"/.[!.]*; do
+        [[ -e "$link" || -L "$link" ]] || continue
+        [[ -f "$link" && ! -L "$link" && -r "$link" ]] || return 1
+        package="$(/bin/cat "$link")" || return 1
+        [[ "$package" == /* ]] || return 1
+        case "$package" in *$'\n'*|*$'\r'*) return 1 ;; esac
+        [[ -e "$package" || -L "$package" ]] || continue
+        manifest="$package/browsers.json"
+        [[ -f "$manifest" && -r "$manifest" ]] || return 1
+        /usr/bin/plutil -extract browsers json -o - "$manifest" >/dev/null 2>&1 || return 1
+        index=0
+        while name="$(/usr/bin/plutil -extract "browsers.$index.name" raw -o - "$manifest" 2>/dev/null)"; do
+            revision="$(/usr/bin/plutil -extract "browsers.$index.revision" raw -o - "$manifest" 2>/dev/null)" || return 1
+            [[ "$revision" =~ ^[0-9]+$ ]] || return 1
+            name="${name//-/_}"
+            [[ "$browser_name" != "$name-$revision" ]] || return 1
+            if [[ "$browser_name" == "$name-"* ]]; then
+                overrides="$(/usr/bin/plutil -extract "browsers.$index.revisionOverrides" json -o - "$manifest" 2>/dev/null || true)"
+                if /usr/bin/printf '%s' "$overrides" | /usr/bin/grep -E -q "[:[:space:]]\"?${browser_name##*-}\"?[,}]"; then
+                    return 1
+                fi
+            fi
+            index=$((index + 1))
+        done
+        [[ "$index" -gt 0 ]] || return 1
+    done
+    return 0
+}
+
 sha256_file() {
     local source="$1"
     if [[ -x /usr/bin/shasum ]]; then
@@ -1056,7 +1093,7 @@ apply_recipe_guidance() {
             DESCRIPTION="여러 프로젝트가 공유하도록 pnpm이 패키지를 모아 두는 저장소입니다. 프로젝트 소스는 대상이 아닙니다."
             AVOID_WHEN="여러 프로젝트를 자주 재설치하거나 오프라인 작업이 예정됐다면 두세요."
             ;;
-        playwright_browsers)
+        playwright_browsers|playwright_unused_browsers)
             DESCRIPTION="Playwright가 테스트용으로 내려받은 Chromium·Firefox·WebKit 바이너리입니다. 평소 쓰는 Chrome 앱과 프로필, 북마크와는 무관합니다."
             AVOID_WHEN="곧 E2E 테스트를 돌려야 하는데 네트워크가 느리다면 두세요."
             ;;
@@ -1107,6 +1144,10 @@ apply_recipe_guidance() {
         xcode_derived_data)
             DESCRIPTION="Xcode가 빌드 중간 산출물과 코드 인덱스를 넣어 두는 폴더입니다. 소스와 Archive는 대상이 아닙니다."
             AVOID_WHEN="지금 빌드나 인덱싱이 돌고 있다면 끝난 뒤에 하세요."
+            ;;
+        vscode_update_cache)
+            DESCRIPTION="VS Code가 업데이트를 위해 내려받은 설치 파일입니다. 현재 설치된 편집기와 사용자 데이터는 대상이 아닙니다."
+            AVOID_WHEN="업데이트가 실행 중이거나 오프라인에서 업데이트해야 한다면 보존하세요."
             ;;
         chrome_code_sign_clones)
             DESCRIPTION="Chrome이 실행 중 앱 서명을 유지하기 위해 만드는 임시 복제본입니다. 북마크·비밀번호·프로필은 대상이 아닙니다."
@@ -1209,6 +1250,24 @@ define_recipe() {
     fi
 
     case "$recipe" in
+        vscode_update_cache)
+            LABEL="VS Code update downloads"
+            PROCESS_PATTERN='[Ss]hip[Ii]t|Visual Studio Code.app/Contents|/com\.microsoft\.VSCode\.ShipIt/'
+            PROCESS_NOTE="VS Code 또는 업데이트가 실행 중이면 다운로드를 보존합니다."
+            WARNING="다운로드한 업데이트는 다음 업데이트 때 다시 받습니다. 설치된 편집기·확장·설정·프로젝트는 보존합니다."
+            local update_dir
+            for update_dir in "$HOME_ROOT/Library/Caches/com.microsoft.VSCode.ShipIt"/update.*; do
+                [[ -e "$update_dir" || -L "$update_dir" ]] || continue
+                if validate_target "$recipe" "$update_dir"; then
+                    add_target_if_present "$update_dir"
+                else
+                    REVIEW_RESIDUE+=("$update_dir")
+                fi
+            done
+            if [[ "${#TARGETS[@]}" -eq 0 && "${#REVIEW_RESIDUE[@]}" -gt 0 ]]; then
+                RECIPE_BLOCK_REASON="업데이트 다운로드가 사용 중이거나 구조·사용 여부를 확인하지 못했습니다."
+            fi
+            ;;
         npm_download_cache)
             LABEL="npm download cache"
             # Long-lived npm exec MCP parents do not own the download cache.
@@ -1244,6 +1303,25 @@ define_recipe() {
             PROCESS_NOTE="pnpm/Node 작업을 먼저 종료하세요."
             WARNING="공유 패키지 저장소가 다시 채워지며 다음 설치가 느려질 수 있습니다."
             add_target_if_present "$HOME_ROOT/Library/pnpm"
+            ;;
+        playwright_unused_browsers)
+            LABEL="Unused Playwright browser downloads"
+            PROCESS_PATTERN='(^|[/[:space:]])(playwright|cli\.js)[[:space:]]+(install|install-deps)([[:space:]]|$)|browserFetcher'
+            PROCESS_NOTE="Playwright 브라우저 설치가 진행 중입니다."
+            WARNING="설치된 프로젝트가 참조하는 버전·실행 중인 버전·도구의 연결 정보는 보존합니다. 참조가 남지 않은 버전만 정리합니다."
+            local browser_dir
+            for browser_dir in "$HOME_ROOT/Library/Caches/ms-playwright"/*; do
+                [[ -e "$browser_dir" || -L "$browser_dir" ]] || continue
+                allowed_target "$recipe" "$browser_dir" || continue
+                if validate_target "$recipe" "$browser_dir"; then
+                    add_target_if_present "$browser_dir"
+                else
+                    REVIEW_RESIDUE+=("$browser_dir")
+                fi
+            done
+            if [[ "${#TARGETS[@]}" -eq 0 && "${#REVIEW_RESIDUE[@]}" -gt 0 ]]; then
+                RECIPE_BLOCK_REASON="설치된 프로젝트가 필요한 버전이거나 사용 중입니다. 참조·사용 여부가 불명확한 버전도 보존합니다."
+            fi
             ;;
         playwright_browsers)
             LABEL="Playwright browser cache"
@@ -1429,9 +1507,19 @@ allowed_target() {
         transient_workspace)
             [[ "$target" == "$TRANSIENT_WORKSPACE_TARGET" ]]
             ;;
+        vscode_update_cache)
+            local update_name="${target#"$HOME_ROOT/Library/Caches/com.microsoft.VSCode.ShipIt/"}"
+            [[ "$target" == "$HOME_ROOT/Library/Caches/com.microsoft.VSCode.ShipIt/"* \
+                && "$update_name" =~ ^update\.[A-Za-z0-9]{6,16}$ ]]
+            ;;
         npm_download_cache) [[ "$target" == "$HOME_ROOT/.npm/_cacache" ]] ;;
         npm_cache) [[ "$target" == "$HOME_ROOT/.npm" ]] ;;
         pnpm_store) [[ "$target" == "$HOME_ROOT/Library/pnpm" ]] ;;
+        playwright_unused_browsers)
+            local browser_name="${target#"$HOME_ROOT/Library/Caches/ms-playwright/"}"
+            [[ "$target" == "$HOME_ROOT/Library/Caches/ms-playwright/"* \
+                && "$browser_name" =~ ^(chromium|chromium_headless_shell|firefox|webkit|ffmpeg)-[0-9]+$ ]]
+            ;;
         playwright_browsers) [[ "$target" == "$HOME_ROOT/Library/Caches/ms-playwright" ]] ;;
         gradle_cache) [[ "$target" == "$HOME_ROOT/.gradle/caches" ]] ;;
         cocoapods_cache) [[ "$target" == "$HOME_ROOT/Library/Caches/CocoaPods" ]] ;;
@@ -1490,6 +1578,16 @@ validate_target() {
         return 1
     fi
     [[ "$canonical_target" == "$expected" ]] || return 1
+    if [[ "$recipe" == "playwright_unused_browsers" ]]; then
+        [[ -f "$target/INSTALLATION_COMPLETE" && ! -L "$target/INSTALLATION_COMPLETE" ]] || return 1
+        playwright_version_is_unreferenced "$target" || return 1
+        transient_workspace_is_idle "$target" || return 1
+    fi
+    if [[ "$recipe" == "vscode_update_cache" ]]; then
+        [[ -d "$target/Visual Studio Code.app/Contents/MacOS" \
+            && "$(read_bundle_id "$target/Visual Studio Code.app")" == "com.microsoft.VSCode" ]] || return 1
+        transient_workspace_is_idle "$target" || return 1
+    fi
     if [[ "$recipe" == "npm_download_cache" ]]; then
         transient_workspace_is_idle "$target" || return 1
     fi
@@ -2665,7 +2763,8 @@ write_receipt() {
 list_recipes() {
     local recipe
     for recipe in \
-        npm_cache pnpm_store playwright_browsers gradle_cache cocoapods_cache pub_cache \
+        npm_download_cache npm_cache pnpm_store playwright_browsers gradle_cache cocoapods_cache pub_cache \
+        uv_cache swiftpm_cache homebrew_cache pip_cache vscode_update_cache playwright_unused_browsers \
         codex_runtime_cache codex_temp_cache claude_vm_bundles xcode_derived_data \
         chrome_code_sign_clones innorix_ex; do
         define_recipe "$recipe"

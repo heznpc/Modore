@@ -107,6 +107,7 @@ struct ModoreApp: App {
             ContentView()
                 .environment(\.layoutDirection, .leftToRight)
                 .environmentObject(cpuWatch)
+                .environmentObject(maintenance.recovery)
                 .environmentObject(quotaWork)
                 .environmentObject(ciWatch)
                 .environmentObject(model)

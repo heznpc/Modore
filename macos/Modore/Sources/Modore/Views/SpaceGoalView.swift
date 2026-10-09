@@ -3,6 +3,8 @@ import SwiftUI
 
 struct SpaceGoalWorkspaceList: View {
     @EnvironmentObject private var model: ScanModel
+    @EnvironmentObject private var recovery: AutomaticCacheRecovery
+    @EnvironmentObject private var monitor: CPUWatchService
     let storage: StorageSnapshot
     let currentFreeGB: Double?
     @State private var targetBytes: Int64
@@ -69,6 +71,17 @@ struct SpaceGoalWorkspaceList: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(recovery.detail).font(.callout.weight(.semibold))
+                    Spacer()
+                    Button("큰 항목부터 자동 확보") {
+                        Task { await recovery.runIfNeeded(model: model, snapshot: monitor.snapshot, requestedNow: true) }
+                    }
+                    .disabled(!recovery.enabled || recovery.running || model.isBusy)
+                }
+                if let report = recovery.last { AutomaticRecoveryDetails(report: report) }
             }
             HStack(alignment: .center, spacing: 28) {
                 VStack(alignment: .leading, spacing: 5) {
