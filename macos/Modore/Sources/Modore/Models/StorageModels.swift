@@ -13,6 +13,7 @@ enum CleanupRecipeCatalog {
         "pub_cache",
         "uv_cache",
         "swiftpm_cache",
+        "swift_build_outputs",
         "homebrew_cache",
         "pip_cache",
         "codex_runtime_cache",
@@ -53,7 +54,7 @@ enum CleanupRecipeCatalog {
              "codex_temp_cache", "chrome_code_sign_clones":
             return .safe
         case "playwright_browsers", "playwright_unused_browsers", "swiftpm_cache", "codex_runtime_cache",
-             "claude_vm_bundles", "xcode_derived_data", "project_residue",
+             "claude_vm_bundles", "xcode_derived_data", "swift_build_outputs", "project_residue",
              "transient_workspace":
             return .rebuild
         default:

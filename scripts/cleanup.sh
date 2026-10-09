@@ -469,6 +469,25 @@ project_has_git_marker() {
     return 1
 }
 
+# Only compiler output triples, never the .build directory or its source
+# checkouts/repositories. Existing worktrees and project files remain in place.
+swift_build_output_candidates() {
+    local root build output
+    for root in "$HOME_ROOT/Documents" "$HOME_ROOT/IdeaProjects" "$HOME_ROOT/.codex/worktrees"; do
+        [[ -d "$root" && ! -L "$root" ]] || continue
+        while IFS= read -r -d '' build; do
+            owned_regular_file "${build%/.build}/Package.swift" || continue
+            for output in "$build/arm64-apple-macosx" "$build/x86_64-apple-macosx"; do
+                [[ -d "$output" && ! -L "$output" ]] || continue
+                /usr/bin/printf '%s\0' "$output"
+            done
+        done < <(/usr/bin/find "$root" -xdev \
+            \( -name .git -o -name node_modules -o -name .venv -o -name .cache \
+               -o -name build -o -name target -o -name .next -o -name .Trash \) -prune -o \
+            -type d -name .build -print0 -prune 2>/dev/null)
+    done
+}
+
 project_residue_candidate_names() {
     case "$PROJECT_RESIDUE_BASENAME" in
         node_modules) /usr/bin/printf '%s\n' package.json ;;
@@ -1161,6 +1180,10 @@ apply_recipe_guidance() {
             DESCRIPTION="선택한 개발 프로젝트 안의 재생성 가능한 빌드 산출물입니다. 프로젝트 소스와 lockfile은 대상이 아닙니다."
             AVOID_WHEN="이 프로젝트의 빌드·패키지 설치가 진행 중이거나 곧 오프라인에서 다시 빌드해야 한다면 두세요."
             ;;
+        swift_build_outputs)
+            DESCRIPTION="문서·개발 프로젝트·기존 워크트리 안의 Swift 컴파일 산출물입니다. 소스·패키지 체크아웃·워크트리 자체는 보존합니다."
+            AVOID_WHEN="실행 중인 빌드·앱이 사용하는 산출물은 보존합니다. 다음 빌드는 다시 컴파일합니다."
+            ;;
         transient_workspace)
             DESCRIPTION="macOS 임시 루트 바로 아래에서 현재 사용자가 만든 작업공간 한 개입니다. 다른 임시 폴더와 사용자 문서는 대상이 아닙니다."
             AVOID_WHEN="관련 빌드·테스트·브라우저 작업을 계속 사용 중이라면 두세요."
@@ -1250,6 +1273,25 @@ define_recipe() {
     fi
 
     case "$recipe" in
+        swift_build_outputs)
+            LABEL="미사용 Swift 프로젝트 컴파일 산출물"
+            WARNING="문서·개발 프로젝트·워크트리의 컴파일 결과만 정리합니다. 다음 빌드는 느려질 수 있습니다. 소스·의존성 체크아웃·프로젝트·워크트리는 보존합니다."
+            if [[ "$OPERATION" == "list" ]]; then
+                apply_recipe_guidance "$recipe"
+                return 0
+            fi
+            local build_output
+            while IFS= read -r -d '' build_output; do
+                if validate_target "$recipe" "$build_output"; then
+                    TARGETS+=("$build_output")
+                else
+                    REVIEW_RESIDUE+=("$build_output")
+                fi
+            done < <(swift_build_output_candidates)
+            if [[ "${#TARGETS[@]}" -eq 0 && "${#REVIEW_RESIDUE[@]}" -gt 0 ]]; then
+                RECIPE_BLOCK_REASON="Swift 산출물이 사용 중이거나 소스·Git·사용 여부를 확인하지 못해 보존합니다."
+            fi
+            ;;
         vscode_update_cache)
             LABEL="VS Code update downloads"
             PROCESS_PATTERN='[Ss]hip[Ii]t|Visual Studio Code.app/Contents|/com\.microsoft\.VSCode\.ShipIt/'
@@ -1501,6 +1543,13 @@ allowed_target() {
         return 1
     fi
     case "$recipe" in
+        swift_build_outputs)
+            case "$target" in
+                "$HOME_ROOT/Documents/"*|"$HOME_ROOT/IdeaProjects/"*|"$HOME_ROOT/.codex/worktrees/"*) ;;
+                *) return 1 ;;
+            esac
+            [[ "$target" == */.build/arm64-apple-macosx || "$target" == */.build/x86_64-apple-macosx ]]
+            ;;
         project_residue)
             [[ "$target" == "$PROJECT_RESIDUE_TARGET" ]]
             ;;
@@ -1578,6 +1627,15 @@ validate_target() {
         return 1
     fi
     [[ "$canonical_target" == "$expected" ]] || return 1
+    if [[ "$recipe" == "swift_build_outputs" ]]; then
+        local project="${parent%/.build}"
+        [[ -d "$target" && "$project" != "$parent" ]] || return 1
+        owned_regular_file "$project/Package.swift" || return 1
+        project_git_state "$project" "$target" || return 1
+        # The parent includes SwiftPM's build database/lock as well as binaries.
+        # This catches a compiler that has not opened its output file yet.
+        transient_workspace_is_idle "$parent" || return 1
+    fi
     if [[ "$recipe" == "playwright_unused_browsers" ]]; then
         [[ -f "$target/INSTALLATION_COMPLETE" && ! -L "$target/INSTALLATION_COMPLETE" ]] || return 1
         playwright_version_is_unreferenced "$target" || return 1
@@ -2764,7 +2822,7 @@ list_recipes() {
     local recipe
     for recipe in \
         npm_download_cache npm_cache pnpm_store playwright_browsers gradle_cache cocoapods_cache pub_cache \
-        uv_cache swiftpm_cache homebrew_cache pip_cache vscode_update_cache playwright_unused_browsers \
+        uv_cache swiftpm_cache swift_build_outputs homebrew_cache pip_cache vscode_update_cache playwright_unused_browsers \
         codex_runtime_cache codex_temp_cache claude_vm_bundles xcode_derived_data \
         chrome_code_sign_clones innorix_ex; do
         define_recipe "$recipe"

@@ -4,11 +4,11 @@ import Foundation
 import UserNotifications
 
 struct AutomaticCachePolicy {
-    static let revision = 3
+    static let revision = 4
     static let recipes = [
         "vscode_update_cache", "chrome_code_sign_clones", "playwright_unused_browsers",
         "npm_download_cache", "pip_cache", "homebrew_cache", "uv_cache",
-        "gradle_cache", "cocoapods_cache", "swiftpm_cache", "xcode_derived_data",
+        "gradle_cache", "cocoapods_cache", "swiftpm_cache", "xcode_derived_data", "swift_build_outputs",
     ]
 
     static func largestFirst(_ candidates: [AutomaticRecoveryCandidate]) -> [AutomaticRecoveryCandidate] {
@@ -79,6 +79,8 @@ struct AutomaticRecoveryCandidate: Codable, Identifiable {
     var bytes: Int64?
     var ready: Bool
     var reason: String
+    var targets: [String]?
+    var preservedTargets: [String]?
     var id: String { recipe }
 }
 
@@ -147,8 +149,8 @@ final class AutomaticCacheRecovery: ObservableObject {
         guard let after = report.after else { return "자동 관리 결과의 여유 공간을 확인하지 못했습니다." }
         let delta = after - report.before
         let remaining = AutomaticCachePolicy.remainingBytes(after: after) ?? 0
-        let state = remaining > 0 ? "공간 부족 지속 · 목표까지 \(HealthSnapshot.bytes(remaining)) 부족" : "공간 확보 목표 도달"
-        return "\(state) · 여유 \(HealthSnapshot.bytes(after)) · 실제 변화 \(delta >= 0 ? "+" : "−")\(HealthSnapshot.bytes(abs(delta)))"
+        let state = remaining > 0 ? "공간 부족 지속 · 목표까지 \(StorageBytes.text(remaining)) 부족" : "공간 확보 목표 도달"
+        return "\(state) · 여유 \(StorageBytes.text(after)) · 실제 변화 \(delta >= 0 ? "+" : "−")\(StorageBytes.text(abs(delta)))"
     }
 
     private func save(_ report: AutomaticCacheReport) throws {
@@ -232,7 +234,8 @@ final class AutomaticCacheRecovery: ObservableObject {
                 }
                 report.candidates?.append(AutomaticRecoveryCandidate(recipe: recipe, label: preview.label,
                     bytes: preview.estimateMeasured ? preview.estimatedBytes : nil, ready: preview.canExecute,
-                    reason: preview.canExecute ? "정리 가능" : (preview.blockedReason.isEmpty ? preview.statusText : preview.blockedReason)))
+                    reason: preview.canExecute ? "정리 가능" : (preview.blockedReason.isEmpty ? preview.statusText : preview.blockedReason),
+                    targets: preview.targets, preservedTargets: preview.reviewResidue))
                 try save(report)
             }
             for candidate in AutomaticCachePolicy.largestFirst(report.candidates ?? []) {
@@ -269,7 +272,9 @@ final class AutomaticCacheRecovery: ObservableObject {
                     report.outcomes.append("\(recipe): 실행 결과 미확인 · 재실행 중단"); break
                 }
                 if !outcome.receipt.isEmpty { report.receipts.append(outcome.receipt) }
-                let resultText = execution.succeeded && outcome.isComplete ? "정리 확인" : outcome.failureMessage
+                let resultText = execution.succeeded && outcome.isComplete
+                    ? "정리 확인 · 제거한 산출물 \(StorageBytes.text(outcome.reclaimedBytes)) · 볼륨 변화 \(StorageBytes.text(outcome.physicalDeltaBytes))"
+                    : outcome.failureMessage
                 report.outcomes.append("\(outcome.label): \(resultText)")
                 if let index = report.candidates?.firstIndex(where: { $0.recipe == recipe }) {
                     report.candidates?[index].ready = false
