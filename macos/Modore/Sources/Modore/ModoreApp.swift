@@ -65,6 +65,9 @@ struct ModoreApp: App {
     private let instanceLease: AppInstanceCoordinator.Lease?
 
     init() {
+        if CommandLine.arguments.contains(BackgroundCacheRecovery.launchArgument) {
+            BackgroundCacheRecovery.runAndExit()
+        }
         if let request = BackgroundNotifier.pendingRequest(in: CommandLine.arguments) {
             BackgroundNotifier.postAndExit(request: request)
         }

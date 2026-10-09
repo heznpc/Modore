@@ -2735,3 +2735,37 @@ def test_download_cache_preserves_npx_runtime_and_rejects_active_install(project
     assert result.returncode == 0, result.stdout + result.stderr
     assert not cache.exists()
     assert runtime.read_text() == 'live tool'
+
+
+@pytest.mark.parametrize("process", [
+    "123 npm exec xcodebuildmcp@latest mcp",
+    "123 node /opt/bin/npm-cli.js exec xcodebuildmcp@latest mcp",
+    "123 node /home/test/.npm/_npx/abc/node_modules/server/index.js",
+])
+def test_download_cache_allows_idle_cache_with_live_mcp(project_root, tmp_path, process):
+    home = tmp_path / "home"
+    cache = home / ".npm" / "_cacache"
+    cache.mkdir(parents=True)
+    (cache / "package").write_bytes(b"x" * 8192)
+    preview = run_cleanup(project_root, home, "--preview", "npm_download_cache", processes=process)
+    assert parse_protocol(preview.stdout)["status"] == "ready", preview.stdout
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+def test_download_cache_blocks_open_files_and_unknown_usage(project_root, tmp_path, unknown):
+    home = tmp_path / "home"
+    cache = home / ".npm" / "_cacache"
+    cache.mkdir(parents=True)
+    (cache / "package").write_bytes(b"x" * 8192)
+    idle = run_cleanup(project_root, home, "--preview", "npm_download_cache")
+    token = approval_token(parse_protocol(idle.stdout))
+    opened = tmp_path / "open-paths"
+    opened.write_text(str(cache) + "\n")
+    env = {"PCH_TEST_TRANSIENT_LSOF_UNKNOWN": "1"} if unknown else {
+        "PCH_TEST_TRANSIENT_OPEN_PATHS_FILE": str(opened)}
+    preview = run_cleanup(project_root, home, "--preview", "npm_download_cache", extra_env=env)
+    assert parse_protocol(preview.stdout)["status"] != "ready"
+    # A file opened after preview also invalidates execution.
+    result = run_cleanup_with_token_file(project_root, home, "npm_download_cache", token, extra_env=env)
+    assert result.returncode != 0
+    assert (cache / "package").exists()

@@ -622,7 +622,7 @@ def test_storage_watch_reserves_rows_for_transient_workspaces(project_root, tmp_
     }
 
 
-def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twice(
+def test_storage_watch_retains_simulator_facts_despite_stalled_root(
     project_root, tmp_path
 ):
     state_dir = tmp_path / "state"
@@ -721,11 +721,19 @@ def test_storage_watch_keeps_fast_simulator_facts_and_measures_slow_devices_twic
     assert len(device_rows) == 2
     assert all(row[2] == "ok" for row in device_rows)
     assert int(device_rows[1][1]) > int(device_rows[0][1]) > 0
+    # The slow root receives a longer retry on the second capture. Healthy
+    # roots deferred by that retry must resume on the next capture, rather
+    # than being represented as freshly measured or permanently starved.
+    for row in latest:
+        if row[3] in labels[:-1]:
+            assert row[2] == "deferred"
+    env["PCH_TEST_FREE_KB"] = str(20 * 1024 * 1024)
+    third = subprocess.run(
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=30
+    )
+    assert third.returncode == 0, third.stderr
     calls = du_log.read_text(encoding="utf-8").splitlines()
-    first_claude = calls.index(str(claude_tmp))
-    assert all(calls.index(str(roots[label])) < first_claude for label in labels[:-1])
-    assert calls.index(str(roots["Simulator 기기 데이터"])) > first_claude
-    assert calls.count(str(roots["Simulator 기기 데이터"])) == 2
+    assert all(calls.count(str(roots[label])) >= 2 for label in labels)
 
 
 def test_storage_watch_separates_signal_commit_from_path_delta_across_three_captures(
@@ -1683,7 +1691,8 @@ def test_storage_watch_does_not_rate_limit_a_notification_that_never_delivered(
     assert first_open and second_open
     assert not first_osascript and not second_osascript
     calls = (tmp_path / "notify-calls.log").read_text(encoding="utf-8").splitlines()
-    assert calls.count("open") == 2
+    # Both failed maintenance launches and failed notices remain retryable.
+    assert calls.count("open") == 4
     assert calls.count("osascript") == 0
     assert parse_protocol((state_dir / "storage-watch.tsv").read_text())["lastNotify"] == "0"
 
@@ -2480,3 +2489,31 @@ def test_timeout_gets_first_budget_when_attempt_timestamps_tie(project_root, tmp
                                  'PCH_TEST_WATCH_DU_BIN': str(du)})
     assert result.returncode == 0, result.stderr
     assert log.read_text().splitlines()[0] == str(roots / 'z-slow')
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="signed app fixture")
+def test_recovery_launch_is_independent_of_notifications_and_rate_limited(project_root, tmp_path):
+    state = tmp_path / "state"
+    roots = tmp_path / "roots"
+    roots.mkdir()
+    bundle = _signed_app_bundle(tmp_path)
+    log = tmp_path / "recovery-args"
+    stub = tmp_path / "open-stub"
+    stub.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "' + str(log) + '"\n')
+    stub.chmod(0o755)
+    env = {**os.environ, "PCH_TEST_MODE": "1", "PCH_STATE_DIR": str(state),
+           "PCH_TEST_FREE_KB": str(11 * 1024 * 1024), "PCH_WATCH_NOTIFY": "0",
+           "PCH_WATCH_SNAPSHOT_ROOT": str(roots), "PCH_TEST_OPEN_BIN": str(stub),
+           "PCH_STORAGE_WATCH_APP_BUNDLE": str(bundle),
+           "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256": _app_executable_hash(bundle)}
+    for expected in ["launched", "not-due"]:
+        result = subprocess.run([str(project_root / "scripts/storage_watch.sh")], env=env,
+                                capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        saved = parse_protocol((state / "storage-watch.tsv").read_text())
+        assert saved["recoveryLaunchResult"] == expected
+        assert saved["notificationResult"] == "not-due"
+    calls = log.read_text().splitlines()
+    assert len(calls) == 1
+    assert "--automatic-storage-recovery" in calls[0]
+    assert "--post-storage-notice" not in calls[0]

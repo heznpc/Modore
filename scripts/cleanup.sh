@@ -1211,7 +1211,9 @@ define_recipe() {
     case "$recipe" in
         npm_download_cache)
             LABEL="npm download cache"
-            PROCESS_PATTERN='(^|/)(npm|npx)( |$)|/\.npm/_cacache|(^|/)npm-cli\.js( |$)|(^|/)npx-cli\.js( |$)'
+            # Long-lived npm exec MCP parents do not own the download cache.
+            # Keep explicit writers blocked; exact open files are checked below.
+            PROCESS_PATTERN='(^|/)(npm|npm-cli\.js)([[:space:]]+[^[:space:]]+)*[[:space:]]+(install|i|ci|update|cache|uninstall|rebuild|dedupe|audit)([[:space:]]|$)|/\.npm/_cacache'
             PROCESS_NOTE="npm 패키지 설치가 실행 중이면 보존합니다."
             WARNING="다음 설치 시 패키지를 다시 다운로드합니다. 실행 중인 도구가 있는 _npx는 보존합니다."
             add_target_if_present "$HOME_ROOT/.npm/_cacache"
@@ -1488,6 +1490,9 @@ validate_target() {
         return 1
     fi
     [[ "$canonical_target" == "$expected" ]] || return 1
+    if [[ "$recipe" == "npm_download_cache" ]]; then
+        transient_workspace_is_idle "$target" || return 1
+    fi
     if [[ "$recipe" == "chrome_code_sign_clones" ]]; then
         [[ -d "$target/Google Chrome.app.bundle/Contents/MacOS" \
             && -f "$target/Google Chrome.app.bundle/Contents/MacOS/Google Chrome" ]] || return 1
