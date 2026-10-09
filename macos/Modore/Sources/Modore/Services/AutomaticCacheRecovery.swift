@@ -20,6 +20,24 @@ struct AutomaticCachePolicy {
             && HealthNoticePolicy.storageLevel(previous.after) < 4
     }
 
+    /// The collector orders rows by file age/size, not by measured growth.
+    /// Keep those candidates separate so unchanged large trees cannot bury a
+    /// newly growing swap volume or cache in the three-line notification.
+    static func evidenceLines(_ rows: [[String: Any]]) -> [String] {
+        let growth = rows.filter { ($0["recentDeltaBytes"] as? Int64 ?? 0) > 0 }
+            .sorted { ($0["recentDeltaBytes"] as? Int64 ?? 0) > ($1["recentDeltaBytes"] as? Int64 ?? 0) }
+        var lines = growth.prefix(3).map { row in
+            "\(row["label"] as? String ?? "경로") 최근 실측 증가 +\(HealthSnapshot.bytes(row["recentDeltaBytes"] as? Int64))"
+        }
+        if lines.isEmpty { lines.append("비교 가능한 경로에서 최근 증가가 확인되지 않았습니다.") }
+        let unmeasured = rows.filter { $0["recentDeltaBytes"] as? Int64 == nil }
+            .compactMap { $0["label"] as? String }
+        if !unmeasured.isEmpty {
+            lines.append("증가량 미확인: " + unmeasured.joined(separator: ", "))
+        }
+        return lines
+    }
+
     static let target: Int64 = 20 * 1_073_741_824
 
     static func shouldRun(enabled: Bool, free: Int64?, lastRun: Date?, now: Date) -> Bool {
@@ -67,6 +85,11 @@ final class AutomaticCacheRecovery: ObservableObject {
         }
     }
 
+    var isDue: Bool {
+        readable && AutomaticCachePolicy.shouldRun(enabled: enabled, free: Self.freeSpace(),
+            lastRun: last?.date, now: Date())
+    }
+
     static func freeSpace() -> Int64? {
         let values = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
         return (values?[.systemFreeSize] as? NSNumber)?.int64Value
@@ -94,7 +117,21 @@ final class AutomaticCacheRecovery: ObservableObject {
     func revealReport() { NSWorkspace.shared.open(reportURL) }
 
     func runIfNeeded(model: ScanModel, snapshot: HealthSnapshot?, requestedNow: Bool = false) async {
-        guard readable, !running, !model.cleanupInFlight, !model.isRunning,
+        guard !running else { return }
+        // UI and scheduled headless launches share the same intent and lease.
+        // Reload under the lease: another process may have recovered space since init.
+        guard case .acquired(let lease) = AppInstanceCoordinator.acquireLease(
+            at: reportURL.deletingLastPathComponent().appendingPathComponent("automatic-recovery-lock")) else { return }
+        defer { withExtendedLifetime(lease) {} }
+        if FileManager.default.fileExists(atPath: reportURL.path) {
+            do {
+                last = try JSONDecoder().decode(AutomaticCacheReport.self, from: Data(contentsOf: reportURL))
+                readable = true
+                if let last { detail = last.finished ? Self.summary(last) : "이전 자동 관리가 중단됐습니다. 처리 기록을 확인하세요." }
+            } catch { readable = false }
+        }
+        enabled = defaults.bool(forKey: "automaticSafeCacheRecovery")
+        guard readable, !model.cleanupInFlight, !model.isRunning,
               !model.applicationTerminationStarted,
               AutomaticCachePolicy.shouldRun(enabled: enabled, free: Self.freeSpace(), lastRun: requestedNow ? nil : last?.date, now: Date()),
               let before = Self.freeSpace() else { return }
@@ -121,7 +158,7 @@ final class AutomaticCacheRecovery: ObservableObject {
                 throw CocoaError(.fileReadCorruptFile)
             }
             for recipe in AutomaticCachePolicy.recipes {
-                guard enabled, !Task.isCancelled, !model.applicationTerminationStarted,
+                guard enabled, defaults.bool(forKey: "automaticSafeCacheRecovery"), !Task.isCancelled, !model.applicationTerminationStarted,
                       let available = Self.freeSpace(), available < AutomaticCachePolicy.target else { break }
                 // Avoid repeatedly deleting a cache that a workflow is rebuilding.
                 if let attempted = report.attempted[recipe], Date().timeIntervalSince(attempted) < 86400 {
@@ -138,12 +175,20 @@ final class AutomaticCacheRecovery: ObservableObject {
                 guard let size = preview.estimatedBytes, size >= 16 * 1_048_576 else {
                     report.outcomes.append("\(preview.label): 작은 캐시로 보존"); continue
                 }
-                guard enabled, preview.approvalIsFresh(), model.persistCleanupMutationIntent() else { break }
+                guard enabled, defaults.bool(forKey: "automaticSafeCacheRecovery"), preview.approvalIsFresh(), model.persistCleanupMutationIntent() else { break }
                 report.attempted[recipe] = Date()
                 report.outcomes.append("\(preview.label): \(HealthSnapshot.bytes(size)) 처리 시작")
                 try save(report)
                 let execution = await CleanupExecutionService.execute(preview, using: context)
-                guard let execution, let outcome = CleanupPreview(protocolText: execution.output),
+                guard let execution else {
+                    // No process launched (e.g. foreground cleanup owns the lease).
+                    // Do not turn contention into a full day of suppressed retries.
+                    report.attempted.removeValue(forKey: recipe)
+                    report.outcomes.append("\(recipe): 다른 정리 또는 승인 검증으로 실행 보류 · 다음 점검에서 재확인")
+                    try save(report)
+                    break
+                }
+                guard let outcome = CleanupPreview(protocolText: execution.output),
                       outcome.recipeID == recipe else {
                     report.outcomes.append("\(recipe): 실행 결과 미확인 · 재실행 중단"); break
                 }
@@ -173,13 +218,7 @@ final class AutomaticCacheRecovery: ObservableObject {
                        let object = try? JSONSerialization.jsonObject(with: Data(analysis.output.utf8)) as? [String: Any],
                        let rows = object["rows"] as? [[String: Any]] {
                         report.analysisAt = Date()
-                        let causes = rows.prefix(3).map { row -> String in
-                            let label = row["label"] as? String ?? "경로"
-                            if let delta = row["recentDeltaBytes"] as? Int64 {
-                                return "\(label) 최근 실측 변화 \(delta >= 0 ? "+" : "−")\(HealthSnapshot.bytes(abs(delta)))"
-                            }
-                            return "\(label) 생성 흔적 \(HealthSnapshot.bytes(row["createdBytes"] as? Int64)) (원인 후보)"
-                        }
+                        let causes = AutomaticCachePolicy.evidenceLines(rows)
                         report.evidence += "\n" + causes.joined(separator: " · ")
                         report.outcomes.append("경로별 원인 분석 저장: 조치 기록 → 공간 확보 이후 무엇이 생겼나")
                     } else { report.outcomes.append("경로별 원인 분석 미완료 · 이전 결과를 현재 근거로 사용하지 않음") }

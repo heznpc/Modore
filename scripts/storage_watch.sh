@@ -583,6 +583,7 @@ case "$FREE_KB" in ''|*[!0-9]*) /usr/bin/printf 'ERROR: free space unavailable.\
 PREVIOUS_KB=0
 PREVIOUS_STATUS="normal"
 LAST_NOTIFY=0
+LAST_RECOVERY_CHECK=0
 LAST_NOTIFY_LEVEL=0
 LAST_SNAPSHOT=0
 LAST_SNAPSHOT_REASON=""
@@ -596,6 +597,7 @@ PREVIOUS_PATH_EVIDENCE_AT=""
 if [[ -f "$STATE_FILE" ]]; then
     PREVIOUS_KB="$(/usr/bin/awk -F '\t' '$1 == "freeKB" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     PREVIOUS_STATUS="$(/usr/bin/awk -F '\t' '$1 == "status" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
+    LAST_RECOVERY_CHECK="$(/usr/bin/awk -F '\t' '$1 == "lastRecoveryCheck" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_NOTIFY="$(/usr/bin/awk -F '\t' '$1 == "lastNotify" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_NOTIFY_LEVEL="$(/usr/bin/awk -F '\t' '$1 == "lastNotifiedLevel" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
     LAST_SNAPSHOT="$(/usr/bin/awk -F '\t' '$1 == "lastSnapshot" {print $2; exit}' "$STATE_FILE" 2>/dev/null)"
@@ -623,6 +625,7 @@ normalize_past_epoch() {
     fi
     /usr/bin/printf '%s' "$value"
 }
+LAST_RECOVERY_CHECK="$(normalize_past_epoch "$LAST_RECOVERY_CHECK")"
 LAST_NOTIFY="$(normalize_past_epoch "$LAST_NOTIFY")"
 case "$LAST_NOTIFY_LEVEL" in 0|1|2|3|4) ;; *) LAST_NOTIFY_LEVEL=0 ;; esac
 LAST_SNAPSHOT="$(normalize_past_epoch "$LAST_SNAPSHOT")"
@@ -1473,9 +1476,8 @@ if [[ "${PCH_TEST_MODE:-0}" == "1" ]]; then
     OPEN_BIN="${PCH_TEST_OPEN_BIN:-$OPEN_BIN}"
 fi
 
-notify_via_app_bundle() {
+validated_app_bundle() {
     local bundle="$APP_BUNDLE_PATH" identifier executable_name executable digest
-    local ack_file nonce
     [[ -n "$bundle" && "$bundle" == /* && "$bundle" == *.app ]] || return 1
     [[ "$APP_EXECUTABLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
     [[ -d "$bundle" && ! -L "$bundle" ]] || return 1
@@ -1499,6 +1501,17 @@ notify_via_app_bundle() {
         | /usr/bin/awk '{print $1; exit}')"
     [[ "$digest" == "$APP_EXECUTABLE_SHA256" ]] || return 1
 
+}
+
+start_automatic_recovery() {
+    validated_app_bundle || return 1
+    bounded_notification_command "$NOTIFICATION_TICKS" \
+        "$OPEN_BIN" -n -g -j -a "$APP_BUNDLE_PATH" --args --automatic-storage-recovery
+}
+
+notify_via_app_bundle() {
+    local bundle="$APP_BUNDLE_PATH" ack_file nonce
+    validated_app_bundle || return 1
     ack_file="$(/usr/bin/mktemp ./.storage-watch-ack.XXXXXX)" || return 1
     /bin/chmod 600 "$ack_file" 2>/dev/null || {
         /bin/rm -f "$ack_file" 2>/dev/null || true
@@ -1539,6 +1552,18 @@ notify_via_app_bundle() {
     /bin/rm -f "$ack_file" 2>/dev/null || true
     return 1
 }
+
+# Maintenance is independent of banner permission/cooldown and window lifetime.
+# Launch at most once per five minutes; the app rechecks standing consent and
+# actual free space, then coordinates with the foreground recovery via a lease.
+RECOVERY_LAUNCH_RESULT="not-due"
+if [[ "$FREE_KB" -lt 20971520 && $((NOW_EPOCH - LAST_RECOVERY_CHECK)) -ge 300 ]]; then
+    RECOVERY_LAUNCH_RESULT="failed"
+    if start_automatic_recovery; then
+        LAST_RECOVERY_CHECK="$NOW_EPOCH"
+        RECOVERY_LAUNCH_RESULT="launched"
+    fi
+fi
 
 NOTIFICATION_RESULT="not-due"
 if [[ "$STATUS" == "warning" && "$NOTIFY" == "1" ]]; then
@@ -1595,6 +1620,8 @@ trap cleanup EXIT
     /usr/bin/printf 'dropKB\t%s\n' "$DROP_KB"
     /usr/bin/printf 'snapshotRows\t%s\n' "$SNAPSHOT_CAPTURED"
     /usr/bin/printf 'signalsRows\t%s\n' "$SIGNALS_CAPTURED"
+    /usr/bin/printf 'lastRecoveryCheck\t%s\n' "$LAST_RECOVERY_CHECK"
+    /usr/bin/printf 'recoveryLaunchResult\t%s\n' "$RECOVERY_LAUNCH_RESULT"
     /usr/bin/printf 'lastNotify\t%s\n' "$LAST_NOTIFY"
     /usr/bin/printf 'lastNotifiedLevel\t%s\n' "$LAST_NOTIFY_LEVEL"
     /usr/bin/printf 'pressureLevel\t%s\n' "$PRESSURE_LEVEL"

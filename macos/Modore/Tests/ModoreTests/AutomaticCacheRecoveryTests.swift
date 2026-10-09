@@ -18,6 +18,29 @@ final class AutomaticCacheRecoveryTests: XCTestCase {
         XCTAssertTrue(AutomaticCachePolicy.shouldRun(enabled: true, free: 1,
             lastRun: now.addingTimeInterval(-1800), now: now))
     }
+    func testMeasuredGrowthOutranksLargeUnchangedDirectories() {
+        let lines = AutomaticCachePolicy.evidenceLines([
+            ["label": "large simulator", "createdBytes": Int64(50_000_000_000), "recentDeltaBytes": Int64(0)],
+            ["label": "tiny change", "recentDeltaBytes": Int64(1024)],
+            ["label": "swap", "recentDeltaBytes": Int64(2_147_483_648)],
+            ["label": "unknown cache", "createdBytes": Int64(4_000_000_000)],
+            ["label": "shrinking files", "recentDeltaBytes": Int64(-2048)],
+        ])
+        XCTAssertTrue(lines[0].hasPrefix("swap 최근 실측 증가"))
+        XCTAssertFalse(lines.joined().contains("large simulator"))
+        XCTAssertFalse(lines.joined().contains("shrinking files"))
+        XCTAssertTrue(lines.last!.contains("증가량 미확인: unknown cache"))
+    }
+
+    func testMissingBaselineDoesNotTurnFileAgeIntoAProvenCause() {
+        let lines = AutomaticCachePolicy.evidenceLines([
+            ["label": "cache", "createdBytes": Int64(5_000_000_000)]
+        ])
+        XCTAssertTrue(lines[0].contains("최근 증가가 확인되지 않았습니다"))
+        XCTAssertTrue(lines.last!.contains("증가량 미확인: cache"))
+        XCTAssertFalse(lines.joined().contains("+"))
+    }
+
     func testScopeExcludesRuntimeAndUserData() {
         XCTAssertEqual(AutomaticCachePolicy.recipes, ["npm_download_cache", "pip_cache", "homebrew_cache"])
     }
