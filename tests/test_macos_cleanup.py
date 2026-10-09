@@ -1,4 +1,5 @@
 import os
+import json
 import plistlib
 import re
 import stat
@@ -2623,10 +2624,10 @@ def _swift_fixed_recipes(project_root: Path) -> set[str]:
 
 
 def _cleanup_recipe_ids(project_root: Path) -> set[str]:
-    """Recipe ids the executor validates — the third case arm that pins each id to
-    its exact target path (`recipe) [[ "$target" == ... ]] ;;`)."""
+    """Read validated recipe arms, including recipes with child-path validation."""
     text = (project_root / "scripts" / "cleanup.sh").read_text(encoding="utf-8")
-    return set(re.findall(r'^\s{8}([a-z_]+)\)\s*\[\[\s*"\$target"', text, re.MULTILINE))
+    validation = text.split("allowed_target() {", 1)[1].split("\nvalidate_target()", 1)[0]
+    return set(re.findall(r'^\s{8}([a-z_]+)\)', validation, re.MULTILINE))
 
 
 def test_new_cache_recipes_are_wired_through_all_three_sources(project_root):
@@ -2769,3 +2770,143 @@ def test_download_cache_blocks_open_files_and_unknown_usage(project_root, tmp_pa
     result = run_cleanup_with_token_file(project_root, home, "npm_download_cache", token, extra_env=env)
     assert result.returncode != 0
     assert (cache / "package").exists()
+
+
+def make_vscode_update(home, name="update.ABC123"):
+    target = home / "Library/Caches/com.microsoft.VSCode.ShipIt" / name
+    app = target / "Visual Studio Code.app"
+    (app / "Contents/MacOS").mkdir(parents=True)
+    (app / "Contents/MacOS/Electron").write_bytes(b"x" * 8192)
+    (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "com.microsoft.VSCode"}))
+    return target
+
+
+def test_vscode_update_only_removes_idle_download_and_preserves_other_data(project_root, tmp_path):
+    home = tmp_path / "home"
+    target = make_vscode_update(home)
+    preserved = home / "Library/Caches/com.microsoft.VSCode.ShipIt/state.json"
+    preserved.write_text("pending-update-state")
+    source = home / "project/main.swift"
+    source.parent.mkdir()
+    source.write_text("user source")
+    preview = run_cleanup(project_root, home, "--preview", "vscode_update_cache")
+    data = parse_protocol(preview.stdout)
+    assert data["status"] == "ready", preview.stdout
+    assert data["targets"] == [str(target)]
+    result = run_cleanup_with_token_file(project_root, home, "vscode_update_cache", approval_token(data))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not target.exists()
+    assert preserved.exists() and source.exists()
+
+
+@pytest.mark.parametrize("condition", ["process", "opened", "unknown", "symlink", "wrong_bundle"])
+def test_vscode_update_blocks_active_or_unverified_download(project_root, tmp_path, condition):
+    home = tmp_path / "home"
+    target = make_vscode_update(home)
+    env = {}
+    processes = ""
+    if condition == "process":
+        processes = "123 /Applications/Visual Studio Code.app/Contents/MacOS/Electron"
+    elif condition == "opened":
+        opened = tmp_path / "open-paths"
+        opened.write_text(str(target) + "\n")
+        env["PCH_TEST_TRANSIENT_OPEN_PATHS_FILE"] = str(opened)
+    elif condition == "unknown":
+        env["PCH_TEST_TRANSIENT_LSOF_UNKNOWN"] = "1"
+    elif condition == "symlink":
+        moved = target.with_name("user-data")
+        target.rename(moved)
+        target.symlink_to(moved, target_is_directory=True)
+    else:
+        (target / "Visual Studio Code.app/Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "other.app"}))
+    result = run_cleanup(project_root, home, "--preview", "vscode_update_cache", processes=processes, extra_env=env)
+    assert parse_protocol(result.stdout)["status"] != "ready", result.stdout
+    assert target.exists()
+
+
+def test_unused_playwright_versions_preserve_active_browser_and_daemon(project_root, tmp_path):
+    home = tmp_path / "home"
+    root = home / "Library/Caches/ms-playwright"
+    idle = root / "chromium-1000"
+    active = root / "chromium-1001"
+    unfinished = root / "webkit-1000"
+    for target in [idle, active, unfinished]:
+        target.mkdir(parents=True)
+        (target / "browser").write_bytes(b"x" * 8192)
+    for target in [idle, active]:
+        (target / "INSTALLATION_COMPLETE").touch()
+    for name in [".links", "daemon"]:
+        (root / name).mkdir()
+        (root / name / "keep").write_text(str(home / "removed-playwright-package"))
+    opened = tmp_path / "open-paths"
+    opened.write_text(str(active) + "\n")
+    env = {"PCH_TEST_TRANSIENT_OPEN_PATHS_FILE": str(opened)}
+    processes = "123 npm exec @playwright/mcp"
+    preview = run_cleanup(project_root, home, "--preview", "playwright_unused_browsers", processes=processes, extra_env=env)
+    data = parse_protocol(preview.stdout)
+    assert data["status"] == "ready", preview.stdout
+    assert data["targets"] == [str(idle)]
+    result = run_cleanup_with_token_file(project_root, home, "playwright_unused_browsers", approval_token(data), processes=processes, extra_env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not idle.exists()
+    assert active.exists() and unfinished.exists()
+    assert (root / ".links/keep").exists() and (root / "daemon/keep").exists()
+
+
+def test_unused_playwright_browser_blocks_new_install(project_root, tmp_path):
+    home = tmp_path / "home"
+    target = home / "Library/Caches/ms-playwright/chromium-1000"
+    target.mkdir(parents=True)
+    (target / "INSTALLATION_COMPLETE").touch()
+    result = run_cleanup(project_root, home, "--preview", "playwright_unused_browsers",
+                         processes="123 node /opt/node_modules/playwright/cli.js install chromium")
+    assert parse_protocol(result.stdout)["status"] != "ready"
+    assert target.exists()
+
+
+@pytest.mark.parametrize("condition", ["referenced", "override", "malformed", "missing_manifest", "missing_links"])
+def test_unused_playwright_preserves_required_or_unknown_versions(project_root, tmp_path, condition):
+    home = tmp_path / "home"
+    root = home / "Library/Caches/ms-playwright"
+    target = root / "chromium-1000"
+    target.mkdir(parents=True)
+    (target / "INSTALLATION_COMPLETE").touch()
+    links = root / ".links"
+    package = home / "project/node_modules/playwright-core"
+    package.mkdir(parents=True)
+    if condition != "missing_links":
+        links.mkdir()
+        (links / "package").write_text(str(package))
+    manifest = package / "browsers.json"
+    if condition == "malformed":
+        manifest.write_text("invalid json")
+    elif condition != "missing_manifest":
+        browser = {"name": "chromium", "revision": "1000"}
+        if condition == "override":
+            browser.update(revision="999", revisionOverrides={"mac-arm64": "1000"})
+        manifest.write_text(json.dumps({"browsers": [browser]}))
+    result = run_cleanup(project_root, home, "--preview", "playwright_unused_browsers")
+    assert parse_protocol(result.stdout)["status"] != "ready", result.stdout
+    assert target.exists()
+
+
+def test_unused_playwright_rechecks_project_references_before_deleting(project_root, tmp_path):
+    home = tmp_path / "home"
+    root = home / "Library/Caches/ms-playwright"
+    target = root / "chromium-1000"
+    target.mkdir(parents=True)
+    (target / "INSTALLATION_COMPLETE").touch()
+    (target / "browser").write_bytes(b"x" * 8192)
+    (root / ".links").mkdir()
+    package = home / "project/node_modules/playwright-core"
+    package.mkdir(parents=True)
+    (root / ".links/package").write_text(str(package))
+    manifest = package / "browsers.json"
+    manifest.write_text(json.dumps({"browsers": [{"name": "chromium", "revision": "1001"}]}))
+    preview = run_cleanup(project_root, home, "--preview", "playwright_unused_browsers")
+    data = parse_protocol(preview.stdout)
+    assert data["status"] == "ready", preview.stdout
+    manifest.write_text(json.dumps({"browsers": [{"name": "chromium", "revision": "1000"}]}))
+    result = run_cleanup_with_token_file(project_root, home, "playwright_unused_browsers", approval_token(data))
+    assert parse_protocol(result.stdout)["status"] != "complete", result.stdout
+    assert target.exists()

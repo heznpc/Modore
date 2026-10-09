@@ -1573,6 +1573,7 @@ _pch_collect_known_storage_paths() {
 
     # 일반 캐시/임시파일: 대부분 재생성 가능하지만 앱 로그아웃/재빌드 시간을 만들 수 있음.
     # 빠른 검사의 시간 예산을 아끼기 위해, 넓은 부모 캐시보다 판단 가치가 큰 하위 캐시를 먼저 잰다.
+    add_du_path "cache" "VS Code update downloads" "$HOME/Library/Caches/com.microsoft.VSCode.ShipIt" "vscode_update_cache"
     add_du_path "cache" "npm cache" "$HOME/.npm" "npm_cache"
     add_du_path "cache" "pnpm store" "$HOME/Library/pnpm" "pnpm_store"
     add_du_path "cache" "Playwright browser cache" "$HOME/Library/Caches/ms-playwright" "playwright_browsers"

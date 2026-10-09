@@ -41,8 +41,43 @@ final class AutomaticCacheRecoveryTests: XCTestCase {
         XCTAssertFalse(lines.joined().contains("+"))
     }
 
-    func testScopeExcludesRuntimeAndUserData() {
-        XCTAssertEqual(AutomaticCachePolicy.recipes, ["npm_download_cache", "pip_cache", "homebrew_cache"])
+    func testScopeProtectsSessionsInstalledAppsSimulatorsAndNPX() {
+        XCTAssertTrue(AutomaticCachePolicy.recipes.contains("vscode_update_cache"))
+        XCTAssertTrue(AutomaticCachePolicy.recipes.contains("chrome_code_sign_clones"))
+        for protected in ["npm_cache", "codex_runtime_cache", "claude_vm_bundles", "ollama_models", "innorix_ex", "simulator_delete"] {
+            XCTAssertFalse(AutomaticCachePolicy.recipes.contains(protected))
+        }
+    }
+
+    func testLargeReadyCandidatesPrecedeSmallCachesAndExcludeBlockedOnes() {
+        func candidate(_ id: String, _ bytes: Int64?, _ ready: Bool = true) -> AutomaticRecoveryCandidate {
+            AutomaticRecoveryCandidate(recipe: id, label: id, bytes: bytes, ready: ready, reason: "test")
+        }
+        let result = AutomaticCachePolicy.largestFirst([
+            candidate("small", 32 * 1_048_576), candidate("unknown", nil),
+            candidate("large", 3 * 1_073_741_824), candidate("active", 10 * 1_073_741_824, false),
+            candidate("tiny", 1000),
+        ])
+        XCTAssertEqual(result.map(\.recipe), ["large", "small"])
+    }
+
+    @MainActor func testHalfGiBRecoveryDoesNotClaimSpaceProblemSolved() {
+        let report = AutomaticCacheReport(date: Date(), before: 6 * 1_073_741_824,
+            after: 6 * 1_073_741_824 + 523 * 1_048_576, evidence: "test", finished: true)
+        XCTAssertTrue(AutomaticCacheRecovery.summary(report).contains("공간 부족 지속"))
+        XCTAssertGreaterThan(AutomaticCachePolicy.remainingBytes(after: report.after)!, 13 * 1_073_741_824)
+        XCTAssertNil(AutomaticCachePolicy.remainingBytes(after: nil))
+        XCTAssertEqual(AutomaticCachePolicy.remainingBytes(after: 25 * 1_073_741_824), 0)
+    }
+
+    func testOccupancyKeepsPartialCoverageDistinctFromReclaimableSpace() {
+        let rows = AutomaticCachePolicy.occupants([
+            ["label": "partial", "path": "/cache", "allocatedBytes": Int64(3_000_000_000), "complete": false],
+            ["label": "complete", "path": "/runtime", "allocatedBytes": Int64(2_000_000_000), "complete": true],
+        ])
+        XCTAssertEqual(rows.map(\.label), ["partial", "complete"])
+        XCTAssertFalse(rows[0].complete)
+        XCTAssertTrue(rows[1].complete)
     }
     @MainActor func testConcurrentWritesAreReportedAsNegativeGain() {
         let report = AutomaticCacheReport(date: Date(), before: 3_000_000_000,

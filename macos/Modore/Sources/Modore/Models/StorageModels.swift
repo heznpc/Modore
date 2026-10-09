@@ -3,8 +3,11 @@ import Foundation
 enum CleanupRecipeCatalog {
     private static let fixedRecipes: Set<String> = [
         "npm_cache",
+        "npm_download_cache",
+        "vscode_update_cache",
         "pnpm_store",
         "playwright_browsers",
+        "playwright_unused_browsers",
         "gradle_cache",
         "cocoapods_cache",
         "pub_cache",
@@ -45,11 +48,11 @@ enum CleanupRecipeCatalog {
     /// simulators and service removals remain individual decisions.
     static func batchTier(recipeID: String) -> CleanupTier? {
         switch recipeID {
-        case "npm_cache", "pnpm_store", "gradle_cache", "cocoapods_cache",
+        case "npm_cache", "npm_download_cache", "vscode_update_cache", "pnpm_store", "gradle_cache", "cocoapods_cache",
              "pub_cache", "uv_cache", "homebrew_cache", "pip_cache",
              "codex_temp_cache", "chrome_code_sign_clones":
             return .safe
-        case "playwright_browsers", "swiftpm_cache", "codex_runtime_cache",
+        case "playwright_browsers", "playwright_unused_browsers", "swiftpm_cache", "codex_runtime_cache",
              "claude_vm_bundles", "xcode_derived_data", "project_residue",
              "transient_workspace":
             return .rebuild
