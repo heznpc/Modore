@@ -2,6 +2,12 @@ import SwiftUI
 
 private struct StorageExplanation: Decodable {
     struct Row: Decodable, Identifiable {
+        struct Candidate: Decodable, Identifiable {
+            var id: String { path }
+            let path: String
+            let createdBytes: Int64
+            let modifiedBytes: Int64
+        }
         var id: String { path }
         let label: String
         let path: String
@@ -13,6 +19,7 @@ private struct StorageExplanation: Decodable {
         let previousMeasuredAt: String?
         let complete: Bool
         let errors: Int
+        let candidates: [Candidate]?
     }
     let capturedAt: String
     let since: String
@@ -67,6 +74,17 @@ struct StorageExplanationSection: View {
                             Text("최근 실측(\(at)) 대비 \(bytes(recent))")
                         }
                         if !row.complete { Text("접근·측정 실패 \(row.errors)건: 부분 결과") }
+                        if let candidates = row.candidates, !candidates.isEmpty {
+                            DisclosureGroup("실제 증가 원인 후보 경로 \(candidates.count)개") {
+                                ForEach(candidates) { candidate in
+                                    VStack(alignment: .leading) {
+                                        Text(candidate.path).font(.caption.monospaced()).textSelection(.enabled)
+                                        Text("이후 생성 파일 \(bytes(candidate.createdBytes)) · 수정된 기존 파일 \(bytes(candidate.modifiedBytes))")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
                     } label: {
                         HStack {
                             Text(row.label)

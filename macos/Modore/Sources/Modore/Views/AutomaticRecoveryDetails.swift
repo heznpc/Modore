@@ -12,6 +12,13 @@ struct AutomaticRecoveryDetails: View {
                             VStack(alignment: .leading) {
                                 Text("\(item.label) · \(item.bytes.map { HealthSnapshot.bytes($0) } ?? "용량 미확인")")
                                 Text(item.reason).font(.caption).foregroundStyle(.secondary)
+                                if let targets = item.targets, !targets.isEmpty {
+                                    Text(targets.joined(separator: "\n")).font(.caption).textSelection(.enabled)
+                                }
+                                if let preserved = item.preservedTargets, !preserved.isEmpty {
+                                    Text("사용 중이거나 검증되지 않아 보존한 경로:\n" + preserved.joined(separator: "\n"))
+                                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }

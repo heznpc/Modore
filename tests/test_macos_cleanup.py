@@ -2910,3 +2910,81 @@ def test_unused_playwright_rechecks_project_references_before_deleting(project_r
     result = run_cleanup_with_token_file(project_root, home, "playwright_unused_browsers", approval_token(data))
     assert parse_protocol(result.stdout)["status"] != "complete", result.stdout
     assert target.exists()
+
+
+def make_swift_output(home, relative="Documents/work/project"):
+    project = home / relative
+    target = project / ".build/arm64-apple-macosx"
+    target.mkdir(parents=True)
+    (project / "Package.swift").write_text("// swift-tools-version: 5.9\n")
+    (target / "object.o").write_bytes(b"x" * 8192)
+    return project, target
+
+
+def test_swift_outputs_remove_only_compiler_products_preserving_projects_and_checkouts(project_root, tmp_path):
+    home = tmp_path / "home"
+    projects = [make_swift_output(home, p) for p in ["Documents/deep/project", "IdeaProjects/project", ".codex/worktrees/existing/project"]]
+    for project, _ in projects:
+        (project / ".build/checkouts/local-edits").mkdir(parents=True)
+        (project / ".build/checkouts/local-edits/source.swift").write_text("important local changes")
+        (project / "source.swift").write_text("source")
+    preview = run_cleanup(project_root, home, "--preview", "swift_build_outputs")
+    data = parse_protocol(preview.stdout)
+    assert data["status"] == "ready", preview.stdout
+    assert set(data["targets"]) == {str(target) for _, target in projects}
+    result = run_cleanup_with_token_file(project_root, home, "swift_build_outputs", approval_token(data))
+    assert result.returncode == 0, result.stdout + result.stderr
+    for project, target in projects:
+        assert not target.exists()
+        assert (project / "source.swift").read_text() == "source"
+        assert (project / ".build/checkouts/local-edits/source.swift").exists()
+        assert (project / "Package.swift").exists()
+
+
+@pytest.mark.parametrize("condition", ["opened", "unknown", "symlink", "missing_manifest", "tracked", "invalid_git"])
+def test_swift_outputs_preserve_active_unverified_or_source_controlled_data(project_root, tmp_path, condition):
+    home = tmp_path / "home"
+    project, target = make_swift_output(home)
+    env = {}
+    if condition == "opened":
+        opened = home / "open-paths"
+        opened.write_text(str(project / ".build") + "\n")
+        env["PCH_TEST_TRANSIENT_OPEN_PATHS_FILE"] = str(opened)
+    elif condition == "unknown":
+        env["PCH_TEST_TRANSIENT_LSOF_UNKNOWN"] = "1"
+    elif condition == "symlink":
+        actual = project / "valuable"
+        target.rename(actual)
+        target.symlink_to(actual, target_is_directory=True)
+    elif condition == "missing_manifest":
+        (project / "Package.swift").unlink()
+    elif condition == "invalid_git":
+        (project / ".git").write_text("broken git directory")
+    else:
+        subprocess.run(["git", "init", "-q", str(project)], check=True)
+        subprocess.run(["git", "-C", str(project), "add", ".build"], check=True)
+    result = run_cleanup(project_root, home, "--preview", "swift_build_outputs", extra_env=env)
+    assert parse_protocol(result.stdout)["status"] != "ready", result.stdout
+    assert target.exists()
+
+
+def test_swift_outputs_do_not_enter_dependencies_or_linked_workspaces(project_root, tmp_path):
+    home = tmp_path / "home"
+    project, target = make_swift_output(home, "Documents/project/node_modules/dependency")
+    outside, linked_target = make_swift_output(home, "elsewhere/project")
+    (home / "Documents/linked").symlink_to(outside, target_is_directory=True)
+    result = run_cleanup(project_root, home, "--preview", "swift_build_outputs")
+    assert parse_protocol(result.stdout)["status"] == "empty", result.stdout
+    assert target.exists() and linked_target.exists()
+
+
+def test_swift_outputs_recheck_usage_at_execute_boundary(project_root, tmp_path):
+    home = tmp_path / "home"
+    project, target = make_swift_output(home)
+    preview = parse_protocol(run_cleanup(project_root, home, "--preview", "swift_build_outputs").stdout)
+    opened = home / "open-paths"
+    opened.write_text(str(project / ".build") + "\n")
+    result = run_cleanup_with_token_file(project_root, home, "swift_build_outputs", approval_token(preview),
+        extra_env={"PCH_TEST_TRANSIENT_OPEN_PATHS_FILE": str(opened)})
+    assert parse_protocol(result.stdout)["status"] != "complete", result.stdout
+    assert target.exists()
