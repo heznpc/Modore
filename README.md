@@ -145,6 +145,23 @@ python3 scripts/friction.py scan --json --source codex       # structured output
 - **Same judgment contract** — keyword and tone matching only, no model anywhere in the path; a review aid that both under- and over-catches, so every verdict is tagged `evidence: preview`.
 - **Content contract** — only turns authored by the user are examined; assistant text, tool calls, and nested subagent transcripts are never emitted. Quotes are capped at 200 characters and masked (email / JWT / API keys / private keys / home path) by default, with `--raw-quotes` as the explicit opt-out. Nothing is written.
 
+### Individual session evaluation (source checkout)
+
+**Currently implemented:** `bin/modore evaluate prepare <session.jsonl> --out
+<private-directory>` creates one evidence packet and review template per named
+Claude Code or Codex JSONL. It includes masked user/assistant text, tool calls
+and results, physical line references, coverage gaps, and review candidates.
+`evaluate check` validates an explicit human/model review against its packet;
+`evaluate summarize` counts validated reviews and reports missing evaluations.
+See [session evaluation](docs/SESSION_EVALUATION.md) for commands and limitations.
+
+**Design intent:** examine prompt wording, assistant behavior, and their
+interaction without treating user dissatisfaction as proof of model failure.
+**Planned:** no automatic model service or app integration is committed.
+**Non-goals:** personality diagnosis, causal blame, provider rankings, automatic
+quality scores, and unattended transcript uploads. **Redacted:** evaluation
+packets and private session reviews stay outside product repositories.
+
 ### App and trust residue (Mac)
 
 Removing an app does not remove everything it registered. Modore correlates macOS installer receipts with the system and user trust stores; the CLI entry point is:

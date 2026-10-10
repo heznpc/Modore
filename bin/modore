@@ -28,6 +28,7 @@ usage() {
         '  modore sessions [--limit N]' \
         '  modore ci status|refresh [--discover] [--repo owner/name] [--project PATH]' \
         '  modore sessions current' \
+        '  modore evaluate prepare|check|summarize [options]  # explicit JSONL evaluation' \
         '  modore search [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
         '  modore resources status|acquire|claim|heartbeat|release [options]' \
         '  modore resources begin-test|hold --provider codex|claude --session ID --turn ID [options]' \
@@ -88,6 +89,9 @@ COMMAND="${1:-help}"
 [[ "$#" -eq 0 ]] || shift
 
 case "$COMMAND" in
+    evaluate)
+        exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/session_eval.py" "$@"
+        ;;
     ci)
         exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/ci_watch.py" "$@"
         ;;
