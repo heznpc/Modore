@@ -244,7 +244,7 @@ private enum StorageSnapshotParser {
         var roots: [String] = []
         var total = 0.0
         let measured = items
-            .filter { $0.measureStatus != "timed_out" && $0.sizeGB > 0 && !$0.path.isEmpty }
+            .filter { $0.isMeasurementComplete && $0.sizeGB > 0 && !$0.path.isEmpty }
             .sorted { $0.path.count < $1.path.count }
         for item in measured {
             let path = item.path.hasSuffix("/") ? String(item.path.dropLast()) : item.path

@@ -10,7 +10,7 @@ Today, the Mac app focuses on AI work continuity and storage recovery. The Windo
 
 [Website](https://heznpc.github.io/Modore/) · [Install](#installation) · [Architecture](./docs/ARCHITECTURE.md) · [Security](./SECURITY.md) · [Releases](https://github.com/heznpc/Modore/releases)
 
-**Local by default.** Core scans, judgments, backups, and cleanup run on the device. No account or LLM is required, and nothing is deleted automatically. The optional MCP interface exposes selected read-only results to the client that invokes it.
+**Local by default.** Core scans, judgments, backups, and cleanup run on the device. No account or LLM is required. Manual cleanup requires a fresh preview and approval. Optional automatic recovery runs only after consent to its listed regenerable-data scope; an expanded or unverifiable scope requires renewed consent. The optional MCP interface exposes selected read-only results to the client that invokes it.
 
 > **Status:** source preview. No public installer is published yet; build the Mac or iPhone app from source, or wait for a signed release.
 
@@ -40,7 +40,7 @@ cd Modore
 ./run-mac-app.command
 ```
 
-Requires macOS 13 or later and Swift 5.9 or later. Cleanup always shows an exact preview and requires explicit approval.
+Requires macOS 13 or later and Swift 5.9 or later. Manual cleanup shows an exact preview and requires explicit approval. Automatic recovery is off by default and requires separate consent to its listed scope.
 
 From a source checkout, you can link that checkout's `bin/modore` into your
 `PATH` for a narrow terminal or agent entry point. The installed Mac app does
@@ -187,7 +187,7 @@ python3 scripts/mcp_server.py --tools    # inspect the surface without speaking 
 
 ### System diagnosis (maintained)
 
-A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange network connection, disk space vanishing overnight. Generic scanners detect but do not explain — and on a Korean banking/government PC they cry wolf over IPinside, nProtect, MagicLine and the rest of the mandated plugin set until users either panic-uninstall critical software or learn to ignore every warning. Modore is the second opinion: it joins process, network, autorun, security, and storage signals, checks miner-like runtime patterns, recognizes the Korean plugin set with a locale-aware whitelist, and explains every finding in plain Korean, English, or Japanese with a 🟢🟡🔴 verdict. Nothing is ever deleted automatically.
+A fan that will not stop, CPU/GPU load while idle, an unknown process, a strange network connection, disk space vanishing overnight. Generic scanners detect but do not explain — and on a Korean banking/government PC they cry wolf over IPinside, nProtect, MagicLine and the rest of the mandated plugin set until users either panic-uninstall critical software or learn to ignore every warning. Modore is the second opinion: it joins process, network, autorun, security, and storage signals, checks miner-like runtime patterns, recognizes the Korean plugin set with a locale-aware whitelist, and explains every finding in plain Korean, English, or Japanese with a 🟢🟡🔴 verdict. System diagnosis itself does not delete files. Separately enabled automatic recovery follows the scope consent described above.
 
 This diagnostic surface is **maintained, not growing**: bug and security fixes continue, but new Modore capability lands on the durable-state side above. Live monitoring that does not contribute to provenance, residue attribution, or a bounded cleanup decision is out of scope.
 

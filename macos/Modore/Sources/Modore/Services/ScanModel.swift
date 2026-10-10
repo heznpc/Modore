@@ -296,12 +296,11 @@ final class ScanModel: ObservableObject {
     @Published var retirementReview: RetirementReviewTarget?
     @Published var archiveInspectionFailures = 0
     @Published var archiveLoading = false
-    /// Repository inspection and continuity binding are automatic Work-screen
-    /// loaders too. Binding may scan every local session for up to 15 minutes,
-    /// so it must share the screen's cancellation and stale-result contract.
+    /// Automatic repository inspection shares the Work screen's cancellation
+    /// and stale-result contract. Deep session analysis is explicitly requested.
     var archiveGeneration = 0
     var archiveTask: Task<Void, Never>?
-    var archiveBindingComplete = false
+    var archiveInspectionComplete = false
     /// Raw backup/verify/restore is model-owned so Cmd-Q can cancel the
     /// subprocess and wait for its exact-inode cleanup before the host exits.
     var sessionBackupGeneration = 0

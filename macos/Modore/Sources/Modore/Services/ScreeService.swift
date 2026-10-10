@@ -239,25 +239,36 @@ enum ScreeService {
     }
 }
 
-/// A binder run's verdict plus, when it failed, why.
-///
-/// The assessment alone is not enough to act on. Every failure here
-/// collapses to `.notAssessed`, which is correct — a binder that could
-/// not run has established nothing — but it is also indistinguishable
-/// from a binder that ran and could not reach a conclusion. If the
-/// subprocess path ever breaks, every workspace reads "확인 안 됨" and
-/// every archive refuses, with nothing anywhere saying the tool is
-/// broken rather than the repos being unassessed. The diagnostic is what
-/// tells those apart.
+/// Display coverage does not confer approval or prove that no external
+/// references exist. A partial run with zero hits is still a partial run.
+enum SessionImpactCoverage: String, Equatable {
+    case complete, partial, unknown
+}
+
+/// Findings and display coverage remain separate from archive authorization.
 struct ScreeBindOutcome {
     let assessment: ContinuityAssessment
-    /// nil when the binder ran and answered. Non-nil means the answer is
-    /// `.notAssessed` because something went wrong, not because the
-    /// binder said so.
     let diagnostic: String?
+    let coverage: SessionImpactCoverage
+
+    init(assessment: ContinuityAssessment, diagnostic: String?, coverage: SessionImpactCoverage? = nil) {
+        self.assessment = assessment
+        self.diagnostic = diagnostic
+        self.coverage = coverage ?? assessment.coverage.map {
+            $0 == .complete ? .complete : .partial
+        } ?? .unknown
+    }
+
+    var sessionCount: Int {
+        switch assessment {
+        case .bindings(let sessions, _): return sessions.count
+        case .sealed(let bundle, _): return bundle.sessions.count
+        case .notAssessed, .assessedNoSessions: return 0
+        }
+    }
 
     static func failed(_ reason: String) -> ScreeBindOutcome {
-        ScreeBindOutcome(assessment: .notAssessed, diagnostic: reason)
+        ScreeBindOutcome(assessment: .notAssessed, diagnostic: reason, coverage: .unknown)
     }
 }
 
@@ -417,20 +428,15 @@ extension ScreeService {
         )
     }
 
-    /// Binds many workspaces in one pass.
-    ///
-    /// A shallow pass never establishes completeness, so every candidate
-    /// on the screen needs a deep look -- and asking one repo at a time
-    /// re-reads the whole session store per repo. Measured here: 12.8
-    /// minutes across 53 candidates one by one, 2.8 minutes in a single
-    /// pass, with every candidate reaching complete coverage either way.
+    /// Explicit impact investigation of selected repositories in one pass.
+    /// Callers must request deep analysis; listing the Work screen never does.
     static func bindAll(
         execution: RuntimeExecutionContext,
         targets: [(workspace: URL, repoURL: String?)],
-        deep: Bool = true,
+        deep: Bool,
         homeOverride: URL? = nil
     ) async -> [String: ScreeBindOutcome] {
-        guard !targets.isEmpty else { return [:] }
+        guard !targets.isEmpty, !Task.isCancelled else { return [:] }
         let payload = targets.map { target in
             ["workspace": target.workspace.path, "repoUrl": target.repoURL as Any]
         }
@@ -463,7 +469,7 @@ extension ScreeService {
 
         // A full content scan of every store; the per-repo timeout would
         // be the wrong budget for one pass over all of them.
-        switch await invoke(execution: execution, arguments: arguments, timeout: 900) {
+        switch await invoke(execution: execution, arguments: arguments, timeout: 900, waitForCleanupOnStop: true) {
         case .failure(let message):
             return failAll(targets, message)
         case .timedOut:
@@ -480,17 +486,34 @@ extension ScreeService {
                     out[target.workspace.path] = .failed(L10n.text("이 저장소에 대한 바인딩 결과가 없습니다."))
                     continue
                 }
-                let assessment = ContinuityAssessment.fromBindReport(encoded)
-                if case .notAssessed = assessment {
-                    out[target.workspace.path] = .failed(Self.incompleteScanReason(encoded))
-                } else {
-                    out[target.workspace.path] = ScreeBindOutcome(
-                        assessment: assessment, diagnostic: nil
-                    )
+                guard URL(fileURLWithPath: report.workspace).standardizedFileURL.path == target.workspace.standardizedFileURL.path else {
+                    out[target.workspace.path] = .failed(L10n.text("이 저장소에 대한 바인딩 결과가 없습니다."))
+                    continue
                 }
+                out[target.workspace.path] = impactOutcome(from: encoded)
             }
             return out
         }
+    }
+
+    /// Keep empty partial reports distinct from execution/decoding failures.
+    /// ContinuityAssessment intentionally remains fail-closed for archiving.
+    static func impactOutcome(from data: Data) -> ScreeBindOutcome {
+        guard let report = try? BindReport.decoder().decode(BindReport.self, from: data),
+              report.assessed, (report.schemaVersion ?? 1) == 1,
+              ["complete", "shallow", "truncated"].contains(report.coverage ?? "") else {
+            return .failed(L10n.text("세션 바인더 출력을 해석하지 못했습니다."))
+        }
+        let assessment = ContinuityAssessment.fromBindReport(data)
+        if case .notAssessed = assessment, !report.bindings.isEmpty {
+            return .failed(L10n.text("세션 바인더 출력을 해석하지 못했습니다."))
+        }
+        let complete = report.coverage == "complete"
+        return ScreeBindOutcome(
+            assessment: assessment,
+            diagnostic: complete ? nil : incompleteScanReason(data),
+            coverage: complete ? .complete : .partial
+        )
     }
 
     static func bindAllScratchURLs(
@@ -1361,7 +1384,7 @@ extension ScanModel {
                 archiveGeneration += 1
                 archiveTask = nil
                 archiveLoading = false
-                archiveBindingComplete = false
+                archiveInspectionComplete = false
                 archiveError = nil
                 repoAssessments = nil
                 repoScanFailures.removeAll()

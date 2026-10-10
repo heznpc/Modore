@@ -15,6 +15,7 @@ struct AssetRetirementView: View {
     @State private var warningConditions: Set<String> = []
     @State private var confirm = false
     @State private var chooseFolders = false
+    @StateObject private var impact = RetirementImpactReview()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -57,6 +58,20 @@ struct AssetRetirementView: View {
                     }
                 }
             }
+            if let plan {
+                HStack {
+                    if impact.isLoading {
+                        ProgressView().controlSize(.small)
+                        Text(L10n.text("선택한 레포의 대화 연결을 조사하는 중…"))
+                        Button(L10n.text("조사 취소")) { impact.cancel() }
+                    } else {
+                        Button(L10n.text("선택한 레포의 대화 영향 확인")) { investigateImpact(plan) }
+                            .disabled(busy || eligible(plan).isEmpty)
+                    }
+                }
+                Text(L10n.text("요청하면 대화 본문까지 조사합니다. 결과는 조사 시점의 지원 저장소 범위이며, 백업이나 삭제 승인 근거가 아닙니다."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if !error.isEmpty { Text(L10n.message(error)).foregroundStyle(.red).textSelection(.enabled) }
             Divider()
             HStack {
@@ -68,7 +83,7 @@ struct AssetRetirementView: View {
                 } else if let plan {
                     Text(L10n.text("격리 없이 삭제 · 파일 크기와 실제 확보량은 다릅니다")).font(.caption)
                     Spacer()
-                    Button(L10n.text("새 계획")) { self.plan = nil; excluded = []; warningConditions = [] }
+                    Button(L10n.text("새 계획")) { impact.reset(); self.plan = nil; excluded = []; warningConditions = [] }
                     Button(L10n.text("선택 승인·실행")) { confirm = true }
                         .disabled(eligible(plan).isEmpty)
                     Button(L10n.text("승인된 항목 이어서 실행")) {
@@ -103,6 +118,8 @@ struct AssetRetirementView: View {
             }
         }
         .interactiveDismissDisabled(busy)
+        .onDisappear { impact.cancel() }
+        .onChange(of: plan?.id) { _ in impact.reset() }
         .onAppear { if choices.isEmpty, let initialPath { choices = [.init(path: initialPath)] } }
         .confirmationDialog(L10n.text("선택한 레포의 작업을 실행하시겠습니까? 로컬 삭제는 되돌릴 수 없습니다."), isPresented: $confirm) {
             Button(L10n.text("선택 승인 후 실행"), role: .destructive) { approveAndExecute() }
@@ -146,6 +163,10 @@ struct AssetRetirementView: View {
                         .font(.caption).textSelection(.enabled)
                 }
             }
+            RetirementImpactStatusView(
+                outcome: impact.outcomes[URL(fileURLWithPath: item.path).standardizedFileURL.path],
+                observedAt: impact.observedAt
+            )
             DisclosureGroup(L10n.text("위험 경고 · 조건을 체크하면 해당 레포를 제외합니다")) {
                 ForEach(Array(item.warnings.enumerated()), id: \.offset) { index, warning in
                     Toggle(L10n.message(warning), isOn: Binding(get: { warningConditions.contains("\(item.id):\(index)") }, set: {
@@ -185,6 +206,13 @@ struct AssetRetirementView: View {
         }.disabled(busy)
     }
 
+    private func investigateImpact(_ plan: AssetRetirementPlan) {
+        impact.start(
+            targets: SessionImpactTarget.selected(from: plan.items, ids: Set(eligible(plan))),
+            owner: model
+        )
+    }
+
     private func size(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
@@ -192,6 +220,7 @@ struct AssetRetirementView: View {
         ["pending": L10n.text("대기"), "attempting": L10n.text("시도됨"), "succeeded": L10n.text("성공"), "verified": L10n.text("확인됨"), "partial": L10n.text("부분 처리"), "failed": L10n.text("실패")][value] ?? value
     }
     private func perform(_ request: [String: Any]) {
+        impact.cancel()
         cancelRequested = false
         if request["action"] as? String == "execute", let id = request["transaction"] as? String {
             AssetRetirementService.resetCancellation(id)
@@ -210,6 +239,7 @@ struct AssetRetirementView: View {
     }
     private func approveAndExecute() {
         guard let plan else { return }
+        impact.cancel()
         let ids = eligible(plan)
         cancelRequested = false
         AssetRetirementService.resetCancellation(plan.id)

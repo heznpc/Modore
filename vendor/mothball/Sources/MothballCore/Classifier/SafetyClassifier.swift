@@ -31,7 +31,11 @@ public struct SafetyClassifier: Sendable {
 
     /// `now` is injectable for deterministic tests.
     public func classify(_ repo: RepoInfo, now: Date = Date()) -> SafetyVerdict {
-        let dormancyDays = daysBetween(repo.lastActivity, now)
+        guard case .observed(let lastActivity) = repo.activity else {
+            // No evidence cannot justify recommending a dormant repository.
+            return SafetyVerdict(tier: .unsafe, reasons: [.activityUnknown])
+        }
+        let dormancyDays = daysBetween(lastActivity, now)
 
         // Recent activity: unconditionally unsafe. Don't archive things
         // the user is currently using.

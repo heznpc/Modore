@@ -16,6 +16,29 @@ final class RepoScannerTests: XCTestCase {
         }
     }
 
+    func test_emptyRepositoryHasNoActivityEvidence() async throws {
+        let repo = scratch.appending(path: "empty")
+        let result = try await ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: ["init", repo.path],
+            workingDirectory: scratch, timeout: .seconds(5)
+        )
+        XCTAssertTrue(result.isSuccess)
+        let report = await RepoScanner().inspectKnownRepositories([repo])
+        XCTAssertTrue(report.failures.isEmpty)
+        let observed = try XCTUnwrap(report.repos.first)
+        XCTAssertNil(observed.lastFileMTime)
+        XCTAssertEqual(observed.activity, .noEvidence)
+        XCTAssertEqual(SafetyClassifier().classify(observed).reasons, [.activityUnknown])
+    }
+
+    func test_epochTimestampIsEvidenceRatherThanMissingActivity() async throws {
+        let file = scratch.appending(path: "epoch.txt")
+        try Data("observed".utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 0)], ofItemAtPath: file.path)
+        let measured = try await SizeAndActivity.measure(at: scratch)
+        XCTAssertEqual(measured.lastMTime, Date(timeIntervalSince1970: 0))
+    }
+
     func test_scanReportSurfacesInspectionFailures() async throws {
         try XCTSkipUnless(
             FileManager.default.isExecutableFile(atPath: "/usr/bin/git"),

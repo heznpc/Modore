@@ -118,7 +118,10 @@ def test_brew_timeout_reaps_descendants_and_preserves_partial_output(
         project_root,
         tmp_path,
         brew_script,
-        {"PCH_DEVTOOL_COMMAND_TIMEOUT_TICKS": "5"},
+        # Allow the fixture shell to start even during a concurrent release
+        # build. At 0.5 seconds it could time out before printing or spawning
+        # the child, testing startup latency instead of descendant cleanup.
+        {"PCH_DEVTOOL_COMMAND_TIMEOUT_TICKS": "20"},
     )
 
     assert result.returncode == 0, result.stderr

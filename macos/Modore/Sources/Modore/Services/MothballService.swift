@@ -1,15 +1,10 @@
 import Foundation
 import MothballCore
 
-/// Connects scree's already-discovered workspace paths to MothballCore's
-/// own read-only repo scanner and safety classifier -- the "real consumer"
-/// deferred when MothballCore was first linked into Modore's build graph.
-/// Read-only: MothballCore's scanner only runs `git log`/`status`/`config`/
-/// `rev-parse`/`rev-list` (no `fetch` -- GitInspector defaults that off),
-/// and this connection stops at display. Archiving (compress + trash the
-/// original) is Mothball's own standalone app; wiring that destructive
-/// action into Modore is deliberately a separate, later step, the same
-/// display-first precedent scree's own first UI integration set.
+/// Adapts discovered workspace paths into read-only repository assessments.
+/// Git inspection does not fetch or mutate repositories. AssetRetirementService
+/// owns the actual GitHub/archive and local-delete approval policy; explicit
+/// session impact investigation is separate from these automatic assessments.
 enum MothballService {
     /// Every lineage path scree already confirmed both exists and is a git
     /// repo becomes one scan root. Pure and independently testable. `limit`
@@ -74,7 +69,7 @@ enum MothballService {
                 ArchiveCandidate(
                     repo: repo,
                     verdict: classifier.classify(repo, now: now),
-                    dormancyDays: max(0, Int(now.timeIntervalSince(repo.lastActivity) / 86_400))
+                    dormancyDays: repo.lastActivity.map { max(0, Int(now.timeIntervalSince($0) / 86_400)) }
                 )
             }
             .sorted { $0.repo.sizeBytes > $1.repo.sizeBytes }
@@ -145,60 +140,7 @@ enum MothballService {
         }
     }
 
-    /// Asks the binder which AI sessions belong to each candidate.
-    ///
-    /// Run after ranking rather than inside it: `rankCandidates` is a pure
-    /// function over git state and stays that way, and binding is a
-    /// subprocess per repo. Candidates that were never bound keep their
-    /// `.notAssessed` default, which is the honest answer and the one the
-    /// gate refuses to archive from — a binder that fails must not leave a
-    /// repo looking session-free.
-    static func withContinuity(
-        _ candidates: [ArchiveCandidate],
-        projectRoot: URL
-    ) async -> [ArchiveCandidate] {
-        guard !candidates.isEmpty else { return candidates }
-        guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: projectRoot) else {
-            // Every candidate keeps its `.notAssessed` default -- the
-            // honest answer, and the one the gate refuses to archive
-            // from. A binder that could not run must not leave a repo
-            // looking session-free.
-            return candidates
-        }
 
-        // One pass for the whole screen. A shallow scan never establishes
-        // completeness, so every candidate needs a deep look, and asking
-        // one repo at a time re-reads the entire session store per repo:
-        // measured here, 12.8 minutes across 53 candidates one by one
-        // against 2.8 minutes in a single pass, both reaching complete
-        // coverage for all 53.
-        let outcomes = await ScreeService.bindAll(
-            execution: execution,
-            targets: candidates.map { ($0.repo.path, $0.repo.git.originURL) }
-        )
-
-        var out: [ArchiveCandidate] = []
-        out.reserveCapacity(candidates.count)
-        for candidate in candidates {
-            var updated = candidate
-            if let outcome = outcomes[candidate.repo.path.path] {
-                updated.continuity = outcome.assessment
-                updated.continuityDiagnostic = outcome.diagnostic
-            }
-            out.append(updated)
-        }
-        // Re-sort once bindings are known. `rankCandidates` orders by repo
-        // size because that is all it has; what actually decides this page
-        // is how much conversation a delete would strand, and the two
-        // orders disagree -- the largest repo here has four bound sessions
-        // and a smaller one has a hundred and twenty.
-        return out.sorted {
-            if $0.boundSessions.count != $1.boundSessions.count {
-                return $0.boundSessions.count > $1.boundSessions.count
-            }
-            return $0.repo.sizeBytes > $1.repo.sizeBytes
-        }
-    }
 }
 
 extension ScanModel {
@@ -330,7 +272,7 @@ extension ScanModel {
         archiveTask?.cancel()
         archiveTask = nil
         archiveLoading = false
-        if archiveWasInFlight { archiveBindingComplete = false }
+        if archiveWasInFlight { archiveInspectionComplete = false }
 
         contentSearchGeneration += 1
         contentSearchTask?.cancel()
@@ -385,19 +327,8 @@ extension ScanModel {
         return projects
     }
 
-    /// Loads what the Work screen needs the moment someone opens it.
-    ///
-    /// Entering the screen *is* the explicit intent -- the privacy line
-    /// this project holds is metadata-only *judgment*, not a rule that a
-    /// listing must be asked for twice.
-    ///
-    /// This does reach transcript bodies, and the comment here used to
-    /// deny it. The continuity binder runs `bind-all --deep`, which reads
-    /// transcripts to find file-access evidence and emits only whether
-    /// such evidence exists. That is inside the contract -- no body is
-    /// retained and no verdict quotes one -- but a comment claiming the
-    /// screen never reads a body was simply false, and a false comment
-    /// about a privacy boundary is worse than none.
+    /// Loads metadata and Git state on entry. Transcript-body impact analysis
+    /// runs only when requested from the retirement review for selected repos.
     func prepareWorkScreen() {
         guard !applicationTerminationStarted else { return }
         if sessionIndexNeedsRefresh && !sessionIndexLoading && sessionIndexError == nil {
@@ -405,7 +336,7 @@ extension ScanModel {
         }
         if screeNeedsRefresh && !screeLoading && screeError == nil {
             refreshScreeReport()
-        } else if screeReport != nil && !archiveBindingComplete
+        } else if screeReport != nil && !archiveInspectionComplete
                     && !archiveLoading && archiveError == nil {
             // The git judgment needs the workspace list the audit
             // produces, which is why the old page could not start without
@@ -683,13 +614,9 @@ extension ScanModel {
             archiveError = L10n.text("작업 감사를 먼저 실행해야 저장소를 판정할 수 있습니다.")
             return
         }
-        let root = projectRoot
         let paths = report.lineagePaths
         refreshArchiveCandidates(
-            using: { await MothballService.scanCandidates(lineagePaths: paths) },
-            binding: { candidates in
-                await MothballService.withContinuity(candidates, projectRoot: root)
-            }
+            using: { await MothballService.scanCandidates(lineagePaths: paths) }
         )
     }
 
@@ -697,49 +624,23 @@ extension ScanModel {
     /// testable without spawning Git and Python processes. Production always
     /// enters through the zero-argument method above.
     func refreshArchiveCandidates(
-        using scan: @escaping () async -> RepoScanOutcome,
-        binding bind: @escaping ([ArchiveCandidate]) async -> [ArchiveCandidate]
+        using scan: @escaping () async -> RepoScanOutcome
     ) {
         guard !applicationTerminationStarted else { return }
         cancelAndRetainForDrain(archiveTask)
         archiveGeneration += 1
         let generation = archiveGeneration
         archiveLoading = true
-        archiveBindingComplete = false
+        archiveInspectionComplete = false
         archiveError = nil
         archiveTask = Task {
             let outcome = await scan()
             guard !Task.isCancelled, generation == archiveGeneration else { return }
-            // Show the git judgment first, then fill in session bindings:
-            // binding spawns one subprocess per repo, and a long wait for
-            // it would otherwise hold back a list that is already useful.
-            // Until it lands every row reads "AI 세션 확인 안 됨", which is
-            // true rather than reassuring.
             repoAssessments = outcome.candidates
             repoScanFailures = outcome.failures
             reposNotScanned = outcome.notScanned
             archiveInspectionFailures = outcome.failureCount
-            // Binding is for repos there is a retirement to review. It
-            // reads every session store per pass, and running it over
-            // repos that can never be archived -- the `.unsafe` ones,
-            // which are `.unsafe` precisely because they hold live work
-            // -- spends that pass on a question nobody asked. The
-            // ineligible keep their assessment and their `.notAssessed`
-            // continuity, which is the honest answer for them.
-            let eligible = outcome.candidates.filter(\.isRetirementEligible)
-            guard !eligible.isEmpty else {
-                archiveBindingComplete = true
-                archiveLoading = false
-                archiveTask = nil
-                return
-            }
-            let bound = await bind(eligible)
-            guard !Task.isCancelled, generation == archiveGeneration else { return }
-            var byPath: [String: ArchiveCandidate] = [:]
-            for candidate in bound { byPath[candidate.pathText] = candidate }
-            repoAssessments = outcome.candidates.map { byPath[$0.pathText] ?? $0 }
-            guard generation == archiveGeneration else { return }
-            archiveBindingComplete = true
+            archiveInspectionComplete = true
             archiveLoading = false
             archiveTask = nil
         }

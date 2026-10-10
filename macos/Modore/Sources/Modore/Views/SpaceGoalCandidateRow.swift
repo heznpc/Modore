@@ -15,7 +15,7 @@ struct SpaceGoalCandidateRow: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 16)
-                Text(item.measureStatus == "timed_out"
+                Text(!item.isMeasurementComplete
                     ? L10n.text("크기 확인 필요")
                     : StorageBytes.text(StorageBytes.fromLegacyGiB(item.sizeGB)))
                     .font(.callout).monospacedDigit()

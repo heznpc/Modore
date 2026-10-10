@@ -1,10 +1,9 @@
 import Foundation
 import MothballCore
 
-/// A dormant git repo, found among the workspace paths scree already
-/// discovered, judged by MothballCore's own read-only git inspection. This
-/// is display data only -- no case here archives or deletes anything; see
-/// MothballPage's own header comment for why.
+/// A repository assessment, including active and activity-unknown repos.
+/// This is display data; actual retirement uses its own explicit preview,
+/// approval, and execution policy.
 struct ArchiveCandidate: Identifiable {
     var id: String { repo.path.path }
     let repo: RepoInfo
@@ -12,7 +11,7 @@ struct ArchiveCandidate: Identifiable {
     /// Computed once, alongside `verdict`, from the same `now` reference --
     /// never re-derived at render time, so the displayed day count can
     /// never drift from the tier it was judged against.
-    let dormancyDays: Int
+    let dormancyDays: Int?
 
     /// What a binder found out about this repo's AI sessions, or
     /// `.notAssessed` when none has run yet.
@@ -50,6 +49,7 @@ struct ArchiveCandidate: Identifiable {
     }
 
     var tierLabel: String {
+        if verdict.reasons.contains(.activityUnknown) { return L10n.text("활동 미확인 · 휴면 판정 보류") }
         switch verdict.tier {
         case .safe: return L10n.text("보관 추천")
         case .caution: return L10n.text("주의 필요")
@@ -58,6 +58,7 @@ struct ArchiveCandidate: Identifiable {
     }
 
     var tierSymbolName: String {
+        if verdict.reasons.contains(.activityUnknown) { return "questionmark.circle" }
         switch verdict.tier {
         case .safe: return "archivebox"
         case .caution: return "exclamationmark.triangle"
@@ -153,6 +154,7 @@ struct ArchiveCandidate: Identifiable {
         case .unpushedCommits(let count): return L10n.format("미푸시 커밋 %@개", String(describing: count))
         case .noRemoteConfigured: return L10n.text("원격 저장소 없음")
         case .noUpstreamConfigured: return L10n.text("업스트림 미설정")
+        case .activityUnknown: return L10n.text("활동 미확인 · 휴면 판정 보류")
         case .noCommitsYet: return L10n.text("커밋 없음")
         case .dormant(let daysAgo): return L10n.format("%@일간 미사용", String(describing: daysAgo))
         case .fullyPushed: return L10n.text("원격에 모두 반영됨")

@@ -5585,10 +5585,17 @@ def render_report(scree: dict, limit: int) -> str:
 
 MAX_PRESERVE_BYTES = 8 * 1024 * 1024
 
+# A failed email probe must not retry every suffix of a long word. Without
+# the start boundary, a transcript containing e.g. 80,000 base64 characters
+# and no '@' takes quadratic time before the viewer can redact and clip it.
+# At the end of the previous match, re.sub permits an adjacent local part
+# even if its preceding character belonged to that match. _mask_emails keeps
+# that cursor exception, including Unicode and '+'-joined addresses.
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
-_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
-_PRIVATE_KEY_RE = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----")
+_EMAIL_START_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+\.[\w.-]+")
+_JWT_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-]+")
+_PRIVATE_KEY_BEGIN_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+_PRIVATE_KEY_END_RE = re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY-----")
 _API_KEY_RE = re.compile(
     r"\b(?:sk|pk)-[A-Za-z0-9]{16,}\b"
     r"|\bgh[opsu]_[A-Za-z0-9]{16,}\b"
@@ -5599,15 +5606,90 @@ _API_KEY_RE = re.compile(
     r"|\bglpat-[A-Za-z0-9_-]{16,}\b")
 
 
+def _mask_emails(text: str) -> str:
+    """Avoid suffix retries while preserving re.sub's continuation boundary."""
+    pieces = []
+    copied_until = 0
+    while copied_until < len(text):
+        # Check the post-match cursor once without a left boundary. Otherwise
+        # first@example.com+second@example.org would expose the second address.
+        match = (_EMAIL_RE.match(text, copied_until)
+                 or _EMAIL_START_RE.search(text, copied_until))
+        if match is None:
+            break
+        pieces.extend((text[copied_until:match.start()], "<email-redacted>"))
+        copied_until = match.end()
+    if not copied_until:
+        return text
+    pieces.append(text[copied_until:])
+    return "".join(pieces)
+
+
+def _mask_private_keys(text: str) -> str:
+    """Pair the next PEM opening and closing markers without retrying starts.
+
+    Repeated BEGIN markers with no END must scan the remaining text only once.
+    Pairing the first following END, including nested/mismatched key labels,
+    preserves the prior redaction pattern's conservative matching semantics.
+    """
+    pieces = []
+    copied_until = 0
+    while True:
+        begin = _PRIVATE_KEY_BEGIN_RE.search(text, copied_until)
+        if begin is None:
+            break
+        end = _PRIVATE_KEY_END_RE.search(text, begin.end())
+        if end is None:
+            break
+        pieces.extend((text[copied_until:begin.start()], "<private-key-redacted>"))
+        copied_until = end.end()
+    if not copied_until:
+        return text
+    pieces.append(text[copied_until:])
+    return "".join(pieces)
+
+
+def _mask_jwts(text: str) -> str:
+    """Match the existing three-segment JWT shape in one forward pass.
+
+    Searching from every 'eyJ' retries the rest of a long base64url segment
+    quadratically when no dot follows. Each maximal segment is examined once
+    here, retaining even JWTs embedded after an arbitrary alphanumeric prefix.
+    """
+    window = []
+    pieces = []
+    copied_until = 0
+    for segment in _JWT_SEGMENT_RE.finditer(text):
+        window.append(segment)
+        if len(window) < 3:
+            continue
+        header, payload, signature = window
+        start = text.find("eyJ", header.start(), header.end())
+        if (start >= 0 and header.end() - start >= 13
+                and payload.end() - payload.start() >= 10
+                and signature.end() - signature.start() >= 10
+                and header.end() + 1 == payload.start() and text[header.end()] == "."
+                and payload.end() + 1 == signature.start() and text[payload.end()] == "."):
+            pieces.extend((text[copied_until:start], "<jwt-redacted>"))
+            copied_until = signature.end()
+            window.clear()
+        else:
+            window.pop(0)
+    if not copied_until:
+        return text
+    pieces.append(text[copied_until:])
+    return "".join(pieces)
+
+
 def mask_text(text: str, home: Path) -> str:
     """Default-on redaction: email, JWT, PEM private keys, known API-key
     prefixes, and the caller's home path. Order matters — keys before the
     generic home-path swap so a key embedded in a home-relative path still
     gets caught by its own pattern first."""
-    text = _PRIVATE_KEY_RE.sub("<private-key-redacted>", text)
-    text = _JWT_RE.sub("<jwt-redacted>", text)
+    text = _mask_private_keys(text)
+    text = _mask_jwts(text)
     text = _API_KEY_RE.sub("<api-key-redacted>", text)
-    text = _EMAIL_RE.sub("<email-redacted>", text)
+    text = _mask_emails(text)
     home_str = str(home)
     if home_str:
         text = text.replace(home_str, "~")
@@ -6189,6 +6271,8 @@ def _inspect_payload(
     def clip(text: str) -> str:
         cleaned = " ".join(text.split())
         if not raw:
+            # Redact before truncating: a cut can remove a PEM closing marker
+            # or the rest of a JWT/email and expose an otherwise masked prefix.
             cleaned = mask_text(cleaned, home)
         if len(cleaned) > INSPECT_TURN_CHARS:
             cleaned = cleaned[: INSPECT_TURN_CHARS - 1].rstrip() + "\u2026"

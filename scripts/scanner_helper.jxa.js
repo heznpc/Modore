@@ -77,7 +77,7 @@ function uniqueStorageTotal(items) {
   const roots = [];
   let total = 0;
   (items || [])
-    .filter(item => item && item.measureStatus !== "timed_out" && Number(item.sizeGB || 0) > 0 && item.path)
+    .filter(item => item && item.measureStatus === "ok" && Number(item.sizeGB || 0) > 0 && item.path)
     .slice()
     .sort((a, b) => String(a.path).length - String(b.path).length)
     .forEach(item => {
@@ -511,16 +511,20 @@ function parseStoragePaths(text, volumeRisk) {
     const kind = parts[0];
     const label = parts[1];
     const path = parts[2];
-    const sizeGB = kind === "application" ? appKbToGb(parts[3]) : kbToGb(parts[3]);
-    const measureStatus = parts[4] || "ok";
+    const rawSizeKB = Number(parts[3]);
+    const validSize = parts[3] !== "" && Number.isFinite(rawSizeKB) && rawSizeKB >= 0;
+    const measureStatus = validSize ? (parts[4] || "ok") : "unknown";
+    const observedGB = validSize ? (kind === "application" ? appKbToGb(rawSizeKB) : kbToGb(rawSizeKB)) : 0;
+    const sizeGB = measureStatus === "ok" ? observedGB : null;
     const measureNote = parts[5] || "";
     return {
-      risk: measureStatus === "timed_out" ? "info" : classifyStorageRow(kind, label, sizeGB, volumeRisk),
+      risk: measureStatus !== "ok" ? "info" : classifyStorageRow(kind, label, sizeGB, volumeRisk),
       kind,
       label,
       sizeGB,
       path,
       measureStatus,
+      lowerBoundGB: measureStatus !== "ok" && observedGB > 0 ? observedGB : null,
       cleanupId: parts[6] || "",
       note: measureNote || storageNote(kind, label),
       action: storageAction(kind, label)
@@ -986,7 +990,7 @@ const simulatorDevices = parseSimulatorDevices(
 const cleanupKinds = ["cache", "temp", "trash", "build_cache", "chrome_clone", "ai_vm_cache", "ai_cache", "known_app"];
 const cleanupCandidates = storageItems.filter(item =>
   cleanupKinds.includes(item.kind) && !!item.cleanupId &&
-    (item.risk === "warning" || item.measureStatus === "timed_out")
+    (item.risk === "warning" || item.measureStatus !== "ok")
 );
 // Keep the established cleanupCandidates contract limited to global/fixed recipes.
 // Exact dynamic paths are a separate recovery surface: cleanup.sh accepts them

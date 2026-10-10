@@ -459,6 +459,7 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     modore_source_checkout = {
         "bin/modore",
         "scripts/bounded_exec.py",
+        "scripts/tool_reuse.py",
         "skills/modore-ops/SKILL.md",
         "skills/modore-ops/agents/openai.yaml",
         "skills/modore-ops/references/command-contract.md",
@@ -729,6 +730,8 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
         # bin/modore entry point. The installed app does not invoke that shell
         # command and therefore must not gain an unreachable Python helper.
         "scripts/bounded_exec.py",
+        # Invoked only by `bin/modore tools`; no app-side caller exists.
+        "scripts/tool_reuse.py",
     }
     non_shell_expected = {
         f"data/{path.name}" for path in (project_root / "data").glob("*.json")
@@ -755,6 +758,7 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
     source_checkout_only = {
         "bin/modore",
         "scripts/bounded_exec.py",
+        "scripts/tool_reuse.py",
         "skills/modore-ops/SKILL.md",
         "skills/modore-ops/agents/openai.yaml",
         "skills/modore-ops/references/command-contract.md",
@@ -1380,10 +1384,10 @@ def test_macos_timed_out_cleanup_measurements_remain_visible(project_root):
         / "macos/Modore/Sources/Modore/Models/StorageChangeSummary.swift"
     ).read_text(encoding="utf-8")
 
-    assert 'item.measureStatus === "timed_out"' in helper
+    assert 'item.measureStatus !== "ok"' in helper
     assert "union(after.keys)" in history
-    assert 'old?.measureStatus == "timed_out"' in history
-    assert 'row?.measureStatus == "timed_out"' in history
+    assert 'old.map({ ($0.measureStatus ?? "ok") != "ok" })' in history
+    assert 'row.map({ ($0.measureStatus ?? "ok") != "ok" })' in history
 
 
 def test_vt_env_key_requires_explicit_local_enable(project_root, tmp_path, monkeypatch):

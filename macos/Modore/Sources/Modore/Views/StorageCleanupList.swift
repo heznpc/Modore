@@ -395,11 +395,7 @@ struct CleanupCandidateRow: View {
             status: item.canCleanup || canRetryMeasurement ? nil : L10n.text("수동 확인"),
             actionTitle: actionTitle
         ) {
-            if item.measureStatus == "timed_out" {
-                model.runScan()
-            } else {
-                model.prepareCleanup(item)
-            }
+            model.prepareCleanup(item)
         }
         .contextMenu { StorageItemContextMenu(item: item) }
     }
@@ -410,11 +406,11 @@ struct CleanupCandidateRow: View {
     }
 
     private var canRetryMeasurement: Bool {
-        item.measureStatus == "timed_out" && item.hasSupportedCleanupRecipe
+        !item.isMeasurementComplete && item.hasSupportedCleanupRecipe
     }
 
     private var cleanupSymbol: String {
-        if item.measureStatus == "timed_out" { return "hourglass" }
+        if !item.isMeasurementComplete { return "hourglass" }
         if item.label.localizedCaseInsensitiveContains("Playwright") {
             return "rectangle.stack.badge.play"
         }
@@ -488,10 +484,10 @@ enum ProtectedStoragePresentation {
         small: [StorageItem]
     ) {
         let prominent = items.filter {
-            $0.measureStatus == "timed_out" || $0.sizeGB >= prominentThresholdGB
+            !$0.isMeasurementComplete || $0.sizeGB >= prominentThresholdGB
         }
         let small = items.filter {
-            $0.measureStatus != "timed_out" && $0.sizeGB < prominentThresholdGB
+            $0.isMeasurementComplete && $0.sizeGB < prominentThresholdGB
         }
         return (prominent, small)
     }

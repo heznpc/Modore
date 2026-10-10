@@ -128,7 +128,7 @@ struct StorageSnapshot {
 
     var reclaimableText: String {
         if cleanupCandidates.contains(where: {
-            $0.hasSupportedCleanupRecipe && $0.measureStatus == "timed_out"
+            $0.hasSupportedCleanupRecipe && !$0.isMeasurementComplete
         }) {
             return reclaimableGB > 0 ? Self.gbText(reclaimableGB) + "+" : L10n.text("측정 보류")
         }
@@ -137,7 +137,7 @@ struct StorageSnapshot {
 
     var recoveryText: String {
         if recoveryCandidates.contains(where: {
-            $0.hasSupportedCleanupRecipe && $0.measureStatus == "timed_out"
+            $0.hasSupportedCleanupRecipe && !$0.isMeasurementComplete
         }) {
             return recoveryGB > 0 ? Self.gbText(recoveryGB) + "+" : L10n.text("측정 보류")
         }
@@ -145,19 +145,24 @@ struct StorageSnapshot {
     }
 
     var reviewText: String {
-        Self.gbText(reviewGB)
+        inventoryText(reviewGB, items: reviewCandidates)
+    }
+
+    private func inventoryText(_ value: Double, items: [StorageItem]) -> String {
+        guard items.contains(where: { !$0.isMeasurementComplete }) else { return Self.gbText(value) }
+        return value > 0 ? Self.gbText(value) + "+" : L10n.text("측정 보류")
     }
 
     var developerText: String {
         let counted = developerToolchains.filter { !$0.kind.hasPrefix("simulator_") }
-        if counted.contains(where: { $0.measureStatus == "timed_out" }) {
+        if counted.contains(where: { !$0.isMeasurementComplete }) {
             return developerGB > 0 ? Self.gbText(developerGB) + "+" : L10n.text("측정 보류")
         }
         return Self.gbText(developerGB)
     }
 
     var applicationsText: String {
-        Self.gbText(applicationsGB)
+        inventoryText(applicationsGB, items: applications)
     }
 
     var simulatorText: String {
@@ -359,6 +364,25 @@ struct SimulatorCreationBurst: Identifiable, Equatable {
     }
 }
 
+/// Measurement completeness is independent of the observed numeric lower bound.
+/// Unknown/future producer states fail closed until a fresh preview succeeds.
+enum StorageMeasurementStatus: String {
+    case ok, deferred, blocked, partial, failed, unknown
+    case timedOut = "timed_out"
+
+    var text: String {
+        switch self {
+        case .ok: L10n.text("측정 완료")
+        case .deferred: L10n.text("측정 보류")
+        case .timedOut: L10n.text("시간 초과")
+        case .blocked: L10n.text("접근 제한")
+        case .partial: L10n.text("일부 측정")
+        case .failed: L10n.text("측정 실패")
+        case .unknown: L10n.text("미확인")
+        }
+    }
+}
+
 struct StorageItem: Identifiable {
     let id = UUID()
     let risk: String
@@ -380,26 +404,36 @@ struct StorageItem: Identifiable {
         // ClosedRange's precondition -- a full-screen crash traceable to one
         // field. `Double("1e999")` and a bare 1e999 in JSON both produce one,
         // so treat it as unmeasured rather than trusting the producer.
-        let rawSize: Double
+        let rawSize: Double?
         if let number = json["sizeGB"] as? NSNumber {
             rawSize = number.doubleValue
         } else if let string = json["sizeGB"] as? String {
-            rawSize = Double(string) ?? 0
+            rawSize = Double(string)
         } else {
-            rawSize = 0
+            rawSize = nil
         }
-        sizeGB = rawSize.isFinite ? rawSize : 0
+        let validSize = rawSize.map { $0.isFinite && $0 >= 0 } ?? false
+        let lowerBound = (json["lowerBoundGB"] as? NSNumber)?.doubleValue ?? 0
+        sizeGB = validSize ? rawSize! : (lowerBound.isFinite ? max(0, lowerBound) : 0)
         path = json["path"] as? String ?? ""
         action = json["action"] as? String ?? L10n.text("확인 필요")
         note = L10n.message(json["note"] as? String ?? "")
-        measureStatus = json["measureStatus"] as? String ?? "ok"
+        let status = json["measureStatus"] as? String ?? "ok"
+        measureStatus = status == "ok" && !validSize ? "unknown" : status
         cleanupID = json["cleanupId"] as? String ?? ""
     }
 
+    var measurementStatus: StorageMeasurementStatus {
+        StorageMeasurementStatus(rawValue: measureStatus) ?? .unknown
+    }
+
+    var isMeasurementComplete: Bool { measurementStatus == .ok }
+
+    /// nil is unmeasured; zero is a successfully measured empty directory.
+    var measuredSizeGB: Double? { isMeasurementComplete ? sizeGB : nil }
+
     var sizeText: String {
-        if measureStatus == "timed_out" {
-            return L10n.text("측정 보류")
-        }
+        guard isMeasurementComplete else { return measurementStatus.text }
         if sizeGB >= 0.1 {
             return String(format: "%.1fGB", sizeGB)
         }
@@ -407,7 +441,7 @@ struct StorageItem: Identifiable {
     }
 
     var canCleanup: Bool {
-        hasSupportedCleanupRecipe && measureStatus != "timed_out"
+        hasSupportedCleanupRecipe && isMeasurementComplete
     }
 
     var cleanupTier: CleanupTier? {

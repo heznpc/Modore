@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -47,6 +49,32 @@ class ExplanationTests(unittest.TestCase):
             measurements=m.past_measurements(p,since)
             self.assertEqual(list(measurements),[os.path.realpath('/tmp/good')])
             self.assertEqual(measurements[os.path.realpath('/tmp/good')][1],40960)
+
+    def test_baseline_bounds_use_evidence_timestamp_precision(self):
+        # The original direct float comparison intermittently rejected a
+        # timestamp produced from this very same `since` value. Exercise both
+        # rounding directions, both persisted producers, and the adjacent
+        # microseconds so the fix cannot start accepting future/stale evidence.
+        exact=m.stamp('2026-10-02T00:00:00.123457Z')
+        for since in (math.nextafter(exact, -math.inf), math.nextafter(exact, math.inf)):
+            with self.subTest(since=since), tempfile.TemporaryDirectory() as d:
+                state=Path(d);reports=state/'storage-explanations';reports.mkdir()
+                samples = [('edge', since), ('oldest', since-300),
+                           ('future', exact+0.000001), ('stale', exact-300-0.000001)]
+                evidence=[]
+                for label, at in samples:
+                    evidence.append(f'path\t{m.iso(at)}\t1\tok\t{label}\t/tmp/tsv-{label}\n')
+                    (reports/f'{label}.json').write_text(json.dumps({
+                        'capturedAt': m.iso(at),
+                        'rows': [{'path': f'/tmp/json-{label}', 'complete': True,
+                                  'allocatedBytes': 2048}],
+                    }))
+                (state/'storage-evidence-2026-10.tsv').write_text(''.join(evidence))
+                measurements=m.past_measurements(state,since)
+                self.assertEqual(set(measurements), {
+                    os.path.realpath(f'/tmp/{producer}-{label}')
+                    for producer in ('tsv', 'json') for label in ('edge', 'oldest')
+                })
 
     def test_explanation_separates_measured_growth_from_metadata(self):
         with tempfile.TemporaryDirectory() as d:

@@ -29,7 +29,7 @@ struct SpaceGoalWorkspaceList: View {
     }
 
     private var pendingCount: Int {
-        candidates.filter { $0.measureStatus == "timed_out" }.count
+        candidates.filter { !$0.isMeasurementComplete }.count
     }
 
     private var freeBytes: Int64? {
@@ -76,7 +76,7 @@ struct SpaceGoalWorkspaceList: View {
                 HStack {
                     Text(recovery.detail).font(.callout.weight(.semibold))
                     Spacer()
-                    Button("큰 항목부터 자동 확보") {
+                    Button(L10n.text("큰 항목부터 자동 확보")) {
                         Task { await recovery.runIfNeeded(model: model, snapshot: monitor.snapshot, requestedNow: true) }
                     }
                     .disabled(!recovery.enabled || recovery.running || model.isBusy)

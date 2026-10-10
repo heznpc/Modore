@@ -1580,6 +1580,106 @@ def test_mask_text_redacts_known_secret_shapes(tmp_path):
     assert "MIIBogIBAA==" not in masked and "<private-key-redacted>" in masked
 
 
+@pytest.mark.parametrize("token", ["A", "eyJ"])
+def test_mask_text_long_non_email_finishes_and_preserves_complete_addresses(tmp_path, token):
+    # A subprocess deadline catches the original quadratic regex without
+    # leaving a stuck test worker. Ordinary process startup and the corrected
+    # scan are well below this generous bound; the old scan takes >10 seconds.
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import scree
+text = sys.argv[2] * 100_000
+assert scree.mask_text(text, Path("/unused-home")) == text
+assert scree.mask_text(text + "@example.com", Path("/unused-home")) == "<email-redacted>"
+""", str(Path(scree.__file__).parent), token],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert scree.mask_text("[한글.user+tag@example.com]", tmp_path) == "[<email-redacted>]"
+
+
+@pytest.mark.parametrize("text", [
+    "first@example.com+second@example.org",
+    "처음@예시.한국+다음@예시.한국",
+    "first@example.com+second@example.org+third@example.net",
+])
+def test_email_masking_covers_adjacent_addresses_after_previous_match(tmp_path, text):
+    assert scree.mask_text(text, tmp_path) == "<email-redacted>" * text.count("@")
+
+
+def test_pem_masking_preserves_adjacent_and_nested_marker_semantics(tmp_path):
+    begin = "-----BEGIN RSA PRIVATE KEY-----"
+    end = "-----END RSA PRIVATE KEY-----"
+    inner = "-----BEGIN EC PRIVATE KEY-----"
+    text = f"before {begin}private {inner}nested{end} after {begin}second{end} tail"
+    assert scree.mask_text(text, tmp_path) == (
+        "before <private-key-redacted> after <private-key-redacted> tail"
+    )
+    # As before, differing supported key labels are masked conservatively.
+    assert scree.mask_text(inner + "payload" + end, tmp_path) == "<private-key-redacted>"
+
+
+def test_repeated_unclosed_pem_markers_do_not_retry_the_whole_tail(tmp_path):
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import scree
+text = "-----BEGIN PRIVATE KEY-----\\n" * 20_000
+# This is malformed PEM, not a complete private key. Preserve the prior
+# result while ensuring absent END markers do not cause quadratic retries.
+assert scree.mask_text(text, Path("/unused-home")) == text
+""", str(Path(scree.__file__).parent)],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_jwt_masking_keeps_embedded_prefix_and_three_segment_boundaries(tmp_path):
+    jwt = "eyJ" + "a" * 10 + "." + "b" * 10 + "." + "c" * 10
+    # Preserve the old matching semantics: a header can follow an arbitrary
+    # prefix, extra dotted suffixes remain, and adjacent tokens are independent.
+    text = f"prefix{jwt}.suffix/{jwt}.{jwt}"
+    assert scree.mask_text(text, tmp_path) == (
+        "prefix<jwt-redacted>.suffix/<jwt-redacted>.<jwt-redacted>"
+    )
+    # If the first three segments are not a JWT, the next segment can still
+    # start one. Whitespace or repeated dots do not join separate segments.
+    assert scree.mask_text("plain." + jwt, tmp_path) == "plain.<jwt-redacted>"
+    for invalid in (jwt.replace(".", "..", 1), jwt.replace(".", " ", 1),
+                    jwt.replace("a" * 10, "a" * 9), jwt.replace("b" * 10, "b" * 9),
+                    jwt.replace("c" * 10, "c" * 9)):
+        assert scree.mask_text(invalid, tmp_path) == invalid
+
+
+@pytest.mark.parametrize("secret,marker", [
+    ("-----BEGIN RSA PRIVATE KEY-----\n" + "PRIVATE_PAYLOAD" * 500
+     + "\n-----END RSA PRIVATE KEY-----", "<private-key-redacted>"),
+    ("eyJ" + "a" * 100 + "." + "b" * 100 + "." + "c" * 100,
+     "<jwt-redacted>"),
+    ("private-address-" + "a" * 100 + "@example.com", "<email-redacted>"),
+])
+def test_inspect_masks_complete_secret_before_clipping(tmp_path, secret, marker):
+    # Each secret crosses the display limit. Clipping the input before masking
+    # would leak its prefix (and remove the PEM closing delimiter entirely).
+    prefix = "safe " * ((scree.INSPECT_TURN_CHARS - 40) // 5)
+    text = prefix + secret + " visible tail " * 200
+    out = scree._inspect_payload(
+        [scree.VisibleTurn("user", text)], status="ok", provider="claude",
+        session_id="fixture", workspace=None, home=tmp_path, raw=False,
+        turn_limit=1,
+    )
+    for rendered in (out["firstUserTurn"], out["turns"][0]["text"]):
+        assert marker in rendered
+        assert len(rendered) <= scree.INSPECT_TURN_CHARS
+        assert rendered.endswith("…")
+        assert secret[:12] not in rendered
+
+
 def test_preserve_masks_by_default_and_raw_opts_out(tmp_path):
     home = tmp_path / "home"
     session = home / ".claude" / "projects" / "p" / "s.jsonl"

@@ -105,7 +105,7 @@ enum BackgroundNotifier {
         let otherAppRunning = NSRunningApplication.runningApplications(withBundleIdentifier: "me.heznpc.modore")
             .contains { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
         if AutomaticCachePolicy.ownsStorageNotice(
-            enabled: UserDefaults.standard.bool(forKey: "automaticSafeCacheRecovery"),
+            enabled: AutomaticCacheConsentStore.isAuthorized(),
             appRunning: otherAppRunning, free: AutomaticCacheRecovery.freeSpace()) {
             // The live app owns analysis and result delivery; acknowledge handling
             // so the minute watcher does not spawn another duplicate reminder.

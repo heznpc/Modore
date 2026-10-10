@@ -2,10 +2,9 @@ import Foundation
 
 /// Snapshot of a git repository's state captured at scan time.
 ///
-/// All fields are nullable where git can legitimately have no answer
-/// (empty repo with no commits, detached HEAD, no remote configured).
-/// Callers must not interpret nil as "unknown" — it means the property
-/// genuinely does not exist for this repo.
+/// Missing activity evidence is distinct from an old activity timestamp.
+/// Git metadata also has legitimate absences (no commits, detached HEAD,
+/// or no configured remote).
 public struct RepoInfo: Sendable, Hashable {
     public let path: URL
     public let sizeBytes: Int64
@@ -13,24 +12,35 @@ public struct RepoInfo: Sendable, Hashable {
     /// Most recent file mtime anywhere in the working tree (including
     /// untracked files but excluding .git contents). Used as a fallback
     /// activity signal when there are no commits.
-    public let lastFileMTime: Date
+    public let lastFileMTime: Date?
 
     public let git: GitMetadata
 
-    public init(path: URL, sizeBytes: Int64, lastFileMTime: Date, git: GitMetadata) {
+    public init(path: URL, sizeBytes: Int64, lastFileMTime: Date?, git: GitMetadata) {
         self.path = path
         self.sizeBytes = sizeBytes
         self.lastFileMTime = lastFileMTime
         self.git = git
     }
 
-    /// The most recent activity signal from any source. Used by the
-    /// classifier as the primary "is this dormant?" signal.
-    public var lastActivity: Date {
-        if let commit = git.lastCommitDate {
-            return max(commit, lastFileMTime)
+    public var activity: ActivityEvidence {
+        guard let latest = [lastFileMTime, git.lastCommitDate].compactMap({ $0 }).max() else {
+            return .noEvidence
         }
-        return lastFileMTime
+        return .observed(latest)
+    }
+
+    public var lastActivity: Date? { activity.observedAt }
+
+}
+
+public enum ActivityEvidence: Sendable, Hashable {
+    case observed(Date)
+    case noEvidence
+
+    public var observedAt: Date? {
+        if case .observed(let date) = self { return date }
+        return nil
     }
 }
 

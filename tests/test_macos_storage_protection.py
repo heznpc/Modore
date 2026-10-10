@@ -808,7 +808,7 @@ def test_storage_batches_simulators_with_a_longer_deadline_than_general_paths(
     assert npm_trace[1:] == ["90", "80", "timed_out"]
 
 
-def test_storage_measures_simulator_assets_before_general_caches_without_volumes(
+def test_storage_interleaves_simulator_assets_and_caches_without_counting_volumes(
     project_root, tmp_path
 ):
     script = project_root / "scripts/modules/macos/storage.sh"
@@ -896,15 +896,15 @@ def test_storage_measures_simulator_assets_before_general_caches_without_volumes
     assert orphan_uuid not in detail_rows[0]
     trace_paths = [line.split("\t")[0] for line in trace.read_text(encoding="utf-8").splitlines()]
     assert trace_paths[:2] == [str(device), str(orphan_device)]
-    assert trace_paths[2:7] == [
+    assert [path for path in trace_paths if path.startswith(str(assets)) or path == str(dyld)] == [
         *(str(assets / name) for name in runtime_names),
         str(dyld),
     ]
     assert str(volumes) not in trace_paths
-    assert trace_paths.index(str(dyld)) < trace_paths.index(str(home / ".npm"))
+    assert trace_paths.index(str(home / ".npm")) < trace_paths.index(str(dyld))
 
 
-def test_storage_prioritizes_recoverable_project_artifacts_before_general_caches(
+def test_storage_reserves_a_measurement_attempt_for_caches_after_slow_projects(
     project_root, tmp_path
 ):
     script = project_root / "scripts/modules/macos/storage.sh"
@@ -951,9 +951,12 @@ def test_storage_prioritizes_recoverable_project_artifacts_before_general_caches
     ]
     by_path = {row[2]: row for row in rows}
     assert by_path[str(build)][0] == "project_residue"
-    assert by_path[str(build)][3:5] == ["8192", "ok"]
+    assert by_path[str(build)][3:5] == ["0", "timed_out"]
     assert by_path[str(build)][6] == "project_residue"
     assert by_path[str(npm)][3:5] == ["0", "timed_out"]
+    attempts = [line.split("\t") for line in trace.read_text().splitlines()]
+    assert all(int(row[2]) > 0 for row in attempts)
+    assert sum(int(row[2]) for row in attempts) <= 80
 
     traced_paths = [
         line.split("\t", 1)[0]
@@ -1177,7 +1180,7 @@ def test_storage_marks_nonzero_du_output_as_an_incomplete_lower_bound(
     by_path = {row[2]: row for row in rows}
     for path in (ios_runtime, dyld, npm):
         row = by_path[str(path)]
-        assert row[3:5] == ["4096", "timed_out"]
+        assert row[3:5] == ["4096", "partial"]
         assert "최소 확인량" in row[5]
 
 
@@ -2212,7 +2215,10 @@ def test_project_git_commands_have_individual_timeout(
     elapsed = time.monotonic() - started
 
     assert result.returncode == 0, result.stderr
-    assert elapsed < 3
+    # Discovery, process-tree inspection and reaping run outside the one-second
+    # command deadline. Allow loaded build/test runners that overhead while
+    # still requiring cancellation before the six-second stalled command ends.
+    assert elapsed < 5
     trace_rows = [line.split("\t") for line in trace.read_text().splitlines()]
     stalled_row = next(row for row in trace_rows if row[0] == stalled_operation)
     assert stalled_row[1] == "command_timeout"

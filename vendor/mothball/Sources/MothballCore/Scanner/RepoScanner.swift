@@ -291,7 +291,7 @@ public struct RepoScanner: Sendable {
         }
         guard !Task.isCancelled else { return .cancelled(url) }
         let size: Int64
-        let mtime: Date
+        let mtime: Date?
         do {
             (size, mtime) = try await measurements
         } catch is CancellationError {
@@ -347,7 +347,7 @@ enum SizeAndActivity {
     /usr/bin/awk -v limit="$1" '
       {
         count += 1
-        if ($1 > latest) latest = $1
+        if (count == 1 || $1 > latest) latest = $1
         if (count > limit) exit 75
       }
       END {
@@ -361,7 +361,7 @@ enum SizeAndActivity {
         maxEntries: Int = 100_000,
         timeout: Duration = .seconds(5),
         shellExecutable: URL = URL(fileURLWithPath: "/bin/bash")
-    ) async throws -> (sizeBytes: Int64, lastMTime: Date) {
+    ) async throws -> (sizeBytes: Int64, lastMTime: Date?) {
         let boundedEntries = max(1, maxEntries)
         do {
             async let usage = ProcessRunner.run(
@@ -399,13 +399,11 @@ enum SizeAndActivity {
             }
             let activityFields = activityResult.stdout.split(whereSeparator: \ .isWhitespace)
             guard activityFields.count == 2,
-                  Int(activityFields[0]) != nil,
-                  let latestSeconds = TimeInterval(activityFields[1]) else {
+                  let fileCount = Int(activityFields[0]), fileCount >= 0,
+                  let latestSeconds = TimeInterval(activityFields[1]), latestSeconds.isFinite else {
                 throw Error.malformedOutput
             }
-            let latest = latestSeconds > 0
-                ? Date(timeIntervalSince1970: latestSeconds)
-                : Date.distantPast
+            let latest = fileCount > 0 ? Date(timeIntervalSince1970: latestSeconds) : nil
             return (kilobytes * 1_024, latest)
         } catch is CancellationError {
             throw CancellationError()

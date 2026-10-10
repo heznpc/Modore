@@ -174,6 +174,31 @@ final class ScreeBindIntegrationTests: XCTestCase {
                        .block(.unsealedSessions(count: 1)))
     }
 
+    func testExplicitBatchImpactInvestigatesOnlyRequestedWorkspaces() async throws {
+        let selected = home.appending(path: "selected")
+        let unrelated = home.appending(path: "unrelated")
+        let store = home.appending(path: ".claude/projects/-fake")
+        for directory in [selected, unrelated, store] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try Data("{\"cwd\":\"\(selected.path)\"}\n".utf8)
+            .write(to: store.appending(path: "selected-session.jsonl"))
+        try Data("{\"cwd\":\"\(unrelated.path)\"}\n".utf8)
+            .write(to: store.appending(path: "unrelated-session.jsonl"))
+        let outcomes = await ScreeService.bindAll(
+            execution: execution, targets: [(selected, nil)], deep: true, homeOverride: home
+        )
+        XCTAssertEqual(Set(outcomes.keys), [selected.path])
+        let outcome = try XCTUnwrap(outcomes[selected.path])
+        XCTAssertEqual(outcome.coverage, .complete, outcome.diagnostic ?? "")
+        XCTAssertEqual(outcome.sessionCount, 1)
+        guard case .bindings(let sessions, _) = outcome.assessment else {
+            return XCTFail("Expected the selected session")
+        }
+        XCTAssertEqual(sessions.map(\.sessionID), ["selected-session"])
+        XCTAssertEqual(ContinuityGate.evaluate(outcome.assessment), .block(.unsealedSessions(count: 1)))
+    }
+
     /// Locks the storage screen to the real `scree evidence` pipe. This is
     /// also the privacy regression test for the UUID query file: after the
     /// subprocess exits, no query scratch file remains in the runtime output.

@@ -21,6 +21,7 @@ public enum SafetyReason: Sendable, Hashable {
     case unpushedCommits(count: Int)
     case noRemoteConfigured
     case noUpstreamConfigured
+    case activityUnknown
     case noCommitsYet
     case dormant(daysAgo: Int)
     case fullyPushed

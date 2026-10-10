@@ -7,7 +7,7 @@ Modore is an evidence-first local diagnostic tool with two OS-specific runtimes 
 1. **Collect** OS facts with readable PowerShell on Windows or Bash/JXA on macOS.
 2. **Classify** facts with declarative JSON rules and locale-aware whitelist data.
 3. **Present** findings in offline HTML; the Mac edition also uses a native SwiftUI app.
-4. **Act only after approval.** Mac cleanup accepts an allowlisted recipe ID, previews fixed targets, checks related processes, and requires a second explicit approval.
+4. **Act only after approval.** Manual Mac cleanup accepts an allowlisted recipe ID, previews fixed targets, checks related processes, and requires a second explicit approval. Optional automatic recovery uses the same preview and execution checks under recorded standing consent to specific recipe scope versions. A legacy enabled flag or expanded scope does not authorize automatic execution; the user must review and enable it again in settings.
 
 Scan results, storage history, cleanup receipts, and local paths are owner data. They are not contribution fixtures and must not be committed or attached to public issues without manual redaction.
 
@@ -53,6 +53,8 @@ Every app build embeds an explicit runtime allowlist under `Contents/Resources/r
   or one complete Claude Desktop conversation unit in a versioned ZIP with per-file SHA-256,
   verifies it, and restores only into a new directory. It never registers the result with a
   provider, follows selected workspace folders, or authorizes cleanup.
+
+Work entry lists metadata and assesses repositories without reading every conversation body. The retirement review sheet offers an explicit, cancellable deep investigation for the selected repositories; complete, partial and failed results remain distinct and never authorize deletion. GitHub archive, local repository removal and original session backup remain separate operations.
 
 The native **Work** page is the composition boundary: Swift groups scree sessions, Mothball's
 read-only repository assessment, and discovered worktrees by canonical workspace. Mothball's

@@ -136,6 +136,13 @@ def scan_isolated(label, path, since, now, seen, timeout=30):
 
 def past_measurements(state, since, max_age=300):
     found = {}
+    # Evidence timestamps are serialized as ISO datetimes (microseconds),
+    # while callers may supply time.time() with finer float precision. Compare
+    # both bounds at that wire precision: serializing the same instant may
+    # round it slightly forward, which must not turn it into a future sample.
+    # This deliberately does not admit a sample from the next microsecond.
+    window_start = stamp(iso(since-max_age))
+    window_end = stamp(iso(since))
     # Only a contemporaneous successful baseline supports a measured growth claim.
     for file in sorted(state.glob('storage-evidence-*.tsv')):
         with file.open() as source:
@@ -144,7 +151,7 @@ def past_measurements(state, since, max_age=300):
                 try:
                     if a[0] != 'path' or a[3] != 'ok': continue
                     at = stamp(a[1]); size = int(a[2])*1024
-                    if since-max_age <= at <= since and size >= 0:
+                    if window_start <= at <= window_end and size >= 0:
                         key = os.path.realpath(a[5])
                         if key not in found or at > found[key][0]: found[key] = (at,size)
                 except (ValueError, IndexError): continue
@@ -152,7 +159,7 @@ def past_measurements(state, since, max_age=300):
         try:
             report = json.loads(file.read_text())
             at = stamp(report['capturedAt'])
-            if not since-max_age <= at <= since: continue
+            if not window_start <= at <= window_end: continue
             for row in report['rows']:
                 key = os.path.realpath(row['path'])
                 if row['complete'] and (key not in found or at > found[key][0]):
