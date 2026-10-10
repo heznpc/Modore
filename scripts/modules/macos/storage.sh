@@ -852,6 +852,10 @@ _pch_add_project_residue_row() {
     case "$seen" in
         *"|$target_path|"*) return 0 ;;
     esac
+    if [[ "${storage_discovery_only:-0}" -eq 1 ]]; then
+        _pch_queue_storage_path "project_residue" "$label" "$target_path" "$note" "project_residue" 4096
+        return 0
+    fi
     seen="${seen}${target_path}|"
 
     du_size_kb "$target_path"
@@ -1460,11 +1464,8 @@ _pch_collect_transient_workspaces() {
 
     while IFS=$'\t' read -r _modified target; do
         [[ "$found" -lt "$max_candidates" ]] || break
-        # Once the shared measurement deadline is gone, adding every remaining
-        # directory as a zero-sized unknown turns a busy temp root into dozens
-        # of unusable cleanup choices. Preserve the directory that actually
-        # timed out, then stop before manufacturing more unknown rows.
-        _pch_storage_du_budget_expired && break
+        # Discovery is bounded by max_candidates, independently of measurement.
+        # Unattempted paths remain explicit deferred candidates for a fresh preview.
         [[ "$_modified" =~ ^[0-9]+([.][0-9]+)?$ \
             && -d "$target" && ! -L "$target" ]] || continue
         if [[ "$(/usr/bin/uname -s)" == "Darwin" ]]; then
@@ -1494,6 +1495,10 @@ _pch_add_transient_workspace_row() {
     case "$seen" in
         *"|$target_path|"*) return 1 ;;
     esac
+    if [[ "${storage_discovery_only:-0}" -eq 1 ]]; then
+        _pch_queue_storage_path "transient_workspace" "임시 작업공간 · $workspace_name" "$target_path" "$note" "transient_workspace" 16384
+        return 0
+    fi
     seen="${seen}${target_path}|"
     du_size_kb "$target_path"
     size_kb="$DU_SIZE_RESULT"
@@ -1806,9 +1811,13 @@ collect_storage() {
     local du_timeout="${PCH_STORAGE_DU_TIMEOUT:-8}"
     local du_budget="${PCH_STORAGE_TOTAL_DU_BUDGET:-32}"
     local simulator_du_timeout="${PCH_STORAGE_SIMULATOR_DU_TIMEOUT:-}"
+    local simulator_du_budget_ticks=0
     local du_bin="/usr/bin/du"
     local du_budget_ticks=0
     local du_budget_started=0
+    local du_remaining_ticks=0
+    local du_item_timeout_ticks=0
+    local storage_discovery_only=1
     local du_budget_timer_pid=""
     local du_test_clock_ticks=0
     local du_test_deadline_ticks=0
@@ -1839,6 +1848,13 @@ collect_storage() {
         du_bin="$(_pch_storage_test_tool "$PCH_TEST_STORAGE_DU_BIN")" || return 1
     fi
     du_budget_ticks=$((du_budget * 10))
+    du_remaining_ticks="$du_budget_ticks"
+    # Reserve at least two thirds for ordinary caches, projects and review
+    # inventory; a large simulator fleet cannot consume the entire scan.
+    if [[ "$du_timeout" -gt 0 && "$du_budget" -gt 0 ]]; then
+        simulator_du_budget_ticks=$((du_budget_ticks / 3))
+        [[ "$simulator_du_budget_ticks" -gt 0 ]] || simulator_du_budget_ticks=1
+    fi
     if [[ "${PCH_TEST_MODE:-}" == "1" ]]; then
         case "${PCH_TEST_STORAGE_DU_DURATION_TICKS:-}" in
             ''|*[!0-9]*) ;;
@@ -1872,37 +1888,71 @@ collect_storage() {
     : > "$TMP_DIR/storage_access.tsv"
     : > "$TMP_DIR/storage_runtime.tsv"
     : > "$TMP_DIR/storage_simulators.tsv"
+    : > "$TMP_DIR/storage_measurement_queue.tsv"
 
     local seen="|"
+    _pch_queue_storage_path() {
+        local kind="$1" label="$2" target_path="$3" note="${4:--}" cleanup_id="${5:--}" minimum="${6:-0}"
+        [[ -e "$target_path" && "$target_path" == /* ]] || return 0
+        case "$kind$label$target_path$note$cleanup_id" in *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;; esac
+        case "$seen" in *"|$target_path|"*) return 0 ;; esac
+        seen="${seen}${target_path}|"
+        /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$kind" "$label" "$target_path" "${note:--}" "${cleanup_id:--}" "$minimum" \
+            >> "$TMP_DIR/storage_measurement_queue.tsv"
+    }
     _pch_storage_du_budget_start() {
         [[ "$du_timeout" -gt 0 && "$du_budget" -gt 0 && "$du_budget_started" -eq 0 ]] || return 0
         du_budget_started=1
-        if [[ -n "$du_test_duration_ticks" ]]; then
-            du_test_deadline_ticks=$((du_test_clock_ticks + du_budget_ticks))
-            return 0
-        fi
-        /bin/sleep "$du_budget" &
+        du_test_deadline_ticks=$((du_test_clock_ticks + du_remaining_ticks))
+        [[ -z "$du_test_duration_ticks" ]] || return 0
+        /bin/sleep "$(/usr/bin/awk -v ticks="$du_remaining_ticks" 'BEGIN { printf "%.1f", ticks / 10 }')" &
         du_budget_timer_pid=$!
     }
 
     _pch_storage_du_budget_expired() {
         [[ "$du_timeout" -gt 0 && "$du_budget" -gt 0 ]] || return 1
+        [[ "$du_remaining_ticks" -gt 0 ]] || return 0
         _pch_storage_du_budget_start
         if [[ -n "$du_test_duration_ticks" ]]; then
             [[ "$du_test_clock_ticks" -ge "$du_test_deadline_ticks" ]]
             return
         fi
-        if [[ -z "$du_budget_timer_pid" ]] || ! /bin/kill -0 "$du_budget_timer_pid" 2>/dev/null; then
-            return 0
-        fi
-        return 1
+        [[ -z "$du_budget_timer_pid" ]] || ! /bin/kill -0 "$du_budget_timer_pid" 2>/dev/null
     }
 
     _pch_storage_du_budget_stop() {
-        [[ -n "$du_budget_timer_pid" ]] || return 0
-        /bin/kill "$du_budget_timer_pid" 2>/dev/null || true
-        wait "$du_budget_timer_pid" 2>/dev/null || true
+        if [[ -n "$du_budget_timer_pid" ]]; then
+            /bin/kill "$du_budget_timer_pid" 2>/dev/null || true
+            wait "$du_budget_timer_pid" 2>/dev/null || true
+        fi
         du_budget_timer_pid=""
+        du_budget_started=0
+    }
+
+    _pch_storage_spend_du_ticks() {
+        [[ "$du_budget" -gt 0 ]] || return 0
+        du_remaining_ticks=$((du_remaining_ticks - $1))
+        [[ "$du_remaining_ticks" -ge 0 ]] || du_remaining_ticks=0
+    }
+
+    _pch_storage_du_result() {
+        local out_file="$1" err_file="$2" command_status="$3" size_kb
+        size_kb="$(/usr/bin/awk '{print $1; exit}' "$out_file" 2>/dev/null)"
+        if [[ "$size_kb" =~ ^[0-9]+$ ]]; then
+            DU_SIZE_RESULT="$size_kb"
+            if [[ "$command_status" -ne 0 ]]; then
+                DU_SIZE_MEASURE_STATUS="partial"
+            fi
+        else
+            DU_SIZE_RESULT="0"
+            DU_SIZE_MEASURE_STATUS="failed"
+        fi
+        if [[ "$command_status" -ne 0 && "$DU_SIZE_RESULT" == "0" ]] \
+            && /usr/bin/grep -Eqi 'Permission denied|Operation not permitted' "$err_file"; then
+            DU_SIZE_MEASURE_STATUS="blocked"
+        fi
+        /bin/rm -f "$out_file" "$err_file"
     }
 
     _pch_storage_trace_test_du() {
@@ -1918,28 +1968,27 @@ collect_storage() {
     du_size_kb() {
         local target_path="$1"
         local out_file="$TMP_DIR/du_size.$$.$RANDOM.out"
+        local err_file="$out_file.err"
         local waited_ticks=0
         local size_kb command_status=0
         local pid
         local this_timeout_ticks=$((du_timeout * 10))
+        if [[ "$du_item_timeout_ticks" -gt 0 && "$du_item_timeout_ticks" -lt "$this_timeout_ticks" ]]; then
+            this_timeout_ticks="$du_item_timeout_ticks"
+        fi
         DU_SIZE_RESULT="0"
         DU_SIZE_MEASURE_STATUS="ok"
 
         if [[ "$du_timeout" -le 0 ]] 2>/dev/null; then
-            "$du_bin" -sk "$target_path" > "$out_file" 2>/dev/null \
-                || command_status=$?
-            size_kb="$(/usr/bin/awk '{print $1; exit}' "$out_file" 2>/dev/null)"
-            /bin/rm -f "$out_file"
-            case "$size_kb" in ''|*[!0-9]*) size_kb=0; command_status=1 ;; esac
-            DU_SIZE_RESULT="$size_kb"
-            [[ "$command_status" -eq 0 ]] || DU_SIZE_MEASURE_STATUS="timed_out"
+            "$du_bin" -sk "$target_path" > "$out_file" 2>"$err_file" || command_status=$?
+            _pch_storage_du_result "$out_file" "$err_file" "$command_status"
             return 0
         fi
         _pch_storage_du_budget_start
         if _pch_storage_du_budget_expired; then
-            _pch_storage_trace_test_du "$target_path" "${du_test_duration_ticks:-0}" 0 "timed_out"
-            DU_SIZE_RESULT="__PCH_TIMEOUT__"
-            DU_SIZE_MEASURE_STATUS="timed_out"
+            _pch_storage_trace_test_du "$target_path" "${du_test_duration_ticks:-0}" 0 "deferred"
+            DU_SIZE_RESULT="0"
+            DU_SIZE_MEASURE_STATUS="deferred"
             return 0
         fi
 
@@ -1959,6 +2008,7 @@ collect_storage() {
                 fi
             fi
             du_test_clock_ticks=$((du_test_clock_ticks + allowed_ticks))
+            _pch_storage_spend_du_ticks "$allowed_ticks"
             _pch_storage_trace_test_du \
                 "$target_path" "$du_test_duration_ticks" "$allowed_ticks" "$test_measure_status"
             if [[ "$test_measure_status" == "timed_out" ]]; then
@@ -1970,13 +2020,14 @@ collect_storage() {
             return 0
         fi
 
-        "$du_bin" -sk "$target_path" > "$out_file" 2>/dev/null &
+        "$du_bin" -sk "$target_path" > "$out_file" 2>"$err_file" &
         pid=$!
         while /bin/kill -0 "$pid" 2>/dev/null; do
             if _pch_storage_du_budget_expired || [[ "$waited_ticks" -ge "$this_timeout_ticks" ]]; then
                 /bin/kill -9 "$pid" 2>/dev/null || true
                 wait "$pid" 2>/dev/null || true
-                /bin/rm -f "$out_file"
+                /bin/rm -f "$out_file" "$err_file"
+                _pch_storage_spend_du_ticks "$waited_ticks"
                 DU_SIZE_RESULT="__PCH_TIMEOUT__"
                 DU_SIZE_MEASURE_STATUS="timed_out"
                 return 0
@@ -1985,11 +2036,8 @@ collect_storage() {
             waited_ticks=$((waited_ticks + 1))
         done
         wait "$pid" 2>/dev/null || command_status=$?
-        size_kb="$(/usr/bin/awk '{print $1; exit}' "$out_file" 2>/dev/null)"
-        /bin/rm -f "$out_file"
-        case "$size_kb" in ''|*[!0-9]*) size_kb=0; command_status=1 ;; esac
-        DU_SIZE_RESULT="$size_kb"
-        [[ "$command_status" -eq 0 ]] || DU_SIZE_MEASURE_STATUS="timed_out"
+        _pch_storage_spend_du_ticks "$waited_ticks"
+        _pch_storage_du_result "$out_file" "$err_file" "$command_status"
     }
 
     # Simulator device roots are siblings and can be numerous. One bounded du
@@ -2000,10 +2048,14 @@ collect_storage() {
         shift
         local waited_ticks=0 pid status=0 target_path
         local this_timeout_ticks=$((simulator_du_timeout * 10))
+        if [[ "$simulator_du_budget_ticks" -gt 0 ]] \
+            && [[ "$this_timeout_ticks" -eq 0 || "$simulator_du_budget_ticks" -lt "$this_timeout_ticks" ]]; then
+            this_timeout_ticks="$simulator_du_budget_ticks"
+        fi
         : > "$output_file" || return 1
         [[ "$#" -gt 0 ]] || return 0
 
-        if [[ "$simulator_du_timeout" -le 0 ]] 2>/dev/null; then
+        if [[ "$this_timeout_ticks" -le 0 ]] 2>/dev/null; then
             "$du_bin" -sk -- "$@" > "$output_file" 2>/dev/null
             return $?
         fi
@@ -2032,6 +2084,7 @@ collect_storage() {
                 fi
             fi
             du_test_clock_ticks=$((du_test_clock_ticks + allowed_ticks))
+            _pch_storage_spend_du_ticks "$allowed_ticks"
             trace_consumed_ticks="$allowed_ticks"
             for target_path in "$@"; do
                 _pch_storage_trace_test_du "$target_path" "$du_test_duration_ticks" \
@@ -2051,49 +2104,68 @@ collect_storage() {
             if _pch_storage_du_budget_expired || [[ "$waited_ticks" -ge "$this_timeout_ticks" ]]; then
                 /bin/kill -9 "$pid" 2>/dev/null || true
                 wait "$pid" 2>/dev/null || true
+                _pch_storage_spend_du_ticks "$waited_ticks"
                 return 124
             fi
             /bin/sleep 0.1
             waited_ticks=$((waited_ticks + 1))
         done
         wait "$pid" 2>/dev/null || status=$?
+        _pch_storage_spend_du_ticks "$waited_ticks"
         return "$status"
     }
 
     add_du_path() {
-        local kind="$1"
-        local label="$2"
-        local target_path="$3"
-        local cleanup_id="${4:-}"
-        local size_kb
-        local measure_status="ok"
-        local measure_note=""
+        _pch_queue_storage_path "$1" "$2" "$3" "" "${4:-}" 0
+    }
 
-        [[ -e "$target_path" ]] || return 0
-        case "$target_path" in
-            /*) ;;
-            *) return 0 ;;
-        esac
-        case "$target_path$cleanup_id" in
-            *$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
-        esac
-        case "$seen" in
-            *"|$target_path|"*) return 0 ;;
-        esac
-        seen="${seen}${target_path}|"
-
-        du_size_kb "$target_path"
-        size_kb="$DU_SIZE_RESULT"
-        if [[ "$size_kb" == "__PCH_TIMEOUT__" ]]; then
-            size_kb=0
-            measure_status="timed_out"
-            measure_note="빠른 검사의 시간 제한 때문에 크기 측정을 보류했습니다. 필요하면 PCH_STORAGE_DU_TIMEOUT=0으로 정밀 측정하세요."
-        elif [[ "$DU_SIZE_MEASURE_STATUS" != "ok" ]]; then
-            measure_status="timed_out"
-            measure_note="크기 측정 도구가 완료되지 않아 표시 값은 최소 확인량입니다. 정리 판단에는 사용하지 않습니다."
-        fi
-        [[ -n "$size_kb" ]] || size_kb=0
-        /usr/bin/printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$kind" "$label" "$target_path" "$size_kb" "$measure_status" "$measure_note" "$cleanup_id" >> "$TMP_DIR/storage_paths.tsv"
+    _pch_measure_storage_queue() {
+        local kind label target_path note cleanup_id minimum size_kb measure_status
+        local remaining_paths=0
+        local scheduled="$TMP_DIR/storage_measurement_schedule.tsv"
+        # Round-robin categories, retaining discovery order inside each one.
+        # Neither numerous apps nor an expensive project may starve all caches.
+        /usr/bin/awk -F '\t' 'BEGIN { OFS="\t" }
+            { category=6
+              if ($1 == "transient_workspace") category=1
+              else if ($1 == "project_residue") category=2
+              else if ($5 != "-" && $1 != "application") category=3
+              else if ($1 ~ /^(simulator_|android_|toolchain)/) category=4
+              else if ($1 == "application") category=5
+              print ++seen[category], category, $0
+            }' "$TMP_DIR/storage_measurement_queue.tsv" \
+            | LC_ALL=C /usr/bin/sort -t $'\t' -k1,1n -k2,2n \
+            | /usr/bin/cut -f3- > "$scheduled"
+        remaining_paths="$(/usr/bin/wc -l < "$scheduled" | /usr/bin/tr -d ' ')"
+        # Start the wall deadline only now, after all path discovery and tools.
+        _pch_storage_du_budget_start
+        while IFS=$'\t' read -r kind label target_path note cleanup_id minimum; do
+            [[ "$remaining_paths" -gt 0 ]] || break
+            du_item_timeout_ticks=0
+            if [[ "$du_timeout" -gt 0 && "$du_budget" -gt 0 ]]; then
+                du_item_timeout_ticks=$((du_remaining_ticks / remaining_paths))
+                [[ "$du_item_timeout_ticks" -gt 0 ]] || du_item_timeout_ticks=1
+            fi
+            remaining_paths=$((remaining_paths - 1))
+            du_size_kb "$target_path"
+            size_kb="$DU_SIZE_RESULT"
+            measure_status="$DU_SIZE_MEASURE_STATUS"
+            [[ "$size_kb" != "__PCH_TIMEOUT__" ]] || size_kb=0
+            [[ "$note" != "-" ]] || note=""
+            [[ "$cleanup_id" != "-" ]] || cleanup_id=""
+            case "$measure_status" in
+                deferred) note="이번 검사에서 아직 측정하지 않았습니다. 개별 미리보기에서 다시 확인할 수 있습니다." ;;
+                timed_out) note="개별 경로의 측정 시간 제한을 초과했습니다. 개별 미리보기에서 다시 확인할 수 있습니다." ;;
+                blocked) note="읽기 권한이 부족해 크기를 확인하지 못했습니다." ;;
+                partial) note="일부 경로만 읽어 최소 확인량을 기록했습니다. 정리 판단에는 사용하지 않습니다." ;;
+                failed) note="크기 측정 도구가 실패했습니다. 정리 판단에는 사용하지 않습니다." ;;
+            esac
+            [[ "$measure_status" != "ok" || "$size_kb" -ge "$minimum" ]] || continue
+            /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$kind" "$label" "$target_path" "$size_kb" "$measure_status" "$note" "$cleanup_id" \
+                >> "$TMP_DIR/storage_paths.tsv"
+        done < "$scheduled"
+        _pch_storage_du_budget_stop
     }
 
     add_sized_path() {
@@ -2265,6 +2337,8 @@ collect_storage() {
 
     _pch_collect_storage_applications
     _pch_collect_storage_simulators
+    # Pause the measurement deadline while metadata and candidate discovery run.
+    _pch_storage_du_budget_stop
     # Exact temporary workspaces and recovery-capable project artifacts get the
     # shared measurement budget before broad cache inventory. Recent temporary
     # workspaces come first because they are the common high-velocity source of
@@ -2274,10 +2348,12 @@ collect_storage() {
     _pch_collect_known_storage_paths
     _pch_collect_storage_access_checks
     _pch_collect_storage_runtime_signals
+    storage_discovery_only=0
+    _pch_measure_storage_queue
 
     # Status is field 5/7 (trailing tab) in storage_paths.tsv but the LAST field
     # in storage_simulators.tsv (line end, no trailing tab), so accept either.
-    if /usr/bin/grep -Eq $'\ttimed_out(\t|$)' "$TMP_DIR/storage_paths.tsv" "$TMP_DIR/storage_simulators.tsv" 2>/dev/null; then
+    if /usr/bin/grep -Eq $'\t(timed_out|deferred|partial|blocked|failed)(\t|$)' "$TMP_DIR/storage_paths.tsv" "$TMP_DIR/storage_simulators.tsv" 2>/dev/null; then
         record_collection_status "storage_inventory" "저장공간 경로 측정" "timed_out" "false" "일부 경로의 완전한 측정값을 확보하지 못했습니다."
     else
         record_collection_status "storage_inventory" "저장공간 경로 측정" "ok" "false" "알려진 저장공간 경로를 측정했습니다."

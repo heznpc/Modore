@@ -256,12 +256,12 @@ struct ModernSidebar: View {
         VStack(spacing: 0) {
             List(selection: nativeSelection) {
                 SidebarDestinationRow(destination: .start).tag(AppDestination.start)
-                Section("할 일") {
+                Section(L10n.text("할 일")) {
                     ForEach([AppDestination.appDiagnostic, .storage, .work]) { destination in
                         SidebarDestinationRow(destination: destination).tag(destination)
                     }
                 }
-                Section("Mac 관리") {
+                Section(L10n.text("Mac 관리")) {
                     ForEach([AppDestination.health, .status, .security, .activity]) { destination in
                         SidebarDestinationRow(destination: destination).tag(destination)
                     }

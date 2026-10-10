@@ -112,7 +112,7 @@ struct WorkProject: Identifiable {
             case .noRemoteConfigured: return L10n.text("원격 없음")
             case .noUpstreamConfigured: return L10n.text("업스트림 미설정")
             case .noCommitsYet: return L10n.text("커밋 없음")
-            case .dormant, .recentActivity, .fullyPushed: return nil
+            case .dormant, .recentActivity, .fullyPushed, .activityUnknown: return nil
             }
         }
     }
@@ -122,6 +122,7 @@ struct WorkProject: Identifiable {
         guard let verdict = assessment?.verdict else { return [] }
         return verdict.reasons.compactMap { reason in
             switch reason {
+            case .activityUnknown: return L10n.text("활동 미확인 · 휴면 판정 보류")
             case .dormant(let days): return L10n.format("%@일간 미사용", String(describing: days))
             case .recentActivity(let days): return L10n.format("최근 활동 %@일 전", String(describing: days))
             case .fullyPushed: return L10n.text("원격에 모두 반영됨")

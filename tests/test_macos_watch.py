@@ -521,14 +521,17 @@ def test_storage_watch_ps_timeout_keeps_partial_rss_and_reaps_descendants(
         "PCH_TEST_WATCH_METADATA_TICKS": "10",
     }
     script = project_root / "scripts/storage_watch.sh"
+    # The metadata deadline above is the behavior under test. Allow the outer
+    # watcher to finish lock setup, journaling, and cleanup during concurrent
+    # builds; those steps can bring a correct timeout run close to five seconds.
     baseline = subprocess.run(
-        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=5
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=15
     )
     assert baseline.returncode == 0, baseline.stderr
 
     env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
     dropped = subprocess.run(
-        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=5
+        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=15
     )
 
     assert dropped.returncode == 0, dropped.stderr
@@ -676,7 +679,11 @@ def test_storage_watch_retains_simulator_facts_despite_stalled_root(
         "PCH_WATCH_PRIVATE_TMP_ROOT": str(private_tmp),
         "PCH_TEST_WATCH_DU_BIN": str(fake_du),
         "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "15",
-        "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "1",
+        # The collector measures deadlines in whole seconds. A one-second
+        # fixture budget can expire immediately at the next clock tick and
+        # classify a healthy root as stalled, changing the retry order. Leave
+        # startup margin while keeping the deliberate 30-second stall bounded.
+        "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "3",
         "PCH_WATCH_SNAPSHOT_DEVICE_SECONDS": "5",
         "PCH_WATCH_SNAPSHOT_EVENT_LIMIT": "2",
     }
@@ -2197,7 +2204,7 @@ def test_storage_watch_retries_partial_evidence_after_five_minutes(
     (snapshot_root / "cache").mkdir(parents=True)
     du_stub = tmp_path / "du-stub"
     # Keep the provider delay well beyond the subprocess deadline. This still
-    # proves that the watcher's one-second item budget kills the provider,
+    # proves that the watcher's three-second item budget kills the provider,
     # while leaving enough runner headroom for two shell startups and file I/O.
     # A five-second provider with a four-second outer deadline was only a
     # 1-second failure margin and flaked on loaded macOS GitHub runners.
@@ -2210,8 +2217,11 @@ def test_storage_watch_retries_partial_evidence_after_five_minutes(
         "PCH_TEST_FREE_KB": str(19 * 1024 * 1024),
         "PCH_WATCH_NOTIFY": "0",
         "PCH_WATCH_SNAPSHOT_ROOT": str(snapshot_root),
-        "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "1",
-        "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "1",
+        # Snapshot setup and the whole-second clock must not exhaust the
+        # total budget before the healthy retry can even start. The 15-second
+        # provider still exceeds both budgets and the outer 10-second deadline.
+        "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "5",
+        "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "3",
         "PCH_TEST_WATCH_DU_BIN": str(du_stub),
     }
     script = project_root / "scripts" / "storage_watch.sh"

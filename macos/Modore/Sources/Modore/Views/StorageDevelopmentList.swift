@@ -267,18 +267,22 @@ private struct DevelopmentAssetRow: View {
         WorkspaceStorageItemRow(
             item: item,
             fallbackSymbol: developmentSymbol,
-            status: item.measureStatus == "timed_out"
+            status: !item.isMeasurementComplete
                 ? nil
                 : (item.cleanupTier == .rebuild ? L10n.text("확보 계획 가능") : L10n.text("개별 판단")),
-            actionTitle: item.measureStatus == "timed_out" ? L10n.text("다시 측정") : nil
+            actionTitle: !item.isMeasurementComplete ? L10n.text("다시 측정") : nil
         ) {
-            model.runScan()
+            if item.hasSupportedCleanupRecipe {
+                model.prepareCleanup(item)
+            } else {
+                model.runScan()
+            }
         }
         .contextMenu { StorageItemContextMenu(item: item) }
     }
 
     private var developmentSymbol: String {
-        if item.measureStatus == "timed_out" { return "hourglass" }
+        if !item.isMeasurementComplete { return "hourglass" }
         let value = (item.kind + " " + item.label).lowercased()
         if value.contains("android") { return "shippingbox" }
         if value.contains("simulator") || value.contains("xcode") { return "hammer" }

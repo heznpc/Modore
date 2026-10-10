@@ -261,7 +261,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         detail = current.summary
         if changed || Date().timeIntervalSince(lastSaved) >= 60 { persist() }
         let managedStorage = AutomaticCachePolicy.ownsStorageNotice(
-            enabled: UserDefaults.standard.bool(forKey: "automaticSafeCacheRecovery"),
+            enabled: AutomaticCacheConsentStore.isAuthorized(),
             appRunning: true, free: current.freeBytes)
         // Automatic recovery owns storage results. Continue distinct RAM/CPU notices.
         guard !managedStorage || (current.memoryPressure ?? 0) >= 2

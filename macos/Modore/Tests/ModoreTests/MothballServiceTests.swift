@@ -32,6 +32,21 @@ final class MothballServiceTests: XCTestCase {
         )
     }
 
+    func testMissingActivityIsNotRankedAsDormantOrGivenADayCount() throws {
+        let repo = RepoInfo(
+            path: URL(fileURLWithPath: "/tmp/empty"), sizeBytes: 0, lastFileMTime: nil,
+            git: GitMetadata(lastCommitDate: nil, isDirty: false, aheadOfOrigin: 0,
+                             originURL: "https://example.test/empty.git", currentBranch: "main", headSHA: nil)
+        )
+        XCTAssertTrue(MothballService.rankCandidates(repos: [repo], now: referenceNow).isEmpty)
+        let assessment = try XCTUnwrap(MothballService.assessRepos(repos: [repo], now: referenceNow).first)
+        XCTAssertNil(assessment.dormancyDays)
+        var project = WorkProject(path: repo.path.path)
+        project.git = .assessed(assessment)
+        XCTAssertTrue(project.gitRisks.isEmpty)
+        XCTAssertFalse(project.gitNotes.isEmpty)
+    }
+
     // MARK: - candidateRoots
 
     func testCandidateRootsIncludesOnlyExistingGitRepos() {

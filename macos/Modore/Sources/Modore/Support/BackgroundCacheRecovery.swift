@@ -9,7 +9,7 @@ enum BackgroundCacheRecovery {
     @MainActor
     static func runAndExit() -> Never {
         NSApplication.shared.setActivationPolicy(.prohibited)
-        guard UserDefaults.standard.bool(forKey: "automaticSafeCacheRecovery") else { exit(0) }
+        guard AutomaticCacheConsentStore.isAuthorized() else { exit(0) }
         Task { @MainActor in
             let recovery = AutomaticCacheRecovery()
             guard recovery.isDue else { exit(0) }

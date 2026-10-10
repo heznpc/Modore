@@ -96,7 +96,8 @@ struct StorageChangeSummary: Equatable {
         return keys.sorted().compactMap { key in
             let old = before[key]
             let row = after[key]
-            if old?.measureStatus == "timed_out" || row?.measureStatus == "timed_out" {
+            if old.map({ ($0.measureStatus ?? "ok") != "ok" }) == true
+                || row.map({ ($0.measureStatus ?? "ok") != "ok" }) == true {
                 return nil
             }
             guard let source = row ?? old else { return nil }

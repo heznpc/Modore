@@ -77,7 +77,9 @@ extension ScanModel {
     }
 
     func prepareCleanup(_ item: StorageItem) {
-        guard item.canCleanup else { return }
+        // An incomplete scan can still request a fresh read-only preview.
+        // Approval and execution continue to require its validated ready result.
+        guard item.hasSupportedCleanupRecipe else { return }
         let request = CleanupExecutionRequest(item: item)
         guard !CleanupExecutionRequest.isRequired(for: item.cleanupID) || request != nil else { return }
         prepareCleanup(

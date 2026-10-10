@@ -29,13 +29,13 @@ enum SpaceGoalSelection {
     }
 
     static func planningBytes(_ item: StorageItem) -> Int64 {
-        guard item.measureStatus != "timed_out" else { return 0 }
+        guard item.isMeasurementComplete else { return 0 }
         return StorageBytes.fromLegacyGiB(item.sizeGB) ?? 0
     }
 
     static func isPlanningCandidate(_ item: StorageItem) -> Bool {
         item.cleanupTier != nil
-            && (item.measureStatus == "timed_out" || planningSizeGB(item) > 0)
+            && (!item.isMeasurementComplete || planningSizeGB(item) > 0)
     }
 
     static func select(from candidates: [StorageItem], targetGB: Double) -> [StorageItem] {

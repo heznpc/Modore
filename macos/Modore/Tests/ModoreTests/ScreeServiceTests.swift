@@ -429,7 +429,7 @@ final class WorkScreenTaskLifecycleTests: XCTestCase {
     func testSuccessfulAuditRefreshInvalidatesRepoJudgmentAndAdvancesRevision() async throws {
         let model = ScanModel(automaticallyScansStaleResults: false)
         await settleStartup(model)
-        model.archiveBindingComplete = true
+        model.archiveInspectionComplete = true
         model.archiveError = "old archive error"
         model.repoScanFailures = ["/old": "old failure"]
         model.reposNotScanned = ["/old-unscanned"]
@@ -441,7 +441,7 @@ final class WorkScreenTaskLifecycleTests: XCTestCase {
         await waitUntil { model.screeTask == nil }
 
         XCTAssertEqual(model.screeReportRevision, revision + 1)
-        XCTAssertFalse(model.archiveBindingComplete)
+        XCTAssertFalse(model.archiveInspectionComplete)
         XCTAssertNil(model.archiveError)
         XCTAssertNil(model.repoAssessments)
         XCTAssertTrue(model.repoScanFailures.isEmpty)
@@ -517,8 +517,7 @@ final class WorkScreenTaskLifecycleTests: XCTestCase {
                     failures: ["/must-not-land": "cancelled"],
                     notScanned: []
                 )
-            },
-            binding: { $0 }
+            }
         )
         model.contentSearchRunning = true
         model.contentSearchTask = Task {
@@ -557,12 +556,12 @@ final class WorkScreenTaskLifecycleTests: XCTestCase {
 
     func testLeavingWorkAfterCompletedBindingKeepsItsCompletionState() {
         let model = ScanModel(automaticallyScansStaleResults: false)
-        model.archiveBindingComplete = true
+        model.archiveInspectionComplete = true
         XCTAssertNil(model.archiveTask)
 
         model.cancelWorkScreenTasks()
 
-        XCTAssertTrue(model.archiveBindingComplete)
+        XCTAssertTrue(model.archiveInspectionComplete)
     }
 
     func testCancelledRefreshKeepsPriorResultsMarkedForRefreshOnReentry() {
@@ -701,8 +700,7 @@ final class WorkScreenTaskLifecycleTests: XCTestCase {
                     failures: ["/stale": "must not land"],
                     notScanned: []
                 )
-            },
-            binding: { $0 }
+            }
         )
         model.refreshArchiveCandidates(
             using: {
@@ -711,8 +709,7 @@ final class WorkScreenTaskLifecycleTests: XCTestCase {
                     failures: ["/newest": "visible"],
                     notScanned: []
                 )
-            },
-            binding: { $0 }
+            }
         )
 
         try? await Task.sleep(nanoseconds: 30_000_000)

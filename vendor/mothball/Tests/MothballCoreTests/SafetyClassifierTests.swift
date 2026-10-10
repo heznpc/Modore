@@ -31,6 +31,30 @@ final class SafetyClassifierTests: XCTestCase {
         )
     }
 
+    func test_missingActivityEvidenceDoesNotBecomeAncientDormancy() {
+        let empty = RepoInfo(
+            path: URL(fileURLWithPath: "/tmp/empty"), sizeBytes: 0, lastFileMTime: nil,
+            git: GitMetadata(lastCommitDate: nil, isDirty: false, aheadOfOrigin: 0,
+                             originURL: "https://example.test/empty.git", currentBranch: "main", headSHA: nil)
+        )
+        XCTAssertEqual(empty.activity, .noEvidence)
+        XCTAssertNil(empty.lastActivity)
+        let verdict = classifier.classify(empty, now: now)
+        XCTAssertEqual(verdict.tier, .unsafe)
+        XCTAssertEqual(verdict.reasons, [.activityUnknown])
+    }
+
+    func test_commitWithoutWorkingTreeFilesIsObservedActivity() {
+        let commit = now.addingTimeInterval(-200 * 86_400)
+        let bareTree = RepoInfo(
+            path: URL(fileURLWithPath: "/tmp/empty-tree"), sizeBytes: 0, lastFileMTime: nil,
+            git: GitMetadata(lastCommitDate: commit, isDirty: false, aheadOfOrigin: 0,
+                             originURL: "https://example.test/repo.git", currentBranch: "main", headSHA: "abc")
+        )
+        XCTAssertEqual(bareTree.activity, .observed(commit))
+        XCTAssertEqual(classifier.classify(bareTree, now: now).tier, .safe)
+    }
+
     // MARK: - Recent activity dominates
 
     func test_recentActivity_isAlwaysUnsafe() {

@@ -136,6 +136,9 @@ private actor ScanPipelineProbe {
         let payload: [String: Any] = [
             "schemaVersion": "1.0",
             "scannedAt": scannedAt,
+            "userName": "fixture-owner",
+            "computerName": "fixture-computer",
+            "summary": ["overall": "safe", "dangerCount": 0, "warningCount": 0],
             "sections": [:],
         ]
         try JSONSerialization.data(withJSONObject: payload).write(to: url, options: .atomic)
@@ -172,7 +175,8 @@ private actor ScanPipelineProbe {
 
 final class ScanPipelineTests: XCTestCase {
     private func executionContext(
-        sealed: Bool = false
+        sealed: Bool = false,
+        reportSource: Data? = nil
     ) throws -> (container: URL, context: RuntimeExecutionContext) {
         let container = FileManager.default.temporaryDirectory
             .appendingPathComponent("modore-scan-pipeline-\(UUID().uuidString)", isDirectory: true)
@@ -202,12 +206,12 @@ final class ScanPipelineTests: XCTestCase {
             runtimeRootIdentity: try XCTUnwrap(FilesystemIdentity.directory(at: runtime)),
             outputRootIdentity: try XCTUnwrap(FilesystemIdentity.directory(at: output)),
             signedBundleURL: nil,
-            sealedRuntimeFiles: sealed ? sealedRuntimeFiles() : nil
+            sealedRuntimeFiles: sealed ? sealedRuntimeFiles(reportSource: reportSource) : nil
         )
         return (container, context)
     }
 
-    private func sealedRuntimeFiles() -> [String: Data] {
+    private func sealedRuntimeFiles(reportSource: Data? = nil) -> [String: Data] {
         let paths = [
             "scripts/scanner.sh",
             "scripts/report.jxa.js",
@@ -229,9 +233,11 @@ final class ScanPipelineTests: XCTestCase {
             "rules/network.json",
             "rules/process.json",
         ]
-        return Dictionary(uniqueKeysWithValues: paths.map {
+        var files = Dictionary(uniqueKeysWithValues: paths.map {
             ($0, Data("sealed \($0)".utf8))
         })
+        if let reportSource { files["scripts/report.jxa.js"] = reportSource }
+        return files
     }
 
     private func dependencies(
@@ -244,6 +250,43 @@ final class ScanPipelineTests: XCTestCase {
                 await probe.run(request, onOutput: onOutput)
             }
         )
+    }
+
+    /// Exercise the same pinned report bytes, environment validation and JXA
+    /// process as the app; only OS collection is replaced with a small fixture.
+    func testRealReportRuntimeGeneratesNormalAndShareHTML() async throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try Data(contentsOf: sourceRoot.appendingPathComponent("scripts/report.jxa.js"))
+        let fixture = try executionContext(sealed: true, reportSource: source)
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        let probe = ScanPipelineProbe(scannerOutcome: .success)
+        let dependencies = ScanPipelineDependencies(
+            prepareExecution: { _ in fixture.context },
+            runProcess: { request, output in
+                if request.environment["PCH_REPORT_OUTPUT"] == nil {
+                    return await probe.run(request, onOutput: output)
+                }
+                return await ScanPipelineDependencies.live.runProcess(request, output)
+            }
+        )
+        let result = await ScanPipeline.run(projectRoot: fixture.context.outputRoot,
+            dependencies: dependencies, onOutput: { print("report fixture: \($0)") })
+        XCTAssertTrue(result.reportsSucceeded)
+        guard result.reportsSucceeded else { return }
+        for name in ["검사결과.html", "검사결과_공유용.html"] {
+            let html = try String(contentsOf: fixture.context.outputRoot.appendingPathComponent(name), encoding: .utf8)
+            XCTAssertTrue(html.lowercased().contains("<!doctype html>"))
+            XCTAssertTrue(html.contains("2026-09-01 09:00:00"))
+            if name.contains("공유용") {
+                XCTAssertFalse(html.contains("fixture-owner"))
+                XCTAssertFalse(html.contains("fixture-computer"))
+            } else {
+                XCTAssertTrue(html.contains("fixture-computer"))
+            }
+        }
     }
 
     func testSuccessfulRunPublishesConsistentSnapshotAndBothReports() async throws {

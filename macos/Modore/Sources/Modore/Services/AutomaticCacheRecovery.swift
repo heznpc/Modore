@@ -11,6 +11,12 @@ struct AutomaticCachePolicy {
         "gradle_cache", "cocoapods_cache", "swiftpm_cache", "xcode_derived_data", "swift_build_outputs",
     ]
 
+    // Bump a recipe's scope version whenever its allowed deletion scope expands.
+    // Scheduling/report revisions alone never establish or renew consent.
+    static var consentScope: [String: Int] {
+        Dictionary(uniqueKeysWithValues: recipes.map { ($0, 1) })
+    }
+
     static func largestFirst(_ candidates: [AutomaticRecoveryCandidate]) -> [AutomaticRecoveryCandidate] {
         candidates.filter { $0.ready && ($0.bytes ?? 0) >= 16 * 1_048_576 }
             .sorted { ($0.bytes ?? 0) == ($1.bytes ?? 0)
@@ -118,25 +124,45 @@ final class AutomaticCacheRecovery: ObservableObject {
     private let defaults: UserDefaults
     private let reportURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Modore/automatic-cache-recovery.json")
-    @Published var enabled: Bool {
-        didSet { defaults.set(enabled, forKey: "automaticSafeCacheRecovery") }
-    }
+    @Published private(set) var enabled = false
+    @Published private(set) var requiresConsentReview = false
     @Published private(set) var last: AutomaticCacheReport?
     private var readable = true
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        enabled = defaults.bool(forKey: "automaticSafeCacheRecovery")
+        refreshConsent()
         if FileManager.default.fileExists(atPath: reportURL.path) {
             do {
                 last = try JSONDecoder().decode(AutomaticCacheReport.self, from: Data(contentsOf: reportURL))
                 detail = last?.finished == true ? Self.summary(last!) : "이전 자동 관리가 중단됐습니다. 처리 기록을 확인하세요."
             } catch { readable = false; detail = "자동 관리 기록을 읽지 못해 실행을 보류했습니다." }
         }
+        if requiresConsentReview {
+            detail = L10n.text("자동 정리 범위를 다시 확인해야 합니다. 설정에서 동의하기 전까지 자동 실행을 보류합니다.")
+        }
+    }
+
+    /// Called only by the explicit settings control, never while loading state.
+    func setEnabled(_ value: Bool) {
+        do {
+            if value { try AutomaticCacheConsentStore.grant(in: defaults) }
+            else { AutomaticCacheConsentStore.revoke(in: defaults) }
+            refreshConsent()
+            detail = enabled ? L10n.text("자동 관리 대기 중") : L10n.text("자동 정리 꺼짐")
+        } catch {
+            detail = L10n.text("자동 정리 동의를 저장하지 못했습니다.")
+        }
+    }
+
+    private func refreshConsent() {
+        let status = AutomaticCacheConsentStore.status(in: defaults)
+        enabled = status == .authorized
+        requiresConsentReview = status == .reviewRequired
     }
 
     var isDue: Bool {
-        readable && AutomaticCachePolicy.shouldRun(enabled: enabled, free: Self.freeSpace(),
+        readable && AutomaticCachePolicy.shouldRun(enabled: AutomaticCacheConsentStore.isAuthorized(in: defaults), free: Self.freeSpace(),
             lastRun: last?.policyRevision == AutomaticCachePolicy.revision ? last?.date : nil, now: Date())
     }
 
@@ -182,7 +208,7 @@ final class AutomaticCacheRecovery: ObservableObject {
                 if let last { detail = last.finished ? Self.summary(last) : "이전 자동 관리가 중단됐습니다. 처리 기록을 확인하세요." }
             } catch { readable = false }
         }
-        enabled = defaults.bool(forKey: "automaticSafeCacheRecovery")
+        refreshConsent()
         guard readable, !model.cleanupInFlight, !model.isRunning,
               !model.applicationTerminationStarted,
               AutomaticCachePolicy.shouldRun(enabled: enabled, free: Self.freeSpace(), lastRun: requestedNow || last?.policyRevision != AutomaticCachePolicy.revision ? nil : last?.date, now: Date()),
@@ -214,7 +240,7 @@ final class AutomaticCacheRecovery: ObservableObject {
             // Never let a small cache consume the run while GB-sized candidates
             // remain undiscovered. A preview is repeated immediately before deletion.
             for recipe in AutomaticCachePolicy.recipes {
-                guard enabled, defaults.bool(forKey: "automaticSafeCacheRecovery"),
+                guard enabled, AutomaticCacheConsentStore.isAuthorized(in: defaults),
                       !Task.isCancelled, !model.applicationTerminationStarted else { break }
                 if let attempted = report.attempted[recipe], Date().timeIntervalSince(attempted) < 86400 {
                     report.candidates?.append(AutomaticRecoveryCandidate(recipe: recipe, label: recipe,
@@ -240,7 +266,7 @@ final class AutomaticCacheRecovery: ObservableObject {
             }
             for candidate in AutomaticCachePolicy.largestFirst(report.candidates ?? []) {
                 let recipe = candidate.recipe
-                guard enabled, defaults.bool(forKey: "automaticSafeCacheRecovery"),
+                guard enabled, AutomaticCacheConsentStore.isAuthorized(in: defaults),
                       !Task.isCancelled, !model.applicationTerminationStarted,
                       let available = Self.freeSpace(), available < AutomaticCachePolicy.target else { break }
                 detail = "큰 항목부터 정리 중 · \(candidate.label)"
@@ -254,7 +280,7 @@ final class AutomaticCacheRecovery: ObservableObject {
                     }
                     continue
                 }
-                guard enabled, defaults.bool(forKey: "automaticSafeCacheRecovery"), preview.approvalIsFresh(), model.persistCleanupMutationIntent() else { break }
+                guard enabled, AutomaticCacheConsentStore.isAuthorized(in: defaults), preview.approvalIsFresh(), model.persistCleanupMutationIntent() else { break }
                 report.attempted[recipe] = Date()
                 report.outcomes.append("\(preview.label): \(HealthSnapshot.bytes(size)) 처리 시작")
                 try save(report)

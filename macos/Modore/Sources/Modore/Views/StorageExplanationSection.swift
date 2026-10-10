@@ -43,43 +43,43 @@ struct StorageExplanationSection: View {
     var body: some View {
         Section {
             HStack {
-                Text("공간 확보 이후 무엇이 생겼나").font(.headline)
+                Text(L10n.text("공간 확보 이후 무엇이 생겼나")).font(.headline)
                 Spacer()
-                Button(running ? "원인 측정 중…" : "증가 원인 분석") {
+                Button(running ? L10n.text("원인 측정 중…") : L10n.text("증가 원인 분석")) {
                     Task { await refresh() }
                 }.disabled(running)
             }
             if running {
-                ProgressView(progress.isEmpty ? "파일 메타데이터 측정 중…" : progress)
+                ProgressView(progress.isEmpty ? L10n.text("파일 메타데이터 측정 중…") : progress)
             }
             if let error { Text(error).foregroundStyle(.secondary).textSelection(.enabled) }
             if let report {
-                Text("비교 시작: \(report.since) · 측정: \(report.capturedAt)")
+                Text(L10n.format("비교 시작: %@ · 측정: %@", report.since, report.capturedAt))
                     .font(.caption).foregroundStyle(.secondary)
                 if let drop = report.freeDropBytes {
-                    Text("여유 공간 감소 \(bytes(drop)) · 측정 당시 여유 \(bytes(report.freeBytes))")
+                    Text(L10n.format("여유 공간 감소 %@ · 측정 당시 여유 %@", bytes(drop), bytes(report.freeBytes)))
                         .font(.callout.weight(.semibold))
                 }
                 Text(report.interpretation).font(.caption).foregroundStyle(.secondary)
                 ForEach(report.rows) { row in
                     DisclosureGroup {
                         Text(row.path).font(.caption.monospaced()).textSelection(.enabled)
-                        Text("현재 점유 \(bytes(row.allocatedBytes)) · 기존 파일 중 수정 흔적 \(bytes(row.modifiedBytes))")
+                        Text(L10n.format("현재 점유 %@ · 기존 파일 중 수정 흔적 %@", bytes(row.allocatedBytes), bytes(row.modifiedBytes)))
                         if let delta = row.measuredDeltaBytes {
-                            Text("기준 시점 실측 대비 변화 \(bytes(delta))")
+                            Text(L10n.format("기준 시점 실측 대비 변화 %@", bytes(delta)))
                         } else {
-                            Text("기준 시점 실측 없음: 생성 흔적을 원인 후보로 표시합니다.")
+                            Text(L10n.text("기준 시점 실측 없음: 생성 흔적을 원인 후보로 표시합니다."))
                         }
                         if let recent = row.recentDeltaBytes, let at = row.previousMeasuredAt {
-                            Text("최근 실측(\(at)) 대비 \(bytes(recent))")
+                            Text(L10n.format("최근 실측(%@) 대비 %@", at, bytes(recent)))
                         }
-                        if !row.complete { Text("접근·측정 실패 \(row.errors)건: 부분 결과") }
+                        if !row.complete { Text(L10n.format("접근·측정 실패 %@건: 부분 결과", String(row.errors))) }
                         if let candidates = row.candidates, !candidates.isEmpty {
-                            DisclosureGroup("실제 증가 원인 후보 경로 \(candidates.count)개") {
+                            DisclosureGroup(L10n.format("실제 증가 원인 후보 경로 %@개", String(candidates.count))) {
                                 ForEach(candidates) { candidate in
                                     VStack(alignment: .leading) {
                                         Text(candidate.path).font(.caption.monospaced()).textSelection(.enabled)
-                                        Text("이후 생성 파일 \(bytes(candidate.createdBytes)) · 수정된 기존 파일 \(bytes(candidate.modifiedBytes))")
+                                        Text(L10n.format("이후 생성 파일 %@ · 수정된 기존 파일 %@", bytes(candidate.createdBytes), bytes(candidate.modifiedBytes)))
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                 }
@@ -89,12 +89,12 @@ struct StorageExplanationSection: View {
                         HStack {
                             Text(row.label)
                             Spacer()
-                            Text("이후 생성 \(bytes(row.createdBytes))").monospacedDigit()
+                            Text(L10n.format("이후 생성 %@", bytes(row.createdBytes))).monospacedDigit()
                         }
                     }
                 }
             } else if !running {
-                Text("기록이 없는 기간도 현재 남아 있는 파일의 생성·수정 흔적으로 조사합니다.")
+                Text(L10n.text("기록이 없는 기간도 현재 남아 있는 파일의 생성·수정 흔적으로 조사합니다."))
                     .foregroundStyle(.secondary)
             }
         }
@@ -117,7 +117,7 @@ struct StorageExplanationSection: View {
                    let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                    let count = value["completed"] as? Int, let total = value["total"] as? Int,
                    let label = value["label"] as? String {
-                    progress = "\(count)/\(total) 경로 측정 · \(label)"
+                    progress = L10n.format("%@/%@ 경로 측정 · %@", String(count), String(total), label)
                 }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
@@ -129,7 +129,7 @@ struct StorageExplanationSection: View {
         }).value,
         let invocation = execution.pinnedInvocation(relativePath: "scripts/storage_explain.py", name: "storage_explain"),
         let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
-            error = "저장공간 원인 분석 실행환경을 준비하지 못했습니다."; return
+            error = L10n.text("저장공간 원인 분석 실행환경을 준비하지 못했습니다."); return
         }
         let wrapper = "import sys; source=open(sys.argv[1],'rb').read(); sys.argv=['storage_explain.py']; exec(compile(source,'storage_explain.py','exec'),{'__name__':'__main__'})"
         let result = await LocalProcessRunner.capture(executable: python,
@@ -138,9 +138,9 @@ struct StorageExplanationSection: View {
             expectedSignedBundleURL: execution.signedBundleURL, pinnedFiles: invocation.files,
             timeout: 1800, maxOutputBytes: 8_000_000, waitForCleanupOnStop: true)
         guard result.succeeded else {
-            error = "원인 분석을 끝내지 못했습니다: \(result.status). 이전 결과를 유지합니다."; return
+            error = L10n.format("원인 분석을 끝내지 못했습니다: %@. 이전 결과를 유지합니다.", String(result.status)); return
         }
         do { report = try JSONDecoder().decode(StorageExplanation.self, from: Data(result.output.utf8)) }
-        catch { self.error = "원인 분석 결과를 읽지 못했습니다: \(error.localizedDescription)" }
+        catch { self.error = L10n.format("원인 분석 결과를 읽지 못했습니다: %@", error.localizedDescription) }
     }
 }
