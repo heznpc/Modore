@@ -261,16 +261,19 @@ def test_real_lsof_invocations_preserve_each_exit_status(project_root, tmp_path)
         **os.environ,
         "PCH_TEST_MODE": "1",
         "PCH_TEST_LSOF_BIN": str(fake_lsof),
-        "PCH_TEST_NETWORK_LSOF_TIMEOUT_TICKS": "5",
     }
 
+    # This tests exit-status propagation, not the timeout boundary. Keep the
+    # normal three-second sample limit so a busy host cannot kill a fixture
+    # shell before it records its invocation, and allow all four samples plus
+    # the observation window to finish under the outer harness deadline.
     result = subprocess.run(
         [str(project_root / "scripts" / "network_watch.sh"), "--window", "1"],
         capture_output=True,
         text=True,
         encoding="utf-8",
         env=env,
-        timeout=5,
+        timeout=15,
     )
 
     assert result.returncode == 0, result.stderr
