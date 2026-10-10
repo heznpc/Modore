@@ -459,6 +459,9 @@ def test_release_artifacts_exclude_runtime_python(project_root):
     modore_source_checkout = {
         "bin/modore",
         "scripts/bounded_exec.py",
+        "scripts/session_evidence.py",
+        "scripts/session_eval.py",
+        "docs/SESSION_EVALUATION.md",
         "skills/modore-ops/SKILL.md",
         "skills/modore-ops/agents/openai.yaml",
         "skills/modore-ops/references/command-contract.md",
@@ -720,6 +723,8 @@ def test_bundled_app_runtime_includes_every_macos_script(project_root):
         # mcp_server.py is a stdio server that a separate MCP client launches
         # from a checkout; the app never spawns it.
         "scripts/friction.py",
+        "scripts/session_evidence.py",
+        "scripts/session_eval.py",
         "scripts/moraine.py",
         "scripts/hfscan.py",
         "scripts/mcpaudit.py",
