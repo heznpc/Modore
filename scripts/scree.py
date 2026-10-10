@@ -5611,8 +5611,8 @@ def _mask_emails(text: str) -> str:
     pieces = []
     copied_until = 0
     while copied_until < len(text):
-        # Check the post-match cursor once without a left boundary. Otherwise
-        # first@example.com+second@example.org would expose the second address.
+        # Check the post-match cursor once without a left boundary. Without
+        # this exception, a '+'-joined second address would remain visible.
         match = (_EMAIL_RE.match(text, copied_until)
                  or _EMAIL_START_RE.search(text, copied_until))
         if match is None:
