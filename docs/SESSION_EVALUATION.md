@@ -213,7 +213,7 @@ claiming that these sources validate this particular rubric or implementation.
    reference for retaining evaluation artifacts and comparing graders with an
    oracle. This CLI does not claim to implement or depend on Inspect.
 
-`session-judge-v2` fixes the direction of each proposition in
+`session-judge-v3` preserves the direction of each proposition in
 `scripts/session_rubric.py`. A scope-change finding requires unresolved
 incompatibility, not merely a follow-up. An agreement-shift finding requires
 before/after conclusions, the intervening prompt, and no material new evidence
@@ -225,6 +225,14 @@ Version 2 also requires an explicit work-completion assertion for completion_gap
 and a concrete violated instruction for instruction_miss. A weak recommendation
 alone must not be counted again under those dimensions. Rubric versions are not
 interchangeable; targeted re-evaluations leave other dimensions unassessed.
+
+For a current-session pilot, bind `prepare` and `judge` with
+`--expected-session <session-id>`. Use `prepare --through-line <line>` to freeze
+the source boundary, then `judge --at-event <event-id>` to judge that event using
+only preceding context. Later corrections must not become earlier requirements.
+The selected event must match the actor being assessed and appear in the finding's
+evidence. Event-scoped reviews cannot be aggregated as whole-session findings.
+These controls validate input scope and citations, not judgment accuracy.
 
 Before treating aggregate judgments as reliable measurements:
 

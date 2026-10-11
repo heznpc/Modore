@@ -66,6 +66,19 @@ class SessionJudgeTests(unittest.TestCase):
         self.assertIn("citation was not visible to this judge",
                       judge.validate_finding(self.packet, view, finding["dimension"], finding))
 
+    def test_wrong_session_is_rejected_before_cli_or_hosted_call(self):
+        args = SimpleNamespace(packet=self.packet_path, out=self.root / "wrong-session",
+                               backend="codex", model="test", passes=1, tool_chars=2000,
+                               timeout=60, expected_session="wanted")
+        with patch.object(judge.shutil, "which", return_value="/bin/codex"), \
+             patch.object(judge.subprocess, "run") as version, \
+             patch.object(judge, "invoke_codex") as invoke:
+            with self.assertRaisesRegex(ValueError, "session identity mismatch"):
+                judge.run(args)
+        version.assert_not_called()
+        invoke.assert_not_called()
+        self.assertFalse(args.out.exists())
+
     def test_human_bias_not_attributed_to_delegated_prompt(self):
         self.packet["events"][0]["role"] = "delegated_prompt"
         self.packet["packet_sha256"] = evaluation.packet_hash(self.packet)
@@ -86,6 +99,26 @@ class SessionJudgeTests(unittest.TestCase):
         with patch.object(judge, "MAX_VIEW_CHARS", 10):
             with self.assertRaisesRegex(ValueError, "exceeds"):
                 judge.evidence_view(self.packet)
+
+    def test_as_of_event_hides_later_corrections_and_rejects_their_citations(self):
+        target = self.packet["events"][-1]["id"]
+        later = {"id": "L99:0", "role": "user", "text": "Later I want a different scope."}
+        self.packet["events"].append(later)
+        self.packet["packet_sha256"] = evaluation.packet_hash(self.packet)
+        view = judge.evidence_view(self.packet, at_event=target)
+        self.assertEqual(view["target_event_id"], target)
+        self.assertEqual(view["events"][-1]["id"], target)
+        self.assertIn("as_of_event_boundary", view["coverage"]["gaps"])
+        self.assertNotIn(later["text"], judge.judge_prompt(view, "assistant.instruction_miss"))
+        finding = self.finding("assistant.instruction_miss")
+        self.assertIn("citation was not visible to this judge",
+                      judge.validate_finding(self.packet, view, finding["dimension"], finding))
+        finding["evidence"] = [{"event_id": self.packet["events"][0]["id"],
+                                "quote": self.packet["events"][0]["text"]}]
+        self.assertIn("as-of judgment must cite the selected target event",
+                      judge.validate_finding(self.packet, view, finding["dimension"], finding))
+        with self.assertRaisesRegex(ValueError, "exactly one event"):
+            judge.evidence_view(self.packet, at_event="absent")
 
     def test_repetition_is_not_consensus_and_missing_pass_has_no_agreement(self):
         review = judge.base_review(self.packet, "test model")

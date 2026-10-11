@@ -76,8 +76,17 @@ def candidates(events: list[dict]) -> list[dict]:
             if event["role"] == role and re.search(pattern, event["text"], re.I)]
 
 
-def prepare(source: Path, *, excerpt_chars: int = 4000, max_events: int = 10000) -> dict:
-    packet = read_evidence(source, home=Path.home(), excerpt_chars=excerpt_chars, max_events=max_events)
+def require_session(packet: dict, expected_session: str | None) -> None:
+    if expected_session is not None and packet.get("metadata", {}).get("session_ids") != [expected_session]:
+        raise ValueError("session identity mismatch; refusing to evaluate a different or unidentified session")
+
+
+def prepare(source: Path, *, excerpt_chars: int = 4000, max_events: int = 10000,
+            expected_session: str | None = None, through_line: int | None = None) -> dict:
+    packet = read_evidence(source, home=Path.home(), excerpt_chars=excerpt_chars, max_events=max_events,
+                           through_line=through_line)
+    require_session(packet, expected_session)
+    packet["selection"] = {"expected_session": expected_session, "through_line": through_line}
     packet.update(schema_version=1, rubric_version=RUBRIC_VERSION,
                   rubric=DIMENSIONS, review_instructions=REVIEW_INSTRUCTIONS,
                   signals=candidates(packet["events"]),
@@ -236,6 +245,8 @@ def summarize(directories: list[Path]) -> dict:
         try:
             review = read_json(review_path)
             errors = validate_review(packet, review)
+            if review.get("evaluation_scope", {}).get("kind") == "event_as_of":
+                errors.append("event-scoped review cannot be aggregated as a session-level finding")
         except (ValueError, TypeError, KeyError, OSError) as exc:
             errors = [str(exc)]
         if errors:
@@ -261,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
     prep.add_argument("--out", required=True, type=Path)
     prep.add_argument("--excerpt-chars", type=int, default=4000)
     prep.add_argument("--max-events", type=int, default=10000)
+    prep.add_argument("--expected-session", help="reject any source whose session identity differs")
+    prep.add_argument("--through-line", type=int, help="freeze evidence at this inclusive physical JSONL line")
     check = sub.add_parser("check", help="validate review structure, packet identity and exact citations")
     check.add_argument("packet", type=Path)
     check.add_argument("review", type=Path)
@@ -277,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     judge.add_argument("--tool-chars", type=int, default=2000, help="per-tool/report excerpt size; dialogue is preserved")
     judge.add_argument("--timeout", type=int, default=600, help="per-call timeout in seconds")
     judge.add_argument("--repair-citations", action="store_true", help="allow one logged citation-only repair; reject any changed judgment")
+    judge.add_argument("--expected-session", help="check the intended session before any hosted evaluation")
+    judge.add_argument("--at-event", help="judge only this event using its preceding context; later events are withheld")
     args = parser.parse_args(argv)
     try:
         if args.command == "judge":
@@ -292,7 +307,8 @@ def main(argv: list[str] | None = None) -> int:
             failed = False
             for source in args.sources:
                 try:
-                    packet = prepare(source, excerpt_chars=args.excerpt_chars, max_events=args.max_events)
+                    packet = prepare(source, excerpt_chars=args.excerpt_chars, max_events=args.max_events,
+                                     expected_session=args.expected_session, through_line=args.through_line)
                     stem = packet["packet_sha256"][:20]
                     destinations = [args.out / (stem + suffix) for suffix in
                                     (".packet.json", ".review-template.json", ".review-instructions.txt")]

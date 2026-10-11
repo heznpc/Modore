@@ -1,6 +1,6 @@
 """Operational propositions for model-assisted session review (not a quality score)."""
 
-METHOD_VERSION = "session-judge-v2"
+METHOD_VERSION = "session-judge-v3"
 PROPOSITIONS = {
     "prompt.leading_frame": "At least one human prompt embeds a preferred conclusion or invites agreement. This describes wording, NOT a user defect or cause of model error.",
     "prompt.acceptance_criteria": "At least one human request omits a necessary success criterion that the assistant could not reasonably infer from the visible context. Do not require users to specify routine implementation details.",

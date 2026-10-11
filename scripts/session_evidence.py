@@ -43,6 +43,39 @@ def serialized(value: object) -> str:
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
+def tool_output_parts(value: object) -> list[tuple[int, str]]:
+    """Keep separately returned text blocks separately attributable and bounded.
+
+    Serializing an entire result array before clipping loses later process
+    receipts behind a long, unrelated first command's output.
+    """
+    if isinstance(value, list):
+        return [(index, block["text"]) for index, block in enumerate(value) if isinstance(block, dict)
+                and block.get("type") in ("text", "input_text", "output_text")
+                and isinstance(block.get("text"), str)]
+    return [(0, serialized(value))]
+
+
+def execution_observation(text: str) -> dict | None:
+    """Read only the outer known command-result envelope, never nested stdout.
+
+    This reports what the tool returned; it is not a success certificate.
+    """
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    if value.get("status") == "fulfilled" and isinstance(value.get("value"), dict):
+        value = value["value"]
+    if not (isinstance(value.get("chunk_id"), str) and isinstance(value.get("output"), str)
+            and isinstance(value.get("wall_time_seconds"), (int, float))):
+        return None
+    return {key: value[key] for key in ("chunk_id", "exit_code", "session_id", "wall_time_seconds")
+            if key in value and isinstance(value[key], (str, int, float, type(None)))}
+
+
 def decode(row: dict, metadata: dict, counts: dict) -> list[dict]:
     """Normalize visible events; metadata/context are never user instructions."""
     kind = row.get("type")
@@ -96,10 +129,13 @@ def decode(row: dict, metadata: dict, counts: dict) -> list[dict]:
                     metadata["delegated_input"] = True
                     return [{"role": "delegated_prompt", "text": match.group(1),
                              "name": "create_thread", "authorship": "delegated; not a direct human prompt"}]
-            return [{"role": "tool_call" if call else "tool_result",
-                     "text": serialized(payload.get("arguments", payload.get("input", ""))
-                                        if call else payload.get("output", "")),
-                     "name": payload.get("name"), "call_id": payload.get("call_id")}]
+            if call:
+                return [{"role": "tool_call", "text": serialized(payload.get("arguments", payload.get("input", ""))),
+                         "name": payload.get("name"), "call_id": payload.get("call_id")}]
+            return [{"role": "tool_result", "text": text, "source_content_index": index,
+                     "name": payload.get("name"), "call_id": payload.get("call_id"),
+                     "execution_observation": execution_observation(text)}
+                    for index, text in tool_output_parts(output)]
         if item == "reasoning":
             counts["hidden_reasoning_rows"] += 1
         else:
@@ -143,7 +179,10 @@ def decode(row: dict, metadata: dict, counts: dict) -> list[dict]:
 
 
 def read_evidence(source: Path, *, home: Path, excerpt_chars: int = 4000,
-                  max_events: int = 10000, max_bytes: int = MAX_BYTES) -> dict:
+                  max_events: int = 10000, max_bytes: int = MAX_BYTES,
+                  through_line: int | None = None) -> dict:
+    if through_line is not None and through_line < 1:
+        raise ValueError("through-line must be positive")
     counts = dict.fromkeys(("malformed_lines", "oversized_lines", "duplicates",
                             "compactions", "injected_rows", "excluded_context_rows",
                             "hidden_reasoning_rows", "unsupported_response_items",
@@ -165,6 +204,8 @@ def read_evidence(source: Path, *, home: Path, excerpt_chars: int = 4000,
         if not stat.S_ISREG(before.st_mode):
             raise ValueError("source must be a regular JSONL file")
         while True:
+            if through_line is not None and line_number >= through_line:
+                break
             raw = handle.readline(min(MAX_LINE + 1, max_bytes - bytes_read + 1))
             if not raw:
                 break
@@ -246,6 +287,10 @@ def read_evidence(source: Path, *, home: Path, excerpt_chars: int = 4000,
             if counts[name]]
     if byte_limit:
         gaps.append("byte_limit")
+    if through_line is not None:
+        gaps.append("explicit_line_boundary")
+        if line_number < through_line:
+            gaps.append("requested_line_boundary_not_reached")
     if changed:
         gaps.append("source_changed_during_read")
     if not metadata["providers"]:
@@ -254,13 +299,14 @@ def read_evidence(source: Path, *, home: Path, excerpt_chars: int = 4000,
     result_ids = {e.get("call_id") for e in events if e["role"] == "tool_result" and e.get("call_id")}
     return {
         "source": mask_text(str(source.absolute()), home),
-        "source_sha256": fingerprint.hexdigest() if not (byte_limit or changed) else None,
+        "source_sha256": fingerprint.hexdigest() if not (byte_limit or changed or through_line is not None) else None,
         "observed_bytes_sha256": fingerprint.hexdigest(), "source_bytes": before.st_size,
         "metadata": {k: sorted(v) if isinstance(v, set) else v for k, v in metadata.items()},
         "coverage": {"status": "partial" if gaps else "complete_for_supported_events",
                      "gaps": gaps, "counts": counts, "physical_lines_read": line_number,
                      "unmatched_tool_calls": len(call_ids - result_ids),
                      "unmatched_tool_results": len(result_ids - call_ids),
+                     "through_line": through_line,
                      "scope": "one physical file; other fragments and subagents are not followed"},
         "events": events,
     }
