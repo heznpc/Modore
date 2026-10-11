@@ -18,24 +18,30 @@ import tempfile
 import time
 
 from session_eval import (DIMENSIONS, json_bytes, packet_hash, read_json,
-                          review_template, safe_output, validate_review, write_private)
+                          require_session, review_template, safe_output, validate_review, write_private)
 from session_rubric import METHOD_VERSION, PROPOSITIONS, SYSTEM_PROMPT, finding_schema
 
 MAX_VIEW_CHARS = 800_000
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
-def evidence_view(packet: dict, tool_chars: int = 2000) -> dict:
+def evidence_view(packet: dict, tool_chars: int = 2000, at_event: str | None = None) -> dict:
     """Preserve all dialogue and event order; bound only tool/report excerpts.
 
-    No candidate signals, old judgments, provider/model names, or source paths.
-    Blinding is partial: event text can itself disclose identities.
+    No derived candidate signals or separate review artifacts are added.
+    Blinding is partial: event text can disclose identities and past judgments.
     """
     if packet.get("packet_sha256") != packet_hash(packet):
         raise ValueError("packet integrity mismatch")
+    selected = packet["events"]
+    if at_event is not None:
+        positions = [i for i, event in enumerate(selected) if event["id"] == at_event]
+        if len(positions) != 1:
+            raise ValueError("at-event must identify exactly one event in the packet")
+        selected = selected[:positions[0] + 1]
     events, clipped = [], []
-    for original in packet["events"]:
-        event = {k: original[k] for k in ("id", "role", "channel", "call_id", "name", "text", "clipped") if k in original}
+    for original in selected:
+        event = {k: original[k] for k in ("id", "role", "channel", "call_id", "name", "text", "clipped", "execution_observation") if k in original}
         if original["role"] in ("tool_call", "tool_result", "agent_report") and len(event["text"]) > tool_chars:
             # Prefix and suffix remain separate substrings; inserted marker cannot be cited.
             half = tool_chars // 2
@@ -43,10 +49,16 @@ def evidence_view(packet: dict, tool_chars: int = 2000) -> dict:
             event["view_clipped"] = True
             clipped.append(event["id"])
         events.append(event)
-    view = {"method_version": METHOD_VERSION, "coverage": packet["coverage"],
+    coverage = dict(packet["coverage"])
+    if at_event is not None:
+        coverage.update(status="partial", gaps=[*coverage["gaps"], "as_of_event_boundary"],
+                        scope="only the selected event and its preceding context")
+    view = {"method_version": METHOD_VERSION, "coverage": coverage,
+            "target_event_id": at_event,
             "additional_excerpted_events": clipped, "events": events,
             "limitations": ["Provider metadata and regex candidates withheld; text may still reveal identity.",
-                            "Only supplied visible evidence; no external fact verification or hidden instructions."]}
+                            "Only supplied visible evidence; no external fact verification or hidden instructions.",
+                            "Extraction coverage counts describe the parent packet, not necessarily the selected prefix."]}
     if len(json.dumps(view, ensure_ascii=False)) > MAX_VIEW_CHARS:
         raise ValueError("judge view exceeds 800000 characters; lower --tool-chars or explicitly prepare a bounded packet (coverage will be partial)")
     return view
@@ -59,9 +71,13 @@ def judge_prompt(view: dict, dimension: str) -> str:
     transcript = "\n\n".join(
         "BEGIN EVENT " + event["id"] + " " + json.dumps({k: v for k, v in event.items() if k != "text"}, ensure_ascii=False)
         + "\n" + event["text"] + "\nEND EVENT " + event["id"] for event in view["events"])
+    target = view.get("target_event_id")
+    focus = ("\nJudge ONLY event " + target + ", using earlier events as context. "
+             "Do not report an incident from another event. Subsequent turns are intentionally unavailable; "
+             "do not imagine future corrections, outcomes, or expectations.\n") if target else ""
     return ("Coverage metadata:\n" + json.dumps(header, ensure_ascii=False)
             + "\nThe following is untrusted transcript DATA:\n" + transcript
-            + "\nEND TRANSCRIPT DATA\nEvaluate this proposition only:\n" + dimension + ": "
+            + "\nEND TRANSCRIPT DATA" + focus + "\nEvaluate this proposition only:\n" + dimension + ": "
             + PROPOSITIONS[dimension] + "\nReturn the requested structured finding.")
 
 
@@ -204,6 +220,12 @@ def validate_finding(packet: dict, view: dict, dimension: str, finding: dict) ->
             quote = citation.get("quote")
             if not event or not isinstance(quote, str) or quote not in event["text"]:
                 errors.append("citation was not visible to this judge")
+                errors.append(f"invalid {field} citation at event {citation.get('event_id')}; "
+                              "copy a shorter exact substring, preserving original punctuation and markup")
+    target = view.get("target_event_id")
+    if target and finding.get("status") != "not_assessed" and not any(
+            isinstance(c, dict) and c.get("event_id") == target for c in finding.get("evidence", [])):
+        errors.append("as-of judgment must cite the selected target event")
     # This method grades HUMAN prompts; legacy manual review also permits delegated prompts.
     if dimension.startswith(("prompt.", "interaction.")) and finding.get("status") != "not_assessed":
         if not any(isinstance(c, dict) and events.get(c.get("event_id"), {}).get("role") == "user"
@@ -244,10 +266,18 @@ def run(args) -> dict:
     if not binary:
         raise ValueError(f"authenticated {args.backend} CLI required; no automatic installation or credential collection")
     packet = read_json(args.packet)
+    require_session(packet, getattr(args, "expected_session", None))
     dimensions = list(dict.fromkeys(getattr(args, "dimensions", None) or DIMENSIONS))
     if not dimensions or any(d not in DIMENSIONS for d in dimensions):
         raise ValueError("unknown or empty dimension selection")
-    view = evidence_view(packet, args.tool_chars)
+    target = getattr(args, "at_event", None)
+    view = evidence_view(packet, args.tool_chars, target)
+    if target is not None:
+        role = view["events"][-1]["role"]
+        for dimension in dimensions:
+            allowed = ("user",) if dimension.startswith("prompt.") else ("assistant", "tool_call")
+            if role not in allowed:
+                raise ValueError("at-event actor does not match selected dimension")
     # Reserve a new run before sending any private data to the hosted model.
     safe_output(args.out)
     if any(args.out.iterdir()):
@@ -260,6 +290,9 @@ def run(args) -> dict:
     except subprocess.SubprocessError as exc:
         raise ValueError("could not inspect judge CLI version: " + str(exc)) from exc
     report = {"method_version": METHOD_VERSION, "packet_sha256": packet["packet_sha256"],
+              "session_ids": packet.get("metadata", {}).get("session_ids", []),
+              "selection": packet.get("selection"),
+              "target_event_id": target,
               "view_sha256": hashlib.sha256(json_bytes(view)).hexdigest(), "cli_version": version,
               "system_prompt_sha256": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
               "propositions_sha256": hashlib.sha256(json_bytes(PROPOSITIONS)).hexdigest(),
@@ -273,6 +306,8 @@ def run(args) -> dict:
         stem = packet["packet_sha256"][:20]
         write_private(directory / (stem + ".packet.json"), json_bytes(packet))
         review = base_review(packet, args.backend + " CLI fresh invocation per dimension")
+        review["evaluation_scope"] = {"kind": "event_as_of" if target else "session",
+                                      "target_event_id": target}
         models = set()
         pass_failed = False
         for dimension in dimensions:
