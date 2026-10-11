@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Prepare per-JSONL evaluation packets and validate evidence-linked reviews.
 
-Stdlib only. No hosted model, hidden reasoning, automatic verdict, or store scan.
-The reviewer is a separate human or explicitly chosen model; its assessments
-remain interpretations, even when this program validates their citations.
+Stdlib evidence handling; the explicit judge command calls a hosted model via
+an authenticated CLI. No store scan. Assessments remain interpretations,
+even when this program validates their citations.
 """
 from __future__ import annotations
 
@@ -155,9 +155,10 @@ def validate_review(packet: dict, review: dict) -> list[str]:
             if not roles:
                 errors.append(dimension + ": assessed findings require evidence")
             prompt_present = bool({"user", "delegated_prompt"} & set(roles))
+            assistant_present = "assistant" in roles or (dimension == "assistant.instruction_miss" and "tool_call" in roles)
             actor_missing = (
                 (dimension.startswith("prompt.") and not prompt_present)
-                or (dimension.startswith("assistant.") and "assistant" not in roles)
+                or (dimension.startswith("assistant.") and not assistant_present)
                 or (dimension.startswith("interaction.") and (not prompt_present or "assistant" not in roles)))
             if actor_missing:
                 errors.append(dimension + ": cite the actor(s) being assessed")
@@ -207,6 +208,7 @@ def read_json(path: Path) -> dict:
 def summarize(directories: list[Path]) -> dict:
     result = {"packets": 0, "reviewed": 0, "unreviewed": 0, "invalid_reviews": [],
               "duplicate_sessions_excluded": 0, "replayed_user_events": 0,
+              "method_versions": {}, "incompatible_methods": False,
               "dimensions": {d: dict.fromkeys(STATUSES, 0) for d in DIMENSIONS},
               "limitation": "Convenience sample, not a population estimate or causal user/model comparison. Physical fragments may overlap."}
     seen = set()
@@ -240,8 +242,14 @@ def summarize(directories: list[Path]) -> dict:
             result["invalid_reviews"].append({"packet": path.name, "errors": errors})
             continue
         result["reviewed"] += 1
+        method = review.get("method_version", "manual-claims-v1")
+        result["method_versions"][method] = result["method_versions"].get(method, 0) + 1
         for finding in review["findings"]:
             result["dimensions"][finding["dimension"]][finding["status"]] += 1
+    if len(result["method_versions"]) > 1:
+        result["incompatible_methods"] = True
+        result["dimensions"] = None
+        result["limitation"] += " Different grading methods cannot be pooled; summarize each method separately."
     return result
 
 
@@ -258,8 +266,24 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("review", type=Path)
     aggregate = sub.add_parser("summarize", help="count validated reviews; disclose missing reviews and replay")
     aggregate.add_argument("directories", type=Path, nargs="+")
+    judge = sub.add_parser("judge", help="send one masked packet view to a hosted model via an authenticated CLI")
+    judge.add_argument("packet", type=Path)
+    judge.add_argument("--out", required=True, type=Path)
+    judge.add_argument("--backend", choices=("codex", "claude"), default="codex")
+    judge.add_argument("--cli", type=Path, help="absolute CLI executable path, if not found in standard locations")
+    judge.add_argument("--model", required=True, help="explicit model ID or alias accepted by the selected CLI")
+    judge.add_argument("--passes", type=int, default=1, help="1..3 fresh passes; repetitions are not independent judges")
+    judge.add_argument("--dimensions", nargs="+", choices=tuple(DIMENSIONS), help="grade only these dimensions; others remain not_assessed")
+    judge.add_argument("--tool-chars", type=int, default=2000, help="per-tool/report excerpt size; dialogue is preserved")
+    judge.add_argument("--timeout", type=int, default=600, help="per-call timeout in seconds")
+    judge.add_argument("--repair-citations", action="store_true", help="allow one logged citation-only repair; reject any changed judgment")
     args = parser.parse_args(argv)
     try:
+        if args.command == "judge":
+            from session_judge import run
+            report = run(args)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report["status"] == "validated_outputs" else 2
         if args.command == "prepare":
             if not 200 <= args.excerpt_chars <= 20000 or not 1 <= args.max_events <= 20000:
                 raise ValueError("excerpt-chars must be 200..20000; max-events must be 1..20000")
@@ -294,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2 if errors else 0
         report = summarize(args.directories)
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 2 if report["invalid_reviews"] else 0
+        return 2 if report["invalid_reviews"] or report["incompatible_methods"] else 0
     except (OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
         print("session-eval: " + str(exc), file=sys.stderr)
         return 2

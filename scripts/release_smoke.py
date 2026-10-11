@@ -358,6 +358,8 @@ MODORE_SOURCE_CHECKOUT_FILES = [
     "scripts/bounded_exec.py",
     "scripts/session_evidence.py",
     "scripts/session_eval.py",
+    "scripts/session_judge.py",
+    "scripts/session_rubric.py",
     "docs/SESSION_EVALUATION.md",
     "skills/modore-ops/SKILL.md",
     "skills/modore-ops/agents/openai.yaml",
