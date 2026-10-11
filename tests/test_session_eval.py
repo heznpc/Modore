@@ -220,6 +220,31 @@ class SessionEvaluationTests(unittest.TestCase):
         self.assertEqual(checked.returncode, 0, checked.stderr)
         self.assertEqual(evaluation.summarize([out])["reviewed"], 1)
 
+    def test_different_judgment_methods_are_not_pooled(self):
+        for i, method in enumerate(("session-judge-v1", "session-judge-v2")):
+            packet = self.packet()
+            packet["metadata"]["session_ids"] = ["different-session-" + str(i)]
+            packet["packet_sha256"] = evaluation.packet_hash(packet)
+            review = self.review(packet)
+            review["method_version"] = method
+            (self.root / (str(i) + ".packet.json")).write_bytes(evaluation.json_bytes(packet))
+            (self.root / (str(i) + ".review.json")).write_bytes(evaluation.json_bytes(review))
+        result = evaluation.summarize([self.root])
+        self.assertTrue(result["incompatible_methods"])
+        self.assertIsNone(result["dimensions"])
+
+    def test_tool_action_can_evidence_an_instruction_violation(self):
+        packet = evaluation.prepare(self.write(message("user", "Do not execute commands."),
+            {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command",
+             "call_id": "test", "arguments": '{"cmd":"true"}'}}))
+        review = self.review(packet)
+        finding = next(f for f in review["findings"] if f["dimension"] == "assistant.instruction_miss")
+        finding.update(status="supported", claim="A command was invoked despite an explicit prohibition.",
+                       attribution="assistant", alternative_explanation="Higher-priority context might be absent.",
+                       improvement="Honor the execution prohibition.", evidence=[
+                           {"event_id": e["id"], "quote": e["text"]} for e in packet["events"]])
+        self.assertEqual(evaluation.validate_review(packet, review), [])
+
 
 if __name__ == "__main__":
     unittest.main()

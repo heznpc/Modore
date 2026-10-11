@@ -27,6 +27,30 @@ Backup, verification, restore, and detailed inspection remain available through
 the Modore app and `scripts/scree.py`. Those operations require an exact named
 source or archive; do not infer one from a transcript.
 
+## Explicit session evaluation
+
+```bash
+modore evaluate prepare /absolute/session.jsonl --out /absolute/private/packets
+modore evaluate judge /absolute/private/packets/HASH.packet.json --backend codex --model MODEL --out /absolute/private/judge-run
+modore evaluate check /absolute/private/judge-run/pass-1/HASH.packet.json /absolute/private/judge-run/pass-1/HASH.review.json
+modore evaluate summarize /absolute/private/judge-run/pass-1
+```
+
+Use named JSONLs only. `prepare` is local; `judge` explicitly sends masked,
+not anonymized, excerpts to the authenticated CLI's model provider. Use it when
+the user requests AI evaluation of those sessions. Do not invoke it during
+ordinary search, storage diagnosis, or generic repository review. Choose a
+model supported by the installed CLI; `--cli` accepts an explicit executable
+path. No installation, login, or model fallback is automatic.
+
+Each dimension runs in a fresh context. Python checks event IDs and exact quotes,
+not judgment accuracy. Failed calls remain incomplete; do not present them as
+successful evaluations. Output must be outside Git in a private directory.
+Keep repeated passes separate. Model agreement is not human calibration, and
+historical framing observations do not establish user bias or causation.
+See [the evaluation method](../../../docs/SESSION_EVALUATION.md) for coverage,
+rubric direction, raw artifacts, and limits. This feature has no app UI or MCP tool.
+
 ## Storage
 
 ```bash

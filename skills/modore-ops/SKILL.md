@@ -1,6 +1,6 @@
 ---
 name: modore-ops
-description: Use Modore for explicit local AI-session continuity and Mac storage diagnosis or recovery. Applies to finding, searching, backing up, or restoring Claude/Codex sessions and explaining or reclaiming local disk; do not use it for generic repo status, next-work choices, PRs, shipping, or multi-repo maps. Also applies to simulator reuse, project/session resource connections, and external SSD occupancy/ejection.
+description: Use Modore for explicit local AI-session continuity and Mac storage diagnosis or recovery. Applies to finding, searching, backing up, restoring, or explicitly evaluating Claude/Codex sessions and explaining or reclaiming local disk; do not use it for generic repo status, next-work choices, PRs, shipping, or multi-repo maps. Also applies to simulator reuse, project/session resource connections, and external SSD occupancy/ejection.
 ---
 
 # Modore
@@ -13,9 +13,10 @@ plane.
 
 - Session listing is metadata-only. Conversation search requires the user's
   explicit request and sends the query over stdin, never argv.
-- Modore's deterministic local rules produce the verdict. An optional hosted
-  model may explain returned evidence, but must not silently receive session
-  bodies or replace the verdict.
+- Deterministic local rules produce storage/recovery verdicts. A hosted model
+  must not replace those verdicts or silently receive session bodies. Explicitly
+  requested session-quality evaluation uses `evaluate judge`; its AI findings
+  are uncalibrated interpretations with verified citations, not rule verdicts.
 - Cleanup remains previewed, remeasured, approved, and receipted by the Modore
   app. The agent-facing command has no execute or approval bypass.
 - Use ordinary repository tools for code status and Git operations. Modore does
