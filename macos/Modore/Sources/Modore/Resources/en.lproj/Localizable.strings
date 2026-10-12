@@ -2070,3 +2070,7 @@
 "최근 연결 실행 수신" = "Recent connection invocation received";
 "설정 있음 · 최근 실행 미확인" = "Configured · recent execution unverified";
 "연결 설정을 읽지 못했습니다." = "Could not read connection settings.";
+
+"검토 전용 모드에서는 삭제할 수 없습니다. Modore를 종료한 뒤 앱 아이콘에서 일반 모드로 다시 실행해 주세요." = "Deletion is disabled in review-only mode. Quit Modore, then reopen it from the app icon in normal mode.";
+"검토 전용 · 삭제 비활성화" = "Review only · Deletion disabled";
+"크기와 사용 근거를 검토할 수 있습니다." = "You can review size and usage evidence.";

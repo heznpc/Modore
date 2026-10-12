@@ -137,6 +137,7 @@ struct SpaceGoalWorkspaceList: View {
                 }.buttonStyle(.borderedProminent)
                     .disabled(model.isBusy || investigable.isEmpty)
             }
+            CleanupReviewOnlyNotice()
             HStack(alignment: .top, spacing: 28) {
                 metric("현재 여유", StorageBytes.text(model.liveState.freeSpace?.value.freeBytes
                     ?? (storage.volumeMeasured ? StorageBytes.fromLegacyGiB(storage.freeGB) : nil)),

@@ -329,6 +329,7 @@ final class ScanModel: ObservableObject {
     let existingResultsLoader: ExistingResultsLoader
     let storageWatchEvidenceLoader: StorageWatchEvidenceLoader
     let cleanupExecution: CleanupExecutionClient
+    let cleanupReviewOnly: Bool
     let cleanupMutationRecorder: CleanupMutationRecorder
     let recoveryHistoryWriter: (RecoveryHistory, URL) throws -> [RecoveryHistory]
     var cleanupRequest: CleanupExecutionRequest?
@@ -388,6 +389,7 @@ final class ScanModel: ObservableObject {
             }.value
         },
         cleanupExecution: CleanupExecutionClient = .live,
+        cleanupReviewOnly: Bool = false,
         cleanupMutationRecorder: @escaping CleanupMutationRecorder = {
             ScanPublication.markCleanupMutationPending(in: $0)
         },
@@ -401,6 +403,7 @@ final class ScanModel: ObservableObject {
         self.existingResultsLoader = existingResultsLoader
         self.storageWatchEvidenceLoader = storageWatchEvidenceLoader
         self.cleanupExecution = cleanupExecution
+        self.cleanupReviewOnly = CleanupExecutionService.isReviewOnly || cleanupReviewOnly
         self.cleanupMutationRecorder = cleanupMutationRecorder
         self.recoveryHistoryWriter = recoveryHistoryWriter
         self.cleanupMutationPending = ScanPublication.cleanupMutationIsPending(

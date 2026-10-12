@@ -7,6 +7,7 @@ struct CleanupApprovalSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             CleanupApprovalHeader(preview: preview)
+            CleanupReviewOnlyNotice()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     CleanupExplanation(preview: preview)
@@ -98,6 +99,7 @@ private struct CleanupRecoveryPaths: View {
 }
 
 private struct CleanupApprovalHeader: View {
+    @EnvironmentObject private var model: ScanModel
     let preview: CleanupPreview
 
     var body: some View {
@@ -109,7 +111,7 @@ private struct CleanupApprovalHeader: View {
                 Text(preview.label)
                     .font(.title3.weight(.semibold))
                     .accessibilityAddTraits(.isHeader)
-                Text(preview.statusText)
+                Text(model.cleanupReviewOnly ? L10n.text("검토 전용 · 삭제 비활성화") : preview.statusText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -333,7 +335,7 @@ private struct CleanupApprovalActions: View {
                     Label(executeLabel, systemImage: "trash")
                 }
             }
-            .disabled(model.cleanupInFlight)
+            .disabled(model.cleanupInFlight || model.cleanupReviewOnly)
             .tint(.red)
         }
     }
@@ -343,6 +345,21 @@ private struct CleanupApprovalActions: View {
         case "trash": return L10n.format("%@ 휴지통으로 이동", String(describing: preview.estimatedText))
         case "simulator": return L10n.format("%@ Simulator 삭제", String(describing: preview.estimatedText))
         default: return L10n.format("%@ 정리", String(describing: preview.estimatedText))
+        }
+    }
+}
+
+struct CleanupReviewOnlyNotice: View {
+    @EnvironmentObject private var model: ScanModel
+
+    var body: some View {
+        if model.cleanupReviewOnly {
+            Label(CleanupExecutionService.reviewOnlyMessage, systemImage: "eye")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
         }
     }
 }
