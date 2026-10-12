@@ -854,6 +854,10 @@ def test_project_residue_preview_and_execute_preserve_project_evidence(
     assert preview.returncode == 0, preview.stderr
     assert payload["status"] == "ready"
     assert payload["recipeId"] == "project_residue"
+    assert "package.json" in payload["regenerationEvidence"]
+    assert "package-lock.json" in payload["regenerationEvidence"]
+    assert "재빌드는 미검증" in payload["regenerationEvidence"]
+    assert "미사용 확정" in payload["usageEvidence"]
     assert payload["targets"] == [str(target)]
     expires_epoch = int(str(payload["approvalExpiresEpoch"]))
     assert time.time() < expires_epoch <= time.time() + 901

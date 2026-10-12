@@ -2327,6 +2327,23 @@ emit_state() {
     emit "description" "$DESCRIPTION"
     emit "avoidWhen" "$AVOID_WHEN"
     emit "processNote" "$PROCESS_NOTE"
+    if [[ "$operation" == "preview" && "$status" == "ready" ]]; then
+        emit "usageEvidence" "레시피에 지정된 대상·관련 프로세스 검사 통과. 미사용 확정은 아니며 실행 직전에 재검증합니다."
+        if [[ "$RECIPE_ID" == "project_residue" ]]; then
+            local marker evidence_names="" git_evidence="Git 저장소 없음"
+            while IFS= read -r marker; do
+                if [[ -f "$PROJECT_RESIDUE_PARENT/$marker" && ! -L "$PROJECT_RESIDUE_PARENT/$marker" ]]; then
+                    evidence_names="${evidence_names}${evidence_names:+, }$marker"
+                fi
+            done < <(project_residue_candidate_names; project_residue_lock_names)
+            [[ -z "$PROJECT_GIT_REPO" ]] || git_evidence="대상 내 Git 추적 파일 없음 확인"
+            emit "regenerationEvidence" "명세 파일 존재: $evidence_names · $git_evidence · 실제 재빌드는 미검증"
+        else
+            emit "regenerationEvidence" "정리 규칙의 대상 구조 검증 통과 · 재다운로드·재빌드는 미검증"
+        fi
+    elif [[ "$operation" == "preview" && -n "$RUNNING_PROCESSES" ]]; then
+        emit "usageEvidence" "$RUNNING_PROCESSES"
+    fi
     emit "blockedReason" "${BLOCKED_REASON:-}"
     emit "runningProcesses" "${RUNNING_PROCESSES:-}"
     emit "approvalToken" "$PREVIEW_APPROVAL_TOKEN"

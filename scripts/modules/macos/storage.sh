@@ -1249,7 +1249,7 @@ _pch_collect_project_residue() {
     # 무시하고 macOS 저장공간 설정은 뭉뚱그리므로, 수 GB가 쌓여도 어떤 도구에도
     # 보이지 않는 사각지대가 된다. 검색은 흔한 개발 루트로 한정하고 깊이와
     # 개수를 제한해 빠른 검사 예산 안에 머문다.
-    local scan_roots="${PCH_PROJECT_SCAN_ROOTS:-$HOME/Documents:$HOME/Developer:$HOME/Projects:$HOME/IdeaProjects:$HOME/StudioProjects:$HOME/dev:$HOME/workspace:$HOME/src}"
+    local scan_roots="${PCH_PROJECT_SCAN_ROOTS:-$HOME/IdeaProjects:$HOME/Developer:$HOME/Projects:$HOME/Documents:$HOME/StudioProjects:$HOME/dev:$HOME/workspace:$HOME/src}"
     local max_projects="${PCH_PROJECT_SCAN_LIMIT:-256}"
     local max_repositories="${PCH_PROJECT_GIT_SCAN_LIMIT:-128}"
     local max_manifests="${PCH_PROJECT_SWIFTPM_MANIFEST_LIMIT:-256}"
@@ -1321,8 +1321,25 @@ _pch_collect_project_residue() {
     fi
 
     IFS=':' read -r -a scan_root_list <<< "$scan_roots"
+    local root_count=0 root_index=0 root_status
+    local any_timed_out="$_pch_project_git_timed_out" any_incomplete="$_pch_project_git_incomplete"
+    for root in "${scan_root_list[@]}"; do
+        [[ -d "$root" && ! -L "$root" ]] && root_count=$((root_count + 1))
+    done
+    [[ "$root_count" -gt 0 ]] || root_count=1
+    _pch_project_git_budget_stop
+    _pch_project_git_total_budget=$((project_git_total_budget / root_count))
+    [[ "$_pch_project_git_total_budget" -gt 0 ]] || _pch_project_git_total_budget=1
+    max_repositories=$(((max_repositories + root_count - 1) / root_count))
+    max_projects=$(((max_projects + root_count - 1) / root_count))
     for root in "${scan_root_list[@]}"; do
         [[ -d "$root" && ! -L "$root" ]] || continue
+        root_index=$((root_index + 1))
+        _pch_project_git_budget_started=0
+        _pch_project_git_timed_out=0
+        _pch_project_git_incomplete=0
+        _pch_project_repository_count=0
+        found=0
         discovery_output="$TMP_DIR/project_discovery.$$.$RANDOM.out"
         _pch_project_discovery_to_file \
             "$root" "$discovery_output" "$project_discovery_result_limit" || true
@@ -1391,7 +1408,15 @@ _pch_collect_project_residue() {
             esac
         done < "$discovery_output"
         /bin/rm -f "$discovery_output"
+        _pch_project_git_budget_stop
+        root_status="ok"
+        if [[ "$_pch_project_git_incomplete" -eq 1 ]]; then root_status="failed"; any_incomplete=1; fi
+        if [[ "$_pch_project_git_timed_out" -eq 1 ]]; then root_status="timed_out"; any_timed_out=1; fi
+        record_collection_status "project_root_$root_index" "프로젝트 경로 · $root" "$root_status" "false" \
+            "조사 범위: $root · 깊이·결과 수 제한 안에서 탐색. 미발견은 미사용을 뜻하지 않습니다."
     done
+    _pch_project_git_timed_out="$any_timed_out"
+    _pch_project_git_incomplete="$any_incomplete"
 
     _pch_project_git_budget_stop
     if [[ "$_pch_project_git_timed_out" -eq 1 \
@@ -1815,7 +1840,8 @@ collect_storage() {
     local du_bin="/usr/bin/du"
     local du_budget_ticks=0
     local du_budget_started=0
-    local du_budget_timer_pid=""
+    local du_consumed_ticks=0
+    local du_active_ticks=0
     local du_test_clock_ticks=0
     local du_test_deadline_ticks=0
     local du_test_duration_ticks=""
@@ -1887,8 +1913,6 @@ collect_storage() {
             du_test_deadline_ticks=$((du_test_clock_ticks + du_budget_ticks))
             return 0
         fi
-        /bin/sleep "$du_budget" &
-        du_budget_timer_pid=$!
     }
 
     _pch_storage_du_budget_expired() {
@@ -1898,18 +1922,12 @@ collect_storage() {
             [[ "$du_test_clock_ticks" -ge "$du_test_deadline_ticks" ]]
             return
         fi
-        if [[ -z "$du_budget_timer_pid" ]] || ! /bin/kill -0 "$du_budget_timer_pid" 2>/dev/null; then
-            return 0
-        fi
-        return 1
+        # Count time spent measuring, not unrelated Git/project discovery.
+        # A slow Documents traversal must not consume every cache's allowance.
+        [[ $((du_consumed_ticks + du_active_ticks)) -ge "$du_budget_ticks" ]]
     }
 
-    _pch_storage_du_budget_stop() {
-        [[ -n "$du_budget_timer_pid" ]] || return 0
-        /bin/kill "$du_budget_timer_pid" 2>/dev/null || true
-        wait "$du_budget_timer_pid" 2>/dev/null || true
-        du_budget_timer_pid=""
-    }
+    _pch_storage_du_budget_stop() { :; }
 
     _pch_storage_trace_test_du() {
         local target_path="$1"
@@ -1978,10 +1996,13 @@ collect_storage() {
 
         "$du_bin" -sk "$target_path" > "$out_file" 2>/dev/null &
         pid=$!
+        du_active_ticks=0
         while /bin/kill -0 "$pid" 2>/dev/null; do
             if _pch_storage_du_budget_expired || [[ "$waited_ticks" -ge "$this_timeout_ticks" ]]; then
                 /bin/kill -9 "$pid" 2>/dev/null || true
                 wait "$pid" 2>/dev/null || true
+                du_consumed_ticks=$((du_consumed_ticks + waited_ticks))
+                du_active_ticks=0
                 /bin/rm -f "$out_file"
                 DU_SIZE_RESULT="__PCH_TIMEOUT__"
                 DU_SIZE_MEASURE_STATUS="timed_out"
@@ -1989,8 +2010,11 @@ collect_storage() {
             fi
             /bin/sleep 0.1
             waited_ticks=$((waited_ticks + 1))
+            du_active_ticks="$waited_ticks"
         done
         wait "$pid" 2>/dev/null || command_status=$?
+        du_consumed_ticks=$((du_consumed_ticks + waited_ticks))
+        du_active_ticks=0
         size_kb="$(/usr/bin/awk '{print $1; exit}' "$out_file" 2>/dev/null)"
         /bin/rm -f "$out_file"
         case "$size_kb" in ''|*[!0-9]*) size_kb=0; command_status=1 ;; esac
@@ -2053,16 +2077,22 @@ collect_storage() {
 
         "$du_bin" -sk -- "$@" > "$output_file" 2>/dev/null &
         pid=$!
+        du_active_ticks=0
         while /bin/kill -0 "$pid" 2>/dev/null; do
             if _pch_storage_du_budget_expired || [[ "$waited_ticks" -ge "$this_timeout_ticks" ]]; then
                 /bin/kill -9 "$pid" 2>/dev/null || true
                 wait "$pid" 2>/dev/null || true
+                du_consumed_ticks=$((du_consumed_ticks + waited_ticks))
+                du_active_ticks=0
                 return 124
             fi
             /bin/sleep 0.1
             waited_ticks=$((waited_ticks + 1))
+            du_active_ticks="$waited_ticks"
         done
         wait "$pid" 2>/dev/null || status=$?
+        du_consumed_ticks=$((du_consumed_ticks + waited_ticks))
+        du_active_ticks=0
         return "$status"
     }
 

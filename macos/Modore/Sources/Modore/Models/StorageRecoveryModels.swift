@@ -52,6 +52,14 @@ struct CleanupPlanEntry: Identifiable {
     let preview: CleanupPreview
     let tier: CleanupTier
     let request: CleanupExecutionRequest?
+    let sourceItem: StorageItem?
+
+    init(preview: CleanupPreview, tier: CleanupTier, request: CleanupExecutionRequest?, sourceItem: StorageItem? = nil) {
+        self.preview = preview
+        self.tier = tier
+        self.request = request
+        self.sourceItem = sourceItem
+    }
 
     var id: String { preview.recipeID + "\u{0}" + (request?.target ?? "") }
 }
@@ -63,18 +71,20 @@ struct CleanupRecoveryPlan: Identifiable {
     let createdAt: Date
     let baselineFreeBytes: Int64
     let requestedGainBytes: Int64
+    let stopAtGoal: Bool
     let entries: [CleanupPlanEntry]
 
     init(
         id: UUID = UUID(), createdAt: Date = Date(),
         baselineFreeBytes: Int64, requestedGainBytes: Int64,
-        entries: [CleanupPlanEntry]
+        entries: [CleanupPlanEntry], stopAtGoal: Bool = true
     ) {
         self.id = id
         self.createdAt = createdAt
         self.baselineFreeBytes = baselineFreeBytes
         self.requestedGainBytes = requestedGainBytes
         self.entries = entries
+        self.stopAtGoal = stopAtGoal
     }
 
     var desiredFreeBytes: Int64? { StorageBytes.adding(baselineFreeBytes, requestedGainBytes) }
@@ -145,10 +155,11 @@ struct CleanupRecoveryResult {
     let items: [CleanupRecoveryItemResult]
     let stoppedAfterFailure: Bool
     let rescanScheduled: Bool
+    var stopAtGoal: Bool = true
 
     var freeSpaceMeasured: Bool { finalFreeBytes != nil }
     var actualChangeBytes: Int64? { finalFreeBytes.map { $0 - baselineFreeBytes } }
-    var goalMet: Bool { finalFreeBytes.map { $0 >= desiredFreeBytes } ?? false }
+    var goalMet: Bool { stopAtGoal && finalFreeBytes.map { $0 >= desiredFreeBytes } ?? false }
     var succeededCount: Int { items.filter(\.succeeded).count }
     var skippedCount: Int { max(0, plannedCount - items.count) }
     var failedItems: [CleanupRecoveryItemResult] { items.filter { !$0.succeeded } }

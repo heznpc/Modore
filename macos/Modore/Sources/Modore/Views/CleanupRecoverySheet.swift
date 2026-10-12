@@ -41,10 +41,12 @@ struct CleanupRecoverySheet: View {
                     .font(.system(size: 26, weight: .medium))
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n.text("정리 전 확인"))
+                    Text(L10n.text("재검증 결과 · 정리 전 승인"))
                         .font(.title2.weight(.semibold))
                     Text(plan.canExecute
-                        ? L10n.text("승인하면 아래 항목을 정리합니다. 사용 중인 항목은 건너뛰고 목표에 도달하면 멈춥니다.")
+                        ? (plan.stopAtGoal
+                            ? L10n.text("승인하면 아래 항목을 정리합니다. 사용 중인 항목은 건너뛰고 목표에 도달하면 멈춥니다.")
+                            : L10n.text("승인하면 선택한 항목을 정리합니다. 사용 중이거나 검증에 실패한 항목은 보존합니다."))
                         : (plan.readyEntries.isEmpty
                             ? L10n.text("이번에 확인된 실행 가능 항목이 없습니다. 항목별 이유를 확인하고 다시 시도하세요.")
                             : L10n.text("확인 후 시간이 지나 대상의 현재 상태를 다시 확인해야 합니다.")))
@@ -66,10 +68,12 @@ struct CleanupRecoverySheet: View {
 
             HStack(spacing: 18) {
                 recoveryMetric(L10n.text("기준 여유"), value: StorageBytes.text(plan.baselineFreeBytes))
+                if plan.stopAtGoal {
                 recoveryMetric(L10n.text("추가 확보 목표"), value: StorageBytes.text(plan.requestedGainBytes))
                 Image(systemName: "arrow.right")
                     .foregroundStyle(.secondary)
                 recoveryMetric(L10n.text("최종 여유 목표"), value: StorageBytes.text(plan.desiredFreeBytes))
+                }
                 Spacer()
                 TimelineView(.periodic(from: .now, by: 1)) { timeline in
                     Text(plan.approvalStatusText(at: timeline.date))
@@ -133,14 +137,14 @@ struct CleanupRecoverySheet: View {
     @ViewBuilder
     private func resultContent(_ result: CleanupRecoveryResult) -> some View {
         HStack(alignment: .top, spacing: 14) {
-            Image(systemName: result.goalMet ? "checkmark.circle" : "exclamationmark.circle")
+            Image(systemName: result.goalMet || (!result.stopAtGoal && result.failedItems.isEmpty && result.freeSpaceMeasured && result.skippedCount == 0) ? "checkmark.circle" : "exclamationmark.circle")
                 .font(.system(size: 28, weight: .medium))
                 .foregroundStyle(result.goalMet ? Color.green : Color.secondary)
             VStack(alignment: .leading, spacing: 4) {
-                Text(result.goalMet ? L10n.text("공간 확보 목표 달성") : L10n.text("목표 미달 · 추가 확보 필요"))
+                Text(!result.stopAtGoal ? "선택 항목 정리 결과" : (result.goalMet ? L10n.text("공간 확보 목표 달성") : L10n.text("목표 미달 · 추가 확보 필요")))
                     .font(.title2.weight(.semibold))
                 Text(!result.freeSpaceMeasured
-                    ? L10n.text("실제 여유 공간을 확인하지 못해 목표 달성을 판정하지 않았습니다.")
+                    ? L10n.text("최종 여유 공간을 확인하지 못했습니다. 공간 순변화는 미검증입니다.")
                     : (result.stoppedAfterFailure
                         ? L10n.text("한 항목의 안전 검증이 실패해 남은 계획을 중단했습니다.")
                         : L10n.text("실제 파일 시스템 여유 공간을 다시 읽어 확인했습니다.")))
@@ -156,13 +160,13 @@ struct CleanupRecoverySheet: View {
                 value: StorageBytes.changeText(result.actualChangeBytes)
             )
             recoveryMetric(
-                L10n.text("현재 여유"),
+                L10n.text("정리 직후 여유"),
                 value: StorageBytes.text(result.finalFreeBytes)
             )
             recoveryMetric(L10n.text("완료"), value: L10n.format("%@개", String(describing: result.succeededCount)))
             if result.skippedCount > 0 {
                 recoveryMetric(
-                    result.stoppedAfterFailure ? L10n.text("안전 검증 실패로 미실행") : L10n.text("목표 도달로 생략"),
+                    result.stoppedAfterFailure ? L10n.text("안전 검증 실패로 미실행") : L10n.text("미실행"),
                     value: L10n.format("%@개", String(describing: result.skippedCount))
                 )
             }
@@ -206,15 +210,19 @@ struct CleanupRecoverySheet: View {
 
         Divider()
         HStack {
+            if result.stopAtGoal {
             Text(L10n.format("추가 확보 목표 %@ · 최종 여유 목표 %@\n공간 순변화에는 다른 앱의 활동도 포함됩니다.", String(describing: StorageBytes.text(result.desiredFreeBytes - result.baselineFreeBytes)), String(describing: StorageBytes.text(result.desiredFreeBytes))))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            } else {
+                Text("공간 순변화에는 다른 앱의 활동도 포함됩니다.").font(.caption).foregroundStyle(.secondary)
+            }
             Spacer()
-            if !result.goalMet {
+            if result.stopAtGoal && !result.goalMet {
                 Button(L10n.text("남은 후보 다시 측정")) { model.retryRecoveryPlan(plan) }
                     .disabled(model.cleanupInFlight)
             }
-            Button(L10n.text("닫기")) { model.dismissRecoveryPlan() }
+            Button(L10n.text("남은 항목 보기")) { model.dismissRecoveryPlan() }
                 .keyboardShortcut(.defaultAction)
         }
     }
@@ -241,6 +249,8 @@ private struct CleanupPlanEntryView: View {
                 if !entry.preview.summary.isEmpty {
                     Text(L10n.message(entry.preview.summary))
                 }
+                if !entry.preview.usageEvidence.isEmpty { Text(entry.preview.usageEvidence) }
+                if !entry.preview.regenerationEvidence.isEmpty { Text(entry.preview.regenerationEvidence) }
                 if !entry.preview.warning.isEmpty {
                     Label(L10n.message(entry.preview.warning), systemImage: "arrow.triangle.2.circlepath")
                 }
@@ -265,6 +275,11 @@ private struct CleanupPlanEntryView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(entry.preview.label)
                         .font(.body.weight(.medium))
+                    if let target = entry.request?.target ?? entry.preview.targets.first {
+                        Text((target as NSString).abbreviatingWithTildeInPath)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
                     Text(entry.preview.blockedReason.isEmpty ? entry.tier.title : entry.preview.blockedReason)
                         .font(.caption)
                         .foregroundStyle(.secondary)

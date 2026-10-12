@@ -18,6 +18,8 @@ final class QuietMaintenanceService: ObservableObject {
     private var task: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
     func start(model: ScanModel, monitor: CPUWatchService) {
+        // UI verification can inspect live evidence without running saved cleanup policies.
+        guard !CommandLine.arguments.contains("--storage-review-only") else { return }
         guard task == nil else { return }
         let center = NSWorkspace.shared.notificationCenter
         observers.append(center.addObserver(forName:NSWorkspace.screensDidSleepNotification,object:nil,queue:.main) { _ in

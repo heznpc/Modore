@@ -164,7 +164,7 @@ struct StorageSnapshot {
         guard let devices = simulatorBreakdown.first(where: {
             $0.kind == "simulator_devices"
         }) else {
-            return "0GB"
+            return StorageBytes.text(0)
         }
         return devices.sizeText
     }
@@ -198,9 +198,9 @@ struct StorageSnapshot {
 
     private static func gbText(_ value: Double) -> String {
         if value <= 0 {
-            return "0GB"
+            return StorageBytes.text(0)
         }
-        return String(format: "%.1fGB", value)
+        return StorageBytes.text(StorageBytes.fromLegacyGiB(max(0, value)))
     }
 
 }
@@ -254,15 +254,9 @@ struct SimulatorDevice: Identifiable {
     var sizeText: String {
         if measureStatus == "timed_out" {
             guard sizeGB > 0 else { return L10n.text("측정 보류") }
-            if sizeGB >= 0.1 {
-                return String(format: L10n.text("최소 %.1fGB"), sizeGB)
-            }
-            return String(format: L10n.text("최소 %.1fMB"), sizeGB * 1024)
+            return "최소 " + StorageBytes.text(StorageBytes.fromLegacyGiB(sizeGB))
         }
-        if sizeGB >= 0.1 {
-            return String(format: "%.1fGB", sizeGB)
-        }
-        return String(format: "%.1fMB", max(sizeGB, 0) * 1024)
+        return StorageBytes.text(StorageBytes.fromLegacyGiB(max(sizeGB, 0)))
     }
 }
 
@@ -274,7 +268,7 @@ struct SimulatorFootprintBreakdown: Identifiable, Equatable {
     let measureStatus: String
 
     var sizeText: String {
-        let measured = sizeGB <= 0 ? "0GB" : String(format: "%.1fGB", sizeGB)
+        let measured = StorageBytes.text(StorageBytes.fromLegacyGiB(max(0, sizeGB)))
         guard measureStatus != "ok" else { return measured }
         return sizeGB > 0 ? measured + "+" : L10n.text("측정 보류")
     }
@@ -400,10 +394,7 @@ struct StorageItem: Identifiable {
         if measureStatus == "timed_out" {
             return L10n.text("측정 보류")
         }
-        if sizeGB >= 0.1 {
-            return String(format: "%.1fGB", sizeGB)
-        }
-        return String(format: "%.1fMB", max(sizeGB, 0) * 1024)
+        return StorageBytes.text(StorageBytes.fromLegacyGiB(max(sizeGB, 0)))
     }
 
     var canCleanup: Bool {

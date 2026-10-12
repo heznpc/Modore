@@ -16,6 +16,8 @@ struct CleanupPreview: Identifiable, Sendable {
     let summary: String
     let avoidWhen: String
     let processNote: String
+    let usageEvidence: String
+    let regenerationEvidence: String
     let blockedReason: String
     let runningProcesses: String
     let approvalToken: String
@@ -43,6 +45,8 @@ struct CleanupPreview: Identifiable, Sendable {
         summary = payload.summary
         avoidWhen = payload.avoidWhen
         processNote = payload.processNote
+        usageEvidence = payload.usageEvidence
+        regenerationEvidence = payload.regenerationEvidence
         blockedReason = payload.blockedReason
         runningProcesses = payload.runningProcesses
         approvalToken = payload.approvalToken
@@ -152,6 +156,8 @@ private struct CleanupProtocolPayload {
     let summary: String
     let avoidWhen: String
     let processNote: String
+    let usageEvidence: String
+    let regenerationEvidence: String
     let blockedReason: String
     let runningProcesses: String
     let approvalToken: String
@@ -187,6 +193,8 @@ private struct CleanupProtocolPayload {
             summary: values["description"] ?? "",
             avoidWhen: values["avoidWhen"] ?? "",
             processNote: values["processNote"] ?? "",
+            usageEvidence: values["usageEvidence"] ?? "",
+            regenerationEvidence: values["regenerationEvidence"] ?? "",
             blockedReason: values["blockedReason"] ?? "",
             runningProcesses: values["runningProcesses"] ?? "",
             approvalToken: values["approvalToken"] ?? "",

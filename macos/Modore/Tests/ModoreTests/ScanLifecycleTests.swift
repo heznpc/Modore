@@ -245,6 +245,73 @@ final class ScanLifecycleTests: XCTestCase {
         }
     }
 
+    func testRetryKeepsSupplementalCandidateAbsentFromScanInventory() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = try makeCleanupContext(in: root)
+        let probe = CleanupLifecycleProbe()
+        let response = processResult("""
+        version\t1
+        operation\tpreview
+        status\tready
+        recipeId\tproject_residue
+        estimatedKB\t256
+        approvalToken\t\(String(repeating: "a", count: 64))
+        approvalExpiresEpoch\t4102444800
+        """)
+        let client = CleanupExecutionClient(prepare: { _ in context }, preview: { _, request, _ in
+            await probe.recordPreview(request); return response
+        }, execute: { _, request, _ in await probe.recordExecution(request); return nil })
+        let model = ScanModel(automaticallyScansStaleResults: false, projectRoot: root, cleanupExecution: client)
+        await settleStartup(model)
+        let item = try projectStorageItem(in: root)
+        let observation = Observation(value: LiveFreeSpace(freeBytes: 10 * StorageBytes.perGiB,
+            totalBytes: 100 * StorageBytes.perGiB), observedAt: Date(), source: .systemVolume)
+        model.prepareRecoveryPlan([item], requestedGainBytes: StorageBytes.perGiB, stopAtGoal: false,
+            observeFreeSpace: { observation })
+        await waitUntil("supplemental preparation did not finish") { !model.cleanupInFlight }
+        let first = try XCTUnwrap(model.cleanupRecoveryPlan)
+        XCTAssertEqual(first.entries.first?.sourceItem?.path, item.path)
+        XCTAssertFalse(model.storage?.recoveryCandidates.contains(where: { $0.path == item.path }) ?? false)
+        model.retryRecoveryPlan(first)
+        await waitUntil("supplemental retry did not finish") { !model.cleanupInFlight }
+        let retried = try XCTUnwrap(model.cleanupRecoveryPlan)
+        XCTAssertNotEqual(retried.id, first.id)
+        XCTAssertEqual(retried.entries.first?.request?.target, item.path)
+        XCTAssertFalse(retried.stopAtGoal)
+        let calls = await probe.requests()
+        XCTAssertEqual(calls.preview.count, 2)
+        XCTAssertTrue(calls.execution.isEmpty)
+    }
+
+    func testSelectedItemsWithoutGoalAreNotSkippedWhenFreeSpaceIncreases() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = try makeCleanupContext(in: root)
+        let preview = try readyCleanupPreview()
+        let plan = CleanupRecoveryPlan(baselineFreeBytes: 1, requestedGainBytes: 1,
+            entries: [CleanupPlanEntry(preview: preview, tier: .rebuild, request: nil)], stopAtGoal: false)
+        let probe = CleanupLifecycleProbe()
+        let success = cleanupExecutionResult(status: "complete")
+        let client = CleanupExecutionClient(prepare: { _ in context }, preview: { _, _, _ in success },
+            execute: { _, request, _ in
+                await probe.recordExecution(request)
+                return success
+            })
+        let model = ScanModel(automaticallyScansStaleResults: false, projectRoot: root,
+            scanRunner: { _, _ in .scanFailed }, cleanupExecution: client)
+        await settleStartup(model)
+        model.cleanupRecoveryPlan = plan
+        let observation = freeSpaceObservation()
+        model.executeRecoveryPlan(plan, observeFreeSpace: { observation })
+        await model.cleanupTask?.value
+        let calls = await probe.requests()
+        XCTAssertEqual(calls.execution.count, 1)
+        XCTAssertEqual(model.cleanupRecoveryResult?.succeededCount, 1)
+        XCTAssertEqual(model.cleanupRecoveryResult?.stopAtGoal, false)
+        XCTAssertEqual(model.cleanupRecoveryResult?.goalMet, false)
+    }
+
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("modore-scan-lifecycle-\(UUID().uuidString)", isDirectory: true)

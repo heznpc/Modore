@@ -224,7 +224,7 @@ private struct SimulatorCreationBurstRow: View {
     }
 }
 
-private struct WorkspaceSimulatorRow: View {
+struct WorkspaceSimulatorRow: View {
     @EnvironmentObject private var model: ScanModel
     let device: SimulatorDevice
 

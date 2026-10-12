@@ -163,6 +163,8 @@ final class ScanModel: ObservableObject {
     @Published var cleanupRecoveryPlan: CleanupRecoveryPlan?
     @Published var cleanupRecoveryProgress: CleanupRecoveryProgress?
     @Published var cleanupRecoveryResult: CleanupRecoveryResult?
+    @Published var storageInvestigations: [String: StorageInvestigation] = [:]
+    @Published var storageInvestigationProgress: CleanupRecoveryProgress?
     @Published var recoveryHistory: [RecoveryHistory] = []
     @Published var recoveryHistoryError: String?
     @Published var cleanupInFlight = false

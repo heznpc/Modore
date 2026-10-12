@@ -422,6 +422,11 @@ for architecture in "${architectures[@]}"; do
     build_arguments=(
         --package-path "$PACKAGE_DIR"
         --scratch-path "$scratch_path"
+        --cache-path "$scratch_path/shared-cache"
+        --config-path "$scratch_path/configuration"
+        --security-path "$scratch_path/security"
+        --manifest-cache local
+        --disable-dependency-cache
         --configuration release
         --jobs 2
         --triple "$triple"

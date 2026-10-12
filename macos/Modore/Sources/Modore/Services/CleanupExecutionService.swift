@@ -144,6 +144,7 @@ enum CleanupExecutionService {
         request: CleanupExecutionRequest? = nil,
         using context: CleanupExecutionContext
     ) async -> CapturedProcessResult? {
+        guard !CommandLine.arguments.contains("--storage-review-only") else { return nil }
         // A headless recovery and a foreground approval must never mutate together.
         let lockDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Modore/cleanup-execution-lock")
