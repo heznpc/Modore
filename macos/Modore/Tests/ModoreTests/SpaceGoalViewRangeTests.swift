@@ -33,6 +33,7 @@ final class SpaceGoalViewRangeTests: XCTestCase {
     private func renderGoalTab(cleanableGB: [Double]) {
         let view = SpaceGoalWorkspaceList(storage: snapshot(cleanableGB: cleanableGB))
             .environmentObject(ScanModel(automaticallyScansStaleResults: false))
+            .environmentObject(AutomaticCacheRecovery())
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(x: 0, y: 0, width: 640, height: 480)
         host.layoutSubtreeIfNeeded()

@@ -49,8 +49,8 @@ final class SimulatorStorageModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.developerGB, 12, accuracy: 0.000_001)
         XCTAssertEqual(snapshot.simulatorFootprintGB, 50.19, accuracy: 0.000_001)
         XCTAssertEqual(snapshot.simulatorGB, 21.35, accuracy: 0.000_001)
-        XCTAssertEqual(snapshot.simulatorText, "21.4GB")
-        XCTAssertEqual(snapshot.simulatorFootprintText, "50.2GB")
+        XCTAssertEqual(snapshot.simulatorText, "21.3 GiB")
+        XCTAssertEqual(snapshot.simulatorFootprintText, "50.2 GiB")
         XCTAssertFalse(snapshot.simulatorFootprintMeasurementIncomplete)
         XCTAssertEqual(snapshot.simulatorBreakdown.map(\.kind), [
             "simulator_devices", "simulator_runtime", "simulator_cache",
@@ -82,8 +82,8 @@ final class SimulatorStorageModelsTests: XCTestCase {
 
         XCTAssertEqual(snapshot.simulatorFootprintGB, 31, accuracy: 0.000_001)
         XCTAssertTrue(snapshot.simulatorFootprintMeasurementIncomplete)
-        XCTAssertEqual(snapshot.simulatorFootprintText, "31.0GB+")
-        XCTAssertEqual(snapshot.simulatorBreakdown.first?.sizeText, "30.0GB+")
+        XCTAssertEqual(snapshot.simulatorFootprintText, "31.0 GiB+")
+        XCTAssertEqual(snapshot.simulatorBreakdown.first?.sizeText, "30.0 GiB+")
     }
 
     func testPartialDeviceAggregateIsPresentedOnlyAsAConfirmedMinimum() throws {
@@ -109,8 +109,8 @@ final class SimulatorStorageModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.simulatorGB, 7, accuracy: 0.000_001)
         XCTAssertEqual(snapshot.simulatorFootprintGB, 8, accuracy: 0.000_001)
         XCTAssertTrue(snapshot.simulatorFootprintMeasurementIncomplete)
-        XCTAssertEqual(snapshot.simulatorText, "7.0GB+")
-        XCTAssertEqual(snapshot.simulatorFootprintText, "8.0GB+")
+        XCTAssertEqual(snapshot.simulatorText, "7.0 GiB+")
+        XCTAssertEqual(snapshot.simulatorFootprintText, "8.0 GiB+")
     }
 
     func testPartialDeviceRowShowsAConfirmedMinimumWhenBytesWerePreserved() throws {
@@ -133,8 +133,8 @@ final class SimulatorStorageModelsTests: XCTestCase {
             createdAtEpoch: 1_002
         )))
 
-        XCTAssertEqual(partial.sizeText, "최소 1.2GB")
-        XCTAssertEqual(smallPartial.sizeText, "최소 51.2MB")
+        XCTAssertEqual(partial.sizeText, "최소 1.2 GiB")
+        XCTAssertEqual(smallPartial.sizeText, "최소 51.2 MiB")
         XCTAssertEqual(unknown.sizeText, "측정 보류")
     }
 
@@ -160,7 +160,7 @@ final class SimulatorStorageModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.simulatorGB, 7, accuracy: 0.000_001)
         XCTAssertEqual(snapshot.simulatorFootprintGB, 7, accuracy: 0.000_001)
         XCTAssertFalse(snapshot.simulatorFootprintMeasurementIncomplete)
-        XCTAssertEqual(snapshot.simulatorText, "7.0GB")
+        XCTAssertEqual(snapshot.simulatorText, "7.0 GiB")
     }
 
     func testDeviceParsesCreationEvidenceAndBurstDoesNotClaimACreator() throws {

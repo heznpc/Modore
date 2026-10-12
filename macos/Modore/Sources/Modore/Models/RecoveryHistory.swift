@@ -51,6 +51,7 @@ struct RecoveryHistory: Codable, Identifiable, Equatable, Sendable {
     var updatedAt: Date
     let baselineFreeBytes: Int64
     let requestedGainBytes: Int64
+    var stopAtGoal: Bool?
     let entries: [Entry]
     var phase: Phase = .reviewed
     var approvedAt: Date?
@@ -66,6 +67,7 @@ struct RecoveryHistory: Codable, Identifiable, Equatable, Sendable {
         updatedAt = plan.createdAt
         baselineFreeBytes = plan.baselineFreeBytes
         requestedGainBytes = plan.requestedGainBytes
+        stopAtGoal = plan.stopAtGoal
         entries = plan.entries.map {
             Entry(id: $0.id, recipeID: $0.preview.recipeID, label: $0.preview.label,
                   targets: $0.preview.targets, estimatedBytes: $0.preview.estimatedBytes,
@@ -76,7 +78,7 @@ struct RecoveryHistory: Codable, Identifiable, Equatable, Sendable {
     var desiredFreeBytes: Int64? { StorageBytes.adding(baselineFreeBytes, requestedGainBytes) }
     var actualChangeBytes: Int64? { finalFreeBytes.map { $0 - baselineFreeBytes } }
     var goalMet: Bool {
-        guard phase == .finished, let finalFreeBytes, let desiredFreeBytes else { return false }
+        guard stopAtGoal != false, phase == .finished, let finalFreeBytes, let desiredFreeBytes else { return false }
         return finalFreeBytes >= desiredFreeBytes
     }
 

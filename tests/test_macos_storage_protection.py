@@ -2541,3 +2541,25 @@ def test_project_discovery_reaches_deep_codex_workspace(project_root, tmp_path):
     result = _run_project_residue_only(project_root / "scripts/modules/macos/storage.sh", env)
     assert result.returncode == 0, result.stderr
     assert str(project / "node_modules") in (facts / "storage_paths.tsv").read_text()
+
+
+def test_project_roots_get_independent_discovery_budget(project_root, tmp_path):
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    (facts / "storage_paths.tsv").write_text("")
+    first = tmp_path / "Documents"
+    second = tmp_path / "IdeaProjects"
+    for root in (first, second):
+        project = root / "client"
+        project.mkdir(parents=True)
+        (project / "package.json").write_text("{}")
+        (project / "node_modules").mkdir()
+        (project / "node_modules/artifact").write_bytes(b"x" * (5 * 1024 * 1024))
+    env = _project_git_test_env(tmp_path, first, facts, tmp_path / "trace")
+    env["PCH_PROJECT_SCAN_ROOTS"] = f"{first}:{second}"
+    env["PCH_PROJECT_GIT_TOTAL_BUDGET"] = "2"
+    result = _run_project_residue_only(project_root / "scripts/modules/macos/storage.sh", env)
+    assert result.returncode == 0, result.stderr
+    rows = (facts / "storage_paths.tsv").read_text()
+    assert str(first / "client/node_modules") in rows
+    assert str(second / "client/node_modules") in rows

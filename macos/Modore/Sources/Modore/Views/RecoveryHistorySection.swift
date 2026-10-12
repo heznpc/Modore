@@ -30,7 +30,9 @@ private struct RecoveryHistoryRow: View {
     var body: some View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 10) {
+                if record.stopAtGoal != false {
                 Text(L10n.format("기준 여유 %@ · 추가 목표 %@ · 최종 목표 %@", String(describing: StorageBytes.text(record.baselineFreeBytes)), String(describing: StorageBytes.text(record.requestedGainBytes)), String(describing: StorageBytes.text(record.desiredFreeBytes))))
+                }
                 Text(L10n.format("최종 여유 %@ · 순변화 %@", String(describing: StorageBytes.text(record.finalFreeBytes)), String(describing: StorageBytes.changeText(record.actualChangeBytes))))
                 if let approvedAt = record.approvedAt {
                     Text(L10n.format("승인 %@ · 승인 대상 %@개", String(describing: approvedAt.formatted(date: .abbreviated, time: .standard)), String(describing: record.entries.filter(\.ready).count)))
@@ -51,7 +53,7 @@ private struct RecoveryHistoryRow: View {
             .padding(.vertical, 8)
         } label: {
             VStack(alignment: .leading, spacing: 3) {
-                Text(L10n.format("추가 %@ · %@", String(describing: StorageBytes.text(record.requestedGainBytes)), String(describing: record.goalMet ? L10n.text("목표 달성") : record.phase.title)))
+                Text(record.stopAtGoal == false ? "선택 항목 정리 · \(record.phase.title)" : L10n.format("추가 %@ · %@", String(describing: StorageBytes.text(record.requestedGainBytes)), String(describing: record.goalMet ? L10n.text("목표 달성") : record.phase.title)))
                     .font(.body.weight(.medium))
                 Text(L10n.format("%@ · %@/%@개 결과 기록", String(describing: record.createdAt.formatted(date: .abbreviated, time: .shortened)), String(describing: record.items.count), String(describing: record.entries.filter(\.ready).count)))
                     .font(.caption)

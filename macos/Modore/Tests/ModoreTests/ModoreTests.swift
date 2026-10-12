@@ -205,7 +205,7 @@ final class ModoreTests: XCTestCase {
         XCTAssertEqual(snapshot.reclaimableGB, 10, accuracy: 0.001)
         XCTAssertEqual(snapshot.developerGB, 11, accuracy: 0.001)
         XCTAssertEqual(snapshot.simulatorGB, 6, accuracy: 0.001)
-        XCTAssertEqual(snapshot.reclaimableText, "10.0GB+")
+        XCTAssertEqual(snapshot.reclaimableText, "10.0 GiB+")
     }
 
     func testScanContentParsesOneCoherentSnapshot() throws {
@@ -386,16 +386,16 @@ final class ModoreTests: XCTestCase {
     func testCleanupPresentationExplainsFreshMeasurementAndCompactsProcesses() {
         XCTAssertNil(CleanupPresentation.sizeChangeNotice(
             snapshotAge: "1시간 전 검사",
-            scannedSize: "13.3GB",
-            previewSize: "13.3GB"
+            scannedSize: "13.3 GiB",
+            previewSize: "13.3 GiB"
         ))
         XCTAssertEqual(
             CleanupPresentation.sizeChangeNotice(
                 snapshotAge: "1시간 전 검사",
-                scannedSize: "13.3GB",
-                previewSize: "16.0GB"
+                scannedSize: "13.3 GiB",
+                previewSize: "16.0 GiB"
             ),
-            "1시간 전 검사 값은 13.3GB였고, 미리보기에서 16.0GB로 다시 측정했습니다."
+            "1시간 전 검사 값은 13.3 GiB였고, 미리보기에서 16.0 GiB로 다시 측정했습니다."
         )
 
         let processes = CleanupPresentation.processDisplays(from: [
@@ -459,11 +459,11 @@ final class ModoreTests: XCTestCase {
         XCTAssertEqual(
             CleanupPresentation.sizeChangeNotice(
                 snapshotAge: "2분 전 검사",
-                scannedSize: "1.5GB",
+                scannedSize: "1.5 GiB",
                 previewSize: "측정 보류",
                 estimateMeasured: false
             ),
-            "2분 전 검사 값은 1.5GB였습니다. 먼저 종료할 작업이 있어 아직 다시 측정하지 않았습니다. 종료 후 '다시 확인'을 누르면 다시 측정합니다."
+            "2분 전 검사 값은 1.5 GiB였습니다. 먼저 종료할 작업이 있어 아직 다시 측정하지 않았습니다. 종료 후 '다시 확인'을 누르면 다시 측정합니다."
         )
         XCTAssertEqual(
             CleanupPresentation.sizeChangeNotice(

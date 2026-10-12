@@ -150,7 +150,7 @@ final class AutomaticCacheRecovery: ObservableObject {
         let delta = after - report.before
         let remaining = AutomaticCachePolicy.remainingBytes(after: after) ?? 0
         let state = remaining > 0 ? "공간 부족 지속 · 목표까지 \(StorageBytes.text(remaining)) 부족" : "공간 확보 목표 도달"
-        return "\(state) · 여유 \(StorageBytes.text(after)) · 실제 변화 \(delta >= 0 ? "+" : "−")\(StorageBytes.text(abs(delta)))"
+        return "\(report.date.formatted(date: .abbreviated, time: .shortened)) 기록 · 당시 \(StorageBytes.text(report.before)) → \(StorageBytes.text(after)) · 순변화 \(delta >= 0 ? "+" : "−")\(StorageBytes.text(abs(delta))) · \(state)"
     }
 
     private func save(_ report: AutomaticCacheReport) throws {
@@ -169,6 +169,7 @@ final class AutomaticCacheRecovery: ObservableObject {
     func revealReport() { NSWorkspace.shared.open(reportURL) }
 
     func runIfNeeded(model: ScanModel, snapshot: HealthSnapshot?, requestedNow: Bool = false) async {
+        guard !CommandLine.arguments.contains("--storage-review-only") else { return }
         guard !running else { return }
         // UI and scheduled headless launches share the same intent and lease.
         // Reload under the lease: another process may have recovered space since init.

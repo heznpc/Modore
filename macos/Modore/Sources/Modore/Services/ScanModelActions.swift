@@ -287,6 +287,7 @@ extension ScanModel {
     func prepareRecoveryPlan(
         _ items: [StorageItem], requestedGainBytes: Int64,
         targetFreeBytes: Int64? = nil,
+        stopAtGoal: Bool = true,
         retainedEntries: [CleanupPlanEntry] = [],
         observeFreeSpace: @escaping @Sendable () async -> Observation<LiveFreeSpace>? = {
             await Task.detached(priority: .utility) { LiveStateService.observeFreeSpace() }.value
@@ -347,6 +348,7 @@ extension ScanModel {
             guard !Task.isCancelled, !applicationTerminationStarted else { return }
             let entries = retainedEntries + candidates.enumerated().map { index, candidate in
                 let result = results[index]
+                storageInvestigations[SpaceGoalSelection.key(candidate.item)] = .evidence(item: candidate.item, result: result, pathMissing: StorageInvestigation.pathIsMissing(candidate.item))
                 let preview = result.flatMap {
                     CleanupExecutionService.validatedPreview($0, recipeID: candidate.item.cleanupID)
                 } ?? CleanupPreview.unavailable(
@@ -358,7 +360,7 @@ extension ScanModel {
                 if let result {
                     appendLog(L10n.format("계획 확인: %@ · %@ · 종료 코드 %@ · %@", String(describing: candidate.item.label), String(describing: preview.statusText), String(describing: result.status), String(describing: result.endState)))
                 }
-                return CleanupPlanEntry(preview: preview, tier: candidate.tier, request: candidate.request)
+                return CleanupPlanEntry(preview: preview, tier: candidate.tier, request: candidate.request, sourceItem: candidate.item)
             }
 
             let currentObservation = await observeFreeSpace()
@@ -380,7 +382,7 @@ extension ScanModel {
             let plan = CleanupRecoveryPlan(
                 baselineFreeBytes: baseline,
                 requestedGainBytes: gain,
-                entries: entries
+                entries: entries, stopAtGoal: stopAtGoal
             )
             guard saveRecoveryHistory(RecoveryHistory(plan: plan)) else {
                 cleanupRecoveryPlan = nil
@@ -411,6 +413,7 @@ extension ScanModel {
               cleanupRecoveryPlan?.id == plan.id,
               cleanupRecoveryPlan?.baselineFreeBytes == plan.baselineFreeBytes,
               cleanupRecoveryPlan?.requestedGainBytes == plan.requestedGainBytes,
+              cleanupRecoveryPlan?.stopAtGoal == plan.stopAtGoal,
               cleanupRecoveryPlan?.entries.map({ $0.preview.approvalToken })
                 == plan.entries.map({ $0.preview.approvalToken }) else { return }
         guard plan.canExecute(at: Date()) else {
@@ -495,7 +498,7 @@ extension ScanModel {
                 }
                 latestFreeBytes = before.value.freeBytes
                 recordLiveFreeSpaceObservation(before)
-                if latestFreeBytes >= desiredFreeBytes {
+                if plan.stopAtGoal && latestFreeBytes >= desiredFreeBytes {
                     appendLog(L10n.format("확보 목표에 도달해 남은 %@개 항목은 실행하지 않았습니다.", String(describing: plan.readyEntries.count - index)))
                     break
                 }
@@ -641,7 +644,7 @@ extension ScanModel {
                 plannedCount: plan.readyEntries.count,
                 items: itemResults,
                 stoppedAfterFailure: stoppedAfterFailure,
-                rescanScheduled: shouldRescan
+                rescanScheduled: shouldRescan, stopAtGoal: plan.stopAtGoal
             )
             if freeSpaceMeasured {
                 let change = latestFreeBytes - plan.baselineFreeBytes
@@ -650,7 +653,7 @@ extension ScanModel {
                 appendLog(L10n.text("공간 확보 결과의 실제 여유 공간을 확인하지 못했습니다."))
             }
             AccessibilityAnnouncer.announce(
-                freeSpaceMeasured && latestFreeBytes >= desiredFreeBytes
+                plan.stopAtGoal && freeSpaceMeasured && latestFreeBytes >= desiredFreeBytes
                     ? L10n.text("공간 확보 목표를 달성했습니다")
                     : L10n.text("공간 확보 실행을 마쳤습니다")
             )
@@ -665,14 +668,14 @@ extension ScanModel {
         } : []
         let retainedIDs = Set(retained.map(\.id))
         let items = plan.entries.filter { !retainedIDs.contains($0.id) }.compactMap { entry in
-            candidates.first {
+            entry.sourceItem ?? candidates.first {
                 $0.cleanupID == entry.preview.recipeID
                     && (entry.request == nil || $0.path == entry.request?.target)
             }
         }
         prepareRecoveryPlan(
             items, requestedGainBytes: plan.requestedGainBytes,
-            targetFreeBytes: plan.desiredFreeBytes, retainedEntries: retained
+            targetFreeBytes: plan.stopAtGoal ? plan.desiredFreeBytes : nil, stopAtGoal: plan.stopAtGoal, retainedEntries: retained
         )
     }
 

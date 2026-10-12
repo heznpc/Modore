@@ -10,7 +10,7 @@ struct AutomaticRecoveryDetails: View {
                     ScrollView {
                         ForEach(candidates.sorted { ($0.bytes ?? 0) > ($1.bytes ?? 0) }) { item in
                             VStack(alignment: .leading) {
-                                Text("\(item.label) · \(item.bytes.map { HealthSnapshot.bytes($0) } ?? "용량 미확인")")
+                                Text("\(item.label) · \(item.bytes.map { StorageBytes.text($0) } ?? "용량 미확인")")
                                 Text(item.reason).font(.caption).foregroundStyle(.secondary)
                                 if let targets = item.targets, !targets.isEmpty {
                                     Text(targets.joined(separator: "\n")).font(.caption).textSelection(.enabled)
@@ -32,7 +32,7 @@ struct AutomaticRecoveryDetails: View {
                         ForEach(occupants) { item in
                             HStack {
                                 VStack(alignment: .leading) {
-                                    Text("\(item.label) · \(HealthSnapshot.bytes(item.bytes))\(item.complete ? "" : " 이상 · 부분 측정")")
+                                    Text("\(item.label) · \(StorageBytes.text(item.bytes))\(item.complete ? "" : " 이상 · 부분 측정")")
                                     Text(item.path).font(.caption).textSelection(.enabled)
                                 }
                                 Spacer()

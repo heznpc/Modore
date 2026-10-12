@@ -8,7 +8,8 @@ enum CleanupPreviewBatch {
         context: CleanupExecutionContext,
         client: CleanupExecutionClient,
         budget: TimeInterval = 30,
-        progress: @escaping @MainActor @Sendable (Int, Int) -> Void
+        progress: @escaping @MainActor @Sendable (Int, Int) -> Void,
+        onResult: @escaping @MainActor @Sendable (Int, CapturedProcessResult) -> Void = { _, _ in }
     ) async -> [Int: CapturedProcessResult] {
         guard !requests.isEmpty else { return [:] }
         return await withTaskGroup(of: (Int, CapturedProcessResult?).self) { group in
@@ -35,6 +36,7 @@ enum CleanupPreviewBatch {
                     break
                 }
                 results[index] = result
+                if let result { await onResult(index, result) }
                 await progress(results.count, requests.count)
                 if results.count == requests.count {
                     group.cancelAll()

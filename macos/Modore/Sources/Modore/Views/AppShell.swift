@@ -356,12 +356,12 @@ private struct SidebarScanStatus: View {
                 Text(statusTitle(at: date))
                     .font(.caption.weight(.semibold))
                 if let liveFreeSpace = model.liveState.freeSpace {
-                    Text(ByteCountFormatter.string(fromByteCount:liveFreeSpace.value.freeBytes,countStyle:.file) + L10n.text(" 사용 가능"))
+                    Text(StorageBytes.text(liveFreeSpace.value.freeBytes) + L10n.text(" 사용 가능"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 } else if let storage = model.storage {
-                    Text(L10n.format("검사 당시 %@GB", String(format: "%.1f", locale: Locale.current, storage.freeGB)))
+                    Text(L10n.format("검사 당시 %@", StorageBytes.text(StorageBytes.fromLegacyGiB(storage.freeGB))))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
