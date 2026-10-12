@@ -1,13 +1,41 @@
 import SwiftUI
 
-private struct DiskBalance: Decodable {
-    struct Volume: Decodable { let name: String; let bytes: Int64 }
-    struct Directory: Decodable { let name, path: String; let bytes: Int64?; let complete: Bool; var directory: Bool?; var classification: String?; var evidence: String?; var cleanupReview: Bool? }
+struct DiskBalance: Decodable, Sendable {
+    struct Volume: Decodable, Sendable { let name: String; let bytes: Int64 }
+    struct Directory: Decodable, Sendable { let name, path: String; let bytes: Int64?; let complete: Bool; var directory: Bool?; var classification: String?; var evidence: String?; var cleanupReview: Bool? }
+    struct AccessIssue: Decodable, Sendable { let path, reason: String }
+    struct Change: Decodable, Sendable { let path: String; let bytes, previousBytes, deltaBytes: Int64; let previousAt: Double }
+    struct UAFMetadata: Decodable, Sendable {
+        struct Row: Decodable, Sendable { let name: String; let logicalBytes: Int64 }
+        let recordedAt: Double
+        let rows: [Row]
+    }
     let observedAt: Double
     let totalBytes, freeBytes: Int64
     let volumes: [Volume]
     let directories: [Directory]
     let warnings: [String]
+    var dataVolumeBytes, scannedAllocatedBytes, accountingDifferenceBytes: Int64?
+    var findings: [Directory]?
+    var accessIssues: [AccessIssue]?
+    var changes: [Change]?
+    var scanStatus: String?
+    var uafMetadata: UAFMetadata?
+
+    static func latest() -> Self? {
+        let url = StorageHistoryStore.stateDirectory.appendingPathComponent("environment-retirement/disk-balance.json")
+        guard let data = try? SecureLocalFileIO.boundedRead(from: url, maximumBytes: 8_000_000) else { return nil }
+        return try? JSONDecoder().decode(Self.self, from: data)
+    }
+
+    var candidates: [StorageItem] {
+        (findings ?? []).filter { $0.cleanupReview == true }.compactMap { row in
+            StorageItem(json: ["kind": "project_residue", "cleanupId": "project_residue",
+                "path": row.path, "label": URL(fileURLWithPath: row.path).deletingLastPathComponent().lastPathComponent + " · " + row.name,
+                "measureStatus": "historical", "sizeGB": 0,
+                "note": "전체 볼륨 조사에서 발견 · \(Date(timeIntervalSince1970: observedAt).formatted()) · 현재 크기·사용 여부 재검증 필요"])
+        }
+    }
 }
 private struct DirectoryBalance: Decodable { let path:String; let observedAt:Double; let entries:[DiskBalance.Directory] }
 struct FullStorageBalanceView: View {
@@ -18,6 +46,7 @@ struct FullStorageBalanceView: View {
     @State private var busy = false
     @State private var error = ""
     @State private var query = ""
+    @State private var findingsQuery = ""
     @State private var appDuplicates = false
     @State private var workbench = false
     private let colors:[Color] = [.teal,.indigo,.orange,.purple,.blue,.mint,.gray]
@@ -34,6 +63,7 @@ struct FullStorageBalanceView: View {
                     Button(L10n.text("전체 다시 측정")) { folder=nil;measure(fresh:true) }.disabled(busy)
                 }
                 if let balance { volumeMap(balance) }
+                if folder == nil, let balance { investigationSummary(balance) }
                 HStack(spacing:16) {
                     HealthActionTile(title:L10n.text("앱 중복 찾기"),subtitle:L10n.text("설치 복사본 · 남은 등록"),icon:"square.on.square") { appDuplicates=true }
                     HealthActionTile(title:L10n.text("개발 환경 정리"),subtitle:L10n.text("시뮬레이터 · 서버 · SSD"),icon:"square.stack.3d.up") { workbench=true }
@@ -61,6 +91,69 @@ struct FullStorageBalanceView: View {
         }.task { measure(fresh:false) }
             .navigationDestination(isPresented:$appDuplicates) { EnvironmentRetirementView(initialTab:"apps") }
             .navigationDestination(isPresented:$workbench) { EnvironmentRetirementView() }
+    }
+    private func investigationSummary(_ b: DiskBalance) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let allocated = b.scannedAllocatedBytes {
+                Text("Data 볼륨 \(b.dataVolumeBytes.map(size) ?? "미측정") · 파일 할당량 \(b.scanStatus == "complete" ? "" : "최소 ")\(size(allocated)) · 미설명 차이 \(b.accountingDifferenceBytes.map(size) ?? "미측정")")
+                    .font(.callout.weight(.semibold))
+            }
+            Text(b.scanStatus == "complete" ? "전체 순회 완료 · 아래 범위·회계 차이 확인 필요" : "전체 설명 미완료 · 접근 실패·측정 범위를 확인하세요")
+                .foregroundStyle(.secondary)
+            ForEach(b.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+            if b.scanStatus == nil {
+                Text("이전 방식의 기록입니다. 전체 다시 측정을 실행하면 알려진 캐시 목록 밖의 큰 경로도 조사합니다.")
+                    .font(.callout)
+            }
+            DisclosureGroup("전체 조사에서 찾은 큰 경로 · \(b.findings?.count ?? 0)개") {
+                TextField("큰 경로 이름·경로 검색", text: $findingsQuery)
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 420)
+                LazyVStack(alignment: .leading, spacing: 8) {
+                ForEach((b.findings ?? []).filter { findingsQuery.isEmpty || $0.path.localizedCaseInsensitiveContains(findingsQuery) }, id: \.path) { row in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(row.path).font(.callout.monospaced()).textSelection(.enabled)
+                            Spacer()
+                            Text(row.bytes.map { (row.complete ? "" : "최소 ") + size($0) } ?? "미측정").monospacedDigit()
+                        }
+                        Text("\(row.classification ?? "내용 확인 필요") · \(row.evidence ?? "")")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("하위 내용 확인") { browse(row.path) }.disabled(busy)
+                            if row.cleanupReview == true, let onReviewCleanup {
+                                Button("사용·재생성 근거 조사") { onReviewCleanup(row.path) }
+                            }
+                        }
+                        Divider()
+                    }.padding(.vertical, 5)
+                }
+                }
+            }
+            DisclosureGroup("이전 실측 대비 변화 · \(b.changes?.count ?? 0)개") {
+                Text("첫 관측·생성 시각만으로 설치 원인이나 사용자 의도를 단정하지 않습니다. 부모·자식 변화는 중복될 수 있습니다.").font(.caption)
+                ForEach(b.changes ?? [], id: \.path) { row in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(row.path).font(.caption.monospaced()).textSelection(.enabled)
+                        Text("\(Date(timeIntervalSince1970: row.previousAt).formatted()) \(size(row.previousBytes)) → 이번 조사 \(size(row.bytes)) · 변화 \(size(row.deltaBytes))")
+                            .font(.caption)
+                    }.padding(.vertical, 4)
+                }
+            }
+            DisclosureGroup("접근하지 못한 경로 · \(b.accessIssues?.count ?? 0)개") {
+                ForEach(Array((b.accessIssues ?? []).prefix(100).enumerated()), id: \.offset) { _, issue in
+                    Text("\(issue.path) · \(issue.reason)").font(.caption).textSelection(.enabled)
+                }
+                if (b.accessIssues?.count ?? 0) > 100 { Text("처음 100개 표시 · 전체 경로는 조사 기록에 저장됩니다.").font(.caption) }
+            }
+            if let metadata = b.uafMetadata {
+                DisclosureGroup("시스템 AI 자산 · 별도 메타데이터 기록") {
+                    Text("기록 수정 시각 \(Date(timeIntervalSince1970: metadata.recordedAt).formatted()) · 아래는 논리 크기입니다. 현재 할당량·회수 가능량에 합산하지 않습니다.").font(.caption)
+                    ForEach(metadata.rows.sorted { $0.logicalBytes > $1.logicalBytes }, id: \.name) { row in
+                        Text("\(row.name) · 논리 크기 \(size(row.logicalBytes))").font(.caption).textSelection(.enabled)
+                    }
+                }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func segmentWidth(_ width:CGFloat,_ bytes:Int64,_ total:Int64)->CGFloat { max(CGFloat(0),width * CGFloat(bytes) / CGFloat(max(total,1)) - 1) }
     private func volumeMap(_ b:DiskBalance)->some View {

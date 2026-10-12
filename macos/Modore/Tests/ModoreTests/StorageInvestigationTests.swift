@@ -12,6 +12,26 @@ private actor InvestigationProbe {
 
 @MainActor
 final class StorageInvestigationTests: XCTestCase {
+    func testWholeDiskDiscoveriesRequireFreshInvestigationAndPreserveSystemAssets() throws {
+        let payload = """
+        {"observedAt":10,"totalBytes":100,"freeBytes":20,"volumes":[],"directories":[],"warnings":[],
+         "findings":[
+           {"name":"node_modules","path":"/example/outside-root/node_modules","bytes":42,"complete":true,"cleanupReview":true},
+           {"name":"CodeLM","path":"/System/Library/AssetsV2/CodeLM","bytes":null,"complete":false,"cleanupReview":false}],
+         "dataVolumeBytes":80,"scannedAllocatedBytes":70,"accountingDifferenceBytes":10,
+         "accessIssues":[{"path":"/System/Library/AssetsV2/CodeLM","reason":"denied"}]}
+        """
+        let balance = try JSONDecoder().decode(DiskBalance.self, from: Data(payload.utf8))
+        XCTAssertEqual(balance.candidates.count, 1)
+        let candidate = try XCTUnwrap(balance.candidates.first)
+        XCTAssertEqual(candidate.path, "/example/outside-root/node_modules")
+        XCTAssertEqual(candidate.cleanupID, "project_residue")
+        XCTAssertEqual(candidate.measureStatus, "historical")
+        XCTAssertEqual(StorageInvestigation.judgment(for: candidate, evidence: nil), .uncertain)
+        XCTAssertNil(balance.findings?.last?.bytes)
+        XCTAssertEqual(balance.accountingDifferenceBytes, 10)
+    }
+
     private func item(_ id: String = "pip_cache", path: String = "/example/cache") -> StorageItem {
         StorageItem(json: ["kind": "cache", "cleanupId": id, "path": path,
             "label": "Cache", "sizeGB": 1, "measureStatus": "timed_out"])!

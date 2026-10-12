@@ -286,10 +286,31 @@ def execute(plan, root, selected):
 
 
 def classify_storage(path):
+    try:
+        return _classify_storage(path)
+    except OSError:
+        return dict(classification='접근 확인 필요', evidence='내부 내용을 읽지 못해 삭제 가능성을 판단할 수 없습니다.', cleanupReview=False)
+
+
+def _classify_storage(path):
     """Explain observed contents; never authorize deletion from a folder name."""
     p = Path(path)
     def result(kind, detail, review=False):
         return dict(classification=kind, evidence=detail, cleanupReview=review)
+    if any(part.startswith('com_apple_MobileAsset_UAF_') for part in p.parts):
+        if 'manifests' in p.parts:
+            return result('시스템 자산 목록 메타데이터', '자산 목록·다운로드 메타데이터입니다. 모델 본체의 실제 할당량과 구분합니다.')
+        return result('시스템 AI·언어 자산', 'Apple Intelligence·Siri·사진·언어 기능의 시스템 자산입니다. 제거하면 기능이 중단되거나 다시 다운로드될 수 있습니다. 메타데이터 크기는 실제 할당량·회수량과 다릅니다.')
+    if 'http-tarballs' in p.parts and (p / 'bin/flutter').is_file():
+        return result('설치된 Flutter SDK', '다운로드 보관 이름이어도 실행 가능한 SDK가 있습니다. 설치 경로의 심볼릭 링크가 이 원본을 사용할 수 있어 전체 삭제 대상으로 삼지 않습니다.')
+    if p.name == 'cache' and p.parent.name == 'bin' and (p.parent / 'flutter').is_file():
+        return result('Flutter SDK 재생성 캐시', 'Flutter 실행 파일을 확인했습니다. SDK 원본과 분리해 검토해야 하며, 다음 실행 때 다운로드·빌드가 필요합니다. 현재 사용 여부는 미확인입니다.')
+    if p.name in ('DerivedData', 'test-products', 'result-bundles') and 'XcodeBuildMCP' in p.parts:
+        return result('테스트·빌드 작업 자료', 'DerivedData·테스트 실행물·결과 묶음을 각각 검토하세요. 결과 묶음은 당시의 증거이며 재빌드로 복원되지 않습니다. 현재 사용 여부는 미확인입니다.')
+    if p.name.endswith('.app-backup'):
+        return result('앱 복구용 복사본', '이전 앱으로 되돌리기 위한 복사본일 수 있습니다. 현재 앱·복구 필요성을 확인한 뒤 개별 검토하세요.')
+    if 'extensions' in p.parts and '.vscode' in p.parts:
+        return result('편집기 확장 구성요소', '여러 버전이 있어도 현재 로드된 버전과 복구 필요성이 확인되지 않았습니다. 확장 관리 화면에서 검토하세요.')
     if any(part.endswith('.app') for part in p.parts):
         return result('앱 구성요소', '앱 번들의 일부입니다. 내부 의존성을 따로 지우면 앱이 손상될 수 있습니다.')
     if p.is_dir() and (p / 'PG_VERSION').is_file() and (p / 'base').is_dir():
@@ -354,10 +375,147 @@ def directory_contents(path):
         entries=[x for x in pool.map(measure,list(p.iterdir())) if x]
     return {'path':str(p),'observedAt':time.time(),'entries':sorted(entries,key=lambda x:x['bytes'] or 0,reverse=True)}
 
+def display_storage_path(path):
+    # Data firmlinks refer to the same user paths; canonical keys avoid false new entries.
+    prefix = '/System/Volumes/Data'
+    return path[len(prefix):] if path.startswith(prefix + '/Users/') else path
+
+
+def parse_disk_walk(output, errors, base):
+    rows = {}
+    for line in output.splitlines():
+        try:
+            size, name = line.split('\t', 1)
+            if not name.startswith(str(base)) or int(size) < 0: continue
+            rows[name] = int(size) * 1024
+        except ValueError: continue
+    issues = []
+    for line in errors.splitlines():
+        if line.startswith('du: '):
+            name, _, reason = line[4:].rpartition(': ')
+            if name.startswith(str(base)):
+                issues.append({'path': name, 'reason': reason})
+    return rows, issues
+
+
+def measured_disk_walk(base, timeout=300):
+    # One traversal, no cache allowlist. Keep partial output on timeout and never
+    # follow symlinks or cross mounts. Spool output so large trees cannot fill RAM.
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        try:
+            proc = subprocess.run(['/usr/bin/du', '-x', '-k', '-d', '10', str(base)],
+                                  stdout=output, stderr=errors, timeout=timeout)
+            status = 'complete' if proc.returncode == 0 else 'partial'
+        except subprocess.TimeoutExpired:
+            status = 'timed_out'
+        output.seek(0); errors.seek(0)
+        rows, issues = parse_disk_walk(output.read().decode(errors='replace'),
+                                      errors.read().decode(errors='replace'), base)
+    return rows, issues, status
+
+
+def disk_walk_evidence(rows, issues, status, base, previous=None, threshold=128*1024**2):
+    previous = previous or {}
+    old = {x['path']: x for x in previous.get('baselineObservations', previous.get('observations', [])) if x.get('complete')}
+    issue_paths = [x['path'] for x in issues]
+    def make(name, value):
+        complete = status != 'timed_out' and not any(p == name or p.startswith(name + '/') for p in issue_paths)
+        path = display_storage_path(name)
+        before = old.get(path)
+        return dict(name=Path(name).name, path=path, bytes=value, complete=complete,
+                    directory=True, **classify_storage(name),
+                    previousBytes=before['bytes'] if before else None,
+                    previousAt=before.get('observedAt', previous.get('observedAt')) if before else None,
+                    deltaBytes=value-before['bytes'] if before and complete and value is not None else None,
+                    comparison='measured' if before and complete else 'no_baseline')
+    # Include denied roots even when du could not emit a row for them.
+    for issue in issues:
+        rows.setdefault(issue['path'], None)
+    directories = [make(p, n) for p, n in rows.items() if Path(p).parent == base]
+    significant = {p for p, n in rows.items() if p != str(base) and n is not None and n >= threshold}
+    children = {str(Path(p).parent) for p in significant}
+    child_bytes = {}
+    for p,n in rows.items():
+        if n is not None:
+            parent = str(Path(p).parent)
+            child_bytes[parent] = child_bytes.get(parent, 0) + n
+    classified = {}
+    for p in sorted(significant, key=lambda x: len(Path(x).parts)):
+        # Keep supported dependency roots intact; inspecting inside node_modules
+        # must not turn bundled third-party packages into independent candidates.
+        if any(p.startswith(parent + '/') for parent, item in classified.items() if item['cleanupReview']): continue
+        item = make(p, rows[p])
+        if p not in children or rows[p]-child_bytes.get(p, 0) >= threshold or item['cleanupReview'] or item['classification'] in (
+                '설치된 Flutter SDK', 'Flutter SDK 재생성 캐시', '앱 복구용 복사본',
+                '테스트·빌드 작업 자료') or Path(p).name.startswith('com_apple_MobileAsset_UAF_'):
+            classified[p] = item
+    for p, n in rows.items():
+        if Path(p).name.startswith('com_apple_MobileAsset_UAF_') and 'manifests' not in Path(p).parts:
+            classified[p] = make(p, n)
+    assets = [x for p,x in classified.items() if Path(p).name.startswith('com_apple_MobileAsset_UAF_') and 'manifests' not in Path(p).parts]
+    findings = sorted(classified.values(), key=lambda x: x['bytes'] or 0, reverse=True)[:150]
+    findings += [x for x in assets if x not in findings]
+    # Deltas also include parent paths so this diagnostic's own build growth is visible.
+    observations = [dict(path=display_storage_path(p), bytes=n,
+                         complete=status != 'timed_out' and not any(q == p or q.startswith(p + '/') for q in issue_paths))
+                    for p, n in rows.items() if n is not None and n >= threshold]
+    changes = []
+    for row in observations:
+        before = old.get(row['path'])
+        if before and row['complete'] and abs(row['bytes']-before['bytes']) >= 16*1024**2:
+            changes.append(dict(**row, previousBytes=before['bytes'], previousAt=before.get('observedAt', previous.get('observedAt')),
+                                deltaBytes=row['bytes']-before['bytes']))
+    return dict(directories=sorted(directories, key=lambda x: x['bytes'] or 0, reverse=True),
+                findings=findings, observations=observations,
+                changes=sorted(changes, key=lambda x: abs(x['deltaBytes']), reverse=True)[:80],
+                accessIssues=[dict(path=display_storage_path(x['path']), reason=x['reason']) for x in issues],
+                scannedAllocatedBytes=rows.get(str(base)), scanStatus=status)
+
+
+def prior_disk_observations(root, previous):
+    from datetime import datetime
+    old = {x['path']: dict(x, observedAt=x.get('observedAt', previous.get('observedAt', 0)))
+           for x in previous.get('baselineObservations', previous.get('observations', [])) if x.get('complete')}
+    # The storage watcher already measures arbitrary paths. Reuse exact, complete
+    # observations, never file birth time or an agent's inferred attribution.
+    for file in sorted(root.parent.glob('storage-evidence-*.tsv'))[-2:]:
+        try:
+            with file.open() as source:
+                for line in source:
+                    fields = line.rstrip('\n').split('\t')
+                    try:
+                        if fields[0] != 'path' or fields[3] != 'ok': continue
+                        at = datetime.fromisoformat(fields[1].replace('Z', '+00:00')).timestamp()
+                        size = int(fields[2])*1024; path = display_storage_path(fields[5])
+                        if size < 0 or at > time.time() or at < time.time()-30*86400: continue
+                        if path not in old or at > old[path]['observedAt']:
+                            old[path] = dict(path=path, bytes=size, complete=True, observedAt=at)
+                    except (IndexError, ValueError): continue
+        except OSError: continue
+    return dict(previous, baselineObservations=list(old.values()))
+
+
+def uaf_metadata(root):
+    """Optional separately captured inventory; its logical sizes never enter totals."""
+    audits = root.parent / 'storage-audits'
+    for directory in sorted(audits.glob('*'), reverse=True)[:40]:
+        file = directory / 'uaf-inventory.json'
+        try:
+            if file.is_symlink() or file.stat().st_size > 2_000_000: continue
+            data = json.loads(file.read_text())
+            values = data['bytes_by_asset_type']
+            return dict(recordedAt=file.stat().st_mtime, source=str(file),
+                        rows=[dict(name=k, logicalBytes=v) for k,v in values.items()
+                              if isinstance(v, int) and v >= 0])
+        except (OSError, ValueError, KeyError, TypeError): continue
+    return None
+
 def disk_balance(root, fresh=False):
     path=root/'disk-balance.json'
-    if path.exists() and not fresh:
-        return json.loads(path.read_text())
+    previous = json.loads(path.read_text()) if path.exists() else {}
+    if previous and not fresh:
+        return previous
+    previous = prior_disk_observations(root, previous)
     payload=run(['/usr/sbin/diskutil','apfs','list','-plist'])
     converted=subprocess.run(['/usr/bin/plutil','-convert','json','-o','-','-'],input=payload,capture_output=True,check=True)
     containers=json.loads(converted.stdout)['Containers']
@@ -365,23 +523,24 @@ def disk_balance(root, fresh=False):
     container=next(c for c in containers if c['ContainerReference']==info['APFSContainerReference'])
     roles={'Data':'앱·사용자 자료','System':'macOS','Preboot':'부팅 지원','Recovery':'복구','VM':'VM·스왑'}
     volumes=[{'name':roles.get((v.get('Roles') or [''])[0],v.get('Name','기타')),'bytes':v['CapacityInUse']} for v in container['Volumes']]
-    result={'observedAt':time.time(),'totalBytes':container['CapacityCeiling'],'freeBytes':container['CapacityFree'],'volumes':volumes,'directories':[],'warnings':[]}
-    save(path,result)
-    # Disjoint first-level Data directories. Bound traversal, preserve unknowns.
+    result={'schemaVersion':2,'observedAt':time.time(),'totalBytes':container['CapacityCeiling'],'freeBytes':container['CapacityFree'],'volumes':volumes,'warnings':[]}
     base=Path('/System/Volumes/Data')
-    names=[p for p in base.iterdir() if p.is_dir() and not p.is_symlink() and p.stat().st_dev==base.stat().st_dev]
-    import concurrent.futures
-    def measure(p):
-        try:
-            measured=subprocess.run(['/usr/bin/du','-skx',str(p)],capture_output=True,timeout=300 if p.name=='Users' else 25)
-            value=int(measured.stdout.split()[0])*1024 if measured.stdout.strip() else None
-            return {'name':p.name,'path':str(p),'bytes':value,'complete':measured.returncode==0}
-        except Exception:
-            return {'name':p.name,'path':str(p),'bytes':None,'complete':False}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        result['directories']=list(pool.map(measure,names))
-    result['directories'].sort(key=lambda x:x['bytes'] or 0,reverse=True)
-    if any(not x['complete'] for x in result['directories']): result['warnings'].append('접근 제한이 있는 폴더는 확인된 최소량, 시간 초과는 미측정으로 표시합니다. 0으로 합산하지 않습니다.')
+    rows, issues, status = measured_disk_walk(base)
+    save(root/'disk-walk-latest.json', dict(observedAt=result['observedAt'], rows=rows, issues=issues, status=status))
+    result.update(disk_walk_evidence(rows, issues, status, base, previous))
+    result['dataVolumeBytes'] = next((v['CapacityInUse'] for v in container['Volumes'] if v.get('DeviceIdentifier') == info.get('DeviceIdentifier')), None)
+    allocated = result['scannedAllocatedBytes']
+    result['accountingDifferenceBytes'] = result['dataVolumeBytes']-allocated if allocated is not None and result['dataVolumeBytes'] is not None else None
+    result['uafMetadata'] = uaf_metadata(root)
+    baselines = {x['path']: x for x in previous.get('baselineObservations', [])}
+    for row in result['observations']:
+        if row['complete']: baselines[row['path']] = dict(row, observedAt=result['observedAt'])
+    result['baselineObservations'] = list(baselines.values())
+    result['warnings'] = ['Data 볼륨 전체를 동일 파일시스템 안에서 순회했습니다. 128 MiB 이상 큰 경로 최대 150개와 시스템 AI 자산을 표시하며, 표시 깊이는 10단계입니다. 부모·자식 경로는 중복되므로 합산하지 않습니다.',
+                          'APFS 사용량과 파일 할당량 차이는 접근 제한·스냅샷·공유 블록·동시 쓰기를 포함한 미설명 순차이입니다. 접근 불가 용량의 상한이나 정리 가능량이 아닙니다.',
+                          '이전 동일 경로의 완전한 실측이 있을 때만 증감을 계산합니다. 첫 관측이나 생성 시각만으로 새로 설치됐거나 몰래 추가됐다고 판단하지 않습니다.']
+    if status != 'complete': result['warnings'].append('접근 실패·시간 제한으로 전체 설명이 끝나지 않았습니다. 누락 경로와 미설명 차이를 확인하세요.')
+    if previous: save(root/'disk-balance-previous.json', previous)
     result['finishedAt']=time.time();save(path,result);return result
 
 
