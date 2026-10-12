@@ -15,10 +15,11 @@ struct SpaceGoalWorkspaceList: View {
     @State private var targetGiB = 5.0
     @State private var coverageExpanded = false
     @State private var supplemental: SupplementalStorageAudit?
+    @State private var diskBalance: DiskBalance?
 
     private var inventory: [StorageItem] {
         var paths = Set<String>()
-        return (StorageInvestigation.inventory(storage) + (supplemental?.candidates ?? []))
+        return (StorageInvestigation.inventory(storage) + (supplemental?.candidates ?? []) + (diskBalance?.candidates ?? []))
             .filter { paths.insert($0.investigationKey).inserted }.sorted {
             let lhs = evidence($0)?.bytes ?? StorageBytes.fromLegacyGiB($0.sizeGB) ?? 0
             let rhs = evidence($1)?.bytes ?? StorageBytes.fromLegacyGiB($1.sizeGB) ?? 0
@@ -30,6 +31,14 @@ struct SpaceGoalWorkspaceList: View {
     }
     private func judgment(_ item: StorageItem) -> StorageJudgment {
         StorageInvestigation.judgment(for: item, evidence: evidence(item))
+    }
+    private func sourceDate(_ item: StorageItem) -> Date? {
+        guard item.measureStatus == "historical" else { return model.deepScanAt }
+        if supplemental?.candidatePaths.contains(item.path) == true { return supplemental?.date }
+        if let diskBalance, diskBalance.findings?.contains(where: { $0.path == item.path }) == true {
+            return Date(timeIntervalSince1970: diskBalance.observedAt)
+        }
+        return nil
     }
     private var visible: [StorageItem] {
         inventory.filter { filter.includes($0) && (query.isEmpty || $0.label.localizedCaseInsensitiveContains(query)
@@ -73,7 +82,7 @@ struct SpaceGoalWorkspaceList: View {
                                 }.padding(.vertical, 6)
                                 ForEach(items, id: \.investigationKey) { item in
                                     SpaceGoalCandidateRow(item: item, evidence: evidence(item), judgment: group,
-                                        scanDate: model.deepScanAt,
+                                        scanDate: sourceDate(item),
                                         isSelected: Binding(get: { selectedKeys.contains(SpaceGoalSelection.key(item)) },
                                             set: { if $0 { selectedKeys.insert(SpaceGoalSelection.key(item)) }
                                                 else { selectedKeys.remove(SpaceGoalSelection.key(item)) } }))
@@ -101,7 +110,10 @@ struct SpaceGoalWorkspaceList: View {
             query = initialQuery
             coverageExpanded = coverage.contains { $0.status != "ok" } || !storage.accessIssues.isEmpty
         }
-        .task { supplemental = await Task.detached(priority: .utility) { SupplementalStorageAudit.latest() }.value }
+        .task {
+            supplemental = await Task.detached(priority: .utility) { SupplementalStorageAudit.latest() }.value
+            diskBalance = await Task.detached(priority: .utility) { DiskBalance.latest() }.value
+        }
         .onChange(of: initialFilter) { filter = $0 }
         .onChange(of: initialQuery) { query = $0 }
         .onChange(of: ready.map(SpaceGoalSelection.key).sorted()) { keys in
