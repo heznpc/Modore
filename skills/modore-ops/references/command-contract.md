@@ -5,6 +5,8 @@
 ```bash
 modore sessions current
 modore sessions --limit 50
+modore inspect <source> --start 0 --turns 12
+modore search --provider claude --workspace Modore --offset 0 --limit 20
 modore search --first                         # query bytes arrive on stdin
 modore search --limit 20 --budget-seconds 30  # query bytes arrive on stdin
 ```
@@ -23,7 +25,15 @@ clock, and a 4096-byte UTF-8 query. Session listing has a 30-second outer wall
 clock. Do not put the search phrase in shell history, process arguments, or a
 temporary file.
 
-Backup, verification, restore, and detailed inspection remain available through
+Search filters apply before content reads: repeatable `--workspace` uses case-insensitive
+substring matching (OR); `--workspace-exact` uses exact paths; repeatable
+`--exclude-workspace` excludes matching paths. `--provider` selects claude/claude-desktop/codex/gemini/kiro.
+`nextOffset` advances a result page; `hasMore: null` means the remaining coverage is unknown.
+Offsets are stable only while the session store is unchanged. JSONL reads accept up to
+512 MiB per file and 16 MiB per record; larger records/files still report truncation. Each file returns at most 2,000 hits;
+that limit is also reported as incomplete coverage, not a complete search.
+
+Backup, verification and restore remain available through
 the Modore app and `scripts/scree.py`. Those operations require an exact named
 source or archive; do not infer one from a transcript.
 

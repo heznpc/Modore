@@ -2525,3 +2525,19 @@ def test_swiftpm_residue_limit_counts_only_real_build_directories(
     ]
     residue_paths = [row[2] for row in rows if row[0] == "project_residue"]
     assert residue_paths == [str(packages[3] / ".build")]
+
+
+def test_project_discovery_reaches_deep_codex_workspace(project_root, tmp_path):
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    (facts / "storage_paths.tsv").write_text("")
+    scan = tmp_path / "scan"
+    project = scan / "Codex/workspaces/session/APP/nested/client"
+    project.mkdir(parents=True)
+    (project / "package.json").write_text("{}")
+    (project / "node_modules").mkdir()
+    (project / "node_modules/artifact").write_bytes(b"x" * (5 * 1024 * 1024))
+    env = _project_git_test_env(tmp_path, scan, facts, tmp_path / "trace")
+    result = _run_project_residue_only(project_root / "scripts/modules/macos/storage.sh", env)
+    assert result.returncode == 0, result.stderr
+    assert str(project / "node_modules") in (facts / "storage_paths.tsv").read_text()

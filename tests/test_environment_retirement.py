@@ -107,3 +107,31 @@ class EnvironmentRetirementTests(unittest.TestCase):
         self.assertNotIn('create',run.call_args.args[0])
 
 if __name__=='__main__':unittest.main()
+
+
+class StorageClassificationTests(unittest.TestCase):
+    def test_app_dependencies_are_not_rebuild_candidates(self):
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root)/'Tool.app/Contents/node_modules';p.mkdir(parents=True)
+            (p.parent/'package.json').write_text('{}')
+            (p.parent/'package-lock.json').write_text('{}')
+            self.assertFalse(m.classify_storage(p)['cleanupReview'])
+    def test_database_and_evidence_are_preserved(self):
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root);(p/'PG_VERSION').write_text('16');(p/'base').mkdir()
+            self.assertEqual(m.classify_storage(p)['classification'],'실제 데이터베이스')
+            self.assertFalse(m.classify_storage(p/'test.xcresult')['cleanupReview'])
+    def test_dependency_needs_manifest_and_lock(self):
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root)/'node_modules';p.mkdir()
+            (p.parent/'package.json').write_text('{}')
+            self.assertFalse(m.classify_storage(p)['cleanupReview'])
+            (p.parent/'package-lock.json').write_text('{}')
+            self.assertTrue(m.classify_storage(p)['cleanupReview'])
+
+    def test_mixed_build_evidence_is_not_a_whole_folder_candidate(self):
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root)/'.build';p.mkdir()
+            (p.parent/'Package.swift').write_text('// package')
+            (p/'test.xcresult').mkdir()
+            self.assertFalse(m.classify_storage(p)['cleanupReview'])
