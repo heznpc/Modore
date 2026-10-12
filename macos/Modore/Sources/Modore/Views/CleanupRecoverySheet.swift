@@ -43,7 +43,9 @@ struct CleanupRecoverySheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L10n.text("재검증 결과 · 정리 전 승인"))
                         .font(.title2.weight(.semibold))
-                    Text(plan.canExecute
+                    Text(model.cleanupReviewOnly
+                        ? L10n.text("크기와 사용 근거를 검토할 수 있습니다.")
+                        : plan.canExecute
                         ? (plan.stopAtGoal
                             ? L10n.text("승인하면 아래 항목을 정리합니다. 사용 중인 항목은 건너뛰고 목표에 도달하면 멈춥니다.")
                             : L10n.text("승인하면 선택한 항목을 정리합니다. 사용 중이거나 검증에 실패한 항목은 보존합니다."))
@@ -65,6 +67,8 @@ struct CleanupRecoverySheet: View {
                     }
                 }
             }
+
+            CleanupReviewOnlyNotice()
 
             HStack(spacing: 18) {
                 recoveryMetric(L10n.text("기준 여유"), value: StorageBytes.text(plan.baselineFreeBytes))
@@ -123,7 +127,7 @@ struct CleanupRecoverySheet: View {
                         } label: {
                             Label(L10n.format("%@개 항목 정리", String(describing: plan.readyEntries.count)), systemImage: "trash")
                         }
-                        .disabled(model.cleanupInFlight)
+                        .disabled(model.cleanupInFlight || model.cleanupReviewOnly)
                         .tint(.red)
                     } else {
                         Button(L10n.text("승인 다시 측정")) { model.retryRecoveryPlan(plan) }

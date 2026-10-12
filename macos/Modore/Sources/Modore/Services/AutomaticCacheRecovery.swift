@@ -169,7 +169,7 @@ final class AutomaticCacheRecovery: ObservableObject {
     func revealReport() { NSWorkspace.shared.open(reportURL) }
 
     func runIfNeeded(model: ScanModel, snapshot: HealthSnapshot?, requestedNow: Bool = false) async {
-        guard !CommandLine.arguments.contains("--storage-review-only") else { return }
+        guard !CleanupExecutionService.isReviewOnly else { return }
         guard !running else { return }
         // UI and scheduled headless launches share the same intent and lease.
         // Reload under the lease: another process may have recovered space since init.

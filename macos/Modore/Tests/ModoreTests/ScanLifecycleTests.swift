@@ -85,6 +85,44 @@ private actor ScanOutputLifecycleProbe {
 
 @MainActor
 final class ScanLifecycleTests: XCTestCase {
+    func testReviewOnlyBlocksSingleAndBatchBeforeExecutionOrMutationRecording() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = try makeCleanupContext(in: root)
+        let probe = CleanupLifecycleProbe()
+        let response = cleanupExecutionResult(status: "complete")
+        let client = CleanupExecutionClient(prepare: { _ in context }, preview: { _, _, _ in response },
+            execute: { _, request, _ in await probe.recordExecution(request); return response })
+        let model = ScanModel(automaticallyScansStaleResults: false, projectRoot: root,
+            cleanupExecution: client, cleanupReviewOnly: true)
+        await settleStartup(model)
+        let preview = try readyCleanupPreview()
+        model.cleanupPreview = preview
+        model.executeCleanup(preview)
+        await model.cleanupTask?.value
+        XCTAssertEqual(model.errorMessage, CleanupExecutionService.reviewOnlyMessage)
+        XCTAssertFalse(model.cleanupInFlight)
+        XCTAssertNil(model.cleanupTask)
+        XCTAssertEqual(model.cleanupPreview?.approvalToken, preview.approvalToken)
+        XCTAssertFalse(ScanPublication.cleanupMutationIsPending(in: root))
+
+        let plan = recoveryPlan(for: preview)
+        model.cleanupRecoveryPlan = plan
+        model.errorMessage = nil
+        model.executeRecoveryPlan(plan, observeFreeSpace: { nil })
+        await model.cleanupTask?.value
+        XCTAssertEqual(model.errorMessage, CleanupExecutionService.reviewOnlyMessage)
+        XCTAssertEqual(model.cleanupRecoveryPlan?.id, plan.id)
+        XCTAssertNil(model.cleanupRecoveryResult)
+        XCTAssertNil(model.cleanupTask)
+        XCTAssertFalse(model.cleanupInFlight)
+        XCTAssertTrue(model.recoveryHistory.isEmpty)
+        XCTAssertTrue(try RecoveryHistoryStore.load(in: root).isEmpty)
+        XCTAssertFalse(ScanPublication.cleanupMutationIsPending(in: root))
+        let calls = await probe.requests()
+        XCTAssertTrue(calls.execution.isEmpty)
+    }
+
     func testRecoveryStopsBeforeNextItemWhenResultCheckpointFails() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -48,6 +48,10 @@ struct CleanupExecutionClient: Sendable {
 }
 
 enum CleanupExecutionService {
+    static var isReviewOnly: Bool { CommandLine.arguments.contains("--storage-review-only") }
+    static var reviewOnlyMessage: String {
+        L10n.text("검토 전용 모드에서는 삭제할 수 없습니다. Modore를 종료한 뒤 앱 아이콘에서 일반 모드로 다시 실행해 주세요.")
+    }
     static let previewTimeout: TimeInterval = 60
     static let executionTimeout: TimeInterval = 15 * 60
     static let stagingRecoveryDisplayPath = "~/Library/Application Support/Modore/cleanup-staging"
@@ -144,7 +148,7 @@ enum CleanupExecutionService {
         request: CleanupExecutionRequest? = nil,
         using context: CleanupExecutionContext
     ) async -> CapturedProcessResult? {
-        guard !CommandLine.arguments.contains("--storage-review-only") else { return nil }
+        guard !isReviewOnly else { return nil }
         // A headless recovery and a foreground approval must never mutate together.
         let lockDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Modore/cleanup-execution-lock")

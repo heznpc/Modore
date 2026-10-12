@@ -199,6 +199,10 @@ extension ScanModel {
               !isBusy,
               cleanupPreview?.recipeID == preview.recipeID,
               cleanupPreview?.approvalToken == preview.approvalToken else { return }
+        guard !cleanupReviewOnly else {
+            errorMessage = CleanupExecutionService.reviewOnlyMessage
+            return
+        }
         let request = cleanupRequest
         cleanupInFlight = true
         errorMessage = nil
@@ -416,6 +420,10 @@ extension ScanModel {
               cleanupRecoveryPlan?.stopAtGoal == plan.stopAtGoal,
               cleanupRecoveryPlan?.entries.map({ $0.preview.approvalToken })
                 == plan.entries.map({ $0.preview.approvalToken }) else { return }
+        guard !cleanupReviewOnly else {
+            errorMessage = CleanupExecutionService.reviewOnlyMessage
+            return
+        }
         guard plan.canExecute(at: Date()) else {
             appendLog(L10n.text("공간 확보 계획의 승인이 만료되어 실행 전에 다시 측정합니다."))
             retryRecoveryPlan(plan)
