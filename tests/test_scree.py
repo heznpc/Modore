@@ -4551,7 +4551,7 @@ def test_search_skips_an_oversized_jsonl_line_without_allocating_it_as_a_turn(
     source.parent.mkdir(parents=True)
     source.write_bytes(
         _jsonl({"cwd": "/tmp/work"}).encode()
-        + b'{"damaged":"' + (b"x" * (scree.MAX_LINE_BYTES * 3)) + b'"}\n'
+        + b'{"damaged":"' + (b"x" * (scree.TRANSCRIPT_LINE_MAX_BYTES + 1)) + b'"}\n'
         + _jsonl({"message": {"role": "user", "content": "bounded phrase"}}).encode()
     )
 
@@ -4654,15 +4654,13 @@ def test_oversized_gemini_chat_is_listed_but_content_read_is_truncated(
     assert search["definitive"] is False
 
 
-def test_search_caps_matches_per_session_so_one_file_cannot_fill_the_answer(tmp_path):
+def test_search_does_not_stop_at_old_three_hit_preview(tmp_path):
     turns = [("user", f"찾는말 {i}") for i in range(30)]
     _stored_session(tmp_path, "a", *turns)
-    out = scree.build_search("찾는말", tmp_path)
-    assert len(out["matches"]) == scree.SEARCH_MATCHES_PER_SESSION
-    assert out["matchesOmittedAtLeast"] >= 1
-    assert out["coverage"] == "truncated"
-    assert out["truncatedReason"] == "limit"
-    assert out["definitive"] is False
+    out = scree.build_search("찾는말", tmp_path, limit=10, offset=20)
+    assert len(out["matches"]) == 10
+    assert out["hasMore"] is False
+    assert out["coverage"] == "complete"
 
 
 def test_search_single_last_session_global_limit_is_not_silently_sliced(
@@ -7405,3 +7403,25 @@ def test_backup_cli_round_trip_and_failure_receipts(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["fileCount"] == 6
     assert scree.main(["backup-restore", str(archive), "--out", str(tmp_path / "restored")]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "restored"
+
+
+def test_search_workspace_filter_and_page_are_applied_before_read(tmp_path):
+    _stored_session(tmp_path, "scope", ("user", "scope needle one"),
+                    ("assistant", "scope needle two"), ("user", "scope needle three"))
+    first = scree.build_search("scope needle", tmp_path, provider="claude", limit=1)
+    assert first["hasMore"] is True
+    second = scree.build_search("scope needle", tmp_path, provider="claude", limit=1,
+                                offset=first["nextOffset"])
+    assert first["matches"][0]["snippet"] != second["matches"][0]["snippet"]
+    excluded = scree.build_search("scope needle", tmp_path, workspace=["does-not-exist"])
+    assert excluded["scannedSessions"] == 0
+    assert excluded["matches"] == []
+
+
+def test_viewer_reads_valid_long_record_and_later_turn(tmp_path):
+    source = tmp_path / "long.jsonl"
+    source.write_text(_jsonl({"message": {"role": "user", "content": "x" * 100000}})
+                      + _jsonl({"message": {"role": "assistant", "content": "later"}}))
+    turns, status = scree.visible_turns(source, tmp_path)
+    assert status == "ok"
+    assert len(turns) == 2

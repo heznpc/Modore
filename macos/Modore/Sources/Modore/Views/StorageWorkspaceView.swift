@@ -25,6 +25,7 @@ enum StorageWorkspaceSection: String, CaseIterable, Identifiable {
 struct StorageWorkspacePage: View {
     @EnvironmentObject private var model: ScanModel
     @Binding var section: StorageWorkspaceSection
+    @State private var reviewPath: String?
     @State private var retirementOpen = false
     @State private var environmentRetirement = false
 
@@ -34,7 +35,7 @@ struct StorageWorkspacePage: View {
             Divider()
             Group {
                 if section == .overview {
-                    FullStorageBalanceView()
+                    FullStorageBalanceView(onReviewCleanup: { path in reviewPath = path; section = .cleanup })
                 } else if let storage = model.storage {
                     VStack(spacing: 0) {
                         if section != .goal {
@@ -107,8 +108,8 @@ struct StorageWorkspacePage: View {
     @ViewBuilder
     private func workspaceList(_ storage: StorageSnapshot) -> some View {
         switch section {
-        case .overview: FullStorageBalanceView()
-        case .cleanup: CleanupWorkspaceList(storage: storage)
+        case .overview: FullStorageBalanceView(onReviewCleanup: { path in reviewPath = path; section = .cleanup })
+        case .cleanup: CleanupWorkspaceList(storage: storage, reviewPath: reviewPath)
         case .goal: SpaceGoalWorkspaceList(
             storage: storage,
             currentFreeGB: model.liveState.freeSpace?.value.freeGB

@@ -285,6 +285,60 @@ def execute(plan, root, selected):
     plan['after']=capacity();plan['memoryAfter']=memory();save(path,plan);return plan
 
 
+def classify_storage(path):
+    """Explain observed contents; never authorize deletion from a folder name."""
+    p = Path(path)
+    def result(kind, detail, review=False):
+        return dict(classification=kind, evidence=detail, cleanupReview=review)
+    if any(part.endswith('.app') for part in p.parts):
+        return result('앱 구성요소', '앱 번들의 일부입니다. 내부 의존성을 따로 지우면 앱이 손상될 수 있습니다.')
+    if p.is_dir() and (p / 'PG_VERSION').is_file() and (p / 'base').is_dir():
+        return result('실제 데이터베이스', 'PostgreSQL 버전 파일과 데이터 디렉터리가 있습니다. 백업·이관 확인이 필요합니다.')
+    if p.suffix in ('.xcresult', '.logarchive', '.trace'):
+        return result('테스트·진단 증거', '실행 당시 결과입니다. 재빌드로 같은 기록이 복원되지는 않습니다.')
+    if p.suffix in ('.jsonl', '.sqlite', '.sqlite3', '.db'):
+        return result('기록·데이터', '세션 또는 데이터 파일입니다. 캐시로 간주하지 않습니다.')
+    if p.is_dir():
+        try:
+            with os.scandir(p) as children:
+                for index, child in enumerate(children):
+                    if index >= 512:
+                        return result('내부 확인 미완료', '하위 항목 512개를 넘어 내용 검토가 필요합니다.')
+                    if child.name.endswith(('.xcresult', '.logarchive', '.sqlite', '.db', '.jsonl')):
+                        return result('기록이 섞인 폴더', '테스트 결과·세션·DB 파일이 함께 있습니다. 폴더 전체 삭제 후보에서 제외합니다.')
+        except OSError:
+            return result('접근 확인 필요', '내부 내용을 읽지 못해 삭제 가능성을 판단할 수 없습니다.')
+    if p.is_dir() and (p / 'pyvenv.cfg').is_file():
+        specs = [name for name in ('requirements.txt', 'uv.lock', 'poetry.lock')
+                 if (p.parent / name).is_file()]
+        return result('Python 실행 환경', 'pyvenv.cfg 확인. ' +
+                      ('복원 명세: ' + ', '.join(specs) if specs else '부모 폴더에 복원 명세가 없습니다.') +
+                      ' 설치 패키지와 로컬 수정 여부를 검토해야 합니다.')
+    rules = {
+        'node_modules': ('package.json', ('package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb')),
+        'Pods': ('Podfile', ('Podfile.lock',)),
+        '.build': ('Package.swift', ()),
+        'target': ('Cargo.toml', ('Cargo.lock',)),
+        '.dart_tool': ('pubspec.yaml', ('pubspec.lock',)),
+        '.gradle': ('gradlew', ()),
+    }
+    rule = rules.get(p.name)
+    if p.name == 'build':
+        rule = next(((marker, ()) for marker in ('pubspec.yaml', 'gradlew', 'Package.swift')
+                     if (p.parent / marker).is_file()), None)
+    if p.is_dir() and rule and (p.parent / rule[0]).is_file():
+        locks = [name for name in rule[1] if (p.parent / name).is_file()]
+        if rule[1] and not locks:
+            return result('의존성·산출물 추정', rule[0] + '는 있으나 잠금 파일이 없어 동일 버전 복원은 미확인입니다.')
+        return result('재생성 근거 있음', '확인: ' + ', '.join([rule[0]] + locks)
+                      + '. 사용 중 여부·Git 추적·내부 보존 자료를 정리 후보에서 재검증해야 합니다.', True)
+    if p.suffix.lower() in ('.mp4', '.mov', '.wav', '.mp3', '.png', '.jpg', '.pdf'):
+        return result('미디어·자료', '파일 형식을 확인했습니다. 원본이나 유일본 여부는 별도 확인이 필요합니다.')
+    if p.name == '.git' or (p.is_dir() and (p / 'HEAD').is_file() and (p / 'objects').is_dir()):
+        return result('Git 저장소', '원격에 없는 커밋·객체가 있을 수 있습니다. 동기화 확인 전 보존합니다.')
+    return result('내용 확인 필요', '이름만으로 삭제 가능성을 판정하지 않았습니다. 하위 항목을 열어 확인하세요.')
+
+
 def directory_contents(path):
     from concurrent.futures import ThreadPoolExecutor
     p=Path(path)
@@ -292,7 +346,10 @@ def directory_contents(path):
     def measure(child):
         if child.is_symlink():return None
         value=allocated(child)
-        return {'name':child.name,'path':str(child),'bytes':value,'complete':value is not None,'directory':child.is_dir()}
+        display_path = str(child)
+        if display_path.startswith('/System/Volumes/Data/Users/'):
+            display_path = display_path.removeprefix('/System/Volumes/Data')
+        return {'name':child.name,'path':display_path,'bytes':value,'complete':value is not None,'directory':child.is_dir(), **classify_storage(child)}
     with ThreadPoolExecutor(max_workers=3) as pool:
         entries=[x for x in pool.map(measure,list(p.iterdir())) if x]
     return {'path':str(p),'observedAt':time.time(),'entries':sorted(entries,key=lambda x:x['bytes'] or 0,reverse=True)}

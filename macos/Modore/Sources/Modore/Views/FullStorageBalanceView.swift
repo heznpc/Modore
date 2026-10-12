@@ -2,7 +2,7 @@ import SwiftUI
 
 private struct DiskBalance: Decodable {
     struct Volume: Decodable { let name: String; let bytes: Int64 }
-    struct Directory: Decodable { let name, path: String; let bytes: Int64?; let complete: Bool; var directory: Bool? }
+    struct Directory: Decodable { let name, path: String; let bytes: Int64?; let complete: Bool; var directory: Bool?; var classification: String?; var evidence: String?; var cleanupReview: Bool? }
     let observedAt: Double
     let totalBytes, freeBytes: Int64
     let volumes: [Volume]
@@ -11,6 +11,7 @@ private struct DiskBalance: Decodable {
 }
 private struct DirectoryBalance: Decodable { let path:String; let observedAt:Double; let entries:[DiskBalance.Directory] }
 struct FullStorageBalanceView: View {
+    var onReviewCleanup: ((String) -> Void)? = nil
     @EnvironmentObject private var model: ScanModel
     @State private var balance: DiskBalance?
     @State private var folder: DirectoryBalance?
@@ -45,7 +46,14 @@ struct FullStorageBalanceView: View {
                 }
                 if busy { ProgressView(L10n.text("용량 측정 중")).frame(maxWidth:.infinity,alignment:.leading) }
                 LazyVGrid(columns:[GridItem(.adaptive(minimum:220),spacing:14)],spacing:14) {
-                    ForEach(Array(entries.enumerated()),id:\.element.path) { index,item in directoryTile(item,index:index) }
+                    ForEach(Array(entries.enumerated()),id:\.element.path) { index,item in
+                        VStack(alignment:.leading) {
+                            directoryTile(item,index:index)
+                            if item.cleanupReview == true, let onReviewCleanup {
+                                Button(L10n.text("정리 후보에서 검토"), action:{ onReviewCleanup(item.path) })
+                            }
+                        }
+                    }
                 }
                 Text(L10n.text("폴더 크기 = 파일 할당량 · 최소 = 일부 접근 제한 · 미측정 ≠ 0 · APFS 공유 블록 때문에 위 물리 용량과 합계가 다를 수 있습니다.")).font(.caption).foregroundStyle(.secondary)
                 if !error.isEmpty { Label(L10n.message(error),systemImage:"exclamationmark.circle").foregroundStyle(.orange) }
@@ -88,11 +96,19 @@ struct FullStorageBalanceView: View {
                 HStack { Image(systemName:item.directory == false ? "doc" : "folder.fill").font(.system(size:30)).foregroundStyle(color); Spacer(); Image(systemName:"arrow.up.right").foregroundStyle(.secondary) }
                 Text(item.name).font(.headline).lineLimit(1)
                 Text(item.bytes.map { (item.complete ? "" : L10n.text("최소 ")) + size($0) } ?? L10n.text("미측정")).font(.system(size:23,weight:.semibold,design:.rounded))
+                if let classification = item.classification {
+                    Text(L10n.text(classification)).font(.caption.weight(.semibold))
+                    Text(L10n.text(item.evidence ?? "")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                }
                 if let n=item.bytes { ProgressView(value:Double(n),total:Double(maxBytes)).tint(color) }
                 else { Label(L10n.text("접근·측정 확인 필요"),systemImage:"questionmark.circle").font(.caption).foregroundStyle(.orange) }
             }.padding(18).frame(maxWidth:.infinity,alignment:.leading).background(color.opacity(0.06),in:RoundedRectangle(cornerRadius:16)).contentShape(Rectangle())
         }.buttonStyle(.plain).disabled(busy).help(item.path)
-            .contextMenu { Button(L10n.text("Finder에서 보기")) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath:item.path)]) }; Text(item.path) }
+            .contextMenu {
+                if item.cleanupReview == true, let onReviewCleanup {
+                    Button(L10n.text("정리 후보에서 검토"), action:{ onReviewCleanup(item.path) })
+                }
+                Button(L10n.text("Finder에서 보기")) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath:item.path)]) }; Text(item.path) }
     }
     private func browse(_ path:String) {
         guard !busy else{return};busy=true;error="";query=""

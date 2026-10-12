@@ -122,7 +122,9 @@ SESSION_DISCOVERY_MAX_DEPTH = 16
 SESSION_METADATA_MAX_BYTES = 4 * 1024 * 1024
 GEMINI_CHAT_METADATA_PREFIX_BYTES = 64 * 1024
 SESSION_CONTENT_MAX_BYTES = 32 * 1024 * 1024
-SEARCH_PROBE_MAX_BYTES = 32 * 1024 * 1024
+TRANSCRIPT_MAX_BYTES = 512 * 1024 * 1024
+TRANSCRIPT_LINE_MAX_BYTES = 16 * 1024 * 1024
+SEARCH_PROBE_MAX_BYTES = TRANSCRIPT_MAX_BYTES
 SEARCH_IO_CHUNK_BYTES = 64 * 1024
 
 # Claude Desktop's Code surface is a separate store from Claude Code.  One
@@ -5718,7 +5720,8 @@ class _BoundedBinaryLines:
     """Iterate complete binary lines without ever allocating a giant line."""
 
     def __init__(self, handle, *, maximum_bytes: int,
-                 deadline: Optional[float] = None):
+                 deadline: Optional[float] = None, maximum_line_bytes: int = MAX_LINE_BYTES):
+        self.maximum_line_bytes = maximum_line_bytes
         self.handle = handle
         self.maximum_bytes = maximum_bytes
         self.deadline = deadline
@@ -5745,7 +5748,7 @@ class _BoundedBinaryLines:
                 else:
                     self.reached_eof = True
                 return
-            line = self.handle.readline(min(MAX_LINE_BYTES + 1, remaining + 1))
+            line = self.handle.readline(min(self.maximum_line_bytes + 1, remaining + 1))
             if not line:
                 self.reached_eof = True
                 return
@@ -5753,7 +5756,7 @@ class _BoundedBinaryLines:
             if self.consumed > self.maximum_bytes:
                 self.truncated = True
                 return
-            oversized = len(line) > MAX_LINE_BYTES
+            oversized = len(line) > self.maximum_line_bytes
             if oversized:
                 self.truncated = True
             # readline(limit) returns a prefix when a line exceeds the cap.
@@ -5767,7 +5770,7 @@ class _BoundedBinaryLines:
                 if remaining <= 0:
                     self.truncated = True
                     return
-                line = self.handle.readline(min(MAX_LINE_BYTES + 1, remaining + 1))
+                line = self.handle.readline(min(self.maximum_line_bytes + 1, remaining + 1))
                 self.consumed += len(line)
                 if self.consumed > self.maximum_bytes:
                     self.truncated = True
@@ -5780,6 +5783,7 @@ class _BoundedBinaryLines:
 def _read_jsonl_turns(
         handle, *, deadline: Optional[float] = None,
         maximum_bytes: Optional[int] = None,
+        maximum_line_bytes: int = MAX_LINE_BYTES,
         ) -> tuple[list[VisibleTurn], bool, bool, bool, bool]:
     """Decode bounded visible records from an already-open binary stream."""
     turns: list[VisibleTurn] = []
@@ -5789,7 +5793,7 @@ def _read_jsonl_turns(
         handle,
         maximum_bytes=(SESSION_CONTENT_MAX_BYTES
                        if maximum_bytes is None else maximum_bytes),
-        deadline=deadline)
+        deadline=deadline, maximum_line_bytes=maximum_line_bytes)
     for line in lines:
         try:
             parsed = json.loads(line)
@@ -5834,7 +5838,8 @@ def _read_session_turns(
             with os.fdopen(os.dup(desktop_descriptor), "rb") as handle:
                 (turns, decoded_any, truncated, timed_out,
                  parse_failed) = _read_jsonl_turns(
-                    handle, deadline=deadline)
+                    handle, deadline=deadline, maximum_bytes=TRANSCRIPT_MAX_BYTES,
+                maximum_line_bytes=TRANSCRIPT_LINE_MAX_BYTES)
             after = os.fstat(desktop_descriptor)
         except OSError:
             return ([], "unreadable")
@@ -5900,7 +5905,8 @@ def _read_session_turns(
         with os.fdopen(os.dup(descriptor), "rb") as handle:
             (turns, decoded_any, truncated, timed_out,
              parse_failed) = _read_jsonl_turns(
-                handle, deadline=deadline)
+                handle, deadline=deadline, maximum_bytes=TRANSCRIPT_MAX_BYTES,
+                maximum_line_bytes=TRANSCRIPT_LINE_MAX_BYTES)
         after = os.fstat(descriptor)
     except OSError:
         return ([], "unreadable")
@@ -6155,7 +6161,7 @@ def _session_workspace(
 
 
 def build_inspect(source: Path, home: Path, *, raw: bool = False,
-                  turn_limit: int = INSPECT_DEFAULT_TURNS) -> dict:
+                  turn_limit: int = INSPECT_DEFAULT_TURNS, start: Optional[int] = None) -> dict:
     """One session's conversation, prepared for display.
 
     The rules that make this safe to expose are the point, not the
@@ -6176,13 +6182,13 @@ def build_inspect(source: Path, home: Path, *, raw: bool = False,
                                      CLAUDE_DESKTOP_PROVIDER) else "claude",
             source, home),
         workspace=_session_workspace(provider, source, home),
-        home=home, raw=raw, turn_limit=turn_limit)
+        home=home, raw=raw, turn_limit=turn_limit, start=start)
 
 
 def _inspect_payload(
         turns: list[VisibleTurn], *, status: str, provider: str,
         session_id: str, workspace: Optional[str], home: Path,
-        raw: bool, turn_limit: int,
+        raw: bool, turn_limit: int, start: Optional[int] = None,
         ) -> dict:
     """Render already-resolved turns through inspect's one output contract."""
 
@@ -6196,7 +6202,10 @@ def _inspect_payload(
 
     first_user = next((clip(text) for role, text in turns
                        if _is_user_role(role) and text.strip()), None)
-    window = turns[-turn_limit:] if turn_limit > 0 else []
+    if start is not None and start < 0:
+        raise ValueError("start must be nonnegative")
+    window_start = start if start is not None else max(0, len(turns) - turn_limit)
+    window = turns[window_start:window_start + turn_limit] if turn_limit > 0 else []
     return {
         # `ok` / `missing` / `unreadable` / `unrecognized`. A caller that
         # shows "no conversation" for anything but `ok` is telling
@@ -6215,7 +6224,7 @@ def _inspect_payload(
         # twice with a reply in between.
         "turns": [{"index": position, "role": turn.role, "text": clip(turn.text),
                    "at": turn.at, "eventId": turn.event_id}
-                  for position, turn in enumerate(window) if turn.text.strip()],
+                  for position, turn in enumerate(window, start=window_start if start is not None else 0) if turn.text.strip()],
         "omittedTurns": max(0, len(turns) - len(window)),
         "masked": not raw,
     }
@@ -9725,6 +9734,7 @@ def restore_session_backup(archive: Path, destination: Path) -> dict:
 
 SEARCH_DEFAULT_LIMIT = 200
 SEARCH_MATCHES_PER_SESSION = 3
+SEARCH_PAGE_MATCHES_PER_SESSION = 2000
 SEARCH_SNIPPET_CHARS = 240
 SEARCH_DEFAULT_BUDGET_SECONDS = 60.0
 SESSION_CONTENT_ISOLATION_MAX_BYTES = 4 * 1024 * 1024
@@ -9909,10 +9919,35 @@ def _session_evidence_isolated(
             {key: omissions[key] for key in empty})
 
 
-def build_search(query: str, home: Path, *, raw: bool = False,
+def build_search(query, home, *, raw=False, limit=SEARCH_DEFAULT_LIMIT, first=False,
+                 budget_seconds=SEARCH_DEFAULT_BUDGET_SECONDS, provider=None,
+                 workspace=(), workspace_exact=False, exclude_workspace=(), offset=0):
+    if offset < 0 or limit < 0:
+        raise ValueError("offset and limit must be nonnegative")
+    requested = 1 if first else limit
+    result = _build_search_page(query, home, raw=raw,
+        limit=offset + requested + (0 if first else 1) if requested else 0, first=first,
+        budget_seconds=budget_seconds, provider=provider, workspace=workspace,
+        workspace_exact=workspace_exact, exclude_workspace=exclude_workspace)
+    matches = result["matches"]
+    more = len(matches) > offset + requested if requested else False
+    result["matches"] = matches[offset:offset + requested] if requested else matches[offset:]
+    if more:
+        result["matchesOmittedAtLeast"] += len(matches) - offset - requested
+        result["coverage"] = "truncated"
+        result["truncatedReason"] = "limit"
+        result["definitive"] = False
+    result["offset"] = offset
+    result["hasMore"] = True if more else (False if result["coverage"] == "complete" else None)
+    result["nextOffset"] = offset + len(result["matches"]) if more else None
+    return result
+
+
+def _build_search_page(query: str, home: Path, *, raw: bool = False,
                  limit: int = SEARCH_DEFAULT_LIMIT,
                  first: bool = False,
-                 budget_seconds: float = SEARCH_DEFAULT_BUDGET_SECONDS) -> dict:
+                 budget_seconds: float = SEARCH_DEFAULT_BUDGET_SECONDS,
+                 provider=None, workspace=(), workspace_exact=False, exclude_workspace=()) -> dict:
     """Find a phrase across every session on the machine.
 
     The one thing the owner kept leaving this app to do. Modore could
@@ -9950,6 +9985,14 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     session_index = _build_sessions_isolated(home, deadline)
     sessions, discovery_complete = _content_sessions_and_coverage(
         session_index)
+    sessions = [session for session in sessions
+                if (not provider or str(session.get("tool", "")).casefold().replace(" ", "-") == provider.casefold())
+                and (not workspace or any(
+                    (str(session.get("workspace", "")) == value if workspace_exact
+                     else value.casefold() in str(session.get("workspace", "")).casefold())
+                    for value in workspace))
+                and not any(value.casefold() in str(session.get("workspace", "")).casefold()
+                            for value in exclude_workspace)]
     matches: list[dict] = []
     match_ids: set[tuple] = set()
     scanned = unreadable = parse_errors = leaked_workers = truncated_sessions = 0
@@ -10309,7 +10352,7 @@ def _search_one_session_bounded(
         # query had its whitespace collapsed and the transcript did not.
         if needle not in " ".join(turn.text.split()).casefold():
             continue
-        if len(hits) >= SEARCH_MATCHES_PER_SESSION:
+        if len(hits) >= SEARCH_PAGE_MATCHES_PER_SESSION:
             omitted_at_least = 1
             break
         hits.append(_search_hit(
@@ -11266,6 +11309,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     inspect.add_argument("source", type=Path, help="session file path from a bind result")
     inspect.add_argument("--turns", type=int, default=INSPECT_DEFAULT_TURNS,
                          help="recent turns to include")
+    inspect.add_argument("--start", type=int, default=None)
     inspect.add_argument("--raw", action="store_true",
                          help="disable masking (explicit opt-out, off by default)")
     inspect.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
@@ -11302,6 +11346,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="read the phrase from this file instead of the command line")
     search.add_argument("--limit", type=int, default=SEARCH_DEFAULT_LIMIT,
                          help="maximum matches to return")
+    search.add_argument("--provider", choices=("claude", "claude-desktop", "codex", "gemini", "kiro"))
+    search.add_argument("--workspace", action="append", default=[])
+    search.add_argument("--workspace-exact", action="store_true")
+    search.add_argument("--exclude-workspace", action="append", default=[])
+    search.add_argument("--offset", type=int, default=0)
     search.add_argument("--first", action="store_true",
                         help="stop after the newest matching turn")
     search.add_argument("--budget-seconds", type=float,
@@ -11421,7 +11470,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.command == "inspect":
         try:
             payload = build_inspect(args.source, args.home, raw=args.raw,
-                                    turn_limit=args.turns)
+                                    turn_limit=args.turns, start=args.start)
         except OSError as exc:
             print(f"inspect: {exc}", file=sys.stderr)
             return 1
@@ -11517,8 +11566,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         # `defer` does not run when the app is force quit.
         _print_wire(json.dumps(
             build_search(query, args.home, raw=args.raw, limit=args.limit,
-                         first=args.first,
-                         budget_seconds=args.budget_seconds),
+                         first=args.first, provider=args.provider, workspace=args.workspace,
+                         workspace_exact=args.workspace_exact, exclude_workspace=args.exclude_workspace,
+                         offset=args.offset, budget_seconds=args.budget_seconds),
             ensure_ascii=False, indent=2))
         return 0
 

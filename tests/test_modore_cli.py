@@ -362,3 +362,14 @@ def test_unknown_generic_status_route_is_rejected(project_root):
 
     assert result.returncode == 64
     assert "unknown command" in result.stderr
+
+
+def test_inspect_can_open_search_hit_position(project_root, tmp_path):
+    source = tmp_path / 'session.jsonl'
+    source.write_text('\n'.join(json.dumps({'message': {'role': role, 'content': content}})
+                                for role, content in [('user', 'first'), ('assistant', 'second'), ('user', 'third')]))
+    result = run_cli(project_root, 'inspect', str(source), '--start', '1', '--turns', '1')
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload['turns'][0]['index'] == 1
+    assert payload['turns'][0]['text'] == 'second'

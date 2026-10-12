@@ -3,9 +3,21 @@ import SwiftUI
 struct CleanupWorkspaceList: View {
     @EnvironmentObject private var model: ScanModel
     let storage: StorageSnapshot
+    var reviewPath: String? = nil
 
     var body: some View {
         List {
+            if let reviewPath {
+                Section(L10n.text("공간 지도에서 선택한 항목")) {
+                    Text(reviewPath).font(.caption.monospaced()).textSelection(.enabled)
+                    let matching = storage.cleanupCandidates.filter { $0.path == reviewPath || $0.path.hasPrefix(reviewPath + "/") }
+                    ForEach(matching) { item in CleanupCandidateRow(item:item) }
+                    if matching.isEmpty {
+                        Text(L10n.text("현재 검사에 정리 후보가 없습니다. 재생성 근거만으로 삭제하지 않습니다."))
+                        Button(L10n.text("정리 후보 다시 측정")) { model.runScan() }.disabled(model.isBusy)
+                    }
+                }
+            }
             StorageExplanationSection()
             StorageIncidentCauseSection(evidence: model.latestStorageWatchEvidence)
             StorageIncidentTimelineSection()

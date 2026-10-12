@@ -993,7 +993,7 @@ _pch_project_discovery_to_file() {
             exec /bin/sleep "$test_stall_seconds"
         fi
         set -o pipefail
-        /usr/bin/find "$scan_root" -mindepth 1 -maxdepth 3 \
+        /usr/bin/find "$scan_root" -mindepth 1 -maxdepth 10 \
             \( -name .git \( -type d -o -type f \) -print0 -prune \) -o \
             \( -type d \( -name node_modules -o -name build -o -name .dart_tool \
                 -o -name target -o -name Pods -o -name .build -o -name .gradle \
@@ -1250,24 +1250,24 @@ _pch_collect_project_residue() {
     # 보이지 않는 사각지대가 된다. 검색은 흔한 개발 루트로 한정하고 깊이와
     # 개수를 제한해 빠른 검사 예산 안에 머문다.
     local scan_roots="${PCH_PROJECT_SCAN_ROOTS:-$HOME/Documents:$HOME/Developer:$HOME/Projects:$HOME/IdeaProjects:$HOME/StudioProjects:$HOME/dev:$HOME/workspace:$HOME/src}"
-    local max_projects="${PCH_PROJECT_SCAN_LIMIT:-32}"
+    local max_projects="${PCH_PROJECT_SCAN_LIMIT:-256}"
     local max_repositories="${PCH_PROJECT_GIT_SCAN_LIMIT:-128}"
     local max_manifests="${PCH_PROJECT_SWIFTPM_MANIFEST_LIMIT:-256}"
     local project_git_command_timeout="${PCH_PROJECT_GIT_COMMAND_TIMEOUT:-2}"
-    local project_git_total_budget="${PCH_PROJECT_GIT_TOTAL_BUDGET:-8}"
+    local project_git_total_budget="${PCH_PROJECT_GIT_TOTAL_BUDGET:-30}"
     local project_git_output_limit_kb="${PCH_PROJECT_GIT_OUTPUT_LIMIT_KB:-4096}"
     local project_git_record_limit="${PCH_PROJECT_GIT_RECORD_LIMIT:-16384}"
-    local project_discovery_timeout="${PCH_PROJECT_DISCOVERY_TIMEOUT:-2}"
-    local project_discovery_result_limit="${PCH_PROJECT_DISCOVERY_RESULT_LIMIT:-400}"
-    case "$max_projects" in ''|*[!0-9]*) max_projects=32 ;; esac
+    local project_discovery_timeout="${PCH_PROJECT_DISCOVERY_TIMEOUT:-8}"
+    local project_discovery_result_limit="${PCH_PROJECT_DISCOVERY_RESULT_LIMIT:-2000}"
+    case "$max_projects" in ''|*[!0-9]*) max_projects=256 ;; esac
     case "$max_repositories" in ''|*[!0-9]*) max_repositories=128 ;; esac
     case "$max_manifests" in ''|*[!0-9]*) max_manifests=256 ;; esac
     case "$project_git_command_timeout" in ''|*[!0-9]*|0) project_git_command_timeout=2 ;; esac
-    case "$project_git_total_budget" in ''|*[!0-9]*|0) project_git_total_budget=8 ;; esac
+    case "$project_git_total_budget" in ''|*[!0-9]*|0) project_git_total_budget=30 ;; esac
     case "$project_git_output_limit_kb" in ''|*[!0-9]*|0) project_git_output_limit_kb=4096 ;; esac
     case "$project_git_record_limit" in ''|*[!0-9]*|0) project_git_record_limit=16384 ;; esac
-    case "$project_discovery_timeout" in ''|*[!0-9]*|0) project_discovery_timeout=2 ;; esac
-    case "$project_discovery_result_limit" in ''|*[!0-9]*|0) project_discovery_result_limit=400 ;; esac
+    case "$project_discovery_timeout" in ''|*[!0-9]*|0) project_discovery_timeout=8 ;; esac
+    case "$project_discovery_result_limit" in ''|*[!0-9]*|0) project_discovery_result_limit=2000 ;; esac
     [[ "$project_git_command_timeout" -le 30 ]] || project_git_command_timeout=30
     [[ "$project_git_total_budget" -le 60 ]] || project_git_total_budget=60
     [[ "$project_git_output_limit_kb" -le 16384 ]] || project_git_output_limit_kb=16384
@@ -1276,7 +1276,7 @@ _pch_collect_project_residue() {
     [[ "$project_discovery_result_limit" -le 2000 ]] || project_discovery_result_limit=2000
     local seen_projects="|"
     local found=0
-    local root marker_file project_dir project_name preferred_project discovery_output
+    local root marker_file project_dir project_name preferred_project discovery_output ancestor
     local -a scan_root_list=()
     # Bash의 동적 local scope를 이용해 helper가 모든 scan root에 걸친 동일 예산과
     # dedup 상태를 갱신한다. 일반 marker 32개 제한과 분리해, 얕게 발견한 Git 저장소
@@ -1326,20 +1326,24 @@ _pch_collect_project_residue() {
         discovery_output="$TMP_DIR/project_discovery.$$.$RANDOM.out"
         _pch_project_discovery_to_file \
             "$root" "$discovery_output" "$project_discovery_result_limit" || true
+        # Resolve each repository once before direct manifests, retaining Git evidence.
+        while IFS= read -r -d '' marker_file; do
+            [[ "$marker_file" == */.git ]] || continue
+            project_dir="${marker_file%/.git}"
+            _pch_collect_git_swiftpm_residue \
+                "$project_dir" "$root" "$max_repositories" "$max_manifests" "true"
+        done < "$discovery_output"
         while IFS= read -r -d '' marker_file; do
             [[ -n "$marker_file" ]] || continue
             case "$marker_file" in *$'\t'*|*$'\n'*|*$'\r'*) continue ;; esac
             if [[ "$marker_file" == */.git ]]; then
-                project_dir="${marker_file%/.git}"
-                _pch_collect_git_swiftpm_residue \
-                    "$project_dir" "$root" "$max_repositories" "$max_manifests" "true"
                 continue
             fi
             project_dir="${marker_file%/*}"
             case "$seen_projects" in
                 *"|$project_dir|"*) continue ;;
             esac
-            [[ "$found" -lt "$max_projects" ]] || continue
+            [[ "$found" -lt "$max_projects" ]] || { _pch_project_git_incomplete=1; continue; }
             seen_projects="${seen_projects}${project_dir}|"
             found=$((found + 1))
             project_name="$(/usr/bin/basename "$project_dir")"
@@ -1363,6 +1367,10 @@ _pch_collect_project_residue() {
                         "cargo clean 으로 안전하게 비우고, 다음 빌드 때 재생성됩니다."
                     ;;
                 */Package.swift)
+                    # Inside Git, only the verified index path above may supply Swift candidates.
+                    ancestor="$project_dir"
+                    while [[ "$ancestor" != "/" && ! -e "$ancestor/.git" ]]; do ancestor="${ancestor%/*}"; ancestor="${ancestor:-/}"; done
+                    [[ ! -e "$ancestor/.git" ]] || continue
                     _pch_add_project_residue_row "$project_dir/.build" \
                         "SwiftPM 빌드 산출물 · $project_name" \
                         "swift package clean 또는 .build 삭제로 재생성 가능합니다."
@@ -1381,8 +1389,6 @@ _pch_collect_project_residue() {
                         "재생성 가능한 프로젝트 로컬 Gradle 캐시입니다."
                     ;;
             esac
-            _pch_collect_git_swiftpm_residue \
-                "$project_dir" "$root" "$max_repositories" "$max_manifests"
         done < "$discovery_output"
         /bin/rm -f "$discovery_output"
     done
