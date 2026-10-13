@@ -899,14 +899,15 @@ def test_mac_builder_embeds_release_identity_without_local_path(project_root):
     assert 'mktemp -d "$binary_staging/swift-build-$architecture.XXXXXX"' in source
     assert 'scratch_path="$BUILD_DIR/swift-build-$architecture"' not in source
     assert "existing_app_is_expected" in source
-    assert "Previous app preserved for manual review" in source
+    assert "Previous app registered for recovery retention" in source
     assert '/bin/rm -rf "$backup_app"' not in source
-    assert 'KEEP_PREVIOUS_APP="${PCH_KEEP_PREVIOUS_APP:-0}"' in source
-    assert 'if [[ "$KEEP_PREVIOUS_APP" == "1" ]]' in source
+    assert 'lifecycle track --id "$build_run_id" --kind recovery' in source
     assert '/bin/rm -rf "$backup_container"' not in source
     assert "build_support_reconcile_app_backup" in source
-    assert "build_support_retire_preserved_backup" in source
-    assert "Verified replacement; previous app backup removed" in source
+    assert '"$current_uid" "managed" app_bundle_is_expected' in source
+    assert 'lifecycle finish --id "$build_run_id" --success' in source
+    assert 'lifecycle seed-runtime --repository "$ROOT_DIR"' in source
+    assert 'Library/Caches/Modore/build-runtime/python' in source
     assert 'ALLOW_USER_TOOLCHAIN="${PCH_ALLOW_USER_TOOLCHAIN:-0}"' in source
     assert '"$ALLOW_USER_TOOLCHAIN" == "1" && "${PCH_SKIP_ADHOC_SIGN:-0}" == "1"' in source
     assert 'Contents/Resources/modore-python' in source

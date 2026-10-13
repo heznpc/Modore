@@ -18,7 +18,6 @@ MINIMUM_SYSTEM_VERSION="${PCH_MINIMUM_SYSTEM_VERSION:-13.0}"
 ARCH_SPEC="${PCH_BUILD_ARCHS:-native}"
 STRICT_BUILD="${PCH_STRICT_BUILD:-1}"
 ALLOW_USER_TOOLCHAIN="${PCH_ALLOW_USER_TOOLCHAIN:-0}"
-KEEP_PREVIOUS_APP="${PCH_KEEP_PREVIOUS_APP:-0}"
 PYTHON_RUNTIME_VERSION="3.11.16+20260825"
 PYTHON_RUNTIME_RELEASE="20260825"
 PYTHON_RUNTIME_ARM64_SHA256="a84adc050a29e0c7387c885ff13e6ac4b0027f9e841359e200d647313dbb5b03"
@@ -35,10 +34,6 @@ if [[ ! "$MINIMUM_SYSTEM_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
 fi
 if [[ "$ALLOW_USER_TOOLCHAIN" != "0" && "$ALLOW_USER_TOOLCHAIN" != "1" ]]; then
     /usr/bin/printf 'ERROR: PCH_ALLOW_USER_TOOLCHAIN must be 0 or 1.\n' >&2
-    exit 64
-fi
-if [[ "$KEEP_PREVIOUS_APP" != "0" && "$KEEP_PREVIOUS_APP" != "1" ]]; then
-    /usr/bin/printf 'ERROR: PCH_KEEP_PREVIOUS_APP must be 0 or 1.\n' >&2
     exit 64
 fi
 if [[ "$ALLOW_USER_TOOLCHAIN" == "1" && "${PCH_SKIP_ADHOC_SIGN:-0}" == "1" ]]; then
@@ -192,13 +187,8 @@ if [[ ! "$build_identity" =~ ^[0-9a-f]{64}$ ]]; then
     /usr/bin/printf 'ERROR: cannot establish the build identity.\n' >&2
     exit 1
 fi
-if ! build_support_recover_staging_directories \
-    "$BUILD_DIR" ".pch-app-staging" "$build_identity" "$current_uid" \
-    || ! build_support_recover_staging_directories \
-        "$user_temp" "pch-swift-binaries" "$build_identity" "$current_uid"; then
-    /usr/bin/printf 'ERROR: cannot safely recover an interrupted build staging directory.\n' >&2
-    exit 73
-fi
+# Do not call build_support_recover_staging_directories here: interrupted
+# builds have no completed validation receipt and must remain reviewable.
 FINAL_APP_DIR="$BUILD_DIR/$APP_NAME"
 
 clean_environment=(
@@ -348,13 +338,12 @@ existing_app_is_expected() {
 backup_recovery_status=0
 build_support_reconcile_app_backup \
     "$BUILD_DIR" "$FINAL_APP_DIR" "$APP_NAME" "$build_identity" \
-    "$current_uid" "$KEEP_PREVIOUS_APP" app_bundle_is_expected \
+    "$current_uid" "managed" app_bundle_is_expected \
     || backup_recovery_status=$?
 if [[ "$backup_recovery_status" -ne 0 ]]; then
     /usr/bin/printf 'ERROR: interrupted app backup is ambiguous or changed; preserving it for manual review.\n' >&2
     exit "$backup_recovery_status"
 fi
-preserved_backup_container="$BUILD_SUPPORT_PRESERVED_BACKUP"
 if [[ "$BUILD_SUPPORT_BACKUP_RECOVERED" == "1" ]]; then
     /usr/bin/printf 'Recovered the previous app after an interrupted replacement.\n'
 fi
@@ -376,44 +365,50 @@ if [[ -x "$running_app_binary" ]] && app_binary_is_running; then
     exit 75
 fi
 
-PYTHON_RUNTIME_CACHE="$BUILD_DIR/.python-runtime-cache"
-if ! create_build_directory_without_symlinks "$BUILD_DIR" "$PYTHON_RUNTIME_CACHE"; then
+PYTHON_RUNTIME_CACHE="$account_home/Library/Caches/Modore/build-runtime/python"
+if ! create_build_directory_without_symlinks "$account_home" "$PYTHON_RUNTIME_CACHE"; then
     /usr/bin/printf 'ERROR: cannot establish the pinned Python runtime cache.\n' >&2
     exit 1
 fi
-runtime_cache_allowlist=()
-for architecture in "${architectures[@]}"; do
-    runtime_cache_allowlist+=("$(python_runtime_archive_name "$architecture")")
-done
-if ! build_support_prune_runtime_cache \
-    "$PYTHON_RUNTIME_CACHE" "$current_uid" "${runtime_cache_allowlist[@]}"; then
-    /usr/bin/printf 'ERROR: cannot safely prune old pinned Python runtime caches.\n' >&2
+if ! build_support_acquire_runtime_lock "$PYTHON_RUNTIME_CACHE/.pch-runtime-cache.lock" "$current_uid"; then
+    /usr/bin/printf 'ERROR: another build is using the shared Python runtime cache.\n' >&2
     exit 1
 fi
+# build_support_prune_runtime_cache is intentionally replaced by receipt-based
+# retirement. Unknown or failed-run archives must not be pruned by name alone.
+
+LIFECYCLE_SCRIPT="$ROOT_DIR/scripts/build_lifecycle.py"
+[[ -f "$LIFECYCLE_SCRIPT" && ! -L "$LIFECYCLE_SCRIPT" && -x /usr/bin/python3 ]] || {
+    /usr/bin/printf 'ERROR: build lifecycle recorder is unavailable.\n' >&2; exit 1;
+}
+lifecycle() { run_clean /usr/bin/python3 -I -B "$LIFECYCLE_SCRIPT" "$@"; }
+lifecycle seed-runtime --repository "$ROOT_DIR" >/dev/null
+build_run_id="$(lifecycle begin --repository "$ROOT_DIR" --output "$BUILD_DIR" --pid "$$" --value-only)"
+build_verified=0
 
 binary_staging=""
 app_staging=""
 cleanup() {
-    if [[ -n "$binary_staging" && ( -e "$binary_staging" || -L "$binary_staging" ) ]]; then
-        build_support_remove_staging_directory \
-            "$binary_staging" "$user_temp" "pch-swift-binaries" \
-            "$build_identity" "$current_uid" \
-            || /usr/bin/printf 'WARNING: preserving changed binary staging for review: %s\n' \
-                "$binary_staging" >&2
+    local exit_status=$?
+    if [[ "$build_verified" == "1" && "$exit_status" == "0" ]]; then
+        lifecycle finish --id "$build_run_id" --success --validation 'Swift release·서명·내장 Python·세션 조회 검증 통과' >/dev/null || return
+        exec 8>&-
+        exec 9>&-
+        lifecycle import-runtime --repository "$ROOT_DIR" >/dev/null || true
+        lifecycle reclaim >/dev/null || /usr/bin/printf 'WARNING: completed outputs preserved; inspect Build Artifacts in Modore.\n' >&2
+    else
+        lifecycle finish --id "$build_run_id" --validation "빌드 실패·중단 (exit $exit_status)" >/dev/null || true
+        /usr/bin/printf 'Build output preserved for review; receipt: %s\n' "$build_run_id" >&2
     fi
-    if [[ -n "$app_staging" && ( -e "$app_staging" || -L "$app_staging" ) ]]; then
-        build_support_remove_staging_directory \
-            "$app_staging" "$BUILD_DIR" ".pch-app-staging" \
-            "$build_identity" "$current_uid" \
-            || /usr/bin/printf 'WARNING: preserving changed app staging for review: %s\n' \
-                "$app_staging" >&2
-    fi
+    return "$exit_status"
 }
 trap cleanup EXIT
 binary_staging="$(build_support_create_staging_directory \
     "$user_temp" "pch-swift-binaries" "$build_identity" "$current_uid")"
 app_staging="$(build_support_create_staging_directory \
     "$BUILD_DIR" ".pch-app-staging" "$build_identity" "$current_uid")"
+lifecycle track --id "$build_run_id" --kind scratch --path "$binary_staging" >/dev/null
+lifecycle track --id "$build_run_id" --kind staging --path "$app_staging" >/dev/null
 APP_DIR="$app_staging/$APP_NAME"
 
 for architecture in "${architectures[@]}"; do
@@ -488,6 +483,7 @@ RUNTIME_FILES=(
     "scripts/storage_explain.py"
     "scripts/ci_watch.py"
     "scripts/environment_retirement.py"
+    "scripts/build_lifecycle.py"
     "scripts/app_registrations.py"
     "scripts/report.jxa.js"
     "scripts/scanner_helper.jxa.js"
@@ -579,6 +575,7 @@ for architecture in "${architectures[@]}"; do
         /bin/mv "$downloaded_archive" "$cached_archive"
     fi
 
+    lifecycle track --id "$build_run_id" --kind runtime --path "$cached_archive" >/dev/null
     archive_entries="$binary_staging/python-runtime-$architecture.entries"
     run_clean /usr/bin/tar -tzf "$cached_archive" > "$archive_entries"
     if ! /usr/bin/awk '
@@ -840,16 +837,7 @@ if [[ -e "$FINAL_APP_DIR" || -L "$FINAL_APP_DIR" ]]; then
         /usr/bin/printf 'ERROR: existing app output changed during the build; preserving it and refusing replacement.\n' >&2
         exit 73
     fi
-    if [[ -n "$preserved_backup_container" ]]; then
-        if ! build_support_retire_preserved_backup \
-            "$preserved_backup_container" "$BUILD_DIR" "$APP_NAME" \
-            "$build_identity" "$current_uid" app_bundle_is_expected; then
-            /usr/bin/printf 'ERROR: preserved app backup changed during the build; keeping it for manual review.\n' >&2
-            exit 73
-        fi
-        preserved_backup_container=""
-        /usr/bin/printf 'Removed the older preserved app backup before replacement.\n'
-    fi
+    # The existing recovery copy remains intact until the replacement validates.
     backup_container="$(build_support_create_staging_directory \
         "$BUILD_DIR" ".pch-app-backup" "$build_identity" "$current_uid")"
     backup_app="$backup_container/$APP_NAME"
@@ -895,20 +883,8 @@ if [[ -e "$FINAL_APP_DIR" || -L "$FINAL_APP_DIR" ]]; then
         /usr/bin/printf 'ERROR: replacement app failed post-swap verification; previous app restored when possible.\n' >&2
         exit 74
     fi
-    if [[ "$KEEP_PREVIOUS_APP" == "1" ]]; then
-        /usr/bin/printf 'Previous app preserved for manual review: %s\n' "$backup_app"
-    else
-        if ! build_support_backup_container_has_exact_payload \
-            "$backup_container" "$APP_NAME" \
-            || ! app_bundle_is_expected "$backup_app" 1 \
-            || ! build_support_remove_staging_directory \
-                "$backup_container" "$BUILD_DIR" ".pch-app-backup" \
-                "$build_identity" "$current_uid"; then
-            /usr/bin/printf 'ERROR: previous app backup changed after replacement; preserving for manual review: %s\n' "$backup_app" >&2
-            exit 73
-        fi
-        /usr/bin/printf 'Verified replacement; previous app backup removed.\n'
-    fi
+    lifecycle track --id "$build_run_id" --kind recovery --path "$backup_container" >/dev/null
+    /usr/bin/printf 'Previous app registered for recovery retention: %s\n' "$backup_app"
 else
     /bin/mv "$APP_DIR" "$FINAL_APP_DIR"
     new_signature_required="1"
@@ -921,6 +897,9 @@ else
     fi
 fi
 
+lifecycle track --id "$build_run_id" --kind app --path "$FINAL_APP_DIR" >/dev/null
+build_verified=1
+/usr/bin/printf 'Build validation receipt: %s\n' "$build_run_id"
 /usr/bin/printf 'Built: %s\n' "$FINAL_APP_DIR"
 /usr/bin/printf 'Architectures: %s\n' "$actual_architectures"
 /usr/bin/printf 'Minimum macOS: %s\n' "$MINIMUM_SYSTEM_VERSION"
