@@ -15,6 +15,7 @@ import tempfile
 import time
 import uuid
 import app_registrations
+import generated_cache
 
 ROOT = Path.home() / 'Library/Application Support/Modore/environment-retirement'
 
@@ -294,7 +295,7 @@ def classify_storage(path):
 
 def _classify_storage(path):
     """Explain observed contents; never authorize deletion from a folder name."""
-    p = Path(path)
+    p = Path(display_storage_path(str(path)))
     def result(kind, detail, review=False):
         return dict(classification=kind, evidence=detail, cleanupReview=review)
     if any(part.startswith('com_apple_MobileAsset_UAF_') for part in p.parts):
@@ -305,6 +306,8 @@ def _classify_storage(path):
         return result('설치된 Flutter SDK', '다운로드 보관 이름이어도 실행 가능한 SDK가 있습니다. 설치 경로의 심볼릭 링크가 이 원본을 사용할 수 있어 전체 삭제 대상으로 삼지 않습니다.')
     if p.name == 'cache' and p.parent.name == 'bin' and (p.parent / 'flutter').is_file():
         return result('Flutter SDK 재생성 캐시', 'Flutter 실행 파일을 확인했습니다. SDK 원본과 분리해 검토해야 하며, 다음 실행 때 다운로드·빌드가 필요합니다. 현재 사용 여부는 미확인입니다.')
+    if generated_cache.review_candidate(p):
+        return result('재생성 검증 대상', '지원하는 생성물 경로입니다. 선택 후 원본·복원 명세·캐시 형식·현재 사용·내부 보존 자료를 검사하며, 확인 실패 시 삭제를 차단합니다.', True)
     if p.name in ('DerivedData', 'test-products', 'result-bundles') and 'XcodeBuildMCP' in p.parts:
         return result('테스트·빌드 작업 자료', 'DerivedData·테스트 실행물·결과 묶음을 각각 검토하세요. 결과 묶음은 당시의 증거이며 재빌드로 복원되지 않습니다. 현재 사용 여부는 미확인입니다.')
     if p.name.endswith('.app-backup'):

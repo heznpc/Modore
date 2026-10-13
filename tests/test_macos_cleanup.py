@@ -240,6 +240,59 @@ def run_project_residue_execute(
         )
 
 
+def test_generated_next_recipe_executes_only_approved_fixture(project_root, tmp_path):
+    from test_generated_cache import next_cache
+    home = tmp_path/'home'; target=next_cache(home)
+    preview=run_project_residue_preview(project_root,home,target)
+    payload=parse_protocol(preview.stdout)
+    assert payload['status']=='ready', preview.stdout+preview.stderr
+    assert '생성 형식: next' in payload['regenerationEvidence']
+    assert payload['targets']==[str(target)]
+    result=run_project_residue_execute(project_root,home,target,approval_token(payload))
+    assert parse_protocol(result.stdout)['status']=='complete', result.stdout+result.stderr
+    assert not target.exists()
+    assert (target.parent/'package.json').exists()
+
+
+@pytest.mark.parametrize('change', ['lock','payload','evidence','tracked'])
+def test_generated_recipe_revokes_changed_evidence_before_deletion(project_root,tmp_path,change):
+    from test_generated_cache import next_cache, put
+    home=tmp_path/'home';target=next_cache(home)
+    if change=='tracked':
+        subprocess.run(['/usr/bin/git','init','-q',str(target.parent)],check=True)
+    preview=run_project_residue_preview(project_root,home,target)
+    token=approval_token(parse_protocol(preview.stdout))
+    if change=='lock':put(target.parent/'package-lock.json','{"changed":true}')
+    elif change=='payload':put(target/'static/chunk.js','changed after approval')
+    elif change=='evidence':put(target/'new.xcresult/data')
+    else:subprocess.run(['/usr/bin/git','-C',str(target.parent),'add','.next'],check=True)
+    result=run_project_residue_execute(project_root,home,target,token)
+    assert parse_protocol(result.stdout)['status']!='complete'
+    assert target.exists()
+
+
+def test_generated_global_cache_is_blocked_by_consumer_process(project_root,tmp_path):
+    from test_generated_cache import put
+    home=tmp_path/'home';target=home/'Library/Caches/node-gyp'
+    put(target/'22.1.0/installVersion','11')
+    put(target/'22.1.0/include/node/node_version.h','#define NODE_MAJOR_VERSION 22\n')
+    put(target/'22.1.0/include/node/node.h')
+    unrelated=run_project_residue_preview(project_root,home,target,processes='123 /opt/bin/node-gyp rebuild /another-project')
+    assert parse_protocol(unrelated.stdout)['status']=='ready',unrelated.stdout+unrelated.stderr
+    result=run_project_residue_preview(project_root,home,target,processes=f'123 /opt/bin/node-gyp rebuild --devdir {target}')
+    assert parse_protocol(result.stdout)['status']!='ready'
+    assert target.exists()
+
+
+def test_generated_recipe_unknown_open_file_probe_fails_closed(project_root,tmp_path,monkeypatch):
+    from test_generated_cache import next_cache
+    home=tmp_path/'home';target=next_cache(home)
+    monkeypatch.setenv('PCH_TEST_TRANSIENT_LSOF_UNKNOWN','1')
+    preview=run_project_residue_preview(project_root,home,target)
+    assert parse_protocol(preview.stdout)['status']=='blocked'
+    assert '사용 여부를 확인하지 못했습니다' in preview.stdout
+
+
 def test_macos_app_keeps_raw_approval_token_out_of_argv(project_root):
     source = (
         project_root

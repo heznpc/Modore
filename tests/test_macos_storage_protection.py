@@ -2168,6 +2168,39 @@ def _make_nested_swift_repo(
     return repo, packages
 
 
+def test_project_discovery_surfaces_next_and_venv_without_walking_inside(project_root,tmp_path):
+    root=tmp_path/'projects';facts=tmp_path/'facts';facts.mkdir()
+    for name,marker,cache in [('web','package.json','.next'),('python','pyproject.toml','.venv')]:
+        p=root/name;p.mkdir(parents=True)
+        (p/marker).write_text('{}')
+        (p/cache).mkdir()
+        # Nested manifests in generated output must not create project rows.
+        (p/cache/'package.json').write_text('{}')
+    env=os.environ.copy();env.update(PCH_TEST_MODE='1',PCH_PROJECT_SCAN_ROOTS=str(root),TMP_DIR=str(facts))
+    result=_run_project_residue_only(project_root/'scripts/modules/macos/storage.sh',env)
+    assert result.returncode==0,result.stderr
+    rows=(facts/'storage_paths.tsv').read_text()
+    assert str(root/'web/.next') in rows
+    assert str(root/'python/.venv') in rows
+    assert rows.count('\n')==2
+
+
+def test_global_discovery_exposes_only_xcode_children_and_exact_caches(project_root,tmp_path):
+    home=tmp_path/'home';facts=tmp_path/'facts';facts.mkdir()
+    parent=home/'Library/Developer/XcodeBuildMCP/workspaces/App/DerivedData/App'
+    (parent/'Build').mkdir(parents=True);(parent/'Logs').mkdir();(parent/'TestResults').mkdir()
+    (parent/'info.plist').write_text('metadata')
+    cache=home/'Library/Caches/node-gyp';cache.mkdir(parents=True)
+    env=os.environ.copy();env.update(HOME=str(home),TMP_DIR=str(facts),PCH_TEST_MODE='1',PCH_TEST_STORAGE_ALLOW_HOST_INVENTORY='1')
+    result=subprocess.run(['/bin/bash','-c','. "$1"; seen="|"; du_size_kb() { DU_SIZE_RESULT=5120; }; _pch_collect_generated_cache_candidates',
+                           'bash',str(project_root/'scripts/modules/macos/storage.sh')],env=env,capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    rows=(facts/'storage_paths.tsv').read_text()
+    assert str(parent/'Build') in rows and str(cache) in rows
+    assert str(parent/'Logs') not in rows and str(parent/'TestResults') not in rows
+    assert rows.count('\n')==2
+
+
 def _project_git_test_env(
     tmp_path: Path, scan_root: Path, facts: Path, trace: Path
 ) -> dict[str, str]:

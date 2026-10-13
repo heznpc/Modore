@@ -34,6 +34,12 @@ PROJECT_RESIDUE_TARGET=""
 PROJECT_RESIDUE_PARENT=""
 PROJECT_RESIDUE_BASENAME=""
 PROJECT_RESIDUE_PRIMARY_MARKER=""
+PROJECT_GENERATED_KIND=""
+PROJECT_GENERATED_SOURCE=""
+PROJECT_GENERATED_SCOPE=""
+PROJECT_GENERATED_PATTERN=""
+PROJECT_GENERATED_FINGERPRINT=""
+PROJECT_GENERATED_ERROR=""
 PROJECT_PROCESS_PATH_PATTERN=""
 PROJECT_PROCESS_ROWS=""
 PROJECT_PROCESS_ROWS_CACHED="false"
@@ -489,6 +495,7 @@ swift_build_output_candidates() {
 }
 
 project_residue_candidate_names() {
+    [[ -z "$PROJECT_GENERATED_KIND" ]] || return 0
     case "$PROJECT_RESIDUE_BASENAME" in
         node_modules) /usr/bin/printf '%s\n' package.json ;;
         target) /usr/bin/printf '%s\n' Cargo.toml ;;
@@ -502,6 +509,7 @@ project_residue_candidate_names() {
 }
 
 project_residue_lock_names() {
+    [[ -z "$PROJECT_GENERATED_KIND" ]] || return 0
     case "$PROJECT_RESIDUE_BASENAME" in
         node_modules)
             /usr/bin/printf '%s\n' package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb
@@ -522,6 +530,10 @@ project_residue_lock_names() {
 }
 
 project_residue_tool_pattern() {
+    if [[ -n "$PROJECT_GENERATED_KIND" ]]; then
+        /usr/bin/printf '%s' "$PROJECT_GENERATED_PATTERN"
+        return 0
+    fi
     case "$PROJECT_RESIDUE_BASENAME" in
         node_modules)
             /usr/bin/printf '%s' '(^|/)(npm|npx|pnpm|yarn|bun)( |$)|(^|/)(npm-cli|npx-cli)\.js( |$)|(^|/)pnpm\.(cjs|js|mjs)( |$)|corepack'
@@ -605,6 +617,37 @@ project_git_state() {
     return 0
 }
 
+validate_generated_cache_contract() {
+    local target="$1" helper python output key value
+    helper="${PCH_PINNED_GENERATED_CACHE:-$(/usr/bin/dirname "${BASH_SOURCE[0]}")/generated_cache.py}"
+    python="${PCH_GENERATED_CACHE_PYTHON:-/usr/bin/python3}"
+    PROJECT_GENERATED_KIND=""; PROJECT_GENERATED_ERROR=""
+    output="$("$python" -I -B -c 'import sys; source=open(sys.argv[1],"rb").read(); sys.argv=["generated_cache.py"]+sys.argv[2:]; exec(compile(source,"generated_cache.py","exec"),{"__name__":"__main__"})' \
+        "$helper" "$target" --home "$HOME_ROOT" 2>/dev/null)"
+    local result=$?
+    while IFS=$'\t' read -r key value; do
+        case "$key" in
+            kind) PROJECT_GENERATED_KIND="$value" ;;
+            source) PROJECT_GENERATED_SOURCE="$value" ;;
+            scope) PROJECT_GENERATED_SCOPE="$value" ;;
+            processPattern) PROJECT_GENERATED_PATTERN="$value" ;;
+            fingerprint) PROJECT_GENERATED_FINGERPRINT="$value" ;;
+            error) PROJECT_GENERATED_ERROR="$value" ;;
+        esac
+    done <<< "$output"
+    [[ "$result" == "0" && -n "$PROJECT_GENERATED_KIND" \
+        && "$PROJECT_GENERATED_FINGERPRINT" =~ ^[0-9a-f]{64}$ ]] || return 1
+    if [[ "$PROJECT_GENERATED_SCOPE" == "global" ]]; then
+        PROJECT_PROCESS_PATH_PATTERN="$(regex_escape "$target")(/|[[:space:]]|$)"
+    fi
+    # Every generated-cache recipe checks exact open files, including tools
+    # whose command line does not mention the target. Unknown usage blocks.
+    transient_workspace_is_idle "$target" || {
+        PROJECT_GENERATED_ERROR="사용 중이거나 현재 사용 여부를 확인하지 못했습니다. 관련 앱·도구를 종료한 뒤 다시 조사하세요."
+        return 1
+    }
+}
+
 validate_project_residue_contract() {
     local target="$1" parent canonical_parent basename owner marker marker_path found=""
     [[ "$target" == "$PROJECT_RESIDUE_TARGET" && -d "$target" && ! -L "$target" ]] || return 1
@@ -615,7 +658,6 @@ validate_project_residue_contract() {
     [[ "$canonical_parent" == "$HOME_ROOT" || "$canonical_parent" == "$HOME_ROOT/"* ]] || return 1
     basename="$(/usr/bin/basename "$target")"
     [[ "$parent" != "$target" && "$parent" != "/" ]] || return 1
-    case "$basename" in .build|node_modules|target|build|.dart_tool|.gradle|Pods) ;; *) return 1 ;; esac
     [[ -d "$parent" && ! -L "$parent" ]] || return 1
     owner="$(path_owner_uid "$target")" || return 1
     [[ "$owner" == "$(/usr/bin/id -u)" ]] || return 1
@@ -624,6 +666,15 @@ validate_project_residue_contract() {
 
     PROJECT_RESIDUE_PARENT="$parent"
     PROJECT_RESIDUE_BASENAME="$basename"
+    PROJECT_GENERATED_KIND=""; PROJECT_GENERATED_ERROR=""
+    case "$basename" in
+        .build|node_modules|target|build|.dart_tool|.gradle|Pods) ;;
+        *)
+            validate_generated_cache_contract "$target" || return 1
+            project_git_state "$parent" "$target"
+            return $?
+            ;;
+    esac
     while IFS= read -r marker; do
         [[ -n "$marker" ]] || continue
         marker_path="$parent/$marker"
@@ -656,6 +707,9 @@ project_residue_evidence_stream() {
     local marker lock marker_path lock_path
     validate_project_residue_contract "$PROJECT_RESIDUE_TARGET" || return 1
     /usr/bin/printf 'request\t1\tproject_residue\t%s\n' "$PROJECT_RESIDUE_TARGET"
+    if [[ -n "$PROJECT_GENERATED_KIND" ]]; then
+        /usr/bin/printf 'generated\t%s\t%s\t%s\n' "$PROJECT_GENERATED_KIND" "$PROJECT_GENERATED_SOURCE" "$PROJECT_GENERATED_FINGERPRINT"
+    fi
     while IFS= read -r marker; do
         [[ -n "$marker" ]] || continue
         marker_path="$PROJECT_RESIDUE_PARENT/$marker"
@@ -1655,7 +1709,7 @@ validate_target() {
         transient_workspace_is_idle "$target" || return 1
     fi
     if [[ "$recipe" == "project_residue" ]]; then
-        validate_project_residue_contract "$target"
+        validate_project_residue_contract "$target" || return 1
     fi
     return 0
 }
@@ -1871,6 +1925,11 @@ current_project_process_rows() {
 }
 
 matching_project_processes() {
+    if [[ "${PROJECT_GENERATED_SCOPE:-}" == "global" ]]; then
+        process_snapshot | /usr/bin/grep -E "$PROJECT_PROCESS_PATH_PATTERN" \
+            | exclude_self_and_measurement | /usr/bin/head -n 5 || true
+        return 0
+    fi
     if [[ "${PCH_TEST_MODE:-0}" == "1" \
         && -z "${PCH_PROCESS_LIST_WITH_PID_FILE:-}" ]]; then
         process_snapshot \
@@ -2254,7 +2313,7 @@ preview_status() {
     for target in "${TARGETS[@]}"; do
         if ! validate_target "$RECIPE_ID" "$target"; then
             PREVIEW_STATUS="blocked"
-            BLOCKED_REASON="안전 경계를 벗어나거나 심볼릭 링크인 대상이 있어 실행을 차단했습니다."
+            BLOCKED_REASON="${PROJECT_GENERATED_ERROR:-안전 경계를 벗어나거나 심볼릭 링크인 대상이 있어 실행을 차단했습니다.}"
             return 0
         fi
     done
@@ -2337,7 +2396,11 @@ emit_state() {
                 fi
             done < <(project_residue_candidate_names; project_residue_lock_names)
             [[ -z "$PROJECT_GIT_REPO" ]] || git_evidence="대상 내 Git 추적 파일 없음 확인"
-            emit "regenerationEvidence" "명세 파일 존재: $evidence_names · $git_evidence · 실제 재빌드는 미검증"
+            if [[ -n "$PROJECT_GENERATED_KIND" ]]; then
+                emit "regenerationEvidence" "생성 형식: $PROJECT_GENERATED_KIND · 원본: $PROJECT_GENERATED_SOURCE · 명세·캐시 형식·보존 증거 검사 통과 · $git_evidence · 실제 재생성은 미검증"
+            else
+                emit "regenerationEvidence" "명세 파일 존재: $evidence_names · $git_evidence · 실제 재빌드는 미검증"
+            fi
         else
             emit "regenerationEvidence" "정리 규칙의 대상 구조 검증 통과 · 재다운로드·재빌드는 미검증"
         fi
