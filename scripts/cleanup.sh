@@ -623,7 +623,27 @@ validate_generated_cache_contract() {
     archive_helper="${PCH_PINNED_ARCHIVE_CACHE:-$(/usr/bin/dirname "${BASH_SOURCE[0]}")/archive_cache.py}"
     python="${PCH_GENERATED_CACHE_PYTHON:-/usr/bin/python3}"
     PROJECT_GENERATED_KIND=""; PROJECT_GENERATED_ERROR=""
-    output="$("$python" -I -B -c 'import sys,types; archive=types.ModuleType("archive_cache"); exec(compile(open(sys.argv[2],"rb").read(),"archive_cache.py","exec"),archive.__dict__); sys.modules["archive_cache"]=archive; source=open(sys.argv[1],"rb").read(); sys.argv=["generated_cache.py"]+sys.argv[3:]; exec(compile(source,"generated_cache.py","exec"),{"__name__":"__main__"})' \
+    # Darwin /dev/fd opens share the pinned descriptors' current offsets. The
+    # same helpers run again for the approval manifest and execution checks;
+    # pread starts at byte zero without consuming or resetting that shared
+    # offset. Keep reading the pinned files, never reopen their original paths.
+    output="$("$python" -I -B -c '
+import os,sys,types
+def read_source(path):
+    with open(path,"rb") as source:
+        size=os.fstat(source.fileno()).st_size
+        data=bytearray()
+        while len(data)<size:
+            block=os.pread(source.fileno(),min(1048576,size-len(data)),len(data))
+            if not block: raise OSError("Pinned helper changed while reading")
+            data.extend(block)
+        return bytes(data)
+archive=types.ModuleType("archive_cache")
+exec(compile(read_source(sys.argv[2]),"archive_cache.py","exec"),archive.__dict__)
+sys.modules["archive_cache"]=archive
+source=read_source(sys.argv[1])
+sys.argv=["generated_cache.py"]+sys.argv[3:]
+exec(compile(source,"generated_cache.py","exec"),{"__name__":"__main__"})' \
         "$helper" "$archive_helper" "$target" --home "$HOME_ROOT" 2>/dev/null)"
     local result=$?
     while IFS=$'\t' read -r key value; do

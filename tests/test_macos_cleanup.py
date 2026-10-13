@@ -311,6 +311,65 @@ def test_expo_archive_recipe_preserves_source_and_revokes_source_change(project_
     assert not target.exists() and archive.read_bytes()==original
 
 
+@pytest.mark.parametrize('initial_helper_offset', ['start', 'end'])
+def test_expo_preview_revalidates_same_pinned_helper_descriptors(project_root, tmp_path, initial_helper_offset):
+    from test_archive_cache import archive_fixture
+    home = tmp_path / 'home'
+    target, archive, _ = archive_fixture(home)
+    original_archive = archive.read_bytes()
+    processes = home / 'processes.txt'
+    processes.write_text('')
+    payloads = {
+        'cleanup': (project_root / 'scripts/cleanup.sh').read_bytes(),
+        'support': (project_root / 'scripts/modules/support_dir.sh').read_bytes(),
+        'approval': (project_root / 'scripts/modules/approval_token.sh').read_bytes(),
+        'generated': (project_root / 'scripts/generated_cache.py').read_bytes(),
+        'archive': (project_root / 'scripts/archive_cache.py').read_bytes(),
+        'request': project_residue_request(target),
+    }
+    descriptors = {}
+    try:
+        # Match LocalProcessRunner: private snapshots, read-only descriptors,
+        # unlinked backing files and /dev/fd paths inherited by the shell.
+        for name, data in payloads.items():
+            with tempfile.NamedTemporaryFile(dir=home, delete=False) as backing:
+                backing.write(data)
+                backing.flush()
+                os.fchmod(backing.fileno(), 0o400)
+            descriptors[name] = os.open(backing.name, os.O_RDONLY | os.O_NOFOLLOW)
+            os.unlink(backing.name)
+        expected_offsets = {}
+        for name in ('generated', 'archive'):
+            offset = len(payloads[name]) if initial_helper_offset == 'end' else 0
+            os.lseek(descriptors[name], offset, os.SEEK_SET)
+            expected_offsets[name] = offset
+        pinned = {name: f'/dev/fd/{fd}' for name, fd in descriptors.items()}
+        env = os.environ.copy()
+        env.update(PCH_TEST_MODE='1', PCH_HOME_OVERRIDE=str(home),
+                   PCH_PROCESS_LIST_FILE=str(processes),
+                   PCH_PINNED_SUPPORT_DIR_MODULE=pinned['support'],
+                   PCH_PINNED_APPROVAL_TOKEN_MODULE=pinned['approval'],
+                   PCH_PINNED_GENERATED_CACHE=pinned['generated'],
+                   PCH_PINNED_ARCHIVE_CACHE=pinned['archive'],
+                   PCH_GENERATED_CACHE_PYTHON=sys.executable)
+        result = subprocess.run(
+            ['/bin/bash', '-p', pinned['cleanup'], '--preview', 'project_residue',
+             '--request-file', pinned['request']],
+            env=env, pass_fds=tuple(descriptors.values()), capture_output=True,
+            text=True, timeout=60)
+        payload = parse_protocol(result.stdout)
+        assert result.returncode == 0 and payload['status'] == 'ready', result.stdout + result.stderr
+        assert payload['estimateMeasured'] == 'true' and int(payload['estimatedBytes']) > 0
+        assert payload['targets'] == [str(target)]
+        assert len(approval_token(payload)) == 64
+        for name, offset in expected_offsets.items():
+            assert os.lseek(descriptors[name], 0, os.SEEK_CUR) == offset
+        assert target.exists() and archive.read_bytes() == original_archive
+    finally:
+        for descriptor in descriptors.values():
+            os.close(descriptor)
+
+
 def test_macos_app_keeps_raw_approval_token_out_of_argv(project_root):
     source = (
         project_root
