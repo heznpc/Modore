@@ -2074,3 +2074,41 @@
 "검토 전용 모드에서는 삭제할 수 없습니다. Modore를 종료한 뒤 앱 아이콘에서 일반 모드로 다시 실행해 주세요." = "Deletion is disabled in review-only mode. Quit Modore, then reopen it from the app icon in normal mode.";
 "검토 전용 · 삭제 비활성화" = "Review only · Deletion disabled";
 "크기와 사용 근거를 검토할 수 있습니다." = "You can review size and usage evidence.";
+
+"빌드 산출물 보관·회수" = "Build artifact retention";
+
+"생성 → 검증 종료 → 설치본 연결 → 보관 또는 회수" = "Created → Verified → Linked to installation → Retained or reclaimed";
+
+"새로 확인" = "Refresh";
+
+"전체 회수 가능 %d개 검토" = "Review all %d reclaimable artifacts";
+
+"생성 기록·현재 사용·보관 조건을 확인하고 있습니다…" = "Checking creation records, current use, and retention…";
+
+"이전 확인 결과" = "Previous results";
+
+"공용 Python 캐시: %@" = "Shared Python cache: %@";
+
+"성공한 빌드·테스트는 종료 시 회수 조건을 검사합니다. 기록이 없는 과거 폴더는 자동 삭제하지 않습니다." = "Successful builds and tests check reclamation conditions on completion. Older folders without records are preserved.";
+
+"경로·보존 사유 검색" = "Search paths or retention reasons";
+
+"기록 당시 %@" = "%@ when recorded";
+
+"생성 %@ · 종료 %@" = "Created %@ · Finished %@";
+
+"서명으로 연결한 설치본: %@" = "Installation matched by signature: %@";
+
+"이전 연결 · 현재 서명 변경 또는 경로 없음: %@" = "Previous link · Signature changed or path missing: %@";
+
+"설치본 연결 확인" = "Match installation";
+
+"아직 등록된 빌드가 없습니다. 다음 관리 빌드부터 생성·검증·보관 기록이 남습니다." = "No builds recorded yet. The next managed build will record creation, verification, and retention.";
+
+"검증 완료 산출물 %d개 삭제 검토" = "Review deletion of %d verified artifacts";
+
+"검색 필터와 관계없이 아래 전체 대상을 검토합니다. 실행 직전에 내용·사용 여부를 다시 검사하며 조건이 바뀐 항목은 보존합니다." = "Review every target below, regardless of the search filter. Content and current use are rechecked before deletion; changed items are preserved.";
+
+"기록된 대상 점유 %@" = "Recorded target size: %@";
+
+"검토한 %d개 삭제" = "Delete %d reviewed artifacts";

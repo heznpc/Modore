@@ -28,6 +28,7 @@ struct StorageWorkspacePage: View {
     @State private var reviewPath: String?
     @State private var retirementOpen = false
     @State private var environmentRetirement = false
+    @State private var buildArtifactsOpen = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,6 +44,7 @@ struct StorageWorkspacePage: View {
                 Menu("환경·프로젝트 검토") {
                     Button("실행 환경") { environmentRetirement = true }
                     Button("프로젝트 정리") { retirementOpen = true }
+                    Button(L10n.text("빌드 산출물 보관·회수")) { buildArtifactsOpen = true }
                 }.fixedSize()
             }.padding(.horizontal, 20).padding(.vertical, 10)
             Divider()
@@ -62,6 +64,7 @@ struct StorageWorkspacePage: View {
         }
         .navigationDestination(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
         .navigationDestination(isPresented: $retirementOpen) { AssetRetirementView() }
+        .navigationDestination(isPresented: $buildArtifactsOpen) { BuildArtifactLifecycleView() }
     }
 
     private var resultFilter: StorageResultFilter {

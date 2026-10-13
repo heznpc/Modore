@@ -65,6 +65,17 @@ build_support_acquire_lock() {
     fi
 }
 
+# Separate descriptor: the per-output lock on fd 9 must remain held too.
+build_support_acquire_runtime_lock() {
+    local path="$1" uid="$2" before after
+    build_support_prepare_lock_file "$path" "$uid" || return 73
+    before="$(/usr/bin/stat -f '%i:%u:%p:%l' "$path")" || return 73
+    exec 8<> "$path" || return 73
+    after="$(/usr/bin/stat -f '%i:%u:%p:%l' /dev/fd/8)" || return 73
+    [[ "$before" == "$after" && ! -L "$path" ]] || return 73
+    /usr/bin/lockf -s -t 0 8
+}
+
 build_support_staging_marker_is_valid() {
     local directory="$1"
     local expected_identity="$2"
@@ -192,7 +203,7 @@ build_support_reconcile_app_backup() {
     BUILD_SUPPORT_PRESERVED_BACKUP=""
     # shellcheck disable=SC2034 # outputs consumed by the sourcing builder
     BUILD_SUPPORT_BACKUP_RECOVERED="0"
-    [[ "$keep_previous" == "0" || "$keep_previous" == "1" ]] || return 64
+    [[ "$keep_previous" == "0" || "$keep_previous" == "1" || "$keep_previous" == "managed" ]] || return 64
     [[ "$build_identity" =~ ^[0-9a-f]{64}$ ]] || return 64
     [[ "$app_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 64
     for candidate in "$parent"/.pch-app-backup.*; do
@@ -203,6 +214,12 @@ build_support_reconcile_app_backup() {
         esac
         build_support_staging_marker_is_valid \
             "$candidate" "$build_identity" "$expected_uid" || return 73
+        # Receipt-based builds may preserve several failed/changed runs. When
+        # a final app exists, none needs restoring or deleting by name here.
+        if [[ "$keep_previous" == "managed" && -e "$final_app" ]]; then
+            "$validator" "$final_app" 1 || return 73
+            continue
+        fi
         count=$((count + 1))
         [[ "$count" -le 1 ]] || return 73
         backup_container="$candidate"
