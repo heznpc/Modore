@@ -293,6 +293,24 @@ def test_generated_recipe_unknown_open_file_probe_fails_closed(project_root,tmp_
     assert '사용 여부를 확인하지 못했습니다' in preview.stdout
 
 
+def test_expo_archive_recipe_preserves_source_and_revokes_source_change(project_root,tmp_path):
+    from test_archive_cache import archive_fixture
+    home=tmp_path/'home';target,archive,_=archive_fixture(home)
+    original=archive.read_bytes()
+    preview=run_project_residue_preview(project_root,home,target)
+    payload=parse_protocol(preview.stdout)
+    assert payload['status']=='ready',preview.stdout+preview.stderr
+    assert payload['targets']==[str(target)] and str(archive) in payload['regenerationEvidence']
+    archive.write_bytes(original+b'changed')
+    rejected=run_project_residue_execute(project_root,home,target,approval_token(payload))
+    assert parse_protocol(rejected.stdout)['status']!='complete' and target.exists()
+    archive.write_bytes(original)
+    preview=run_project_residue_preview(project_root,home,target)
+    result=run_project_residue_execute(project_root,home,target,approval_token(parse_protocol(preview.stdout)))
+    assert parse_protocol(result.stdout)['status']=='complete',result.stdout+result.stderr
+    assert not target.exists() and archive.read_bytes()==original
+
+
 def test_macos_app_keeps_raw_approval_token_out_of_argv(project_root):
     source = (
         project_root

@@ -485,6 +485,7 @@ RUNTIME_FILES=(
     "scripts/environment_retirement.py"
     "scripts/build_lifecycle.py"
     "scripts/generated_cache.py"
+    "scripts/archive_cache.py"
     "scripts/app_registrations.py"
     "scripts/report.jxa.js"
     "scripts/scanner_helper.jxa.js"
@@ -632,8 +633,8 @@ for architecture in "${architectures[@]}"; do
         /usr/bin/ditto --norsrc --noextattr --noacl \
             "$source_stdlib" "$PYTHON_RUNTIME_DIR/lib/python3.11"
         for excluded in \
-            asyncio distutils email ensurepip http idlelib lib-dynload lib2to3 \
-            multiprocessing pydoc_data site-packages tkinter turtledemo unittest venv xml xmlrpc; do
+            asyncio distutils ensurepip http idlelib lib-dynload lib2to3 \
+            multiprocessing pydoc_data site-packages tkinter turtledemo unittest venv xmlrpc; do
             /bin/rm -rf "$PYTHON_RUNTIME_DIR/lib/python3.11/$excluded"
         done
         # CPython's path bootstrap expects the platform-library directory to
@@ -723,6 +724,15 @@ fi
 # Exercise the shipped session index, not only argparse startup. An empty,
 # private home keeps the build from reading the builder's real conversations
 # while still importing and running the collectors used by the app.
+if ! run_clean "$PYTHON_RUNTIME_EXECUTABLE" -I -B -c \
+    'import sys; sys.path.insert(0,sys.argv[1]); import generated_cache,archive_cache,plistlib,tomllib; from email.parser import BytesParser; assert plistlib.loads(plistlib.dumps({"ok":True}))["ok"]; assert BytesParser().parsebytes(b"Name: demo\n")["Name"]=="demo"; assert tomllib.loads("version = 1")["version"]==1; print("generated-cache-runtime-ok")' \
+    "$RUNTIME_DIR/scripts" > "$python_smoke_stdout" 2> "$python_smoke_stderr" \
+    || [[ -s "$python_smoke_stderr" ]]; then
+    /usr/bin/printf 'ERROR: embedded Python generated-cache smoke failed.\n' >&2
+    /usr/bin/head -c 4096 "$python_smoke_stderr" >&2
+    exit 1
+fi
+
 python_sessions_home="$binary_staging/python-sessions-home"
 python_sessions_stdout="$binary_staging/python-sessions.stdout"
 python_sessions_stderr="$binary_staging/python-sessions.stderr"

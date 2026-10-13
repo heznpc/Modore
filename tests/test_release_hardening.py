@@ -965,6 +965,9 @@ def test_mac_builder_keeps_every_top_level_stdlib_dependency_imported_by_scree(
         "embedded runtime prunes scree imports: "
         f"{sorted(imported & excluded)}"
     )
+    # plistlib and wheel METADATA parsing are used by generated-cache checks.
+    assert not {'xml','email'} & excluded
+    assert 'generated-cache-runtime-ok' in builder
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS lockf/stat behavior")

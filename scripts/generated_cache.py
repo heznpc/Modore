@@ -17,6 +17,7 @@ import signal
 import stat
 import subprocess
 import zipfile
+import archive_cache
 try:
     import tomllib
 except ImportError:  # Development checkouts may still use macOS Python 3.9.
@@ -28,10 +29,16 @@ EVIDENCE_SUFFIXES = {'.xcresult', '.logarchive', '.trace', '.log', '.mov', '.mp4
 VERSION = re.compile(r'^\d+\.\d+\.\d+$')
 
 
+class InspectionTimeout(Exception):
+    pass
+
+
 def review_candidate(path, home=None):
     """Cheap discovery only. Approval still requires the complete inspect()."""
     home = Path(home or Path.home()); p = Path(path)
-    if not p.is_dir() or not p.is_relative_to(home) or any(x.endswith('.app') for x in p.parts): return False
+    if not p.is_dir() or not p.is_relative_to(home): return False
+    if expo_target(p,home): return True
+    if any(x.endswith('.app') for x in p.parts): return False
     if p.name == '.next': return (p.parent/'package.json').is_file()
     if p.name == '.venv': return (p/'pyvenv.cfg').is_file()
     if p.name in XCODE_OUTPUTS: return (p.parent/'info.plist').is_file()
@@ -45,6 +52,23 @@ def review_candidate(path, home=None):
         '.dartServer/.analysis-driver', 'Library/Caches/node-gyp', 'Library/Caches/electron',
         'Library/Application Support/Code/CachedExtensionVSIXs',
         'Library/Application Support/Google/GoogleUpdater/crx_cache')}
+
+
+def expo_target(p,home):
+    return p.parent == home/'.expo/ios-simulator-app-cache' and bool(re.fullmatch(r'Expo-Go-[0-9.]+\.tar\.app',p.name))
+
+
+def expo_contract(p,home):
+    archives=sorted((home/'.expo/expo-go').glob('*-body.bin'))
+    require(0<len(archives)<=4, 'Expo 복원 아카이브를 좁히지 못해 보존합니다.')
+    errors=[]
+    for archive in archives:
+        try: proof=archive_cache.inspect(p,archive,home)
+        except (OSError,ValueError,archive_cache.tarfile.TarError) as error:
+            errors.append(str(error));continue
+        return dict(kind='expo-archive-extraction',source=str(archive),scope='global',
+                    processPattern='expo',fingerprint=proof['fingerprint'],evidence=[str(archive)])
+    raise ValueError('보존된 Expo 원본과 일치하는 추출물을 확인하지 못했습니다. '+errors[-1])
 
 
 def require(condition, message):
@@ -235,6 +259,7 @@ def dart_cache(p, home):
 def inspect(path, home=None, contents=True):
     home = physical(home or Path.home()); p = physical(path)
     require(p.is_relative_to(home) and p != home and p.is_dir(), '홈 아래의 검증된 생성 폴더만 지원합니다.')
+    if expo_target(p,home): return expo_contract(p,home)
     require(not any(x.endswith('.app') for x in p.parts), '앱 내부 구성요소는 개별 정리하지 않습니다.')
     st = p.lstat()
     require(st.st_uid == os.getuid() and not st.st_mode & 0o022, '대상 소유권·권한을 확인하지 못했습니다.')
@@ -359,14 +384,14 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('path');parser.add_argument('--home',required=True)
     args=parser.parse_args()
-    def timed_out(*_): raise ValueError('검증 시간 한도를 넘어 보존합니다. 관련 도구를 종료한 뒤 다시 조사하세요.')
+    def timed_out(*_): raise InspectionTimeout('검증 시간 한도를 넘어 보존합니다. 관련 도구를 종료한 뒤 다시 조사하세요.')
     signal.signal(signal.SIGALRM,timed_out); signal.alarm(25)
     try:
         result=inspect(args.path,args.home)
         for key in ('kind','source','scope','processPattern','fingerprint'):
             value=result[key]; require(not any(x in value for x in ('\n','\r','\t')), '잘못된 증거 값')
             print(key+'\t'+value)
-    except (OSError,ValueError,KeyError,TypeError,zipfile.BadZipFile,subprocess.SubprocessError) as error:
+    except (OSError,ValueError,KeyError,TypeError,InspectionTimeout,zipfile.BadZipFile,subprocess.SubprocessError) as error:
         print('error\t'+str(error).replace('\n',' ').replace('\t',' ')); return 1
     return 0
 
