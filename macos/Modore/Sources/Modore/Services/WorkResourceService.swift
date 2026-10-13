@@ -4,6 +4,16 @@ final class WorkResourceService: ObservableObject {
     @Published var snapshot: WorkResourceSnapshot?
     @Published var busy = false
     @Published var message = ""
+    func diagnose(root: URL) async {
+        guard !busy else { return }
+        busy = true
+        do {
+            _ = try await invoke(root: root, request: ["action": "diagnose-hooks", "project": root.path])
+            message = L10n.text("Codex의 활성화·신뢰 상태를 확인했습니다.")
+        } catch { message = error.localizedDescription }
+        busy = false
+        await refresh(root: root)
+    }
     func invoke(root: URL, request: [String: Any]) async throws -> Data {
         guard let execution = await Task.detached(priority: .utility, operation: {
             RuntimeWorkspace.prepareExecution(projectRoot: root)

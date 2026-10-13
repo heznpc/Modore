@@ -30,6 +30,8 @@ usage() {
         '  modore sessions current' \
         '  modore search [--provider NAME] [--workspace PATH] [--exclude-workspace PATH] [--workspace-exact] [--offset N] [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
         '  modore resources status|acquire|claim|heartbeat|release [options]' \
+        '  modore resources bind|unbind --id ID --provider PROVIDER --session ID --project PATH [--fingerprint HASH]' \
+        '  modore resources diagnose-hooks --project PATH' \
         '  modore resources begin-test|hold --provider codex|claude --session ID --turn ID [options]' \
         '  modore resources begin-browser-test --provider codex|claude --session ID --project PATH --turn ID --url URL [--headed]' \
         '  modore resources install-hooks --provider codex|claude' \

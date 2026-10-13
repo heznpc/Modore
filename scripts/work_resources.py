@@ -17,6 +17,65 @@ import sys
 import tempfile
 import time
 import uuid
+import threading
+import queue
+
+
+def identity(session, provider=''):
+    """UI row IDs are not provider session IDs. Accept legacy rows on read."""
+    if not isinstance(session, str): raise ValueError('세션 ID가 필요합니다.')
+    prefix, sep, raw = session.partition(':')
+    if sep and prefix in ('codex', 'claude', 'gemini', 'kiro', 'claude desktop'):
+        if provider and provider != prefix: raise ValueError('세션 제공자가 일치하지 않습니다.')
+        return prefix, raw
+    return provider, session
+
+
+def same_session(row, session, provider=''):
+    rp, rs = identity(row.get('session', ''), row.get('provider', ''))
+    pp, ss = identity(session, provider)
+    return rs == ss and (not rp or not pp or rp == pp)
+
+
+def migrate_state(state):
+    state.setdefault('bindings', [])
+    for row in state.get('leases', []):
+        provider, session = identity(row.get('session', ''), row.get('provider', ''))
+        row['session'] = session
+        if provider: row['provider'] = provider
+
+
+def assigned_resource(state, req, rows):
+    """One resolver for CLI, lifecycle and guards. Never silently replace a setting."""
+    project, session = project_session(req)
+    provider = req.get('provider', '')
+    runtime, kind = req.get('runtime', ''), req.get('deviceType', '')
+    compatible = lambda r: (r.get('kind') == 'simulator' and (not runtime or r['runtime'] == runtime)
+                            and (not kind or r['deviceType'] == kind))
+    by_id = {r['id']: r for r in rows}
+    bindings = [b for b in state.get('bindings', []) if b['project'] == project
+                and (not runtime or b['runtime'] == runtime) and (not kind or b['deviceType'] == kind)]
+    own = [b for b in bindings if same_session(b, session, provider)]
+    leases = [l for l in state['leases'] if same_session(l, session, provider)
+              and l.get('project') == project and not l.get('releasedAt')
+              and l['resourceID'] in by_id and compatible(by_id[l['resourceID']])]
+    candidates = own or leases or bindings
+    ids = {b['resourceID'] for b in candidates}
+    if len(ids) > 1: raise ValueError('연결된 기기가 여러 대입니다. OS·기종 또는 기기 ID를 명시하세요.')
+    rid = next(iter(ids), None)
+    if not rid and runtime:
+        rid = state['preferred'].get(runtime + '/' + kind)
+        if not rid and kind:
+            generic = state['preferred'].get(runtime + '/')
+            if generic in by_id and compatible(by_id[generic]): rid = generic
+    if rid:
+        r = by_id.get(rid)
+        if not r or not r['available']: raise ValueError('지정된 기기가 없거나 사용 불가입니다: ' + rid + '. 앱에서 연결을 확인하세요.')
+        if not compatible(r): raise ValueError('지정된 기기의 OS·기종이 요청과 다릅니다.')
+        binding = next((b for b in candidates if b['resourceID'] == rid and b.get('fingerprint')), None)
+        if binding and binding['fingerprint'] != r['fingerprint']: raise ValueError('연결된 기기의 식별이 바뀌었습니다.')
+        return r
+    return None
 
 ROOT = Path.home() / 'Library/Application Support/Modore/work-resources'
 
@@ -56,6 +115,7 @@ def registry(root=ROOT):
         path = root / 'leases.json'
         if path.is_symlink(): raise ValueError('Registry file is a symlink')
         state = json.loads(path.read_text()) if path.exists() else {'leases': [], 'preferred': {}}
+        migrate_state(state)
         for lease in state['leases']:
             # The old release action encoded explicit release as expiry before
             # updatedAt. Ordinary TTL expiry always remains after updatedAt.
@@ -149,6 +209,68 @@ def unresolved_leases(state, rid):
     return [x for x in state['leases'] if x['resourceID'] == rid and not x.get('releasedAt')]
 
 
+def codex_hook_settings(home):
+    """Read only relevant config metadata, including older system Pythons without tomllib."""
+    path = Path(home) / '.codex/config.toml'
+    text = path.read_text() if path.exists() else ''
+    feature = re.search(r'(?ms)^\[features\]\s*\n(.*?)(?=^\[|\Z)', text)
+    disabled = bool(feature and re.search(r'(?m)^\s*(?:hooks|codex_hooks)\s*=\s*false\s*(?:#.*)?$', feature[1]))
+    states = {}
+    for match in re.finditer(r'(?ms)^\[hooks\.state\."([^"\n]+)"\]\s*\n(.*?)(?=^\[|\Z)', text):
+        states[match[1]] = {'enabled': not bool(re.search(r'(?m)^enabled\s*=\s*false', match[2])),
+                            'hasTrust': bool(re.search(r'(?m)^trusted_hash\s*=', match[2]))}
+    return disabled, states
+
+
+def hook_config_stamp(home):
+    result = {}
+    for name in ('.codex/config.toml', '.codex/hooks.json'):
+        path = Path(home) / name
+        result[name] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+    return result
+
+
+def diagnose_hooks(req, root=ROOT, home=None):
+    """Ask the installed Codex runtime; never write trust or launch an AI turn."""
+    home = Path.home() if home is None else Path(home)
+    choices = [Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'),
+               Path('/Applications/Codex.app/Contents/Resources/codex'), Path(shutil.which('codex') or '/nonexistent')]
+    executable = next((p for p in choices if p.is_file()), None)
+    if executable is None: raise ValueError('Codex 실행 파일을 찾지 못했습니다.')
+    cwd = str(Path(req.get('project') or Path.cwd()).resolve())
+    proc = subprocess.Popen([str(executable), 'app-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, cwd=cwd)
+    messages = queue.Queue()
+    def read():
+        for line in proc.stdout:
+            try: messages.put(json.loads(line))
+            except ValueError: pass
+    reader = threading.Thread(target=read, daemon=True); reader.start()
+    try:
+        for item in [dict(id=1, method='initialize', params={'clientInfo': {'name': 'modore_diagnostics', 'version': '1'}, 'capabilities': {'experimentalApi': True}}),
+                     dict(method='initialized'), dict(id=2, method='hooks/list', params={'cwds': [cwd]})]:
+            proc.stdin.write(json.dumps(item)+'\n'); proc.stdin.flush()
+        deadline = time.monotonic()+15
+        while time.monotonic() < deadline:
+            try: reply = messages.get(timeout=max(.01, deadline-time.monotonic()))
+            except queue.Empty: break
+            if reply.get('id') != 2: continue
+            if 'error' in reply: raise ValueError('Codex 훅 진단 실패: ' + str(reply['error'].get('message', 'unknown')))
+            entry = reply['result']['data'][0]
+            hooks = [h for h in entry['hooks'] if re.search(r'\bmodore[\'\"]?\s+(resources|tools)\s+(hook|guard)', h.get('command', ''))]
+            result = {'observedAt': time.time(), 'cwd': cwd, 'executable': str(executable),
+                      'stamp': hook_config_stamp(home), 'hooks': [{k: h.get(k) for k in ('key','eventName','enabled','trustStatus','currentHash')} for h in hooks],
+                      'errors': entry.get('errors', [])}
+            with registry(root) as state: state['codexHookDiagnosis'] = result
+            return {'message': 'Codex 실행 설정을 확인했습니다.', 'diagnosis': result}
+        raise ValueError('Codex 훅 진단 응답 시간 초과')
+    finally:
+        proc.terminate()
+        try: proc.wait(timeout=3)
+        except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+        proc.stdin.close(); proc.stdout.close(); reader.join(timeout=1)
+
+
 def hook_status(state, home=None, now=None):
     """Configuration is not execution evidence. Read only bounded hook metadata."""
     home = Path.home() if home is None else Path(home)
@@ -158,6 +280,8 @@ def hook_status(state, home=None, now=None):
         path = home / filename
         configured, disabled, changed_at, error = False, False, 0, None
         simulator_configured = False
+        trust_status = 'unknown'
+        diagnostics = []
         try:
             if path.exists():
                 if path.is_symlink() or path.parent.is_symlink() or path.stat().st_size > 1_048_576:
@@ -165,6 +289,25 @@ def hook_status(state, home=None, now=None):
                 config = json.loads(path.read_text())
                 changed_at = path.stat().st_mtime
                 disabled = bool(config.get('disableAllHooks'))
+                if provider == 'codex':
+                    feature_disabled, states = codex_hook_settings(home)
+                    disabled = disabled or feature_disabled
+                    for event, groups in config.get('hooks', {}).items():
+                        snake = re.sub(r'(?<!^)(?=[A-Z])', '_', event).lower()
+                        for gi, group in enumerate(groups):
+                            for hi, handler in enumerate(group.get('hooks', [])):
+                                words = shlex.split(handler.get('command', ''))
+                                if not words or Path(words[0]).name != 'modore': continue
+                                if not Path(words[0]).is_file(): diagnostics.append('훅 실행 파일 없음: ' + words[0])
+                                setting = states.get(str(path) + ':' + snake + ':' + str(gi) + ':' + str(hi), {})
+                                if setting.get('enabled') is False: disabled = True
+                                if not setting.get('hasTrust'): trust_status = 'untrusted'
+                    diagnosis = state.get('codexHookDiagnosis', {})
+                    if diagnosis.get('stamp') == hook_config_stamp(home):
+                        hs = diagnosis.get('hooks', [])
+                        if hs:
+                            trust_status = 'trusted' if all(h['trustStatus'] in ('trusted','managed') for h in hs) else 'untrusted'
+                            disabled = disabled or any(not h['enabled'] for h in hs)
                 def registered(event):
                     for group in config.get('hooks', {}).get(event, []):
                         for hook in group.get('hooks', []):
@@ -188,12 +331,16 @@ def hook_status(state, home=None, now=None):
             observed_at = None
         recent = (configured and not disabled and error is None and observed_at is not None
                   and observed_at >= changed_at and now - observed_at <= 900)
+        if provider == 'codex' and trust_status != 'trusted': recent = False
+        if diagnostics: error = '; '.join(diagnostics); recent = False
         result.append({'provider': provider, 'configured': configured, 'disabled': disabled,
                        'lastObservedAt': observed_at, 'lastEvent': receipt.get('event'),
                        'recentlyObserved': bool(recent), 'error': error,
+                       'trustStatus': trust_status,
+                       'lastSession': receipt.get('session'),
                        'simulatorGuard': {'configured': simulator_configured and not disabled,
                                           'hostEnforcementVerified': False,
-                                          'coverage': '직접 simctl create/clone 명령 검사. 간접 스크립트·외부 앱·호스트 미실행은 차단 보장 없음.'}})
+                                          'coverage': '실기기 접근·다른 시뮬레이터 조작을 지원 셸·MCP에서 검사합니다. 훅 신뢰 승인과 실제 호스트 검증이 필요합니다. 동적 코드·외부 앱 전체를 통제하는 OS 격리는 아닙니다.'}})
     return result
 
 
@@ -211,6 +358,12 @@ def snapshot(root=ROOT, observe=True):
             r['processes'] = evidence.get(r['id'], [])
             r['preferred'] = r['id'] in state['preferred'].values()
             r['managedTest'] = state.get('testRuns', {}).get(r['id'])
+            r['bindings'] = [b for b in state.get('bindings', []) if b['resourceID'] == r['id']]
+        live = {r['id'] for r in rows if r['available']}
+        for key, rid in state['preferred'].items():
+            if rid not in live: warnings.append('기본 기기 확인 필요: ' + key + ' → ' + rid)
+        for binding in state.get('bindings', []):
+            if binding['resourceID'] not in live: warnings.append('프로젝트 연결 기기 확인 필요: ' + binding['project'] + ' → ' + binding['resourceID'])
         browser_runs = list(state.get('browserRuns', {}).values())
         hooks = hook_status(state)
     return {'observedAt': time.time(), 'resources': rows, 'browsers': browser_runs, 'warnings': warnings,
@@ -233,7 +386,7 @@ def project_session(req):
     if not session or len(session) > 256 or not os.path.isabs(project) or not Path(project).is_dir():
         raise ValueError('실제 프로젝트 절대 경로와 세션 ID가 필요합니다.')
     project = str(Path(project).resolve())
-    return project, session
+    return project, identity(session, req.get('provider', ''))[1]
 
 
 def register(req, root=ROOT):
@@ -244,22 +397,33 @@ def register(req, root=ROOT):
         if req.get('id'):
             r = next((r for r in rows if r['id'] == req['id']), None)
             if r is None: raise ValueError('대상을 찾지 못했습니다.')
+            if r['kind'] == 'simulator':
+                assigned = assigned_resource(state, {**req, 'runtime': r['runtime'], 'deviceType': r['deviceType']}, rows)
+                if assigned and assigned['id'] != r['id']:
+                    raise ValueError('앱에 지정된 기기와 다릅니다: ' + assigned['id'])
+                if any(not same_session(l, session, req.get('provider', '')) for l in unresolved_leases(state, r['id'])):
+                    raise ValueError('지정된 기기를 다른 세션이 사용 중입니다.')
         else:
             runtime = req.get('runtime', '')
             if not runtime: raise ValueError('재사용할 runtime ID를 지정하세요.')
-            key = runtime + '/' + req.get('deviceType', '')
-            r = select_existing(rows, runtime, req.get('deviceType', ''), state['preferred'].get(key))
-            state['preferred'][key] = r['id']
+            r = assigned_resource(state, req, rows)
+            if r and any(not same_session(l, session, req.get('provider', '')) for l in unresolved_leases(state, r['id'])):
+                raise ValueError('지정된 기기를 다른 세션이 사용 중입니다.')
+            if r is None:
+                free = [r for r in rows if not any(not same_session(l, session, req.get('provider', '')) for l in unresolved_leases(state, r['id']))]
+                r = select_existing(free, runtime, req.get('deviceType', ''))
         if any(x['session'] == session and x['resourceID'] == r['id'] and
                x.get('lifetime') == 'turn' and not x.get('releasedAt') for x in state['leases']):
             raise ValueError('턴 테스트로 등록된 기기입니다. begin-test로 재사용하거나 hold로 유지하세요.')
-        state['leases'] = [x for x in state['leases'] if not (x['session'] == session and x['resourceID'] == r['id'])]
+        state['leases'] = [x for x in state['leases'] if not (same_session(x, session, req.get('provider', '')) and x['resourceID'] == r['id'])]
         state['leases'].append({'resourceID': r['id'], 'session': session, 'project': project,
+                               'provider': identity(req['session'], req.get('provider', ''))[0],
                                'updatedAt': time.time(), 'expiresAt': time.time() + 900})
         return {'resource': r, 'leases': active_leases(state, r['id']), 'instruction': '이 UDID를 모든 simctl/시뮬레이터 도구 호출에 명시하세요. 5분마다 heartbeat, 종료 시 release. 기기를 새로 만들지 마세요.'}
 
 
 def turn_key(provider, session):
+    provider, session = identity(session, provider)
     if provider not in ('codex', 'claude') or not isinstance(session, str) or not session or len(session) > 256:
         raise ValueError('codex 또는 claude 제공자와 실제 세션 ID가 필요합니다.')
     return hashlib.sha256((provider + '\0' + session).encode()).hexdigest()
@@ -486,6 +650,11 @@ def begin_test(req, root=ROOT):
         if not turn or turn.get('finishedAt') or turn['project'] != project or turn['token'] != req.get('turn'):
             raise ValueError('현재 턴 훅의 provider·session·project·turn 값이 필요합니다.')
         rows = devices()
+        assigned = assigned_resource(state, req, rows)
+        if req.get('id') and assigned and req['id'] != assigned['id']:
+            raise ValueError('앱에 지정된 기기와 다릅니다: ' + assigned['id'])
+        if assigned:
+            req = {**req, 'id': assigned['id']}
         owned = [x for x in state['leases'] if x.get('turnKey') == key and x.get('turn') == turn['token']
                  and x.get('lifetime') == 'turn' and not x.get('releasedAt')]
         if req.get('id'):
@@ -501,6 +670,20 @@ def begin_test(req, root=ROOT):
                 if run.get('status') == 'booted' and run.get('fingerprint') == r['fingerprint'] and r['state'] == 'Booted' and run.get('lastBooted') == r['lastBooted']:
                     return {'resource': r, 'turn': turn['token'], 'reused': True}
                 raise ValueError('관리 중인 기기의 상태가 바뀌었습니다. 새로 확인하세요.')
+        # A persistent assignment does not authorize taking over a foreign run.
+        for r in candidates:
+            leases = unresolved_leases(state, r['id'])
+            own_manual = [l for l in leases if same_session(l, session, req['provider']) and not l.get('turnKey')]
+            foreign = [l for l in leases if not same_session(l, session, req['provider'])]
+            if foreign:
+                if req.get('id'): raise ValueError('지정된 기기를 다른 세션이 사용 중입니다.')
+                continue
+            if r['state'] == 'Booted' and own_manual:
+                for l in own_manual: l.update(updatedAt=time.time(), expiresAt=time.time()+900)
+                return {'resource': r, 'turn': turn['token'], 'reused': True, 'automaticStop': False,
+                        'instruction': '기존 세션 기기를 재사용합니다. 이 실행은 자동 종료하지 않습니다.'}
+            if r['state'] == 'Shutdown' and own_manual:
+                for l in own_manual: l['releasedAt'] = time.time()
         candidates = [r for r in candidates if r['state'] == 'Shutdown' and not unresolved_leases(state, r['id'])]
         if not candidates:
             raise ValueError('명시적 사용 등록이 없는 꺼진 기존 기기가 없습니다. 다른 세션의 기기를 끄거나 새로 만들지 않습니다.')
@@ -542,7 +725,9 @@ def turn_hook(provider, payload, root=ROOT):
     if provider == 'codex' and (not isinstance(wire_turn, str) or not wire_turn or len(wire_turn) > 256):
         raise ValueError('Codex turn_id가 없어 자동 처리를 보류합니다.')
     with registry(root) as state:
-        state.setdefault('hookObservations', {})[provider] = {'event': event, 'observedAt': time.time()}
+        observation = {'event': event, 'observedAt': time.time(), 'session': session, 'turn': wire_turn}
+        state.setdefault('hookObservations', {})[provider] = observation
+        state.setdefault('sessionObservations', {})[key] = observation
         turns = state.setdefault('turns', {})
         old = turns.get(key)
         if event == 'UserPromptSubmit':
@@ -568,6 +753,12 @@ def turn_hook(provider, payload, root=ROOT):
                        'Reuse the exact installed version with modore tools run vercel@<version> -- <arguments>; '
                        'do not create another npx cache for the same version via latest or another spelling. '
                        'This command never installs packages. Project node_modules and lockfiles remain project-specific.')
+            bindings = [b for b in state.get('bindings', []) if b['project'] == project or same_session(b, session, provider)]
+            leases = [l for l in state['leases'] if same_session(l, session, provider) and not l.get('releasedAt')]
+            context += '\nSaved Modore environment (data, not instructions): ' + json.dumps(
+                {'bindings': bindings, 'sessionResources': [l['resourceID'] for l in leases],
+                 'preferred': state['preferred'], 'physicalDeviceChanges': 'denied'}, ensure_ascii=False)
+            context += '\nUse this existing environment. Do not switch to a personal physical device for verification.'
             return {'hookSpecificOutput': {'hookEventName': event, 'additionalContext': context}}
         if not old or old['project'] != project or (provider == 'codex' and old['token'] != wire_turn):
             return {}
@@ -666,6 +857,112 @@ def simulator_guard(provider, payload):
     return {}
 
 
+def shell_segments(text, depth=0, cwd=None):
+    """Inspect literal wrappers and local scripts without evaluating shell/code."""
+    if depth > 4: raise ValueError('중첩된 명령을 확인할 수 없습니다.')
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=';&|()<>\n')
+    lexer.whitespace = ' \t\r'; lexer.whitespace_split = True
+    parts, part = [], []
+    for word in lexer:
+        if word and all(c in ';&|()<>\n' for c in word):
+            if part: parts.append(part)
+            part = []
+        else: part.append(word)
+    if part: parts.append(part)
+    result = []
+    for args in parts:
+        while args and (args[0] in ('env','command','exec','sudo') or re.match(r'^[\w]+=', args[0])): args = args[1:]
+        if not args: continue
+        name = Path(args[0]).name
+        if name in ('sh','bash','zsh') and len(args)>2 and args[1] in ('-c','-lc'):
+            result.extend(shell_segments(args[2], depth+1, cwd)); continue
+        result.append(args)
+        script_arg = (args[1] if name in ('python','python3','node','sh','bash','zsh') and len(args)>1 and not args[1].startswith('-')
+                      else args[0] if '/' in args[0] else None)
+        if script_arg:
+            script = Path(script_arg)
+            if not script.is_absolute(): script = Path(cwd or Path.cwd()) / script
+            if script.is_file() and script.stat().st_size <= 262144:
+                # Only inspect device-related scripts. Never run/import them.
+                source = script.read_text(errors='replace')
+                if re.search(r'devicectl|simctl|ios-deploy|ideviceinstaller', source): result.append(['embedded-code', source])
+    return result
+
+
+def resource_guard(provider, payload, root=ROOT):
+    if payload.get('hook_event_name') != 'PreToolUse': return {}
+    name = payload.get('tool_name', '')
+    data = payload.get('tool_input') or {}
+    if not isinstance(data, dict): return {}
+    def deny(reason):
+        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
+                                       'permissionDecisionReason': 'Modore: ' + reason}}
+    target = None
+    shell = name in ('Bash','exec_command','functions.exec_command')
+    if shell:
+        text = data.get('command', data.get('cmd', ''))
+        if isinstance(text, list): text = shlex.join(text)
+        if re.search(r'\|\s*(?:/\S+/)?(?:sh|bash|zsh|python3?|node)\b', text) and re.search(r'devicectl|simctl|ios-deploy|ideviceinstaller', text):
+            return deny('기기 명령을 인터프리터에 전달하는 대신 명시적인 시뮬레이터 명령을 사용하세요.')
+        # File paths are resolved against the host-provided cwd, not the hook process.
+        for args in shell_segments(text, cwd=payload.get('cwd')):
+            command_name = Path(args[0]).name
+            if command_name in ('echo','printf','cat','rg','grep','sed','head','tail'): continue
+            combined = ' '.join(args)
+            physical = any(Path(a).name in ('devicectl','ios-deploy','ideviceinstaller','idevicedebug') for a in args)
+            embedded = command_name in ('python','python3','node','embedded-code')
+            if physical or (embedded and re.search(r'devicectl|ios-deploy|ideviceinstaller|idevicedebug', combined)):
+                return deny('개인 실기기 접근은 허용되지 않습니다. 앱에 연결한 시뮬레이터를 사용하세요.')
+            if any(Path(a).name == 'xcodebuild' for a in args):
+                destination = next((args[i+1] for i,a in enumerate(args[:-1]) if a == '-destination'), '')
+                simulator = 'Simulator' in destination
+                if destination and not simulator and re.search(r'(?:^|,)\s*(?:id=|platform=(?:iOS|watchOS|tvOS|visionOS)(?:,|$))', destination):
+                    return deny('실기기 빌드 대상은 허용되지 않습니다. 시뮬레이터 대상을 지정하세요.')
+                if simulator or any(a in ('test','test-without-building') for a in args):
+                    match = re.search(r'(?:^|,)\s*id=([^,]+)', destination)
+                    if not simulator or not match: return deny('테스트 대상에 시뮬레이터 UDID를 명시하세요.')
+                    current = match[1].strip()
+                    if target and target != current: return deny('한 호출에서 서로 다른 기기를 변경할 수 없습니다.')
+                    target = current
+            if embedded and 'simctl' in combined:
+                return deny('스크립트 내부 기기 조작 대신 명시적인 시뮬레이터 명령을 사용하세요.')
+            sim = next((i for i,a in enumerate(args) if Path(a).name == 'simctl'), None)
+            if sim is not None and len(args)>sim+1:
+                action = args[sim+1]
+                if action in ('list','help'): continue
+                if action in ('create','clone'): return simulator_guard(provider, payload)
+                if action in ('delete','erase','shutdown') and (len(args)<=sim+2 or args[sim+2]=='all'):
+                    return deny('전체 시뮬레이터 변경은 허용되지 않습니다.')
+                if len(args)<=sim+2: return deny('명시적인 시뮬레이터 UDID가 필요합니다.')
+                current = args[sim+2]
+                if target and current != target: return deny('한 호출에서 서로 다른 기기를 변경할 수 없습니다.')
+                target = current
+    elif name.startswith('mcp__'):
+        operation = name.rsplit('__', 1)[-1]
+        physical = re.search(r'(?:install|launch|run|stop|terminate|uninstall|debug|copy|tap|swipe|list).*device|device.*(?:install|launch|run|stop|terminate|uninstall|debug|copy|tap|swipe)', operation, re.I)
+        if physical: return deny('실기기 MCP 조작은 허용되지 않습니다. 시뮬레이터 도구를 사용하세요.')
+        if re.search(r'simulator|simctl|_sim(?:_|$)', name, re.I):
+            if re.search(r'(?:list|read|status|get_).*', name) and not any(k in data for k in ('action','operation')): return {}
+            target = next((data[k] for k in ('udid','simulatorId','simulatorUDID','deviceId','deviceUDID') if data.get(k)), None)
+            if not target: return deny('시뮬레이터 MCP 호출에 UDID를 명시하세요.')
+    if target:
+        if target in ('booted','all'): return deny('booted/all 대신 앱에 연결한 기기 UDID를 명시하세요.')
+        req = {'project': payload.get('cwd'), 'session': payload.get('session_id'), 'provider': provider}
+        rows = devices()
+        r = next((r for r in rows if r['id'] == target and r['available']), None)
+        if r is None: return deny('시뮬레이터로 확인되지 않는 대상입니다.')
+        req.update(runtime=r['runtime'], deviceType=r['deviceType'])
+        with registry(root) as state:
+            expected = assigned_resource(state, req, rows)
+            if expected and expected['id'] != target: return deny('앱에 지정한 기기와 다릅니다: ' + expected['id'])
+            leases = unresolved_leases(state, target)
+            if any(not same_session(l, req['session'], provider) for l in leases): return deny('다른 세션이 사용하는 기기입니다.')
+            if not any(same_session(l, req['session'], provider) for l in leases): return deny('먼저 modore resources acquire 또는 begin-test로 기존 기기를 등록하세요.')
+            state.setdefault('guardObservations', {})[turn_key(provider, req['session'])] = {
+                'observedAt': time.time(), 'resourceID': target, 'turn': payload.get('turn_id')}
+    return {}
+
+
 def install_hooks(provider, root=ROOT, home=None, executable=None):
     """Merge our lifecycle and CLI guard handlers; never grant Codex hook trust."""
     turn_key(provider, 'install')
@@ -682,6 +979,17 @@ def install_hooks(provider, root=ROOT, home=None, executable=None):
     if config.get('disableAllHooks'):
         raise ValueError('Claude 훅이 비활성화돼 있습니다. 사용자 설정을 유지합니다.')
     hooks = config.setdefault('hooks', {})
+    # Replace our old definitions instead of accumulating obsolete guards.
+    for event in ('UserPromptSubmit', 'Stop', 'PreToolUse'):
+        cleaned = []
+        for group in hooks.get(event, []):
+            keep = []
+            for handler in group.get('hooks', []):
+                words = shlex.split(handler.get('command', ''))
+                ours = words and Path(words[0]).name == 'modore' and words[1:3] in (['resources','hook'], ['resources','guard'], ['tools','hook'])
+                if not ours: keep.append(handler)
+            if keep: cleaned.append({**group, 'hooks': keep})
+        hooks[event] = cleaned
     command_text = shlex.quote(str(executable)) + ' resources hook --provider ' + provider
     for event in ('UserPromptSubmit', 'Stop'):
         groups = hooks.setdefault(event, [])
@@ -692,7 +1000,7 @@ def install_hooks(provider, root=ROOT, home=None, executable=None):
              'command': shlex.quote(str(executable)) + ' tools hook', 'timeout': 5}]}
     if guard not in hooks.setdefault('PreToolUse', []):
         hooks['PreToolUse'].append(guard)
-    simulator = {'matcher': '^(Bash|exec_command|functions\\.exec_command)$', 'hooks': [{'type': 'command',
+    simulator = {'matcher': '*', 'hooks': [{'type': 'command',
                  'command': shlex.quote(str(executable)) + ' resources guard --provider ' + provider, 'timeout': 15}]}
     if simulator not in hooks['PreToolUse']:
         hooks['PreToolUse'].append(simulator)
@@ -768,7 +1076,24 @@ def mutate(req, root=ROOT):
 def dispatch(req, root=ROOT):
     action = req.get('action', 'status')
     if action == 'status': return snapshot(root)
+    if action == 'diagnose-hooks': return diagnose_hooks(req, root)
     if action in ('acquire', 'claim'): return register(req, root)
+    if action in ('bind', 'unbind'):
+        project, session = project_session(req)
+        provider, session = identity(req['session'], req.get('provider', ''))
+        if not provider: raise ValueError('연결할 세션의 제공자가 필요합니다.')
+        with registry(root) as state:
+            if action == 'unbind':
+                state['bindings'] = [b for b in state['bindings'] if not (b['project'] == project and same_session(b, session, provider) and b['resourceID'] == req.get('id'))]
+            else:
+                rows = devices(); vs, _ = volumes(); rows += vs
+                r = next((r for r in rows if r['id'] == req.get('id')), None)
+                if not r or r['fingerprint'] != req.get('fingerprint'): raise ValueError('기기 식별이 바뀌었습니다.')
+                state['bindings'] = [b for b in state['bindings'] if not (b['project'] == project and same_session(b, session, provider)
+                    and b['runtime'] == r['runtime'] and b['deviceType'] == r['deviceType'])]
+                state['bindings'].append({'resourceID': r['id'], 'project': project, 'provider': provider, 'session': session,
+                    'runtime': r['runtime'], 'deviceType': r['deviceType'], 'fingerprint': r['fingerprint']})
+        return {'message': '프로젝트 기기 설정을 저장했습니다. 사용 등록이 만료돼도 유지됩니다.' if action == 'bind' else '프로젝트 기기 연결을 해제했습니다.'}
     if action == 'begin-test': return begin_test(req, root)
     if action == 'begin-browser-test': return begin_browser_test(req, root)
     if action == 'install-hooks': return install_hooks(req.get('provider'), root)
@@ -787,8 +1112,7 @@ def dispatch(req, root=ROOT):
         with registry(root) as state:
             targets = set()
             for x in state['leases']:
-                if x['session'] == req['session'] and (not req.get('id') or x['resourceID'] == req['id']):
-                    if req.get('provider') and x.get('provider') != req['provider']: continue
+                if same_session(x, req['session'], req.get('provider', '')) and (not req.get('id') or x['resourceID'] == req['id']):
                     if action == 'heartbeat' and x.get('releasedAt'): continue
                     x['updatedAt'] = time.time(); x['expiresAt'] = time.time() + (900 if action == 'heartbeat' else -1)
                     if action == 'release':
@@ -820,10 +1144,10 @@ def main():
         try:
             raw = sys.stdin.buffer.read(2_097_153)
             if len(raw) > 2_097_152: raise ValueError('hook input too large')
-            result = simulator_guard(args['provider'], json.loads(raw))
+            result = resource_guard(args['provider'], json.loads(raw))
         except Exception:
             result = {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-                      'permissionDecision': 'deny', 'permissionDecisionReason': 'Modore: 시뮬레이터 생성 검사 실패. 명령과 resources status를 확인하세요.'}}
+                      'permissionDecision': 'deny', 'permissionDecisionReason': 'Modore: 작업 환경 검사 실패. 명령과 resources status를 확인하세요.'}}
         print(json.dumps(result, ensure_ascii=False))
         return 0
     if args['action'] == 'hook':

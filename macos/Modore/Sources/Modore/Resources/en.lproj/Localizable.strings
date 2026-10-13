@@ -2112,3 +2112,9 @@
 "기록된 대상 점유 %@" = "Recorded target size: %@";
 
 "검토한 %d개 삭제" = "Delete %d reviewed artifacts";
+"Codex 실행 설정 진단" = "Check Codex hook settings";
+"신뢰 승인 필요 · 훅 실행 안 됨" = "Trust required · hooks skipped";
+"%@ 연결 해제" = "Disconnect %@";
+"저장된 프로젝트 설정" = "Saved project settings";
+"Codex의 활성화·신뢰 상태를 확인했습니다." = "Checked whether Codex hooks are enabled and trusted.";
+"사용 등록이 만료되어도 기기 지정은 유지됩니다." = "The device assignment remains after a usage lease expires.";

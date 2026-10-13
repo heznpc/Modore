@@ -14,18 +14,22 @@ leases, actions and receipts. Taxi is not required.
   an existing available simulator. It never creates a device. The preferred
   shared device wins within the requested OS/type, otherwise a booted one wins.
 - `claim --id <UDID-or-volume-UUID> --project <path> --session <ID>` records use.
+- `bind --id <ID> --fingerprint <fingerprint> --provider <provider> --project <path>
+  --session <raw-provider-session-ID>` saves the same persistent assignment as
+  the app's project connection. `unbind` removes it. Releasing or expiring a
+  usage lease does not erase that setting.
 - `heartbeat --session <ID>` renews for fifteen minutes; `release` expires it.
 
 The ops skill tells subsequent sessions to discover/reuse/register before
 starting simulator work and to specify the returned UDID in every tool action.
-Tools outside Modore cannot be forced to register. Names and historic session
+Trusted PreToolUse hooks enforce registration on supported shell and MCP device
+calls. Names and historic session
 workspace metadata do not prove ownership of a currently running simulator.
 The UI opens on active resources: a compact summary, device cards, and a project
 sidebar. Idle simulators are collapsed. Registered project/session connections
 and observed process usage are distinguished; process lists, paths, identifiers,
 and expired registrations live in a separate detail sheet. Connecting a project
-opens a searchable recent-session picker. The view refreshes every ten seconds
-while open. Active-lease warnings are confirmed at the affected action, not with
+opens a searchable recent-session picker. Active-lease warnings are confirmed at the affected action, not with
 a global override checkbox.
 
 ## Actions
@@ -58,6 +62,36 @@ is protected by the separate CLI guard.
 The native work-environment screen shows these states. It queries when opened,
 on explicit refresh, and after an action, instead of spawning an inventory
 process every ten seconds while the page is visible.
+
+## Saved settings and hook enforcement
+
+Selection is shared by acquire, begin-test and the tool guard: the session's
+saved binding, its existing lease, the project's binding, then the shared
+preference. A missing, changed or occupied saved target produces an error,
+never a silent replacement. The picker stores the provider session ID rather
+than its prefixed display-row ID; legacy lease IDs are normalized on read.
+
+`resources diagnose-hooks --project <path>` asks the installed Codex app-server
+for `hooks/list`. The app exposes the same diagnosis. Enabled configuration,
+trust and observed execution are separate. Untrusted hooks cannot produce a
+healthy status, even if an old invocation receipt exists. Modore never writes
+trusted hashes. Review the four Modore hooks in Codex `/hooks`: prompt context,
+managed test shutdown, resource guard and deployment-CLI reuse guard.
+
+The resource guard matches all tools, blocks physical-device commands and MCP
+operations, and checks explicit simulator IDs against saved assignments and
+foreign leases. Literal shell wrappers and small local interpreter scripts are
+inspected without execution. This is bounded inspection, not an OS sandbox:
+arbitrary dynamic/encoded code, unrelated app automation, and hosts that do not
+invoke PreToolUse are outside enforcement. Do not represent global bypass
+prevention or the current desktop chat as verified from CLI evidence alone.
+
+`python3 tests/run_codex_resource_probe.py <new-output-directory>` runs the
+installed Codex executor against a local Responses fixture and fake shell/MCP
+devices. It records injected app settings, accepted calls and rejected calls.
+Its one-invocation trust bypass applies only to its vetted temporary CODEX_HOME;
+it never changes the user's trust, invokes a real device command or contacts an
+AI service. Normal account hook execution still requires the user's approval.
 
 Before claiming a capability is missing, follow its existing collector, stored
 result, UI and executor. Full storage collection already exists in

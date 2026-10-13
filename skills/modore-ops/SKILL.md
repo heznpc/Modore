@@ -58,6 +58,15 @@ For simulator, development environment, or external SSD work, first run
 users, and explicit session/project connections. Never claim a missing session
 connection proves the resource is unused. Device names are not ownership proof.
 
+Respect persistent app bindings before selecting a target. `acquire` and
+`begin-test` resolve them; a stale or busy configured target is an error, not
+permission to select a personal device. App bindings survive lease release.
+Use provider session IDs, not prefixed session-list row IDs. Inspect hook trust
+with `resources diagnose-hooks --project <path>`; saved configuration alone
+does not mean the host executes it. Untrusted Modore hooks need user review in
+Codex `/hooks`. The resource guard covers supported shell and MCP device calls,
+including literal wrappers; it is not an OS-wide dynamic-code sandbox.
+
 When Modore's turn hooks provide a provider, session, project, and turn token,
 start a turn's simulator test with:
 `modore resources begin-test --runtime <exact-runtime-ID> --provider <provider> --session <session-ID> --project <absolute-path> --turn <token>`.

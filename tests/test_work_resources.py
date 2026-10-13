@@ -27,6 +27,8 @@ class ResourceTests(unittest.TestCase):
                      'turn_id': 'b', 'cwd': tmp, 'prompt': 'private text must not be retained'}
             m.turn_hook('codex', event, home / 'registry')
             with m.registry(home / 'registry') as state:
+                self.assertFalse(m.hook_status(state, home)[0]['recentlyObserved'])
+                state['codexHookDiagnosis'] = {'stamp': m.hook_config_stamp(home), 'hooks': [{'trustStatus': 'trusted', 'enabled': True}]}
                 self.assertTrue(m.hook_status(state, home)[0]['recentlyObserved'])
                 self.assertNotIn('private text', json.dumps(state))
                 future = m.time.time() + 901
@@ -134,8 +136,9 @@ class TurnResourceTests(unittest.TestCase):
 
     def test_expired_foreign_lease_still_prevents_shutdown(self):
         m.begin_test(self.req, self.root)
-        m.register({'id':'2','session':'session-b','project':self.tmp.name}, self.root)
         with m.registry(self.root) as state:
+            # Legacy overlapping registrations remain protective after migration.
+            state['leases'].append({'resourceID':'2','session':'session-b','project':self.tmp.name})
             other = state['leases'][-1]
             other['updatedAt'] = m.time.time()-1800
             other['expiresAt'] = other['updatedAt']+900
@@ -462,4 +465,4 @@ class SimulatorGuardTests(unittest.TestCase):
                 config = json.loads((home/filename).read_text())
                 guards = [g for g in config['hooks']['PreToolUse'] if any('resources guard' in h['command'] for h in g['hooks'])]
                 self.assertEqual(len(guards), 1)
-                self.assertRegex('exec_command', guards[0]['matcher'])
+            self.assertEqual(guards[0]['matcher'], '*')

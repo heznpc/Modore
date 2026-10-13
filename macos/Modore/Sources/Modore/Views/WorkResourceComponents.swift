@@ -50,6 +50,14 @@ struct ResourceDetailSheet: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    if let bindings = resource.bindings, !bindings.isEmpty {
+                        Text(L10n.text("저장된 프로젝트 설정")).font(.headline)
+                        ForEach(bindings) { binding in
+                            Text("\(binding.project) · \(binding.provider):\(binding.session)")
+                                .font(.caption).textSelection(.enabled)
+                        }
+                        Text(L10n.text("사용 등록이 만료되어도 기기 지정은 유지됩니다.")).font(.caption).foregroundStyle(.secondary)
+                    }
                     if !resource.leases.isEmpty {
                         Text(L10n.text("연결된 작업")).font(.headline)
                         ForEach(resource.leases) { lease in
@@ -95,7 +103,7 @@ struct ResourceDetailSheet: View {
 struct ResourceConnectionSheet: View {
     let resource: WorkResource
     let sessions: [SessionIndexEntry]
-    let connect: (String, String) -> Void
+    let connect: (ResourceConnectionRequest) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
     @State private var selected: String?
@@ -121,7 +129,10 @@ struct ResourceConnectionSheet: View {
                 Spacer()
                 Button(L10n.text("취소")) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(L10n.text("연결")) {
-                    if let entry = candidates.first(where: { $0.id == selected }) { connect(entry.workspace, entry.id); dismiss() }
+                    if let entry = candidates.first(where: { $0.id == selected }), let identity = entry.resourceIdentity {
+                        connect(ResourceConnectionRequest(id: resource.id, fingerprint: resource.fingerprint,
+                            project: entry.workspace, identity: identity, isSimulator: resource.kind == "simulator")); dismiss()
+                    }
                 }.buttonStyle(.borderedProminent).disabled(selected == nil)
             }
         }.padding(24).frame(width: 540, height: 520)

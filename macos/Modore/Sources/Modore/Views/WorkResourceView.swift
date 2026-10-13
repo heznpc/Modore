@@ -75,8 +75,8 @@ struct WorkResourceView: View {
         .navigationDestination(isPresented: $environmentRetirement) { EnvironmentRetirementView() }
         .sheet(item: $detail) { r in ResourceDetailSheet(resource: resources.first { $0.id == r.id } ?? r) }
         .sheet(item: $connecting) { r in
-            ResourceConnectionSheet(resource: r, sessions: model.sessionIndex?.sessions ?? []) { project, session in
-                act(r, "claim", project: project, session: session)
+            ResourceConnectionSheet(resource: r, sessions: model.sessionIndex?.sessions ?? []) { request in
+                Task { await service.act(model: model, request: request.dictionary) }
             }
         }
         .alert(pendingAction == "delete-duplicate" ? L10n.text("중복 기기를 삭제할까요?") : L10n.text("연결된 작업에 영향을 줍니다"), isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
@@ -131,6 +131,8 @@ struct WorkResourceView: View {
                 if let hooks = service.snapshot?.hookStatus {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(L10n.text("AI 세션 자동 연결")).font(.headline)
+                        Button(L10n.text("Codex 실행 설정 진단")) { Task { await service.diagnose(root: model.projectRoot) } }
+                            .disabled(service.busy)
                         ForEach(hooks) { hook in
                             VStack(alignment: .leading, spacing: 4) {
                                 Label {
@@ -139,6 +141,9 @@ struct WorkResourceView: View {
                                 } icon: {
                                     Image(systemName: hook.recentlyObserved ? "checkmark.circle" : "exclamationmark.circle")
                                         .foregroundStyle(hook.recentlyObserved ? Color.green : Color.orange)
+                                }
+                                if let guardStatus = hook.simulatorGuard {
+                                    Text(guardStatus.coverage).font(.caption).foregroundStyle(.secondary)
                                 }
                                 if let at = hook.lastObservedAt {
                                     Text(L10n.format("마지막 실행 수신: %@", Date(timeIntervalSince1970: at).formatted(date: .abbreviated, time: .shortened)))
@@ -192,6 +197,7 @@ struct WorkResourceView: View {
         if let error = hook.error { return L10n.message(error) }
         if hook.disabled { return L10n.text("연결 실행이 꺼져 있습니다") }
         if !hook.configured { return L10n.text("자동 연결 미설정") }
+        if hook.trustStatus == "untrusted" { return L10n.text("신뢰 승인 필요 · 훅 실행 안 됨") }
         return hook.recentlyObserved ? L10n.text("최근 연결 실행 수신") : L10n.text("설정 있음 · 최근 실행 미확인")
     }
     private func resourceCard(_ r: WorkResource) -> some View {
@@ -210,6 +216,11 @@ struct WorkResourceView: View {
                     .foregroundStyle(r.isRunning ? Color.green : Color.secondary)
                 Menu {
                     Button(L10n.text("프로젝트에 연결…")) { connecting = r }
+                    ForEach(r.bindings ?? []) { binding in
+                        Button(L10n.format("%@ 연결 해제", URL(fileURLWithPath: binding.project).lastPathComponent)) {
+                            act(r, "unbind", project: binding.project, session: binding.session, provider: binding.provider)
+                        }
+                    }
                     Button(L10n.text("상세 정보…")) { detail = r }
                     if r.kind == "simulator" {
                         Button(L10n.text("공용 기기로 지정")) { act(r, "prefer") }
@@ -223,7 +234,9 @@ struct WorkResourceView: View {
                     if !paths.isEmpty {
                         Label(paths.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: " · "), systemImage: "folder")
                             .font(.callout).lineLimit(2)
-                        Text(r.leases.isEmpty ? L10n.text("프로젝트의 프로세스가 사용 중") : L10n.format("연결된 세션 %@개", String(describing: r.leases.count))).font(.caption).foregroundStyle(.secondary)
+                        Text(r.leases.isEmpty
+                             ? ((r.bindings ?? []).isEmpty ? L10n.text("프로젝트의 프로세스가 사용 중") : L10n.text("저장된 프로젝트 설정"))
+                             : L10n.format("연결된 세션 %@개", String(describing: r.leases.count))).font(.caption).foregroundStyle(.secondary)
                     } else {
                         Text(r.preferred ? L10n.text("공용으로 재사용하는 기기") : L10n.text("연결된 프로젝트 미확인")).font(.callout).foregroundStyle(.secondary)
                     }
@@ -258,12 +271,12 @@ struct WorkResourceView: View {
             if let project = knownWorkspaces.first(where: { path == $0 || path.hasPrefix($0 + "/") }) { cwdProjects[path] = project }
         }
         for r in resources {
-            assignments[r.id] = Array(Set(r.leases.map(\.project) + r.processes.compactMap { cwdProjects[$0.cwd] })).sorted()
+            assignments[r.id] = Array(Set(r.leases.map(\.project) + (r.bindings ?? []).map(\.project) + r.processes.compactMap { cwdProjects[$0.cwd] })).sorted()
         }
         projectAssignments = assignments
     }
-    private func act(_ r: WorkResource, _ action: String, project: String = "", session: String = "", override: Bool = false) {
-        let request: [String: Any] = ["action": action, "id": r.id, "fingerprint": r.fingerprint, "project": project, "session": session, "override": override]
+    private func act(_ r: WorkResource, _ action: String, project: String = "", session: String = "", provider: String = "", override: Bool = false) {
+        let request: [String: Any] = ["action": action, "id": r.id, "fingerprint": r.fingerprint, "project": project, "session": session, "provider": provider, "override": override]
         Task { await service.act(model: model, request: request) }
     }
 }

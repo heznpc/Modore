@@ -58,17 +58,24 @@ would mint a live destructive approval token.
 ```bash
 modore resources install-hooks --provider claude
 modore resources install-hooks --provider codex
+modore resources diagnose-hooks --project <path>
+modore resources bind --id <UDID> --fingerprint <hash> --provider <provider> --session <ID> --project <path>
+modore resources unbind --id <UDID> --provider <provider> --session <ID> --project <path>
 modore resources begin-test --runtime <runtime> --provider <provider> --session <ID> --project <path> --turn <token>
 modore resources begin-browser-test --provider <provider> --session <ID> --project <path> --turn <token> --url <URL> [--headed]
 modore resources hold --id <UDID> --provider <provider> --session <ID> --turn <token>
 modore resources release --id <UDID> --provider <provider> --session <ID>
 ```
 
-The installer merges two synchronous lifecycle hooks and a Vercel CLI reuse
-`PreToolUse` guard into the selected user's
+The installer merges two synchronous lifecycle hooks, a resource-policy
+`PreToolUse` guard for all tools, and a Vercel CLI reuse guard into the selected user's
 configuration and backs up existing JSON under Modore's work-resource directory.
 It preserves other hooks and does not grant trust. Codex requires review of the
-lifecycle hooks and CLI guard in `/hooks`; existing sessions may need a refresh.
+four hooks in `/hooks`; existing sessions may need a refresh. `diagnose-hooks`
+reads the installed Codex runtime's enabled/trust states, without granting trust.
+Bindings persist independently of leases. A stale or busy assigned simulator
+blocks selection instead of falling back to another target. The UI and CLI use
+raw provider session IDs, not prefixed session-list row IDs.
 
 `UserPromptSubmit` records metadata and supplies the turn token. `Stop` explicitly
 ends that turn's managed test use. Codex matches `turn_id`; Claude uses a generated
