@@ -1253,6 +1253,7 @@ _pch_collect_generated_cache_candidates() {
         "$HOME/Library/Caches/node-gyp" "$HOME/Library/Caches/electron" \
         "$HOME/Library/Application Support/Code/CachedExtensionVSIXs" \
         "$HOME/Library/Application Support/Google/GoogleUpdater/crx_cache" \
+        "$HOME/.expo/ios-simulator-app-cache/"Expo-Go-*.tar.app \
         "$HOME/Library/Developer/XcodeBuildMCP/workspaces/"*/test-products \
         "$HOME/.local/share/mise/http-tarballs/"*/bin/cache/artifacts/engine \
         "$HOME/flutter/bin/cache/artifacts/engine"; do

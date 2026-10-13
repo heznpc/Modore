@@ -214,3 +214,12 @@ def test_signed_app_requests_identifier_in_verbose_codesign_output(tmp_path,monk
         return types.SimpleNamespace(returncode=0,stderr=output)
     monkeypatch.setattr(g.subprocess,'run',codesign)
     assert g.signed_app(tmp_path,'Visual Studio Code.app','com.microsoft.VSCode')==app/'Contents/Info.plist'
+
+
+def test_expo_discovery_and_unknown_bytes_preserve_the_extraction(tmp_path):
+    from test_archive_cache import archive_fixture
+    p,archive,_=archive_fixture(tmp_path)
+    assert g.review_candidate(p,tmp_path)
+    assert g.inspect(p,tmp_path)['source']==str(archive)
+    put(p/'notes.txt','unique data')
+    with pytest.raises(ValueError,match='확인하지 못했습니다'):g.inspect(p,tmp_path)

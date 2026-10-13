@@ -618,12 +618,13 @@ project_git_state() {
 }
 
 validate_generated_cache_contract() {
-    local target="$1" helper python output key value
+    local target="$1" helper archive_helper python output key value
     helper="${PCH_PINNED_GENERATED_CACHE:-$(/usr/bin/dirname "${BASH_SOURCE[0]}")/generated_cache.py}"
+    archive_helper="${PCH_PINNED_ARCHIVE_CACHE:-$(/usr/bin/dirname "${BASH_SOURCE[0]}")/archive_cache.py}"
     python="${PCH_GENERATED_CACHE_PYTHON:-/usr/bin/python3}"
     PROJECT_GENERATED_KIND=""; PROJECT_GENERATED_ERROR=""
-    output="$("$python" -I -B -c 'import sys; source=open(sys.argv[1],"rb").read(); sys.argv=["generated_cache.py"]+sys.argv[2:]; exec(compile(source,"generated_cache.py","exec"),{"__name__":"__main__"})' \
-        "$helper" "$target" --home "$HOME_ROOT" 2>/dev/null)"
+    output="$("$python" -I -B -c 'import sys,types; archive=types.ModuleType("archive_cache"); exec(compile(open(sys.argv[2],"rb").read(),"archive_cache.py","exec"),archive.__dict__); sys.modules["archive_cache"]=archive; source=open(sys.argv[1],"rb").read(); sys.argv=["generated_cache.py"]+sys.argv[3:]; exec(compile(source,"generated_cache.py","exec"),{"__name__":"__main__"})' \
+        "$helper" "$archive_helper" "$target" --home "$HOME_ROOT" 2>/dev/null)"
     local result=$?
     while IFS=$'\t' read -r key value; do
         case "$key" in

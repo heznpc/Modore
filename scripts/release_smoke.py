@@ -390,6 +390,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/test_macos_swift_app.sh",
     "scripts/build_lifecycle.py",
     "scripts/generated_cache.py",
+    "scripts/archive_cache.py",
     "scripts/artifact_audit.py",
     "scripts/modules/build_support.sh",
     "scripts/modules/support_dir.sh",

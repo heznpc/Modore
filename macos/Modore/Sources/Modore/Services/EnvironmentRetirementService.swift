@@ -15,16 +15,18 @@ final class EnvironmentRetirementService: ObservableObject {
         let invocation = execution.pinnedInvocation(relativePath: "scripts/environment_retirement.py", name: "environment"),
         let registrations = execution.pinnedInvocation(relativePath:"scripts/app_registrations.py",name:"registrations"),
         let generated = execution.pinnedInvocation(relativePath:"scripts/generated_cache.py",name:"generated_cache"),
+        let archive = execution.pinnedInvocation(relativePath:"scripts/archive_cache.py",name:"archive_cache"),
         let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
             throw RetirementError(L10n.text("환경 정리 실행 파일을 준비하지 못했습니다."))
         }
         var pinned = invocation.files
         pinned.merge(registrations.files) { _,new in new }
         pinned.merge(generated.files) { _,new in new }
+        pinned.merge(archive.files) { _,new in new }
         pinned["request"] = try JSONSerialization.data(withJSONObject: request)
-        let wrapper = "import sys,types; helper=types.ModuleType('app_registrations'); exec(compile(open(sys.argv[2],'rb').read(),'app_registrations.py','exec'),helper.__dict__); sys.modules['app_registrations']=helper; generated=types.ModuleType('generated_cache'); exec(compile(open(sys.argv[3],'rb').read(),'generated_cache.py','exec'),generated.__dict__); sys.modules['generated_cache']=generated; source=open(sys.argv[1],'rb').read(); sys.argv=['environment_retirement.py']+sys.argv[4:]; exec(compile(source,'environment_retirement.py','exec'),{'__name__':'__main__'})"
+        let wrapper = "import sys,types; helper=types.ModuleType('app_registrations'); exec(compile(open(sys.argv[2],'rb').read(),'app_registrations.py','exec'),helper.__dict__); sys.modules['app_registrations']=helper; archive=types.ModuleType('archive_cache'); exec(compile(open(sys.argv[4],'rb').read(),'archive_cache.py','exec'),archive.__dict__); sys.modules['archive_cache']=archive; generated=types.ModuleType('generated_cache'); exec(compile(open(sys.argv[3],'rb').read(),'generated_cache.py','exec'),generated.__dict__); sys.modules['generated_cache']=generated; source=open(sys.argv[1],'rb').read(); sys.argv=['environment_retirement.py']+sys.argv[5:]; exec(compile(source,'environment_retirement.py','exec'),{'__name__':'__main__'})"
         let result = await LocalProcessRunner.capture(executable: python,
-            arguments: ["-I", "-B", "-c", wrapper, invocation.argument, registrations.argument, generated.argument, "--request-file", "@pch-pinned:request"],
+            arguments: ["-I", "-B", "-c", wrapper, invocation.argument, registrations.argument, generated.argument, archive.argument, "--request-file", "@pch-pinned:request"],
             currentDirectory: execution.runtimeRoot, expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
             expectedSignedBundleURL: execution.signedBundleURL, pinnedFiles: pinned, timeout: 3600,
             maxOutputBytes: 8_000_000, waitForCleanupOnStop: true)

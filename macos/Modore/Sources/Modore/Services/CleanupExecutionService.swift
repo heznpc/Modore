@@ -68,6 +68,7 @@ enum CleanupExecutionService {
               let supportModule = execution.pinnedSupportDirectoryModule(),
               let tokenModule = execution.pinnedApprovalTokenModule(),
               let generated = execution.pinnedInvocation(relativePath: "scripts/generated_cache.py", name: "generated_cache"),
+              let archive = execution.pinnedInvocation(relativePath: "scripts/archive_cache.py", name: "archive_cache"),
               let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
             return nil
         }
@@ -77,10 +78,12 @@ enum CleanupExecutionService {
             pinnedFiles: invocation.files
                 .merging(supportModule.files) { current, _ in current }
                 .merging(tokenModule.files) { current, _ in current }
-                .merging(generated.files) { current, _ in current },
+                .merging(generated.files) { current, _ in current }
+                .merging(archive.files) { current, _ in current },
             environment: supportModule.environment
                 .merging(tokenModule.environment) { current, _ in current }
                 .merging(["PCH_PINNED_GENERATED_CACHE": generated.argument,
+                          "PCH_PINNED_ARCHIVE_CACHE": archive.argument,
                           "PCH_GENERATED_CACHE_PYTHON": python]) { current, _ in current }
         )
     }
