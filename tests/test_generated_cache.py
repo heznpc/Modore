@@ -203,3 +203,14 @@ def test_discovery_does_not_offer_current_extension_or_full_derived_data(tmp_pat
     p=tmp_path/'.vscode/extensions/vendor.demo';p.mkdir(parents=True)
     put(p.parent/'.obsolete','{}')
     assert not g.review_candidate(p,tmp_path)
+
+
+def test_signed_app_requests_identifier_in_verbose_codesign_output(tmp_path,monkeypatch):
+    import types
+    app=tmp_path/'Applications/Visual Studio Code.app';app.mkdir(parents=True)
+    def codesign(args,**_):
+        # codesign -d alone only emits Executable= on macOS.
+        output='Identifier=com.microsoft.VSCode' if '--verbose=4' in args else 'Executable=Code'
+        return types.SimpleNamespace(returncode=0,stderr=output)
+    monkeypatch.setattr(g.subprocess,'run',codesign)
+    assert g.signed_app(tmp_path,'Visual Studio Code.app','com.microsoft.VSCode')==app/'Contents/Info.plist'

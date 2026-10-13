@@ -88,7 +88,7 @@ def signed_app(home, name, identifier):
         if not app.is_dir(): continue
         physical(app)
         verified = subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict',str(app)], capture_output=True, timeout=25)
-        description = subprocess.run(['/usr/bin/codesign','-d',str(app)], capture_output=True, text=True, timeout=5)
+        description = subprocess.run(['/usr/bin/codesign','-d','--verbose=4',str(app)], capture_output=True, text=True, timeout=5)
         if verified.returncode == 0 and f'Identifier={identifier}' in description.stderr.splitlines():
             return app/'Contents/Info.plist'
     raise ValueError('캐시를 재생성할 설치 앱의 서명을 확인하지 못했습니다.')
