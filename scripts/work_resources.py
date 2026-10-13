@@ -860,6 +860,41 @@ def simulator_guard(provider, payload):
 def shell_segments(text, depth=0, cwd=None):
     """Inspect literal wrappers and local scripts without evaluating shell/code."""
     if depth > 4: raise ValueError('중첩된 명령을 확인할 수 없습니다.')
+    # A heredoc body is data for its receiving command, not shell tokens. In
+    # particular, Python apostrophes must not break shell quote parsing. Retain
+    # interpreter bodies for the same bounded device-code inspection as scripts.
+    lines = text.splitlines(keepends=True)
+    shell_lines, embedded, i = [], [], 0
+    def heredoc_start(line):
+        quote, escaped = None, False
+        for offset, char in enumerate(line):
+            if escaped: escaped = False; continue
+            if char == '\\' and quote != "'": escaped = True; continue
+            if quote:
+                if char == quote: quote = None
+                continue
+            if char in ("'", '"'): quote = char; continue
+            if char == '#' and (offset == 0 or line[offset-1].isspace()): break
+            if char == '<' and (offset == 0 or line[offset-1] != '<'):
+                match = re.match(r"<<(-?)[ \t]*(?:'([A-Za-z_][A-Za-z_0-9]*)'|\"([A-Za-z_][A-Za-z_0-9]*)\"|([A-Za-z_][A-Za-z_0-9]*))", line[offset:])
+                if match: return match
+        return None
+    while i < len(lines):
+        line = lines[i]; i += 1
+        match = heredoc_start(line)
+        shell_lines.append(line)
+        if not match: continue
+        delimiter = next(x for x in match.groups()[1:] if x is not None)
+        body = []
+        while i < len(lines):
+            content = lines[i]; i += 1
+            end = content.rstrip('\r\n')
+            if (end.lstrip('\t') if match[1] else end) == delimiter: break
+            body.append(content)
+        else: raise ValueError('heredoc 종료를 확인할 수 없습니다.')
+        if re.search(r'(?:^|[\s/|;&])(?:python[0-9.]*|node|sh|bash|zsh)(?:\s|$)', line):
+            embedded.append(['embedded-code', ''.join(body)])
+    text = ''.join(shell_lines)
     lexer = shlex.shlex(text, posix=True, punctuation_chars=';&|()<>\n')
     lexer.whitespace = ' \t\r'; lexer.whitespace_split = True
     parts, part = [], []
@@ -869,7 +904,7 @@ def shell_segments(text, depth=0, cwd=None):
             part = []
         else: part.append(word)
     if part: parts.append(part)
-    result = []
+    result = embedded
     for args in parts:
         while args and (args[0] in ('env','command','exec','sudo') or re.match(r'^[\w]+=', args[0])): args = args[1:]
         if not args: continue

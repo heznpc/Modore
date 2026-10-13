@@ -175,3 +175,20 @@ def test_pipe_and_xcodebuild_cannot_bypass_binding(env, command):
     root, rows, req = env
     bind(root, rows, req)
     assert m.resource_guard('codex', payload(req, command), root)['hookSpecificOutput']['permissionDecision'] == 'deny'
+
+
+def test_benign_python_heredoc_is_data_not_shell_quotes(env):
+    root, rows, req = env
+    command = "python3 - <<'PY'\nprint(\"account's hooks are trusted\")\nPY\ngit status --short"
+    assert m.resource_guard('codex', payload(req, command), root) == {}
+
+
+def test_python_heredoc_device_code_remains_denied(env):
+    root, rows, req = env
+    command = "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['xcrun','devicectl','list','devices'])\nPY"
+    assert m.resource_guard('codex', payload(req, command), root)['hookSpecificOutput']['permissionDecision'] == 'deny'
+
+
+def test_quoted_heredoc_marker_is_not_a_redirection(env):
+    root, rows, req = env
+    assert m.resource_guard('codex', payload(req, 'echo "<<EOF"'), root) == {}
