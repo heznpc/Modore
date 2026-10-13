@@ -996,10 +996,10 @@ _pch_project_discovery_to_file() {
         /usr/bin/find "$scan_root" -mindepth 1 -maxdepth 10 \
             \( -name .git \( -type d -o -type f \) -print0 -prune \) -o \
             \( -type d \( -name node_modules -o -name build -o -name .dart_tool \
-                -o -name target -o -name Pods -o -name .build -o -name .gradle \
+                -o -name target -o -name Pods -o -name .build -o -name .gradle -o -name .next -o -name .venv \
                 -o -name Library -o -name "*.app" \) -prune \) -o \
             -type f \( -name pubspec.yaml -o -name package.json -o -name Cargo.toml \
-                -o -name Package.swift -o -name Podfile -o -name gradlew \) -print0 2>/dev/null \
+                -o -name Package.swift -o -name Podfile -o -name gradlew -o -name pyproject.toml -o -name requirements.txt \) -print0 2>/dev/null \
             | _pch_project_git_limit_nul_records "$max_results" "$limit_status_file"
     ) > "$output_file" 2>/dev/null &
     command_pid=$!
@@ -1243,6 +1243,33 @@ _pch_collect_git_swiftpm_residue() {
     /bin/rm -f "$ls_files_output"
 }
 
+_pch_collect_generated_cache_candidates() {
+    local candidate parent count=0
+    _pch_storage_host_inventory_allowed || return 0
+    # Inventory is only a request to investigate. The cleanup helper checks
+    # exact formats, source evidence, open users and the approval fingerprint.
+    for candidate in \
+        "$HOME/.dartServer/.analysis-driver" \
+        "$HOME/Library/Caches/node-gyp" "$HOME/Library/Caches/electron" \
+        "$HOME/Library/Application Support/Code/CachedExtensionVSIXs" \
+        "$HOME/Library/Application Support/Google/GoogleUpdater/crx_cache" \
+        "$HOME/Library/Developer/XcodeBuildMCP/workspaces/"*/test-products \
+        "$HOME/.local/share/mise/http-tarballs/"*/bin/cache/artifacts/engine \
+        "$HOME/flutter/bin/cache/artifacts/engine"; do
+        [[ -d "$candidate" && ! -L "$candidate" ]] || continue
+        _pch_add_project_residue_row "$candidate" "재생성 검증 대상 · ${candidate##*/}" \
+            "원본·복원 명세·생성 형식·사용 여부를 정리 전에 검사합니다. 확인하지 못한 자료는 보존합니다."
+    done
+    for parent in "$HOME/Library/Developer/XcodeBuildMCP/workspaces/"*/DerivedData/*; do
+        [[ -f "$parent/info.plist" && ! -L "$parent" ]] || continue
+        count=$((count+1)); [[ "$count" -le 128 ]] || break
+        for candidate in Build ModuleCache.noindex Index.noindex SDKStatCaches.noindex CompilationCache.noindex; do
+            _pch_add_project_residue_row "$parent/$candidate" "Xcode 생성물 · $candidate" \
+                "info.plist의 원본 프로젝트를 재검증합니다. Logs·TestResults·결과 묶음은 별도로 보존합니다."
+        done
+    done
+}
+
 _pch_collect_project_residue() {
     # 개발 프로젝트가 자기 폴더 안에 쌓는 재생성 가능 산출물(Flutter build/,
     # node_modules, Cargo target/ 등)을 표면화한다. 이 항목들은 .gitignore가
@@ -1377,6 +1404,14 @@ _pch_collect_project_residue() {
                     _pch_add_project_residue_row "$project_dir/node_modules" \
                         "node_modules · $project_name" \
                         "삭제해도 npm install(또는 pnpm/yarn install)로 재설치됩니다. lock 파일은 보존하세요."
+                    _pch_add_project_residue_row "$project_dir/.next" \
+                        "Next.js 생성물 · $project_name" \
+                        "정리 전 Next.js 명세·잠금 파일·생성 매니페스트와 사용 여부를 검증합니다."
+                    ;;
+                */pyproject.toml|*/requirements.txt)
+                    _pch_add_project_residue_row "$project_dir/.venv" \
+                        "Python 가상환경 · $project_name" \
+                        "정리 전 복원 명세·설치 패키지 해시·로컬 수정과 사용 여부를 검증합니다."
                     ;;
                 */Cargo.toml)
                     _pch_add_project_residue_row "$project_dir/target" \
@@ -2307,6 +2342,7 @@ collect_storage() {
     # "I just freed space and it filled again" incidents.
     _pch_collect_transient_workspaces
     _pch_collect_project_residue
+    _pch_collect_generated_cache_candidates
     _pch_collect_known_storage_paths
     _pch_collect_storage_access_checks
     _pch_collect_storage_runtime_signals
