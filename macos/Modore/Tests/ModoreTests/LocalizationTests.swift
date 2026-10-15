@@ -50,4 +50,61 @@ extension LocalizationTests {
         XCTAssertEqual(L10n.message("/Volumes/자료/원본", preferences: ["ja"]), "/Volumes/자료/원본")
         XCTAssertEqual(L10n.message("외부 도구가 반환한 미등록 내용", preferences: ["en"]), "외부 도구가 반환한 미등록 내용")
     }
+
+    func testSkillRestoreConflictAndSafetyErrorsLocalize() {
+        let conflict = "복구 충돌: 원래 위치에 파일 또는 링크가 있습니다. 덮어쓰지 않았습니다."
+        XCTAssertEqual(
+            L10n.message(conflict, preferences: ["en"]),
+            "Recovery conflict: A file or link exists at the original location. Nothing was overwritten."
+        )
+        XCTAssertEqual(
+            L10n.message(conflict, preferences: ["ja"]),
+            "復元の競合: 元の場所にファイルまたはリンクがあります。上書きはしていません。"
+        )
+        let changed = "백업 중 원본이 바뀌었습니다. 비활성화하지 않았습니다."
+        XCTAssertEqual(
+            L10n.message(changed, preferences: ["en"]),
+            "The original changed during backup. It was not disabled."
+        )
+        XCTAssertEqual(
+            L10n.message(changed, preferences: ["ja"]),
+            "バックアップ中に元の項目が変更されました。無効化は行っていません。"
+        )
+        let linked = "내부 심볼릭 링크가 있는 스킬은 아직 안전한 복구를 지원하지 않습니다. 원본을 변경하지 않았습니다."
+        XCTAssertEqual(
+            L10n.message(linked, preferences: ["en"]),
+            "Safe recovery is not yet supported for skills containing internal symbolic links. The original was not changed."
+        )
+        XCTAssertEqual(
+            L10n.message(linked, preferences: ["ja"]),
+            "内部にシンボリックリンクがあるスキルは、まだ安全な復元に対応していません。元の項目は変更していません。"
+        )
+    }
+
+    func testSkillPathDiagnosticsPreserveCapturedPathsAndPluginNames() {
+        let path = "/Volumes/자료/백업 완료 · 비활성화/100% original %@/SKILL.md"
+        let message = "읽는 중 파일이 바뀌었습니다: \(path)"
+        XCTAssertEqual(L10n.message(message, preferences: ["en"]), "The file changed while being read: \(path)")
+        XCTAssertEqual(L10n.message(message, preferences: ["ja"]), "読み取り中にファイルが変更されました: \(path)")
+        XCTAssertEqual(L10n.message(message, preferences: ["ko"]), message)
+
+        let plugin = "프로젝트·대화 찾기@시장"
+        let warning = "Claude 플러그인 \(plugin): 설치 기록 형식이 올바르지 않습니다."
+        XCTAssertEqual(L10n.message(warning, preferences: ["en"]), "Claude plugin \(plugin): The installation record format is invalid.")
+        XCTAssertEqual(L10n.message(warning, preferences: ["ja"]), "Claude プラグイン \(plugin): インストール記録の形式が正しくありません。")
+    }
+
+    func testSkillBackupContextLocalizesEachGeneratedLineAndPreservesIdentifiers() {
+        let identifier = "A92F90C8-9F33-411E-9618-BF4BFC2A8D1F"
+        let path = "/Volumes/자료/원본/스킬 %@"
+        let message = "백업 \(identifier)\n백업 기록 읽기 실패\n\(path)\n읽는 중 파일이 바뀌었습니다: \(path)"
+        XCTAssertEqual(
+            L10n.message(message, preferences: ["en"]),
+            "Backup \(identifier)\nFailed to read the backup record\n\(path)\nThe file changed while being read: \(path)"
+        )
+        XCTAssertEqual(
+            L10n.message(message, preferences: ["ja"]),
+            "バックアップ \(identifier)\nバックアップ記録の読み取りに失敗しました\n\(path)\n読み取り中にファイルが変更されました: \(path)"
+        )
+    }
 }

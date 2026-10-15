@@ -6,10 +6,12 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
     case health
     case appDiagnostic
     case status
+    case macRecheck
     case storage
     case security
     case work
     case activity
+    case skills
 
     var id: String { rawValue }
 
@@ -19,6 +21,7 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
         case .health: return L10n.text("Mac 상태")
         case .appDiagnostic: return L10n.text("앱 버벅임 진단")
         case .status: return L10n.text("문제 점검")
+        case .macRecheck: return L10n.text("Mac 재점검")
         case .storage: return L10n.text("저장공간")
         case .security: return L10n.text("권한·자동 실행 점검")
         // Not "AI 세션": the object here is a project, and sessions are
@@ -26,6 +29,7 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
         // -- worktrees, git state and lineage arrived first on that
         // screen long before any session did.
         case .work: return L10n.text("프로젝트·대화 찾기")
+        case .skills: return L10n.text("AI 스킬")
         case .activity: return L10n.text("조치 기록")
         }
     }
@@ -36,9 +40,11 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
         case .health: return "heart.text.clipboard"
         case .appDiagnostic: return "cursorarrow.motionlines"
         case .status: return "waveform.path.ecg"
+        case .macRecheck: return "list.bullet.clipboard"
         case .storage: return "internaldrive"
         case .security: return "lock.shield"
         case .work: return "folder.badge.gearshape"
+        case .skills: return "books.vertical"
         case .activity: return "clock.arrow.circlepath"
         }
     }
@@ -60,7 +66,8 @@ struct ModernRootView: View {
         } detail: {
           NavigationStack {
             VStack(spacing: 0) {
-                if let freeSpace = model.liveState.freeSpace,
+                if selection != .macRecheck,
+                   let freeSpace = model.liveState.freeSpace,
                    freeSpace.value.pressure.needsRecovery,
                    !(selection == .storage && storageSection == .goal) {
                     StoragePressureBanner(
@@ -257,12 +264,12 @@ struct ModernSidebar: View {
             List(selection: nativeSelection) {
                 SidebarDestinationRow(destination: .start).tag(AppDestination.start)
                 Section("할 일") {
-                    ForEach([AppDestination.appDiagnostic, .storage, .work]) { destination in
+                    ForEach([AppDestination.appDiagnostic, .storage, .work, .skills]) { destination in
                         SidebarDestinationRow(destination: destination).tag(destination)
                     }
                 }
                 Section("Mac 관리") {
-                    ForEach([AppDestination.health, .status, .security, .activity]) { destination in
+                    ForEach([AppDestination.health, .status, .macRecheck, .security, .activity]) { destination in
                         SidebarDestinationRow(destination: destination).tag(destination)
                     }
                 }
@@ -435,13 +442,21 @@ struct ModernDetailView: View {
                 openWork: { onNavigate(.work) },
                 openStorageOverview: { onOpenStorage(.overview) },
                 openDiagnosis: { onNavigate(.status) },
-                openSecurity: { onNavigate(.security) }
+                openSecurity: { onNavigate(.security) },
+                openRecheck: { onNavigate(.macRecheck) }
             )
         case .status:
             StatusPage(
                 onOpenStorage: onOpenStorage,
                 onOpenSecurity: { onNavigate(.security) },
-                onOpenActivity: { onNavigate(.activity) }
+                onOpenActivity: { onNavigate(.activity) },
+                onOpenRecheck: { onNavigate(.macRecheck) }
+            )
+        case .macRecheck:
+            MacRecheckPage(
+                onOpenStorage: { onOpenStorage(.goal) },
+                onOpenActivity: { onNavigate(.activity) },
+                onOpenWork: { onNavigate(.work) }
             )
         case .storage:
             StorageWorkspacePage(section: $storageSection)
@@ -449,6 +464,8 @@ struct ModernDetailView: View {
             SecurityPage()
         case .work:
             WorkPage()
+        case .skills:
+            SkillInventoryView()
         case .activity:
             ActivityPage()
         }

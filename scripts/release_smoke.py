@@ -364,6 +364,7 @@ MODORE_SOURCE_CHECKOUT_FILES = [
 
 MACOS_BASE_FILES = COMMON_FILES + [
     "docs/CI_INCIDENTS.md",
+    "docs/AI_SKILLS.md",
     "scan.command",
     "run-mac-app.command",
     "scripts/scanner.sh",
@@ -371,6 +372,7 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/storage_watch.sh",
     "scripts/schedule.sh",
     "scripts/scree.py",
+    "scripts/skill_inventory.py",
     "scripts/friction.py",
     "scripts/moraine.py",
     "scripts/hfscan.py",
