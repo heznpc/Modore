@@ -22,12 +22,14 @@ struct WorkPage: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(L10n.text("작업 환경")).font(.headline)
+                Text(L10n.text("프로젝트·대화")).font(.headline)
                 Spacer()
-                Button(L10n.text("CI 문제")) { ci.showIncidents = true }
-                    .accessibilityIdentifier("work-ci-incidents")
-                Button(L10n.text("작업 환경 보기")) { resources = true }
-                    .keyboardShortcut("k", modifiers: [.command, .shift])
+                Menu(L10n.text("개발 도구")) {
+                    Button(L10n.text("CI 실행 결과")) { ci.showIncidents = true }
+                        .accessibilityIdentifier("work-ci-incidents")
+                    Button(L10n.text("작업 환경 보기")) { resources = true }
+                        .keyboardShortcut("k", modifiers: [.command, .shift])
+                }
             }.padding(12)
             if let message = quotaWork.message {
                 WorkNotice(text: message, action: (L10n.text("닫기"), {

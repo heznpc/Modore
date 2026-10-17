@@ -226,5 +226,11 @@
     "시간": "時間",
     "조사": "調査",
     "건": "件"
+  },
+  "load_line_macos": "測定区間のCPU {cpu}% · アクティブ＋固定メモリ {mem}% · macOSメモリプレッシャー {pressure} · 合計メモリ {totalGb} GiB",
+  "memory_pressure": {
+    "normal": "正常",
+    "warning": "注意",
+    "critical": "危険"
   }
 }

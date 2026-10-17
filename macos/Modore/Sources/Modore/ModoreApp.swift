@@ -9,6 +9,11 @@ final class PCHealthCheckApplicationDelegate: NSObject, NSApplicationDelegate {
     private var terminationReplyPending = false
     private var pendingTerminationConditions = 0
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func bind(to model: ScanModel) {
         self.model = model
     }
@@ -21,7 +26,7 @@ final class PCHealthCheckApplicationDelegate: NSObject, NSApplicationDelegate {
         if AppDiagnosticService.shared.active {
             deferredConditions += 1
             Task {
-                await AppDiagnosticService.shared.stop("앱 종료 · 부분 결과")
+                await AppDiagnosticService.shared.stop(L10n.text("앱 종료 · 부분 결과"))
                 self.finishTerminationCondition(sender: sender)
             }
         }
@@ -60,6 +65,7 @@ struct ModoreApp: App {
     @StateObject private var quotaWork = QuotaWorkModel()
     @StateObject private var ciWatch = CIWatchService()
     @StateObject private var model: ScanModel
+    @AppStorage("showMenuBarStatus") private var showMenuBarStatus = true
     /// Retaining the descriptor is what retains singleton ownership. The lock
     /// is released automatically after normal or deferred app termination.
     private let instanceLease: AppInstanceCoordinator.Lease?
@@ -157,9 +163,17 @@ struct ModoreApp: App {
             }
         }
 
-        Window("앱 재현 검사", id: "app-diagnostic") {
-            AppDiagnosticPage().frame(minWidth: 820, minHeight: 650)
+        Window(L10n.text("앱 버벅임 진단"), id: "app-diagnostic") {
+            AppDiagnosticPage()
+                .environmentObject(model)
+                .frame(minWidth: 820, minHeight: 650)
         }.defaultSize(width: 960, height: 780)
+
+        MenuBarExtra("Modore", systemImage: "heart.text.clipboard", isInserted: $showMenuBarStatus) {
+            ModoreStatusMenu()
+                .environmentObject(cpuWatch)
+                .environmentObject(model)
+        }
 
         Settings {
             StorageWatchSettingsView()
@@ -174,10 +188,16 @@ struct ModoreApp: App {
 struct StorageWatchSettingsView: View {
     @EnvironmentObject private var cpuWatch: CPUWatchService
     @AppStorage("automaticDeepScan") private var automaticDeepScan = false
+    @AppStorage("showMenuBarStatus") private var showMenuBarStatus = true
     @EnvironmentObject private var model: ScanModel
 
     var body: some View {
         Form {
+            Section(L10n.text("일반")) {
+                Toggle(L10n.text("메뉴 막대에 상태 표시"), isOn: $showMenuBarStatus)
+                Text(L10n.text("메뉴 막대에서 상태를 확인하고, 문제를 해결할 때 작업창을 엽니다."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             AutomaticCacheRecoverySettings()
 
             Section(L10n.text("저장공간 급감 감시")) {
@@ -190,7 +210,7 @@ struct StorageWatchSettingsView: View {
                 )
                 .disabled(model.storageWatchInFlight || model.isRunning || model.cleanupInFlight)
 
-                Text(L10n.text("20·10·5·3GB 아래로 내려가면 알립니다. 5GB 미만은 10분, 3GB 미만은 5분마다 다시 알리며, 한 시간에 8GB 이상 줄어도 경고합니다. 알림에서 공간 확보와 실행 중인 앱 확인을 열 수 있습니다."))
+                Text(L10n.text("실제 여유 공간 20 GiB 미만은 주의, 5 GiB 미만은 위험입니다. 10·3 GiB 경계와 한 시간에 8 GiB 이상 감소할 때도 알립니다. 5 GiB 미만은 10분, 3 GiB 미만은 5분마다 다시 알립니다."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
@@ -211,7 +231,7 @@ struct StorageWatchSettingsView: View {
                 .disabled(cpuWatch.configuring)
                 Text(L10n.text("Modore 실행 중 약 2초마다 공간·RAM·CPU를 관찰하고, 공간이 부족하면 Dock에도 잔여 용량을 표시합니다. 앱 종료 후 공간 감시는 위의 매분 확인 설정을 따릅니다. RAM 압박이나 지속 CPU 부하는 10분마다, 위험한 RAM 압박은 5분마다 다시 알립니다."))
                     .font(.caption).foregroundStyle(.secondary)
-                Text(L10n.text("기준: 전체 코어 평균 70% 이상, 프로세스 하나가 150% 이상, 또는 macOS 열압력과 CPU 부하가 함께 감지될 때. CPU 100%는 코어 1개입니다."))
+                Text(L10n.text("CPU 기준: 관측한 프로세스의 코어 평균 70% 이상, 하나가 150% 이상, 또는 열 압력과 20% 이상 부하가 함께 감지될 때입니다. CPU 100%는 코어 1개이며 보호된 프로세스는 빠질 수 있습니다. 메모리 판정은 macOS 메모리 압력을 따릅니다."))
                     .font(.caption).foregroundStyle(.secondary)
                 Text(cpuWatch.detail).font(.caption).textSelection(.enabled)
                 Text(cpuWatch.notificationStatus).font(.caption).textSelection(.enabled)

@@ -226,5 +226,11 @@
     "시간": "시간",
     "조사": "조사",
     "건": "건"
+  },
+  "load_line_macos": "측정 구간 CPU {cpu}% · 활성 + 고정 메모리 {mem}% · macOS 메모리 압력 {pressure} · 전체 메모리 {totalGb} GiB",
+  "memory_pressure": {
+    "normal": "정상",
+    "warning": "주의",
+    "critical": "위험"
   }
 }

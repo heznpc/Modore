@@ -4,7 +4,7 @@ import AppKit
 /// Narrow AppKit boundary. Only explicitly registered elements; never press Send/Return.
 @MainActor
 final class AppDiagnosticReplay: ObservableObject {
-    @Published private(set) var message = "자동 재현을 쓰려면 입력창과 목록 위치를 등록하세요."
+    @Published private(set) var message = L10n.text("자동 재현을 쓰려면 입력창과 목록 위치를 등록하세요.")
     @Published private(set) var hasInput = false
     @Published private(set) var hasHover = false
     private var input: AXUIElement?
@@ -19,7 +19,7 @@ final class AppDiagnosticReplay: ObservableObject {
     var trusted: Bool { AXIsProcessTrusted() }
     func requestPermission() {
         _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
-        message = "시스템 설정에서 Modore 접근성을 허용한 뒤 위치를 등록하세요."
+        message = L10n.text("시스템 설정에서 Modore 접근성을 허용한 뒤 위치를 등록하세요.")
     }
     func reset() {
         cancelRegistration(); input = nil; hover = nil; owner = nil; hasInput = false; hasHover = false
@@ -30,9 +30,9 @@ final class AppDiagnosticReplay: ObservableObject {
     }
     func register(input isInput: Bool, target: DiagnosticTarget) {
         cancelRegistration()
-        guard trusted else { message = "자동 조작에는 Modore 접근성 권한이 필요합니다."; return }
+        guard trusted else { message = L10n.text("자동 조작에는 Modore 접근성 권한이 필요합니다."); return }
         if owner != target { reset(); owner = target }
-        message = isInput ? "대상 앱의 빈 입력창을 한 번 클릭하세요. 등록만 합니다." : "대상 앱의 목록에서 포인터를 옮길 곳을 한 번 클릭하세요."
+        message = isInput ? L10n.text("대상 앱의 빈 입력창을 한 번 클릭하세요. 등록만 합니다.") : L10n.text("대상 앱의 목록에서 포인터를 옮길 곳을 한 번 클릭하세요.")
         registration = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
             let point = CGEvent(source: nil)?.location
             Task { @MainActor in
@@ -43,7 +43,7 @@ final class AppDiagnosticReplay: ObservableObject {
         registrationTimeout = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 60_000_000_000)
             guard !Task.isCancelled else { return }
-            self?.cancelRegistration(); self?.message = "위치 등록 대기가 끝났습니다. 다시 등록할 수 있습니다."
+            self?.cancelRegistration(); self?.message = L10n.text("위치 등록 대기가 끝났습니다. 다시 등록할 수 있습니다.")
         }
     }
     private func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
@@ -56,7 +56,7 @@ final class AppDiagnosticReplay: ObservableObject {
         let app = AXUIElementCreateApplication(target.pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
         guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &element) == .success,
-              var chosen = element else { message = "대상 앱의 접근성 요소를 읽을 수 없습니다."; return }
+              var chosen = element else { message = L10n.text("대상 앱의 접근성 요소를 읽을 수 없습니다."); return }
         var pid: pid_t = 0
         AXUIElementGetPid(chosen, &pid)
         guard pid == target.pid else { return }
@@ -70,11 +70,11 @@ final class AppDiagnosticReplay: ObservableObject {
             let role = attribute(chosen, kAXRoleAttribute as CFString) as? String
             guard role == kAXTextAreaRole || role == kAXTextFieldRole,
                   attribute(chosen, kAXSubroleAttribute as CFString) as? String != kAXSecureTextFieldSubrole,
-                  value(chosen) == "" else { message = "접근성으로 읽을 수 있는 빈 일반 입력창을 선택하세요."; return }
+                  value(chosen) == "" else { message = L10n.text("접근성으로 읽을 수 있는 빈 일반 입력창을 선택하세요."); return }
             input = chosen; hasInput = true
         } else { hover = chosen; hasHover = true }
         AXUIElementSetMessagingTimeout(chosen, 0.25)
-        cancelRegistration(); message = isInput ? "입력창 등록됨" : "목록 위치 등록됨"
+        cancelRegistration(); message = isInput ? L10n.text("입력창 등록됨") : L10n.text("목록 위치 등록됨")
     }
     private func value(_ element: AXUIElement) -> String? { attribute(element, kAXValueAttribute as CFString) as? String }
     private func center(_ element: AXUIElement) throws -> CGPoint {
@@ -153,7 +153,7 @@ final class AppDiagnosticReplay: ObservableObject {
                 throw error
             }
         }
-        message = "자동 재현 종료 · 화면 끊김 여부는 별도 확인이 필요합니다."
+        message = L10n.text("자동 재현 종료 · 화면 끊김 여부는 별도 확인이 필요합니다.")
     }
     private func installEscape() {
         escapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -174,9 +174,9 @@ final class AppDiagnosticReplay: ObservableObject {
         case unavailable, changed, cleanup
         var errorDescription: String? {
             switch self {
-            case .unavailable: return "등록한 빈 입력창·목록 위치 또는 접근성 권한을 확인하세요."
-            case .changed: return "대상·포커스·입력 내용이 바뀌어 자동 조작을 중단했습니다."
-            case .cleanup: return "시험 입력 제거를 확인하지 못했습니다. 입력창을 확인하세요."
+            case .unavailable: return L10n.text("등록한 빈 입력창·목록 위치 또는 접근성 권한을 확인하세요.")
+            case .changed: return L10n.text("대상·포커스·입력 내용이 바뀌어 자동 조작을 중단했습니다.")
+            case .cleanup: return L10n.text("시험 입력 제거를 확인하지 못했습니다. 입력창을 확인하세요.")
             }
         }
     }

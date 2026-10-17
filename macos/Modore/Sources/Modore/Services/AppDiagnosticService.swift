@@ -4,10 +4,10 @@ import SwiftUI
 @MainActor
 final class AppDiagnosticService: ObservableObject {
     static let shared = AppDiagnosticService()
-    static let readyStatus = "대상 앱을 확인하고 검사를 시작하세요."
+    static let readyStatus = L10n.text("대상 앱을 확인하고 검사를 시작하세요.")
     @Published private(set) var apps: [DiagnosticTarget] = []
     @Published var selectedPID: Int32 = 0
-    @Published var condition = "현재 상태"
+    @Published var condition = L10n.text("현재 상태")
     @Published var repeats = 1
     @Published private(set) var active = false
     @Published private(set) var saving = false
@@ -68,7 +68,7 @@ final class AppDiagnosticService: ObservableObject {
             let recorder = try AppDiagnosticRecorder(target: target, condition: condition)
             self.recorder = recorder; active = true; output = nil; frame = nil; lastMarker = nil
             UserDefaults.standard.set(target.bundleID, forKey: "diagnosticTargetBundleID")
-            status = "기록 중 · 평소처럼 사용하고 증상이 나타나면 표식을 남기세요. 고부하 증거는 자동 보존합니다."
+            status = L10n.text("기록 중 · 평소처럼 사용하고 증상이 나타나면 표식을 남기세요. 고부하 증거는 자동 보존합니다.")
             collectionTask = Task { [weak self] in
                 while !Task.isCancelled {
                     let (frame, reason) = await recorder.capture()
@@ -81,19 +81,19 @@ final class AppDiagnosticService: ObservableObject {
             }
             showController()
             NSRunningApplication(processIdentifier: target.pid)?.activate(options: .activateIgnoringOtherApps)
-        } catch { status = "검사 저장소를 만들지 못했습니다: \(error.localizedDescription)" }
+        } catch { status = L10n.format("검사 저장소를 만들지 못했습니다: %@", String(describing: error.localizedDescription)) }
     }
     func mark(_ action: String) {
         guard active, !saving else { return }
         Task {
             await recorder?.mark("manual", action)
-            let names = ["first-input": "첫 입력", "sidebar": "목록 이동", "attachment": "사진 첨부", "stutter": "끊김 발생"]
-            lastMarker = "\(names[action] ?? action) · 표식 저장됨"
+            let names = ["first-input": L10n.text("첫 입력"), "sidebar": L10n.text("목록 이동"), "attachment": L10n.text("사진 첨부"), "stutter": L10n.text("끊김 발생")]
+            lastMarker = L10n.format("%@ · 표식 저장됨", String(describing: names[action] ?? action))
         }
     }
     func collectStack() {
         guard active, !saving else { return }
-        Task { status = await recorder?.collectStack() ?? "검사를 먼저 시작하세요." }
+        Task { status = await recorder?.collectStack() ?? L10n.text("검사를 먼저 시작하세요.") }
     }
     func runReplay() {
         guard active, !saving, !replaying, let target = selected, let recorder else { return }
@@ -102,9 +102,9 @@ final class AppDiagnosticService: ObservableObject {
             guard let self else { return }
             do {
                 try await replay.run(target: target, repeats: repeats) { kind, detail in await recorder.mark(kind, detail) }
-                status = "자동 재현 종료 · 검사 기록은 계속됩니다."
+                status = L10n.text("자동 재현 종료 · 검사 기록은 계속됩니다.")
             } catch {
-                let detail = error is CancellationError ? "사용자가 자동 재현을 중단했습니다." : error.localizedDescription
+                let detail = error is CancellationError ? L10n.text("사용자가 자동 재현을 중단했습니다.") : error.localizedDescription
                 status = detail; await recorder.mark("auto-stopped", detail)
             }
             replaying = false; replay.onStop = nil
@@ -126,8 +126,8 @@ final class AppDiagnosticService: ObservableObject {
             results.insert(result, at: 0); results = Array(results.prefix(20))
             presentations = presentations.filter { id, _ in results.contains { $0.id == id } }
             output = recorder.folder
-            status = "저장됨 · \(result.diagnosticHeadline)"
-        } catch { status = "결과 저장 실패: \(error.localizedDescription)" }
+            status = L10n.format("저장됨 · %@", String(describing: result.diagnosticHeadline))
+        } catch { status = L10n.format("결과 저장 실패: %@", String(describing: error.localizedDescription)) }
         self.recorder = nil; active = false; saving = false
         panel?.close(); panel = nil
         if reason == "사용자 종료" {
@@ -139,7 +139,7 @@ final class AppDiagnosticService: ObservableObject {
         if let panel { panel.orderFrontRegardless(); return }
         let panel = NSPanel(contentRect: NSRect(x: 100, y: 100, width: 365, height: 255),
             styleMask: [.titled, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.title = "Modore · 기록 중"
+        panel.title = L10n.text("Modore · 기록 중")
         panel.level = .floating; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
         panel.contentView = NSHostingView(rootView: DiagnosticController(service: self))
         panel.orderFrontRegardless(); self.panel = panel
@@ -154,26 +154,26 @@ private struct DiagnosticController: View {
     @ObservedObject var service: AppDiagnosticService
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(service.replaying ? "자동 재현 중 · Esc로 중단" : "\(service.selected?.name ?? "앱") 기록 중", systemImage: "record.circle.fill")
+            Label(service.replaying ? L10n.text("자동 재현 중 · Esc로 중단") : L10n.format("%@ 기록 중", String(describing: service.selected?.name ?? L10n.text("앱"))), systemImage: "record.circle.fill")
                 .font(.headline).foregroundStyle(Color.accentColor)
-            Text(service.frame.map { "\(Int($0.seconds))초 / 최대 5분 · CPU \($0.targetCPU.map { String(format: "%.1f%%", $0) } ?? "측정 중")" } ?? "측정 시작 중")
+            Text(service.frame.map { L10n.format("%@초 / 최대 5분 · CPU %@", String(describing: Int($0.seconds)), String(describing: $0.targetCPU.map { String(format: "%.1f%%", $0) } ?? L10n.text("측정 중"))) } ?? L10n.text("측정 시작 중"))
                 .font(.callout).monospacedDigit()
-            Text("동작하거나 끊긴 순간에 표식을 누르세요.").font(.caption).foregroundStyle(.secondary)
+            Text(L10n.text("동작하거나 끊긴 순간에 표식을 누르세요.")).font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button("첫 입력") { service.mark("first-input") }
-                Button("목록 이동") { service.mark("sidebar") }
-                Button("사진 첨부") { service.mark("attachment") }
-                Button("끊김") { service.mark("stutter") }
+                Button(L10n.text("첫 입력")) { service.mark("first-input") }
+                Button(L10n.text("목록 이동")) { service.mark("sidebar") }
+                Button(L10n.text("사진 첨부")) { service.mark("attachment") }
+                Button(L10n.text("끊김")) { service.mark("stutter") }
             }.disabled(service.saving)
-            Text(service.lastMarker ?? "고부하 증거는 자동으로 보존합니다.")
+            Text(service.lastMarker ?? L10n.text("고부하 증거는 자동으로 보존합니다."))
                 .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             HStack {
-                if service.replaying { Button("자동 조작 중단") { service.stopReplay() } }
+                if service.replaying { Button(L10n.text("자동 조작 중단")) { service.stopReplay() } }
                 Spacer()
-                Button(service.saving ? "저장 중…" : "종료하고 결과 보기") { Task { await service.stop() } }
+                Button(service.saving ? L10n.text("저장 중…") : L10n.text("종료하고 결과 보기")) { Task { await service.stop() } }
                     .buttonStyle(.borderedProminent).disabled(service.saving)
             }
-            Text("표식은 누른 시각이며 실제 조작 시각의 자동 판별은 아닙니다.")
+            Text(L10n.text("표식은 누른 시각이며 실제 조작 시각의 자동 판별은 아닙니다."))
                 .font(.caption2).foregroundStyle(.secondary)
         }.padding(16).frame(width: 365, height: 255)
     }

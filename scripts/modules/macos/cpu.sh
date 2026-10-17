@@ -33,12 +33,12 @@ collect_cpu() {
 
 collect_system_load() {
     local CPU_USED status="ok" detail="CPU와 메모리 부하를 확인했습니다."
-    CPU_USED=$(top -l 1 -n 0 -s 0 | awk '/CPU usage/ {
+    CPU_USED=$(top -l 2 -n 0 -s 1 | awk '/CPU usage/ {
         gsub(/%/, "");
         for (i=1; i<=NF; i++) {
-            if ($i == "idle") { print 100 - $(i-1); exit }
+            if ($i == "idle") { used = 100 - $(i-1); break }
         }
-    }')
+    } END { if (used != "") print used }')
     local MEM_TOTAL_BYTES
     MEM_TOTAL_BYTES=$(sysctl -n hw.memsize)
     local MEM_TOTAL_GB
@@ -55,14 +55,11 @@ collect_system_load() {
         TOTAL_PAGES=$((MEM_TOTAL_BYTES / PAGE_SIZE))
         MEM_PCT=$(echo "scale=1; $PAGES_USED * 100 / $TOTAL_PAGES" | bc)
     fi
-    # A "0" here would be a fake measurement, not a real one -- an actually
-    # running macOS system never has 0% memory used, so leaving MEM_PCT
-    # empty on a vm_stat parse failure (rather than substituting "0") is
-    # what lets the check below tell "we couldn't measure this" apart from
-    # "we measured it and it's zero". The downstream JXA reader already
-    # treats an empty value as 0 for display (Number(load.MEM_PCT || 0)),
-    # so this only changes whether the failure is reported, not what number
-    # ends up on screen.
+    # Active+wired pages are an occupancy measure, not system memory pressure.
+    # Preserve missing values; the report serializes them as null, never zero.
+    local MEM_PRESSURE
+    MEM_PRESSURE=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || true)
+    case "$MEM_PRESSURE" in 1|2|4) ;; *) MEM_PRESSURE="" ;; esac
     if [[ -z "$CPU_USED" || -z "$MEM_TOTAL_GB" || -z "$MEM_PCT" ]]; then
         status="failed"
         detail="CPU 또는 메모리 부하를 완전히 읽지 못했습니다."
@@ -70,6 +67,7 @@ collect_system_load() {
     {
         echo "CPU_PCT=$CPU_USED"
         echo "MEM_PCT=$MEM_PCT"
+        echo "MEM_PRESSURE=$MEM_PRESSURE"
         echo "MEM_TOTAL_GB=$MEM_TOTAL_GB"
     } > "$TMP_DIR/load.txt"
     record_collection_status "system_load" "시스템 부하" "$status" "false" "$detail"

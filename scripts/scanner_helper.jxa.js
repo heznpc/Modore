@@ -414,13 +414,18 @@ function parseStorageDf(text) {
   const freeKb = Number(parts[3] || 0);
   const usePercent = Number(String(parts[4] || "0").replace("%", ""));
   const mount = parts.slice(5).join(" ") || "/";
+  if (![totalKb, usedKb, freeKb, usePercent].every(Number.isFinite) || totalKb <= 0 ||
+      usedKb < 0 || freeKb < 0 || freeKb > totalKb || usePercent < 0 || usePercent > 100) {
+    return { mount, totalGB: 0, usedGB: 0, freeGB: 0, usePercent: 0, risk: "unknown", measured: false, note: "저장공간 정보를 읽지 못했습니다." };
+  }
   const freeGB = kbToGb(freeKb);
-  const risk = (freeGB < 5 || usePercent >= 95) ? "danger" :
-    (freeGB < 15 || usePercent >= 90) ? "warning" : "safe";
+  // Same unallocated-byte thresholds as ModoreDomain.StorageRecoveryPolicy.
+  // Use the unrounded df value; percent-full is context, not a second verdict.
+  const risk = freeKb < 5 * 1048576 ? "danger" : freeKb < 20 * 1048576 ? "warning" : "safe";
   const note = risk === "danger" ? "남은 공간이 매우 적습니다. 캐시/임시파일 후보를 먼저 확인하세요." :
     risk === "warning" ? "macOS 저장공간 막대 뒤에 숨은 큰 캐시와 개발 도구 구성요소를 검토하세요." :
     "저장공간 압박은 낮지만, macOS가 뭉뚱그린 항목의 정체를 확인할 수 있습니다.";
-  return { mount, totalGB: kbToGb(totalKb), usedGB: kbToGb(usedKb), freeGB, usePercent, risk, measured: true, note };
+  return { mount, totalGB: kbToGb(totalKb), usedGB: kbToGb(usedKb), freeGB, freeBytes: freeKb * 1024, totalBytes: totalKb * 1024, usePercent, risk, measured: true, note };
 }
 
 function storageNote(kind, label) {
@@ -969,7 +974,17 @@ tmp("load.txt").split(/\r?\n/).forEach(line => {
   const idx = line.indexOf("=");
   if (idx > 0) load[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
 });
-raw.sections.systemLoad = { cpuPercent: Number(load.CPU_PCT || 0), memoryPercent: Number(load.MEM_PCT || 0), totalMemoryGB: Number(load.MEM_TOTAL_GB || 0) };
+function measuredNumber(value) {
+  return value !== undefined && String(value).trim() !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
+}
+raw.sections.systemLoad = {
+  cpuPercent: measuredNumber(load.CPU_PCT),
+  cpuMeasurement: "systemIntervalPercent",
+  memoryPercent: measuredNumber(load.MEM_PCT),
+  memoryMeasurement: "activeAndWiredPercent",
+  memoryPressure: [1, 2, 4].includes(measuredNumber(load.MEM_PRESSURE)) ? Number(load.MEM_PRESSURE) : null,
+  totalMemoryGB: measuredNumber(load.MEM_TOTAL_GB)
+};
 const storageVolume = parseStorageDf(tmp("storage_df.txt"));
 const storageItems = parseStoragePaths(tmp("storage_paths.tsv"), storageVolume.risk);
 const storageAccess = parseStorageAccess(tmp("storage_access.tsv"));

@@ -67,4 +67,51 @@ final class HealthContextTests: XCTestCase {
         XCTAssertEqual(ModoreRoute(url: URL(string: "modore://health")!), .health)
         XCTAssertNil(ModoreRoute(url: URL(string: "modore://health?execute=1")!))
     }
+    func testCaptureKeepsUnmeasuredCPUSeparateFromMemoryFootprint() {
+        let cpu = CPUSample(uptime: 1,
+            counters: [.init(pid: 12345, started: 1, name: "new process", nanoseconds: 0,
+                             residentBytes: 1_000, physicalFootprintBytes: 2_000)],
+            thermalPressure: 0, cores: 8, enumeratedProcessCount: 2)
+        let captured = HealthSnapshot.capture(sample: cpu, usage: [], cpuElevated: false)
+        XCTAssertFalse(captured.cpuAvailable)
+        XCTAssertEqual(captured.processes.first?.cpuMeasured, false)
+        XCTAssertEqual(captured.processes.first?.residentBytes, 1_000)
+        XCTAssertEqual(captured.processes.first?.physicalFootprintBytes, 2_000)
+        XCTAssertEqual(captured.cpuCoverage?.unavailableProcesses, 2)
+        XCTAssertNotNil(captured.compressedBytes)
+    }
+
+    func testFreshnessRejectsOldAndFutureSnapshots() {
+        let value = sample(100)
+        XCTAssertTrue(value.isFresh(at: Date(timeIntervalSince1970: 100)))
+        XCTAssertTrue(value.isFresh(at: Date(timeIntervalSince1970: 130)))
+        XCTAssertFalse(value.isFresh(at: Date(timeIntervalSince1970: 131)))
+        XCTAssertFalse(value.isFresh(at: Date(timeIntervalSince1970: 99)))
+    }
+
+    func testLegacySnapshotsWithoutPlatformFieldsStillDecode() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(sample(0))) as? [String: Any])
+        for key in ["storageCapacity", "compressedBytes", "cpuCoverage", "power", "connectivity", "cpuBurst"] {
+            object.removeValue(forKey: key)
+        }
+        let decoded = try JSONDecoder().decode(HealthSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(decoded.storageCapacity)
+        XCTAssertNil(decoded.compressedBytes)
+        XCTAssertNil(decoded.cpuCoverage)
+        XCTAssertNil(decoded.power)
+        XCTAssertNil(decoded.connectivity)
+        XCTAssertNil(decoded.processes.first?.cpuMeasured)
+    }
+
+    func testBatteryPercentageDoesNotInventZeroOrDesktopBattery() {
+        XCTAssertEqual(PowerSnapshot.percentage(current: 40, maximum: 80), 50)
+        XCTAssertEqual(PowerSnapshot.percentage(current: 0, maximum: 100), 0)
+        XCTAssertNil(PowerSnapshot.percentage(current: nil, maximum: nil))
+        XCTAssertNil(PowerSnapshot.percentage(current: 10, maximum: 0))
+        XCTAssertNil(PowerSnapshot.percentage(current: -1, maximum: 100))
+        XCTAssertNil(PowerSnapshot.percentage(current: 110, maximum: 100))
+        let power = PowerSourceReader.capture()
+        if power.hasBattery == false { XCTAssertNil(power.batteryPercent) }
+    }
+
 }

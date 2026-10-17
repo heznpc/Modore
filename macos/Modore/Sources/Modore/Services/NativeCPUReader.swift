@@ -25,7 +25,8 @@ enum NativeCPUReader {
         return CPUProcessCounter(pid: pid, started: usage.ri_proc_start_abstime,
             name: label,
             nanoseconds: UInt64(Double(usage.ri_user_time &+ usage.ri_system_time) * nanosecondsPerTick),
-            residentBytes: usage.ri_resident_size)
+            residentBytes: usage.ri_resident_size,
+            physicalFootprintBytes: usage.ri_phys_footprint)
     }
 
     static func percent(before: CPUProcessCounter?, after: CPUProcessCounter, elapsed: Double) -> Double? {

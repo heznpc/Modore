@@ -1,4 +1,5 @@
 import Foundation
+import ModoreDomain
 
 /// Notification delivery is independent of the incident journal. A journal
 /// records a condition even when the screen is locked or a delivery fails.
@@ -23,12 +24,12 @@ struct HealthNoticePolicy {
 
     static func storageLevel(_ freeBytes: Int64?) -> Int {
         guard let freeBytes else { return 0 }
-        let gib: Int64 = 1_073_741_824
+        guard StoragePressure.classify(freeBytes: freeBytes).needsRecovery else { return 0 }
+        let gib = StorageRecoveryPolicy.bytesPerGiB
         if freeBytes < 3 * gib { return 4 }
-        if freeBytes < 5 * gib { return 3 }
+        if freeBytes < StorageRecoveryPolicy.defaultDangerThresholdBytes { return 3 }
         if freeBytes < 10 * gib { return 2 }
-        if freeBytes < 20 * gib { return 1 }
-        return 0
+        return 1
     }
 
     static func reminderInterval(_ freeBytes: Int64?) -> TimeInterval {
@@ -44,7 +45,7 @@ struct HealthNoticePolicy {
         _ snapshot: HealthSnapshot, journalChanged: Bool,
         userPresent: Bool, now: Date
     ) -> Bool {
-        if let free = snapshot.freeBytes, free >= 21 * 1_073_741_824 {
+        if let free = snapshot.freeBytes, free >= StorageRecoveryPolicy.defaultWarningThresholdBytes + StorageRecoveryPolicy.bytesPerGiB {
             deliveredStorageLevel = 0
         }
         let memory = Self.memoryLevel(snapshot)

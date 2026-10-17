@@ -226,5 +226,11 @@
     "시간": " hours",
     "조사": "Investigate",
     "건": " entries"
+  },
+  "load_line_macos": "CPU over measurement interval {cpu}% · Active + wired memory {mem}% · macOS memory pressure {pressure} · Total memory {totalGb} GiB",
+  "memory_pressure": {
+    "normal": "Normal",
+    "warning": "Elevated",
+    "critical": "Critical"
   }
 }

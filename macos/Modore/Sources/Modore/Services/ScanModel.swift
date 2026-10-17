@@ -1,4 +1,5 @@
 import Darwin
+import Combine
 import Foundation
 import SwiftUI
 
@@ -144,6 +145,7 @@ final class ScanModel: ObservableObject {
     enum TrackedTaskScope: Hashable {
         case workScreen
         case activityScreen
+        case storageScreen
         case application
     }
 
@@ -165,6 +167,7 @@ final class ScanModel: ObservableObject {
     @Published var cleanupRecoveryResult: CleanupRecoveryResult?
     @Published var storageInvestigations: [String: StorageInvestigation] = [:]
     @Published var storageInvestigationProgress: CleanupRecoveryProgress?
+    @Published var storageMeasurementInFlight = false
     @Published var recoveryHistory: [RecoveryHistory] = []
     @Published var recoveryHistoryError: String?
     @Published var cleanupInFlight = false
@@ -343,6 +346,7 @@ final class ScanModel: ObservableObject {
     /// subprocess has finished bounded process-group cleanup.
     var scanGeneration = 0
     private var liveStateTask: Task<Void, Never>?
+    private var diagnosticBusyObservation: AnyCancellable?
     var applicationTerminationWaitGeneration = 0
     var applicationTerminationWaitTask: Task<Void, Never>?
     var applicationTerminationDeadlineTask: Task<Void, Never>?
@@ -409,6 +413,12 @@ final class ScanModel: ObservableObject {
         self.cleanupMutationPending = ScanPublication.cleanupMutationIsPending(
             in: self.projectRoot
         )
+        diagnosticBusyObservation = AppDiagnosticService.shared.$active
+            .combineLatest(AppDiagnosticService.shared.$saving)
+            .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.objectWillChange.send() }
+            }
         self.virusTotalEnabled = Self.loadVirusTotalEnabled(projectRoot: self.projectRoot)
         let keepState = SimulatorKeepStore.load()
         self.simulatorKeepUUIDs = keepState.uuids
@@ -430,6 +440,9 @@ final class ScanModel: ObservableObject {
     var isRunning: Bool { state == .running }
     var isBusy: Bool {
         isRunning
+            || storageMeasurementInFlight
+            || AppDiagnosticService.shared.active
+            || AppDiagnosticService.shared.saving
             || cleanupInFlight
             || browserAutomationStopInFlight
             || storageWatchInFlight

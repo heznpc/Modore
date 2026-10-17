@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ModoreDomain
 
 struct HealthProcess: Codable, Equatable, Identifiable, Sendable {
     var id: Int32 { pid }
@@ -8,6 +9,10 @@ struct HealthProcess: Codable, Equatable, Identifiable, Sendable {
     let cpu: Double
     let residentBytes: UInt64?
     let workspace: String?
+    /// Footprint includes memory charged to this process, including compressed memory.
+    var physicalFootprintBytes: UInt64? = nil
+    /// nil is legacy data; false means no matching interval CPU counter.
+    var cpuMeasured: Bool? = nil
 }
 
 struct HealthSnapshot: Codable, Equatable, Sendable {
@@ -20,11 +25,22 @@ struct HealthSnapshot: Codable, Equatable, Sendable {
     let cpuElevated: Bool
     var cpuAvailable = true
     var cpuBurst: Bool?
+    var storageCapacity: LiveFreeSpace? = nil
+    var compressedBytes: UInt64? = nil
+    var cpuCoverage: CPUCoverage? = nil
+    var power: PowerSnapshot? = nil
+    var connectivity: ConnectivitySnapshot? = nil
+    var storagePressure: StoragePressure? { freeBytes.map(StoragePressure.classify(freeBytes:)) }
+
+    func isFresh(at now: Date = Date(), maximumAge: TimeInterval = 30) -> Bool {
+        let age = now.timeIntervalSince(date)
+        return age >= 0 && age <= maximumAge
+    }
     var peakCPU: Double { processes.map(\.cpu).max() ?? 0 }
 
     var issues: [String] {
         var result: [String] = []
-        if let freeBytes, freeBytes < 20 * 1_073_741_824 { result.append(freeBytes < 5 * 1_073_741_824 ? "저장공간 임계" : "저장공간 부족") }
+        if let storagePressure, storagePressure.needsRecovery { result.append(storagePressure == .danger ? "저장공간 임계" : "저장공간 부족") }
         if let memoryPressure, memoryPressure >= 2 { result.append("RAM 압박") }
         if cpuBurst == true && !cpuElevated { result.append("CPU 순간 부하") }
         if cpuElevated { result.append(thermalPressure >= 1 ? "발열·CPU 부하" : "CPU 부하") }
@@ -35,7 +51,7 @@ struct HealthSnapshot: Codable, Equatable, Sendable {
         L10n.format("여유 공간 %@ · 스왑 %@ · RAM %@", String(describing: Self.bytes(freeBytes)), String(describing: swapBytes.map { Self.bytes(Int64(clamping: $0)) } ?? L10n.text("미확인")), String(describing: memoryPressure.map { $0 >= 4 ? L10n.text("위험") : ($0 >= 2 ? L10n.text("주의") : L10n.text("정상")) } ?? L10n.text("미확인")))
     }
     static func bytes(_ value: Int64?) -> String {
-        value.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .binary) } ?? L10n.text("미확인")
+        value.map { StorageBytes.text($0) } ?? L10n.text("미확인")
     }
     func change(from before: Self) -> String {
         var parts: [String] = []
@@ -53,32 +69,52 @@ struct HealthSnapshot: Codable, Equatable, Sendable {
             return L10n.text("여유 공간 감소와 스왑 증가가 함께 관찰됐습니다. RAM 압박이 디스크 사용에 기여했을 가능성이 있습니다. 개별 프로세스가 만든 파일의 원인까지 확정한 것은 아닙니다.")
         }
         if (memoryPressure ?? 0) >= 2 { return L10n.text("macOS가 RAM 압박을 보고했습니다. 아래 메모리 사용량이 큰 앱의 작업을 먼저 확인하세요. 스왑 공간은 캐시 정리와 별개로 다시 늘 수 있습니다.") }
-        if let freeBytes, freeBytes < 20 * 1_073_741_824 { return L10n.text("빌드와 스왑에 쓸 디스크 여유가 부족합니다. 공간 확보에서 실제 회수 가능한 항목을 확인하세요. 프로세스 순위만으로 디스크를 채운 원인을 단정하지 않습니다.") }
+        if storagePressure?.needsRecovery == true { return L10n.text("빌드와 스왑에 쓸 디스크 여유가 부족합니다. 공간 확보에서 실제 회수 가능한 항목을 확인하세요. 프로세스 순위만으로 디스크를 채운 원인을 단정하지 않습니다.") }
         if cpuElevated { return L10n.text("CPU 부하가 지속됐습니다. 상위 프로세스와 연결된 작업을 확인하세요. CPU 100%는 코어 하나이며 온도 자체를 측정한 값은 아닙니다.") }
         return complete ? L10n.text("관찰 범위에서 현재 경고 기준 아래입니다.") : L10n.text("일부 관찰값이 없어 정상 여부를 확정하지 못했습니다.")
     }
 
-    static func capture(sample: CPUSample, usage: [CPUProcessUsage], cpuElevated: Bool, cpuBurst: Bool = false) -> Self {
+    static func capture(sample: CPUSample, usage: [CPUProcessUsage], cpuElevated: Bool, cpuBurst: Bool = false,
+                        power: PowerSnapshot? = nil, connectivity: ConnectivitySnapshot? = nil) -> Self {
         var pressure: Int32 = 0
         var pressureSize = MemoryLayout.size(ofValue: pressure)
         let pressureOK = sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &pressureSize, nil, 0) == 0
         var swap = xsw_usage()
         var swapSize = MemoryLayout.size(ofValue: swap)
         let swapOK = sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0
+        var statistics = vm_statistics64()
+        var statisticsCount = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let host = mach_host_self()
+        defer { mach_port_deallocate(mach_task_self_, host) }
+        let statisticsOK = withUnsafeMutablePointer(to: &statistics) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(statisticsCount)) {
+                host_statistics64(host, HOST_VM_INFO64, $0, &statisticsCount) == KERN_SUCCESS
+            }
+        }
+        var pageSize: vm_size_t = 0
+        let pageSizeOK = host_page_size(host, &pageSize) == KERN_SUCCESS && pageSize > 0
+        let compressed = UInt64(statistics.compressor_page_count).multipliedReportingOverflow(by: UInt64(pageSize))
+        let capacity = LiveStateService.observeFreeSpace()
         let counters = Dictionary(sample.counters.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
-        let memory = sample.counters.sorted { $0.residentBytes > $1.residentBytes }.prefix(5)
+        let memory = sample.counters.sorted { ($0.physicalFootprintBytes ?? $0.residentBytes) > ($1.physicalFootprintBytes ?? $1.residentBytes) }.prefix(5)
         var rows = Array(usage.prefix(5))
         let included = Set(rows.map(\.pid))
         rows += memory.filter { !included.contains($0.pid) }.map { counter in
             CPUProcessUsage(pid: counter.pid, name: counter.name, percent: usage.first { $0.pid == counter.pid }?.percent ?? 0)
         }
-        return Self(date: Date(), freeBytes: LiveStateService.observeFreeSpace()?.value.freeBytes,
-                    swapBytes: swapOK ? swap.xsu_used : nil, memoryPressure: pressureOK ? Int(pressure) : nil,
+        let measuredPIDs = Set(usage.map(\.pid))
+        return Self(date: Date(), freeBytes: capacity?.value.freeBytes,
+                    swapBytes: swapOK ? swap.xsu_used : nil, memoryPressure: pressureOK && [1, 2, 4].contains(pressure) ? Int(pressure) : nil,
                     thermalPressure: sample.thermalPressure,
                     processes: rows.map { row in
                         HealthProcess(pid: row.pid, name: row.name, cpu: row.percent,
-                                      residentBytes: counters[row.pid]?.residentBytes, workspace: workspace(pid: row.pid))
-                    }, cpuElevated: cpuElevated, cpuAvailable: !usage.isEmpty, cpuBurst: cpuBurst)
+                                      residentBytes: counters[row.pid]?.residentBytes, workspace: workspace(pid: row.pid),
+                                      physicalFootprintBytes: counters[row.pid]?.physicalFootprintBytes,
+                                      cpuMeasured: measuredPIDs.contains(row.pid))
+                    }, cpuElevated: cpuElevated, cpuAvailable: !usage.isEmpty, cpuBurst: cpuBurst,
+                    storageCapacity: capacity?.value,
+                    compressedBytes: statisticsOK && pageSizeOK && !compressed.overflow ? compressed.partialValue : nil,
+                    cpuCoverage: sample.coverage(measuredCount: usage.count), power: power, connectivity: connectivity)
     }
     private static func workspace(pid: Int32) -> String? {
         var info = proc_vnodepathinfo()

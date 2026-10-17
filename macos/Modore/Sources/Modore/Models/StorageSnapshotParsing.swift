@@ -1,4 +1,6 @@
 import Foundation
+import CoreFoundation
+import ModoreDomain
 
 struct StorageSnapshotComponents {
     let mount: String
@@ -24,18 +26,37 @@ struct StorageSnapshotComponents {
     init?(json: [String: Any]?) {
         guard let json, let volume = json["volume"] as? [String: Any] else { return nil }
         mount = volume["mount"] as? String ?? "/"
-        freeGB = StorageSnapshotParser.double(volume["freeGB"])
-        usedGB = StorageSnapshotParser.double(volume["usedGB"])
-        totalGB = StorageSnapshotParser.double(volume["totalGB"])
-        usePercent = StorageSnapshotParser.double(volume["usePercent"])
-        risk = volume["risk"] as? String ?? "unknown"
-        if let measured = volume["measured"] as? Bool {
-            volumeMeasured = measured
-        } else {
-            // Backward compatibility with results predating the flag: a real
-            // mounted volume always reports a nonzero total.
-            volumeMeasured = StorageSnapshotParser.double(volume["totalGB"]) > 0
-        }
+        let hasExactFree = volume["freeBytes"] != nil
+        let hasExactTotal = volume["totalBytes"] != nil
+        let exactFreeBytes = StorageSnapshotParser.capacityBytes(volume["freeBytes"])
+        let exactTotalBytes = StorageSnapshotParser.capacityBytes(volume["totalBytes"])
+        let legacyFree = StorageSnapshotParser.capacityNumber(volume["freeGB"])
+        let legacyTotal = StorageSnapshotParser.capacityNumber(volume["totalGB"])
+        let freeBytes = hasExactFree ? exactFreeBytes : legacyFree.flatMap(StorageBytes.fromLegacyGiB)
+        let totalBytes = hasExactTotal ? exactTotalBytes : legacyTotal.flatMap(StorageBytes.fromLegacyGiB)
+        freeGB = freeBytes.map { Double($0) / Double(StorageRecoveryPolicy.bytesPerGiB) } ?? 0
+        totalGB = totalBytes.map { Double($0) / Double(StorageRecoveryPolicy.bytesPerGiB) } ?? 0
+        usedGB = StorageSnapshotParser.capacityNumber(volume["usedGB"]) ?? 0
+        usePercent = StorageSnapshotParser.capacityNumber(volume["usePercent"]).flatMap { $0 <= 100 ? $0 : nil } ?? 0
+        let validCapacity: Bool
+        if let freeBytes, let totalBytes, totalBytes > 0 {
+            // Old producers rounded totalGB to 0.1 GiB. Only an exact free-byte
+            // reading paired with that rounded total needs a half-step tolerance.
+            // Exact totals and two legacy GiB readings enforce the strict bound.
+            let roundingAllowance = hasExactFree && !hasExactTotal
+                ? Int64(ceil(0.05 * Double(StorageRecoveryPolicy.bytesPerGiB))) : 0
+            validCapacity = freeBytes <= totalBytes || freeBytes - totalBytes <= roundingAllowance
+        } else { validCapacity = false }
+        volumeMeasured = validCapacity && (volume["measured"] as? Bool ?? true)
+        // Older persisted reports may have used percent-full or 15 GiB as a
+        // warning threshold. Normalize their status to the current common policy.
+        if volumeMeasured, let bytes = freeBytes {
+            switch StoragePressure.classify(freeBytes: bytes) {
+            case .normal: risk = "safe"
+            case .warning: risk = "warning"
+            case .danger: risk = "danger"
+            }
+        } else { risk = "unknown" }
         cleanupCandidates = StorageSnapshotParser.items(json["cleanupCandidates"])
         if json["recoveryCandidates"] != nil {
             recoveryCandidates = StorageSnapshotParser.items(json["recoveryCandidates"])
@@ -232,6 +253,24 @@ private enum StorageSnapshotParser {
     static func simulatorItems(_ value: Any?) -> [SimulatorDevice] {
         guard let rows = value as? [[String: Any]] else { return [] }
         return rows.prefix(maximumRowsPerCollection).compactMap(SimulatorDevice.init(json:))
+    }
+
+    /// Capacity is optional evidence. A malformed value must not become a
+    /// measured zero, and JSON booleans must not bridge to NSNumber capacities.
+    static func capacityNumber(_ value: Any?) -> Double? {
+        let result: Double?
+        if let number = value as? NSNumber {
+            guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            result = number.doubleValue
+        } else if let text = value as? String {
+            result = Double(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        } else { result = nil }
+        guard let result, result.isFinite, result >= 0 else { return nil }
+        return result
+    }
+
+    static func capacityBytes(_ value: Any?) -> Int64? {
+        capacityNumber(value).flatMap { Int64(exactly: $0) }
     }
 
     static func double(_ value: Any?) -> Double {

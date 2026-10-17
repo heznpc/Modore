@@ -72,11 +72,11 @@ struct SpaceGoalWorkspaceList: View {
                         if !items.isEmpty {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack {
-                                    Text(group.title).font(.headline)
+                                    Text(L10n.text(group.title)).font(.headline)
                                     Text("\(items.count)").font(.callout).foregroundStyle(.secondary)
                                     Spacer()
                                     if group == .ready {
-                                        Button("이 그룹 선택") { selectedKeys.formUnion(items.map(SpaceGoalSelection.key)) }
+                                        Button(L10n.text("이 그룹 선택")) { selectedKeys.formUnion(items.map(SpaceGoalSelection.key)) }
                                             .disabled(model.isBusy)
                                     }
                                 }.padding(.vertical, 6)
@@ -87,7 +87,7 @@ struct SpaceGoalWorkspaceList: View {
                                             set: { if $0 { selectedKeys.insert(SpaceGoalSelection.key(item)) }
                                                 else { selectedKeys.remove(SpaceGoalSelection.key(item)) } }))
                                     if let device = storage.simulatorDevices.first(where: { $0.path == item.path }) {
-                                        DisclosureGroup("기기 보존 설정·개별 검토") { WorkspaceSimulatorRow(device: device) }
+                                        DisclosureGroup(L10n.text("기기 보존 설정·개별 검토")) { WorkspaceSimulatorRow(device: device) }
                                             .font(.caption).padding(.bottom, 8)
                                     }
                                     Divider()
@@ -96,7 +96,7 @@ struct SpaceGoalWorkspaceList: View {
                         }
                     }
                     if visible.isEmpty {
-                        Text("현재 필터에 해당하는 항목이 없습니다. 조사 범위와 검색어를 확인하세요.")
+                        Text(L10n.text("현재 필터에 해당하는 항목이 없습니다. 조사 범위와 검색어를 확인하세요."))
                             .foregroundStyle(.secondary).padding(.vertical, 24)
                     }
                     optionsAndHistory
@@ -108,7 +108,8 @@ struct SpaceGoalWorkspaceList: View {
         .onAppear {
             filter = initialFilter
             query = initialQuery
-            coverageExpanded = coverage.contains { $0.status != "ok" } || !storage.accessIssues.isEmpty
+            // Keep collection evidence available without pushing the task out
+            // of view. Its summary still exposes missing/access-limited data.
         }
         .task {
             supplemental = await Task.detached(priority: .utility) { SupplementalStorageAudit.latest() }.value
@@ -137,28 +138,34 @@ struct SpaceGoalWorkspaceList: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("저장공간 조사").font(.title.bold())
-                    Text("조사 → 근거 확인 → 선택 → 재검증 → 결과")
+                    Text(L10n.text("공간 비우기")).font(.title.bold())
+                    Text(L10n.text("후보 확인 → 선택 → 정리 내용 확인 → 결과"))
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(pending.isEmpty ? "현재 범위 다시 조사" : "미확인 \(pending.count)개 조사") {
-                    let items = pending.isEmpty ? investigable : pending
-                    selectedKeys.subtract(items.map(SpaceGoalSelection.key))
-                    model.investigateStorage(items)
+                Button(L10n.text("정리 후보 확인")) {
+                    selectedKeys.removeAll()
+                    model.prepareStorageReview()
                 }.buttonStyle(.borderedProminent)
-                    .disabled(model.isBusy || investigable.isEmpty)
+                    .disabled(model.isBusy)
             }
+            Text(L10n.text("검사와 사용 상태 확인을 함께 진행합니다. 확인 후 정리할 항목을 직접 선택하세요."))
+                .font(.callout).foregroundStyle(.secondary)
             CleanupReviewOnlyNotice()
             HStack(alignment: .top, spacing: 28) {
-                metric("현재 여유", StorageBytes.text(model.liveState.freeSpace?.value.freeBytes
-                    ?? (storage.volumeMeasured ? StorageBytes.fromLegacyGiB(storage.freeGB) : nil)),
-                    model.liveState.freeSpace.map { "\($0.observedAt.formatted(date: .omitted, time: .standard)) 측정" }
-                        ?? (storage.volumeMeasured ? "\(model.deepScanAt?.formatted() ?? "시각 미확인") 검사 기준" : "여유 공간 측정 실패"))
-                metric("전체 정리 가능 대상 점유", ready.isEmpty ? (inventory.contains { judgment($0) == .uncertain } ? "조사 필요" : "해당 없음") : StorageBytes.text(bytes(ready)),
-                    "실제 확보량은 정리 후 확인")
-                metric("현재 범위 조사", "\(investigatedCount) / \(investigable.count)",
-                    "확인 부족 \(pending.count)개 · 전체 디스크 아님")
+                TimelineView(.periodic(from: .now, by: 5)) { context in
+                    let current = model.liveState.currentFreeSpace(at: context.date)
+                    let observed = current ?? model.liveState.freeSpace
+                    metric(current != nil ? L10n.text("실제 여유 공간") : L10n.text("마지막 관찰 · 현재 상태 미확인"),
+                        StorageBytes.text(observed?.value.freeBytes
+                            ?? (storage.volumeMeasured ? StorageBytes.fromLegacyGiB(storage.freeGB) : nil)),
+                        observed.map { L10n.format("%@ 측정", $0.observedAt.formatted(date: .abbreviated, time: .standard)) }
+                            ?? (storage.volumeMeasured ? L10n.format("%@ 검사 기준", model.deepScanAt?.formatted() ?? L10n.text("시각 미확인")) : L10n.text("여유 공간 측정 실패")))
+                }
+                metric(L10n.text("전체 정리 가능 대상 점유"), ready.isEmpty ? (inventory.contains { judgment($0) == .uncertain } ? L10n.text("조사 필요") : L10n.text("해당 없음")) : StorageBytes.text(bytes(ready)),
+                    L10n.text("실제 확보량은 정리 후 확인"))
+                metric(L10n.text("현재 범위 조사"), "\(investigatedCount) / \(investigable.count)",
+                    L10n.format("확인 부족 %@개 · 전체 디스크 아님", String(describing: pending.count)))
                 Spacer(minLength: 0)
             }
         }.padding(20)
@@ -174,79 +181,87 @@ struct SpaceGoalWorkspaceList: View {
 
     private var filters: some View {
         HStack(spacing: 16) {
-            Picker("결과 범위", selection: $filter) {
-                ForEach(StorageResultFilter.allCases) { Text($0.rawValue).tag($0) }
+            Picker(L10n.text("결과 범위"), selection: $filter) {
+                ForEach(StorageResultFilter.allCases) { Text(L10n.text($0.rawValue)).tag($0) }
             }.pickerStyle(.segmented).frame(maxWidth: 370)
-            TextField("이름·경로 검색", text: $query).textFieldStyle(.roundedBorder)
+            TextField(L10n.text("이름·경로 검색"), text: $query).textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 260)
             Spacer(minLength: 0)
-            Text("큰 항목부터").font(.caption).foregroundStyle(.secondary)
+            Text(L10n.text("큰 항목부터")).font(.caption).foregroundStyle(.secondary)
         }.padding(.horizontal, 20).padding(.vertical, 12)
     }
 
     private var coverageView: some View {
         DisclosureGroup(isExpanded: $coverageExpanded) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("경로 발견과 크기 측정은 범위·시간 제한이 있습니다. 목록에 없다고 공간을 차지하지 않는 것은 아닙니다.")
+                Text(L10n.text("경로 발견과 크기 측정은 범위·시간 제한이 있습니다. 목록에 없다고 공간을 차지하지 않는 것은 아닙니다."))
                 ForEach(coverage) { source in
-                    Text("\(source.label) · \(source.statusText)\n\(source.detail)")
+                    Text("\(L10n.message(source.label)) · \(L10n.message(source.statusText))\n\(L10n.message(source.detail))")
                 }
                 ForEach(storage.accessIssues) { issue in
-                    Text("\(issue.label) · \(issue.path)\n\(issue.note)")
+                    Text("\(L10n.message(issue.label)) · \(issue.path)\n\(L10n.message(issue.note))")
                 }
                 HStack {
-                    Button("경로 목록 다시 검사") { model.runScan() }.disabled(model.isBusy)
-                    Button("접근 설정 열기") { model.openFullDiskAccessSettings() }
+                    Button(L10n.text("정리 후보 확인")) { selectedKeys.removeAll(); model.prepareStorageReview() }.disabled(model.isBusy)
+                    Button(L10n.text("접근 설정 열기")) { model.openFullDiskAccessSettings() }
                 }
                 StorageSupplementalAuditView(audit: supplemental)
             }.frame(maxWidth: .infinity, alignment: .leading)
                 .font(.caption).foregroundStyle(.secondary).padding(.vertical, 8).textSelection(.enabled)
         } label: {
-            Text("조사 범위 · 누락·접근 문제 \(coverage.filter { $0.status != "ok" }.count + storage.accessIssues.count)건 · \(model.deepScanAt?.formatted(date: .abbreviated, time: .shortened) ?? "검사 시각 미확인")")
+            Text(L10n.format("조사 범위 · 누락·접근 문제 %@건 · %@", String(describing: coverage.filter { $0.status != "ok" }.count + storage.accessIssues.count), String(describing: model.deepScanAt?.formatted(date: .abbreviated, time: .shortened) ?? L10n.text("검사 시각 미확인"))))
                 .font(.callout.weight(.medium))
         }
     }
 
     private var optionsAndHistory: some View {
         VStack(alignment: .leading, spacing: 12) {
-            DisclosureGroup("추가 확보 목표 · 선택 기능") {
+            DisclosureGroup(L10n.text("추가 확보 목표 · 선택 기능")) {
                 HStack {
-                    Toggle("목표에 도달하면 남은 항목 보존", isOn: $goalEnabled)
+                    Toggle(L10n.text("목표에 도달하면 남은 항목 보존"), isOn: $goalEnabled)
                     Stepper("\(Int(targetGiB)) GiB", value: $targetGiB, in: 1...max(2, storage.totalGB), step: 1)
                         .fixedSize().disabled(!goalEnabled)
                 }.padding(.vertical, 8).disabled(model.isBusy)
             }
             if let report = recovery.last {
-                DisclosureGroup("과거 자동 정리 · \(report.date.formatted(date: .abbreviated, time: .shortened))") {
-                    Text(AutomaticCacheRecovery.summary(report)).font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup(L10n.format("과거 자동 정리 · %@", String(describing: report.date.formatted(date: .abbreviated, time: .shortened)))) {
+                    Text(L10n.message(AutomaticCacheRecovery.summary(report))).font(.caption).foregroundStyle(.secondary)
                     AutomaticRecoveryDetails(report: report)
                 }
             }
             if !model.recoveryHistory.isEmpty {
-                DisclosureGroup("이전 선택·정리 결과") { RecoveryHistorySection() }
+                DisclosureGroup(L10n.text("이전 선택·정리 결과")) { RecoveryHistorySection() }
             }
         }.font(.callout)
     }
 
     private var actionBar: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let progress = model.storageInvestigationProgress ?? model.cleanupRecoveryProgress, model.cleanupRecoveryPlan == nil {
+            if model.isRunning {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(L10n.text("정리할 경로를 찾고 있습니다. 완료되면 사용 상태를 자동으로 확인합니다."))
+                        .font(.callout)
+                    Spacer()
+                    Button(L10n.text("확인 중지")) { model.cancelScan() }
+                }
+            } else if let progress = model.storageInvestigationProgress ?? model.cleanupRecoveryProgress, model.cleanupRecoveryPlan == nil {
                 HStack {
                     ProgressView(value: progress.fraction).frame(width: 150)
-                    Text("\(progress.currentLabel) · \(progress.completedCount)/\(progress.totalCount)").font(.caption)
+                    Text("\(L10n.message(progress.currentLabel)) · \(progress.completedCount)/\(progress.totalCount)").font(.caption)
                     Spacer()
-                    Button("조사 중지") { model.cancelCleanupPreviewRequest() }
+                    Button(L10n.text("조사 중지")) { model.cancelCleanupPreviewRequest() }
                 }
             } else {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("선택 \(selection.count)개 · 대상 점유 \(StorageBytes.text(bytes(selection)))").fontWeight(.medium)
-                        Text("모든 필터의 선택 포함 · 선택 항목의 현재 상태를 다시 확인합니다")
+                        Text(L10n.format("선택 %@개 · 대상 점유 %@", String(describing: selection.count), String(describing: StorageBytes.text(bytes(selection))))).fontWeight(.medium)
+                        Text(L10n.text("다음 화면에서 현재 상태와 정리 영향을 확인한 뒤 승인합니다"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if !selection.isEmpty { Button("선택 해제") { selectedKeys.removeAll() } }
-                    Button("선택 항목 재검증") {
+                    if !selection.isEmpty { Button(L10n.text("선택 해제")) { selectedKeys.removeAll() } }
+                    Button(L10n.text("정리 내용 확인")) {
                         model.prepareRecoveryPlan(selection,
                             requestedGainBytes: StorageBytes.fromLegacyGiB(targetGiB) ?? StorageBytes.perGiB,
                             stopAtGoal: goalEnabled)

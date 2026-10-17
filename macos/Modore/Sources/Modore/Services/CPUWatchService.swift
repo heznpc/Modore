@@ -9,6 +9,7 @@ struct CPUProcessCounter: Sendable {
     let name: String
     let nanoseconds: UInt64
     var residentBytes: UInt64 = 0
+    var physicalFootprintBytes: UInt64? = nil
 }
 
 struct CPUProcessUsage: Equatable, Sendable {
@@ -22,7 +23,7 @@ struct CPUSample: Sendable {
     let counters: [CPUProcessCounter]
     let thermalPressure: Int
     let cores: Int
-    var systemProcesses: [CPUProcessUsage] = []
+    var enumeratedProcessCount: Int? = nil
 
     static func capture() -> CPUSample {
         var timebase = mach_timebase_info_data_t()
@@ -41,29 +42,19 @@ struct CPUSample: Sendable {
             / Double(timebase.denom) / 1_000_000_000
         return CPUSample(uptime: continuousSeconds, counters: counters,
                          thermalPressure: ProcessInfo.processInfo.thermalState.rawValue,
-                         cores: ProcessInfo.processInfo.activeProcessorCount)
+                         cores: ProcessInfo.processInfo.activeProcessorCount,
+                         enumeratedProcessCount: count > 0 && Int(count) < capacity ? pids.prefix(min(Int(count), capacity)).filter { $0 > 0 }.count : nil)
     }
 
-    static func captureWithSystemProcesses() async -> CPUSample {
-        var sample = capture()
-        // WindowServer and other protected processes reject libproc queries.
-        // The OS-provided ps reader exposes those statistics without requesting
-        // administrator access; never invoke a shell or inspect command arguments.
-        let result = await LocalProcessRunner.capture(
-            executable: "/bin/ps", arguments: ["-axo", "pid=,pcpu=,comm="],
-            currentDirectory: URL(fileURLWithPath: "/"), timeout: 2, maxOutputBytes: 1_000_000)
-        if result.succeeded { sample.systemProcesses = parseSystemProcesses(result.output) }
-        return sample
-    }
+    // Keep the async entry point for callers. Protected process reads remain
+    // unavailable: ps %cpu is a different averaging window and must never be
+    // mixed into this interval-delta series or its alerts.
+    static func captureWithSystemProcesses() async -> CPUSample { capture() }
 
-    static func parseSystemProcesses(_ text: String) -> [CPUProcessUsage] {
-        text.split(separator: "\n").compactMap { line in
-            let fields = line.split(maxSplits: 2, whereSeparator: { $0.isWhitespace })
-            guard fields.count == 3, let pid = Int32(fields[0]), pid > 0,
-                  let percent = Double(fields[1]), percent.isFinite, percent >= 0 else { return nil }
-            return CPUProcessUsage(pid: pid, name: URL(fileURLWithPath: String(fields[2])).lastPathComponent,
-                                   percent: percent)
-        }
+    func coverage(measuredCount: Int) -> CPUCoverage {
+        CPUCoverage(measuredProcesses: measuredCount,
+                    unavailableProcesses: max(0, (enumeratedProcessCount ?? counters.count) - measuredCount),
+                    enumeratedProcesses: enumeratedProcessCount)
     }
 
     func usage(since previous: CPUSample) -> [CPUProcessUsage] {
@@ -77,8 +68,7 @@ struct CPUSample: Sendable {
             return CPUProcessUsage(pid: counter.pid, name: counter.name,
                                    percent: Double(counter.nanoseconds - before.nanoseconds) / elapsed / 10_000_000)
         }
-        let measured = Set(native.map(\.pid))
-        return (native + systemProcesses.filter { !measured.contains($0.pid) }).sorted { $0.percent > $1.percent }
+        return native.sorted { $0.percent > $1.percent }
     }
 }
 
@@ -172,6 +162,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         PressureNotification.register(on: UNUserNotificationCenter.current())
         Task { await refreshNotificationStatus() }
         guard enabled, task == nil else { return }
+        PlatformContextService.shared.start()
         if activity == nil {
             activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
                                                              reason: L10n.text("사용자가 켠 Mac 상태 감시"))
@@ -221,6 +212,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         journal.resume(); persist()
         if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
         if value { start() } else {
+            PlatformContextService.shared.stop()
             detail = L10n.text("CPU 감시 꺼짐")
             NSApplication.shared.dockTile.badgeLabel = nil
         }
@@ -247,13 +239,16 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
         if !high { cpuHighSince = nil }
         else if cpuHighSince == nil { cpuHighSince = sample.uptime }
         let sustained = cpuHighSince.map { sample.uptime - $0 >= 60 } ?? false
+        let power = PlatformContextService.shared.power
+        let connectivity = PlatformContextService.shared.connectivity
         let current = await Task.detached(priority: .utility) {
-            HealthSnapshot.capture(sample: sample, usage: usage, cpuElevated: sustained, cpuBurst: high)
+            HealthSnapshot.capture(sample: sample, usage: usage, cpuElevated: sustained, cpuBurst: high,
+                                   power: power, connectivity: connectivity)
         }.value
         guard !Task.isCancelled else { return }
         snapshot = current
         let lowStorage = HealthNoticePolicy.storageLevel(current.freeBytes) > 0
-        let badge = lowStorage ? current.freeBytes.map { String(format: "%.1f GB", Double($0) / 1_073_741_824) } : nil
+        let badge = lowStorage ? current.freeBytes.map { HealthSnapshot.bytes($0) } : nil
         if NSApplication.shared.dockTile.badgeLabel != badge {
             NSApplication.shared.dockTile.badgeLabel = badge
         }

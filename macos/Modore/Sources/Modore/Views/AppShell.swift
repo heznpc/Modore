@@ -15,6 +15,17 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
 
     var id: String { rawValue }
 
+    static let sidebarDestinations: [AppDestination] = [.health, .storage, .work]
+
+    /// Secondary tools stay inside the user's task rather than becoming peer destinations.
+    var topLevel: AppDestination {
+        switch self {
+        case .storage: return .storage
+        case .work, .skills: return .work
+        default: return .health
+        }
+    }
+
     var title: String {
         switch self {
         case .start: return L10n.text("시작")
@@ -28,7 +39,7 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
         // one of the things it has. The old name also stopped being true
         // -- worktrees, git state and lineage arrived first on that
         // screen long before any session did.
-        case .work: return L10n.text("프로젝트·대화 찾기")
+        case .work: return L10n.text("개발 작업")
         case .skills: return L10n.text("AI 스킬")
         case .activity: return L10n.text("조치 기록")
         }
@@ -55,43 +66,45 @@ struct ModernRootView: View {
     @EnvironmentObject private var model: ScanModel
     @EnvironmentObject private var monitor: CPUWatchService
     @EnvironmentObject private var quotaWork: QuotaWorkModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var selection: AppDestination = .start
+    @State private var selection: AppDestination = .health
     @State private var storageSection: StorageWorkspaceSection = .overview
+    @State private var navigationPath = NavigationPath()
+    @StateObject private var skillService = SkillInventoryService()
+    @StateObject private var skillState = SkillInventoryViewState()
 
     var body: some View {
         NavigationSplitView {
             ModernSidebar(selection: selection, onSelect: navigate)
                 .navigationSplitViewColumnWidth(min: 185, ideal: 215, max: 260)
         } detail: {
-          NavigationStack {
+          NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
-                if selection != .macRecheck,
-                   let freeSpace = model.liveState.freeSpace,
-                   freeSpace.value.pressure.needsRecovery,
-                   !(selection == .storage && storageSection == .goal) {
-                    StoragePressureBanner(
-                        freeSpace: freeSpace.value,
-                        openRecovery: openStorageRecovery
-                    )
-                    Divider()
+                contextualNavigation
+                TimelineView(.periodic(from: .now, by: 5)) { context in
+                    if selection != .macRecheck,
+                       let freeSpace = model.liveState.currentFreeSpace(at: context.date),
+                       freeSpace.value.pressure.needsRecovery,
+                       !(selection == .storage && storageSection == .goal) {
+                        StoragePressureBanner(
+                            freeSpace: freeSpace.value,
+                            openRecovery: openStorageRecovery
+                        )
+                        Divider()
+                    }
                 }
 
-                ZStack {
-                    ModernDetailView(
-                        destination: selection,
-                        storageSection: $storageSection,
-                        onOpenStorage: openStorage,
-                        onNavigate: navigate
-                    )
-                    .id(selection)
-                    .transition(.opacity)
-                }
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: selection)
+                ModernDetailView(
+                    destination: selection,
+                    storageSection: $storageSection,
+                    skillService: skillService,
+                    skillState: skillState,
+                    onOpenStorage: openStorage,
+                    onNavigate: navigate
+                )
             }
             .navigationTitle(selection.title)
             .toolbar {
-                if [.health, .status, .storage, .security].contains(selection) {
+                if [.status, .security].contains(selection) {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
                             performPrimaryAction()
@@ -110,7 +123,7 @@ struct ModernRootView: View {
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         .onOpenURL(perform: openURL)
         .onChange(of: monitor.showHealth) { value in
-            if value { selection = .health; monitor.showHealth = false }
+            if value { navigate(to: .health); monitor.showHealth = false }
         }
         .alert(
             "Modore",
@@ -125,13 +138,40 @@ struct ModernRootView: View {
         }
     }
 
+    @ViewBuilder
+    private var contextualNavigation: some View {
+        if selection.topLevel == .work {
+            Picker(L10n.text("개발 작업"), selection: Binding(get: { selection }, set: { navigate(to: $0) })) {
+                Text(L10n.text("프로젝트·대화")).tag(AppDestination.work)
+                Text(L10n.text("AI 스킬")).tag(AppDestination.skills)
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 360)
+            .padding(12)
+            Divider()
+        } else if selection != selection.topLevel && selection != .start {
+            HStack {
+                Button { navigate(to: selection.topLevel) } label: {
+                    Label(L10n.text("Mac 상태로 돌아가기"), systemImage: "chevron.left")
+                }
+                .buttonStyle(.plain)
+                Spacer()
+                Text(selection.title).font(.callout.weight(.semibold))
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            Divider()
+        }
+    }
+
     private func navigate(to destination: AppDestination) {
-        selection = destination
+        navigationPath = NavigationPath()
+        selection = destination == .start ? .health : destination
     }
 
     private func openStorage(_ section: StorageWorkspaceSection) {
         storageSection = section
-        selection = .storage
+        navigate(to: .storage)
     }
 
     private func openStorageRecovery() {
@@ -146,21 +186,21 @@ struct ModernRootView: View {
     private func apply(_ route: ModoreRoute) {
         switch route {
         case .ci:
-            selection = .work
+            navigate(to: .work)
             ci.showIncidents = true
         case .quotaTask(let id):
             quotaWork.requestedTaskID = id
             quotaWork.message = nil
-            selection = .work
+            navigate(to: .work)
         case .health:
-            selection = .health
+            navigate(to: .health)
         case .storageRecovery:
             openStorage(.goal)
             if route.shouldStartStorageScan(
                 hasStorageData: model.storage != nil,
                 isBusy: model.isBusy
             ) {
-                model.runScan()
+                model.prepareStorageReview()
             }
         }
     }
@@ -190,7 +230,9 @@ struct ModernRootView: View {
     }
 
     private var primaryActionDisabled: Bool {
-        model.cleanupIsExecuting || model.storageWatchInFlight || model.resultLoading
+        if model.cleanupIsExecuting { return true }
+        if model.isRunning || model.cleanupInFlight { return false }
+        return model.isBusy
     }
 
     private var primaryActionHelp: String {
@@ -243,10 +285,7 @@ private struct StoragePressureBanner: View {
     }
 
     private var detail: String {
-        String(
-            format: L10n.text("현재 %.1fGB 남았습니다. 정리할 항목을 확인해 공간을 확보하세요."),
-            freeSpace.freeGB
-        )
+        L10n.format("실제 여유 공간 %@. 정리할 항목을 확인해 공간을 확보하세요.", StorageBytes.text(freeSpace.freeBytes))
     }
 
     private var tint: Color {
@@ -262,16 +301,8 @@ struct ModernSidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             List(selection: nativeSelection) {
-                SidebarDestinationRow(destination: .start).tag(AppDestination.start)
-                Section("할 일") {
-                    ForEach([AppDestination.appDiagnostic, .storage, .work, .skills]) { destination in
-                        SidebarDestinationRow(destination: destination).tag(destination)
-                    }
-                }
-                Section("Mac 관리") {
-                    ForEach([AppDestination.health, .status, .macRecheck, .security, .activity]) { destination in
-                        SidebarDestinationRow(destination: destination).tag(destination)
-                    }
+                ForEach(AppDestination.sidebarDestinations) { destination in
+                    SidebarDestinationRow(destination: destination).tag(destination)
                 }
             }
             .listStyle(.sidebar)
@@ -284,7 +315,7 @@ struct ModernSidebar: View {
 
     private var nativeSelection: Binding<AppDestination?> {
         Binding(
-            get: { selection },
+            get: { selection.topLevel },
             set: { destination in
                 if let destination {
                     onSelect(destination)
@@ -299,16 +330,22 @@ private struct SidebarDestinationRow: View {
     let destination: AppDestination
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 5)) { context in
+            row(at: context.date)
+        }
+    }
+
+    private func row(at date: Date) -> some View {
         Label {
             HStack {
                 Text(destination.title)
                 Spacer(minLength: 8)
-                if destination == .security, model.securityAttentionCount > 0 {
+                if destination == .health, model.securityAttentionCount > 0 {
                     Text("\(model.securityAttentionCount)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(model.securityHasDanger ? Color.red : Color.secondary)
                 } else if destination == .storage,
-                          let pressure = model.liveState.storagePressure,
+                          let pressure = model.liveState.currentFreeSpace(at: date)?.value.pressure,
                           pressure.needsRecovery {
                     Text(pressure == .danger ? L10n.text("위험") : L10n.text("부족"))
                         .font(.caption.weight(.semibold))
@@ -318,14 +355,14 @@ private struct SidebarDestinationRow: View {
         } icon: {
             Image(systemName: destination.symbol)
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(destinationColor)
+                .foregroundStyle(destinationColor(at: date))
         }
     }
 
-    private var destinationColor: Color {
-        if destination == .security, model.securityHasDanger { return .red }
+    private func destinationColor(at date: Date) -> Color {
+        if destination == .health, model.securityHasDanger { return .red }
         if destination == .storage,
-           let pressure = model.liveState.storagePressure,
+           let pressure = model.liveState.currentFreeSpace(at: date)?.value.pressure,
            pressure.needsRecovery {
             return storagePressureColor(pressure)
         }
@@ -341,7 +378,7 @@ private struct SidebarScanStatus: View {
     @EnvironmentObject private var model: ScanModel
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
+        TimelineView(.periodic(from: .now, by: 5)) { context in
             statusContent(at: context.date)
         }
     }
@@ -354,7 +391,7 @@ private struct SidebarScanStatus: View {
                         .controlSize(.small)
                 } else {
                     Image(systemName: statusSymbol(at: date))
-                        .foregroundStyle(statusColor)
+                        .foregroundStyle(statusColor(at: date))
                 }
             }
             .frame(width: 16, height: 16)
@@ -362,11 +399,17 @@ private struct SidebarScanStatus: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(statusTitle(at: date))
                     .font(.caption.weight(.semibold))
-                if let liveFreeSpace = model.liveState.freeSpace {
-                    Text(StorageBytes.text(liveFreeSpace.value.freeBytes) + L10n.text(" 사용 가능"))
+                if let liveFreeSpace = model.liveState.currentFreeSpace(at: date) {
+                    Text(L10n.format("실제 여유 공간 %@", StorageBytes.text(liveFreeSpace.value.freeBytes)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
+                } else if let previous = model.liveState.freeSpace {
+                    Text(L10n.format("마지막 관찰 %@", StorageBytes.text(previous.value.freeBytes)))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .help(previous.observedAt.formatted())
                 } else if let storage = model.storage {
                     Text(L10n.format("검사 당시 %@", StorageBytes.text(StorageBytes.fromLegacyGiB(storage.freeGB))))
                         .font(.caption2)
@@ -380,6 +423,10 @@ private struct SidebarScanStatus: View {
 
     private func statusTitle(at date: Date) -> String {
         if model.isRunning { return L10n.text("정밀 검사 중") }
+        if model.storageMeasurementInFlight { return L10n.text("용량 측정 중") }
+        if AppDiagnosticService.shared.active || AppDiagnosticService.shared.saving {
+            return L10n.text("앱 버벅임 진단")
+        }
         if model.cleanupIsExecuting {
             return model.cleanupRecoveryProgress.map {
                 L10n.format("%@ 정리 중", String(describing: $0.currentLabel))
@@ -389,26 +436,26 @@ private struct SidebarScanStatus: View {
         if model.cleanupInFlight { return L10n.text("정리 대상 확인 중") }
         if model.browserAutomationStopInFlight { return L10n.text("자동화 브라우저 확인 중") }
         if model.storageWatchInFlight { return L10n.text("감시 설정 적용 중") }
-        if model.liveState.storagePressure == .danger { return L10n.text("저장공간 즉시 확보 필요") }
+        if model.liveState.currentFreeSpace(at: date)?.value.pressure == .danger { return L10n.text("저장공간 즉시 확보 필요") }
         if model.state == .failed { return L10n.text("정밀 검사 실패") }
         if model.securityHasDanger {
             return model.securityAttentionCount > 0
                 ? L10n.format("위험 신호 %@건", String(describing: model.securityAttentionCount))
                 : L10n.text("위험 신호 확인")
         }
-        if model.liveState.storagePressure == .warning { return L10n.text("저장공간 확보 권장") }
-        if model.summary == nil { return L10n.text("정밀 검사 필요") }
+        if model.liveState.currentFreeSpace(at: date)?.value.pressure == .warning { return L10n.text("저장공간 확보 권장") }
+        if model.summary == nil { return L10n.text("검사 기록 없음") }
         if model.collectionIsIncomplete { return L10n.text("안전 판단 보류") }
-        if model.deepScanSnapshotNeedsRefresh(at: date) { return L10n.text("정밀 검사 필요") }
+        if model.deepScanSnapshotNeedsRefresh(at: date) { return L10n.text("검사 결과 오래됨") }
         if model.securityAttentionCount > 0 { return L10n.format("확인 항목 %@건", String(describing: model.securityAttentionCount)) }
         return model.deepScanSnapshotAgeText
     }
 
     private func statusSymbol(at date: Date) -> String {
-        if model.liveState.storagePressure == .danger { return "exclamationmark.triangle.fill" }
+        if model.liveState.currentFreeSpace(at: date)?.value.pressure == .danger { return "exclamationmark.triangle.fill" }
         if model.securityHasDanger { return "exclamationmark.shield" }
         if model.state == .failed { return "exclamationmark.circle" }
-        if model.liveState.storagePressure == .warning { return "internaldrive.fill" }
+        if model.liveState.currentFreeSpace(at: date)?.value.pressure == .warning { return "internaldrive.fill" }
         if model.summary == nil { return "questionmark.circle" }
         if model.collectionIsIncomplete { return "questionmark.shield" }
         if model.deepScanSnapshotNeedsRefresh(at: date) { return "clock" }
@@ -416,10 +463,10 @@ private struct SidebarScanStatus: View {
         return model.state.symbol
     }
 
-    private var statusColor: Color {
-        if model.liveState.storagePressure == .danger { return .red }
+    private func statusColor(at date: Date) -> Color {
+        if model.liveState.currentFreeSpace(at: date)?.value.pressure == .danger { return .red }
         if model.state == .failed || model.securityHasDanger { return .red }
-        if model.liveState.storagePressure == .warning { return .secondary }
+        if model.liveState.currentFreeSpace(at: date)?.value.pressure == .warning { return .secondary }
         return .secondary
     }
 }
@@ -427,23 +474,25 @@ private struct SidebarScanStatus: View {
 struct ModernDetailView: View {
     let destination: AppDestination
     @Binding var storageSection: StorageWorkspaceSection
+    @ObservedObject var skillService: SkillInventoryService
+    @ObservedObject var skillState: SkillInventoryViewState
     let onOpenStorage: (StorageWorkspaceSection) -> Void
     let onNavigate: (AppDestination) -> Void
 
     var body: some View {
         switch destination {
-        case .start:
-            ModoreStartPage(onNavigate: onNavigate, onOpenStorage: onOpenStorage)
         case .appDiagnostic:
             AppDiagnosticPage()
-        case .health:
+        case .health, .start:
             HealthContextView(
                 openRecovery: { onOpenStorage(.goal) },
                 openWork: { onNavigate(.work) },
                 openStorageOverview: { onOpenStorage(.overview) },
                 openDiagnosis: { onNavigate(.status) },
                 openSecurity: { onNavigate(.security) },
-                openRecheck: { onNavigate(.macRecheck) }
+                openRecheck: { onNavigate(.macRecheck) },
+                openAppDiagnostic: { onNavigate(.appDiagnostic) },
+                openActivity: { onNavigate(.activity) }
             )
         case .status:
             StatusPage(
@@ -465,9 +514,19 @@ struct ModernDetailView: View {
         case .work:
             WorkPage()
         case .skills:
-            SkillInventoryView()
+            SkillInventoryView(service: skillService, state: skillState)
         case .activity:
-            ActivityPage()
+            VStack(spacing: 0) {
+                HStack {
+                    Label(L10n.text("앱 진단과 결과"), systemImage: "cursorarrow.motionlines")
+                    Spacer()
+                    Button(L10n.text("앱 진단에서 확인")) { onNavigate(.appDiagnostic) }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                Divider()
+                ActivityPage()
+            }
         }
     }
 }

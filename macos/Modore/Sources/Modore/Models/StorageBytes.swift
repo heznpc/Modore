@@ -1,4 +1,5 @@
 import Foundation
+import ModoreDomain
 
 /// Recovery accounting is signed integer bytes. Legacy *GB fields are GiB;
 /// convert them only at the old scanner/protocol boundary, never for arithmetic.
@@ -25,11 +26,7 @@ enum StorageBytes {
 
     static func text(_ bytes: Int64?) -> String {
         guard let bytes else { return L10n.text("미확인") }
-        let magnitude = abs(Double(bytes))
-        if magnitude >= Double(perGiB) { return String(format: "%.1f GiB", Double(bytes) / Double(perGiB)) }
-        if magnitude >= 1_048_576 { return String(format: "%.1f MiB", Double(bytes) / 1_048_576) }
-        if magnitude >= 1_024 { return String(format: "%.1f KiB", Double(bytes) / 1_024) }
-        return "\(bytes) B"
+        return ModoreDomain.StorageBytes.text(bytes)
     }
 
     static func changeText(_ bytes: Int64?) -> String {

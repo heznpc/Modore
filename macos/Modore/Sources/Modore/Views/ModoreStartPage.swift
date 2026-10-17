@@ -1,61 +1,37 @@
 import SwiftUI
 
-/// Entry points describe the user's goal; system inventories stay in their own destinations.
-struct ModoreStartPage: View {
-    let onNavigate: (AppDestination) -> Void
-    let onOpenStorage: (StorageWorkspaceSection) -> Void
+/// The health landing page follows one task: identify a problem, review a safe action, verify its result.
+struct HealthWorkflowActions: View {
+    let diagnose: () -> Void
+    let review: () -> Void
+    let results: () -> Void
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("무엇을 해결할까요?").font(.largeTitle.bold())
-                    Text("할 일을 고르면 필요한 확인부터 안내합니다.")
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.text("문제 해결")).font(.title2.bold())
+            GroupBox {
+                VStack(spacing: 0) {
+                    step("1", title: L10n.text("문제 확인"), detail: L10n.text("느린 앱을 선택하고 평소처럼 사용하며 원인을 좁힙니다."), actionTitle: L10n.text("앱 진단"), action: diagnose)
+                    Divider()
+                    step("2", title: L10n.text("조치 검토"), detail: L10n.text("검사에서 확인한 항목을 보고 필요한 조치를 선택합니다."), actionTitle: L10n.text("점검과 조치"), action: review)
+                    Divider()
+                    step("3", title: L10n.text("결과 확인"), detail: L10n.text("실행 기록과 이후 관찰을 비교하고 남은 문제를 확인합니다."), actionTitle: L10n.text("결과와 기록"), action: results)
                 }
-                VStack(spacing: 12) {
-                    goal("앱이 버벅여요", detail: "앱 선택 → 평소처럼 사용 → 부하와 동작 전후 결과 확인", symbol: "cursorarrow.motionlines", action: { onNavigate(.appDiagnostic) })
-                    goal("저장공간을 비우고 싶어요", detail: "현재 공간과 정리 대상을 확인하고 확보 계획 만들기", symbol: "internaldrive", action: { onOpenStorage(.goal) })
-                    goal("프로젝트·대화를 이어가고 싶어요", detail: "작업 폴더와 AI 대화 기록을 찾아 다시 열기", symbol: "folder", action: { onNavigate(.work) })
-                }
-                Divider()
-                HStack {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Mac 전체 상태가 궁금하다면").font(.headline)
-                        Text("현재 자원 상태를 보거나 전체 문제 점검을 진행하세요.")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Mac 상태 보기") { onNavigate(.health) }
-                }
-                Button("전체 문제 점검") { onNavigate(.status) }
-                    .buttonStyle(.link)
+                .padding(.horizontal, 8)
             }
-            .padding(28)
-            .frame(maxWidth: 820, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
-    private func goal(_ title: String, detail: String, symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 18) {
-                Image(systemName: symbol)
-                    .font(.title2)
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 32)
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(title).font(.title3.weight(.semibold)).foregroundStyle(.primary)
-                    Text(detail).font(.callout).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 10)
-                Image(systemName: "chevron.right").font(.callout.weight(.semibold)).foregroundStyle(.secondary)
+    private func step(_ number: String, title: String, detail: String, actionTitle: String, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 16) {
+            Text(number).font(.title3.weight(.semibold)).foregroundStyle(.secondary).frame(width: 24)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.headline)
+                Text(detail).font(.callout).foregroundStyle(.secondary)
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
-            .contentShape(RoundedRectangle(cornerRadius: 14))
+            Spacer(minLength: 16)
+            Button(actionTitle, action: action).buttonStyle(.bordered)
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 14)
     }
 }

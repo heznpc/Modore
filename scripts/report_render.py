@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """Modore 리포트 - HTML 렌더링(CSS, 테이블/섹션 렌더러, 조립)."""
 import html
+import math
 import os
 import urllib.parse
 from datetime import datetime
@@ -700,9 +701,20 @@ def build_report(i18n: I18n, scan, monitor) -> str:
     meta_line = h("meta_line", computer=esc(scan.get("computerName")),
                   user=esc(scan.get("userName")), os=esc(scan.get("osVersion")),
                   scannedAt=esc(scan.get("scannedAt")))
-    load_line = h("load_line", cpu=load.get("cpuPercent", 0),
-                  mem=load.get("memoryPercent", 0),
-                  totalGb=load.get("totalMemoryGB", 0))
+    def measurement_value(key):
+        value = load.get(key)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else h("defender_labels.unknown")
+
+    load_arguments = dict(cpu=measurement_value("cpuPercent"),
+                          mem=measurement_value("memoryPercent"),
+                          totalGb=measurement_value("totalMemoryGB"))
+    if is_macos and load.get("cpuMeasurement") == "systemIntervalPercent" and load.get("memoryMeasurement") == "activeAndWiredPercent":
+        pressure_value = load.get("memoryPressure")
+        pressure_key = {1: "normal", 2: "warning", 4: "critical"}.get(pressure_value) if type(pressure_value) in (int, float) else None
+        pressure = h("memory_pressure." + pressure_key) if pressure_key else h("defender_labels.unknown")
+        load_line = h("load_line_macos", pressure=pressure, **load_arguments)
+    else:
+        load_line = h("load_line", **load_arguments)
 
     return f"""<!DOCTYPE html>
 <html lang="{i18n.lang}">
@@ -724,7 +736,7 @@ def build_report(i18n: I18n, scan, monitor) -> str:
   <div class="verdict-icon">{verdict_icon}</div>
   <div class="verdict-text">
     <div class="big">{esc(verdict_msg)}</div>
-    <div>{load_line}</div>
+    <div>{esc(load_line)}</div>
   </div>
 </div>
 

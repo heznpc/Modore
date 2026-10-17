@@ -33,17 +33,17 @@ struct StorageWorkspacePage: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Picker("저장공간 작업", selection: Binding(
+                Picker(L10n.text("저장공간 작업"), selection: Binding(
                     get: { section == .overview ? StorageWorkspaceSection.overview : .goal },
                     set: { section = $0; reviewPath = nil }
                 )) {
-                    Text("전체 사용 현황").tag(StorageWorkspaceSection.overview)
-                    Text("조사·정리").tag(StorageWorkspaceSection.goal)
+                    Text(L10n.text("사용 현황")).tag(StorageWorkspaceSection.overview)
+                    Text(L10n.text("공간 비우기")).tag(StorageWorkspaceSection.goal)
                 }.pickerStyle(.segmented).frame(width: 280)
                 Spacer()
-                Menu("환경·프로젝트 검토") {
-                    Button("실행 환경") { environmentRetirement = true }
-                    Button("프로젝트 정리") { retirementOpen = true }
+                Menu(L10n.text("환경·프로젝트 검토")) {
+                    Button(L10n.text("실행 환경")) { environmentRetirement = true }
+                    Button(L10n.text("프로젝트 정리")) { retirementOpen = true }
                     Button(L10n.text("빌드 산출물 보관·회수")) { buildArtifactsOpen = true }
                 }.fixedSize()
             }.padding(.horizontal, 20).padding(.vertical, 10)
@@ -55,10 +55,15 @@ struct StorageWorkspacePage: View {
                     initialFilter: resultFilter, initialQuery: reviewPath ?? "")
             } else {
                 VStack(spacing: 16) {
-                    ModernEmptyState(symbol: "internaldrive", title: "조사할 경로를 먼저 찾습니다",
-                        message: "로컬 검사로 후보를 발견한 뒤 크기와 사용 근거를 조사합니다.")
-                    if model.isRunning { ProgressView() }
-                    else { Button("경로 목록 검사") { model.runScan() }.buttonStyle(.borderedProminent).disabled(model.isBusy) }
+                    ModernEmptyState(symbol: "internaldrive", title: L10n.text("정리할 항목을 확인하세요"),
+                        message: L10n.text("경로와 크기, 사용 상태를 함께 확인합니다. 정리는 항목을 선택하고 승인한 뒤 실행됩니다."))
+                    if model.isRunning {
+                        ProgressView()
+                        Button(L10n.text("확인 중지")) { model.cancelScan() }
+                    } else {
+                        Button(L10n.text("정리 후보 확인")) { model.prepareStorageReview() }
+                            .buttonStyle(.borderedProminent).disabled(model.isBusy)
+                    }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }

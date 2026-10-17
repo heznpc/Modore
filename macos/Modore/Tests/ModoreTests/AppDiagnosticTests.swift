@@ -58,15 +58,15 @@ final class AppDiagnosticTests: XCTestCase {
         XCTAssertTrue(action.rose)
         XCTAssertEqual(action.before.mean, 30)
         XCTAssertEqual(action.after.mean, 215)
-        XCTAssertTrue(value.report.contains("입력 지연 시간이나 인과관계를 증명하지 않습니다"))
-        XCTAssertTrue(value.report.contains("프로세스별 CPU를 저장하지 않아"))
+        XCTAssertTrue(value.report.contains(L10n.text("\n표식 전후 각 3초에서 경계를 넘지 않는 CPU 표본을 비교합니다. 150%는 원인 추적용 기준이며 정상/비정상 판정 기준은 아닙니다. 표식과 부하의 시간적 관계를 보여주며, 입력 지연 시간이나 인과관계를 증명하지 않습니다.\n")))
+        XCTAssertTrue(value.report.contains(L10n.text("이 기록은 프로세스별 CPU를 저장하지 않아 Renderer와 작업 프로세스를 구분할 수 없습니다.\n")))
     }
     func testMissingBaselineStillReportsObservedHighCPUButNotIncrease() {
         let rows = (1...6).map { timed(Double($0), cpu: $0 <= 3 ? 30 : 215, missing: $0 == 2 ? 1 : 0) }
         let value = result(frames: rows, events: [.init(seconds: 3, kind: "manual", detail: "first-input")])
         XCTAssertTrue(value.actionAssessments[0].highCPU)
         XCTAssertFalse(value.actionAssessments[0].rose)
-        XCTAssertTrue(value.diagnosticHeadline.contains("높은 CPU"))
+        XCTAssertEqual(value.diagnosticHeadline, L10n.text("동작 표식 직후 높은 CPU 사용 관측"))
     }
     func testBoundaryCrossingAndShortObservationCannotBecomeActionEvidence() {
         let rows = [timed(2, cpu: 20), timed(3.5, cpu: 400), timed(4, cpu: 10, interval: 0.5)]
@@ -82,7 +82,7 @@ final class AppDiagnosticTests: XCTestCase {
         let value = result(frames: rows, events: [marker])
         XCTAssertFalse(value.actionAssessments[0].highCPU)
         XCTAssertEqual(value.actionAssessments[0].after.mean, 10)
-        XCTAssertTrue(value.diagnosticHeadline.contains("앱·작업 합산"))
+        XCTAssertEqual(value.diagnosticHeadline, L10n.text("검사 중 앱·작업 합산 고부하 관측"))
         let high = (1...6).map { timed(Double($0), cpu: $0 <= 3 ? 30 : 215) }
         let sampled = result(frames: high, events: [marker, .init(seconds: 4, kind: "stack-start", detail: "sample")])
         XCTAssertFalse(sampled.actionAssessments[0].rose)

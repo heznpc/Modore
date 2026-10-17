@@ -1,28 +1,34 @@
 import AppKit
 import SwiftUI
 
+/// Window-owned navigation context survives switching between Mac, storage and development tasks.
+@MainActor
+final class SkillInventoryViewState: ObservableObject {
+    @Published var selection: String?
+    @Published var compareID = ""
+    @Published var query = ""
+    @Published var host = "all"
+    @Published var source: SkillSourceFilter = .all
+    @Published var duplicatesOnly = false
+    @Published var tab = "installations"
+    @Published var approval: SkillInstallation?
+    @Published var showDiff = false
+}
+
 struct SkillInventoryView: View {
     @EnvironmentObject private var model: ScanModel
-    @StateObject private var service = SkillInventoryService()
-    @State private var selection: String?
-    @State private var compareID = ""
-    @State private var query = ""
-    @State private var host = "all"
-    @State private var source: SkillSourceFilter = .all
-    @State private var duplicatesOnly = false
-    @State private var tab = "installations"
-    @State private var approval: SkillInstallation?
-    @State private var showDiff = false
+    @ObservedObject var service: SkillInventoryService
+    @ObservedObject var state: SkillInventoryViewState
 
     private var items: [SkillInstallation] { service.snapshot?.items ?? [] }
     private var visible: [SkillInstallation] {
         items.filter {
-            (host == "all" || $0.host == host) && source.matches($0) &&
-            (!duplicatesOnly || $0.duplicates > 1) &&
-            (query.isEmpty || ($0.name + $0.origin + $0.path + $0.realPath).localizedCaseInsensitiveContains(query))
+            (state.host == "all" || $0.host == state.host) && state.source.matches($0) &&
+            (!state.duplicatesOnly || $0.duplicates > 1) &&
+            (state.query.isEmpty || ($0.name + $0.origin + $0.path + $0.realPath).localizedCaseInsensitiveContains(state.query))
         }
     }
-    private var focused: SkillInstallation? { visible.first { $0.id == selection } }
+    private var focused: SkillInstallation? { visible.first { $0.id == state.selection } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -38,18 +44,22 @@ struct SkillInventoryView: View {
             if !service.error.isEmpty {
                 Label(L10n.message(service.error), systemImage: "exclamationmark.triangle").foregroundStyle(.red).textSelection(.enabled)
             }
-            Picker(L10n.text("보기"), selection: $tab) {
+            Picker(L10n.text("보기"), selection: $state.tab) {
                 Text(L10n.format("설치·참고 (%d)", items.count)).tag("installations")
                 Text(L10n.format("백업·복구 (%d)", service.snapshot?.backups.count ?? 0)).tag("backups")
             }.pickerStyle(.segmented)
-            if tab == "installations" { inventory } else { backups }
+            if state.tab == "installations" { inventory } else { backups }
         }
         .padding(20)
         .disabled(service.busy)
         .overlay(alignment: .topTrailing) { if service.busy { ProgressView().controlSize(.small).padding(24) } }
-        .onChange(of: selection) { _ in compareID = "" }
-        .onAppear { service.startRead(["action": "status"], model: model) }
-        .sheet(item: $approval) { item in
+        .onChange(of: state.selection) { _ in state.compareID = "" }
+        .onAppear {
+            if service.snapshot == nil && !service.busy {
+                service.startRead(["action": "status"], model: model)
+            }
+        }
+        .sheet(item: $state.approval) { item in
             VStack(alignment: .leading, spacing: 18) {
                 Text(L10n.text("백업 후 이 설치 비활성화")).font(.title2.bold())
                 Text(item.name).font(.headline)
@@ -58,23 +68,23 @@ struct SkillInventoryView: View {
                 Text(L10n.message(service.snapshot?.scope ?? "")).foregroundStyle(.secondary)
                 HStack {
                     Spacer()
-                    Button(L10n.text("취소")) { approval = nil }.keyboardShortcut(.cancelAction)
+                    Button(L10n.text("취소")) { state.approval = nil }.keyboardShortcut(.cancelAction)
                     Button(L10n.text("백업하고 비활성화")) {
-                        approval = nil
+                        state.approval = nil
                         Task {
                             await service.perform(["action": "disable", "id": item.id, "fingerprint": item.fingerprint], model: model, mutation: true)
-                            tab = "backups"
+                            state.tab = "backups"
                         }
                     }.buttonStyle(.borderedProminent)
                 }
             }.padding(24).frame(width: 560)
         }
-        .sheet(isPresented: $showDiff) {
+        .sheet(isPresented: $state.showDiff) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text(L10n.text("SKILL.md 내용 비교")).font(.title2.bold())
                     Spacer()
-                    Button(L10n.text("닫기")) { showDiff = false }.keyboardShortcut(.cancelAction)
+                    Button(L10n.text("닫기")) { state.showDiff = false }.keyboardShortcut(.cancelAction)
                 }
                 Text(L10n.text("− 원본 · + 비교 대상. 버전 문자열과 파일 내용의 동일 여부는 별개입니다.")).foregroundStyle(.secondary)
                 ScrollView([.horizontal, .vertical]) {
@@ -94,8 +104,8 @@ struct SkillInventoryView: View {
             Menu(L10n.text("검증 자료")) {
                 Button(service.demo ? L10n.text("내 설치로 돌아가기") : L10n.text("격리된 예제 열기")) {
                     service.startModeSwitch(model: model) {
-                        selection = nil; compareID = ""; query = ""; host = "all"
-                        source = .all; duplicatesOnly = false; tab = "installations"
+                        state.selection = nil; state.compareID = ""; state.query = ""; state.host = "all"
+                        state.source = .all; state.duplicatesOnly = false; state.tab = "installations"
                     }
                 }
             }.fixedSize().accessibilityIdentifier("skills-demo-menu")
@@ -106,20 +116,20 @@ struct SkillInventoryView: View {
     private var inventory: some View {
         VStack(spacing: 10) {
             HStack {
-                TextField(L10n.text("이름·출처·표시/실제 경로 검색"), text: $query).textFieldStyle(.roundedBorder)
-                Picker(L10n.text("호스트"), selection: $host) {
+                TextField(L10n.text("이름·출처·표시/실제 경로 검색"), text: $state.query).textFieldStyle(.roundedBorder)
+                Picker(L10n.text("호스트"), selection: $state.host) {
                     Text(L10n.text("전체")).tag("all")
                     Text("Codex").tag("Codex")
                     Text("Claude").tag("Claude")
                     Text(L10n.text("참고")).tag(SkillSourceFilter.referenceHost)
                 }.frame(width: 150)
-                Picker(L10n.text("출처"), selection: $source) {
+                Picker(L10n.text("출처"), selection: $state.source) {
                     ForEach(SkillSourceFilter.allCases) { Text($0.title).tag($0) }
                 }.frame(width: 180)
-                Toggle(L10n.text("중복만"), isOn: $duplicatesOnly).toggleStyle(.checkbox)
+                Toggle(L10n.text("중복만"), isOn: $state.duplicatesOnly).toggleStyle(.checkbox)
             }
             HSplitView {
-                List(selection: $selection) {
+                List(selection: $state.selection) {
                     ForEach(visible) { item in
                         VStack(alignment: .leading, spacing: 5) {
                             Text(item.name).font(.headline)
@@ -159,6 +169,14 @@ struct SkillInventoryView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(item.name).font(.title2.bold())
             Text(item.description).foregroundStyle(.secondary)
+            Text("\(L10n.message(item.host)) · \(L10n.message(item.source)) · \(L10n.message(item.version))")
+                .font(.callout).foregroundStyle(.secondary)
+            Button(L10n.text("백업 후 비활성화…")) { state.approval = item }
+                .disabled(!item.manageable || item.fingerprint.isEmpty || !item.error.isEmpty
+                    || model.isBusy || (!service.demo && model.cleanupReviewOnly))
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("skills-disable")
+            comparison(item)
             evidenceSection(L10n.text("설치와 로드 근거")) {
                 VStack(alignment: .leading, spacing: 8) {
                     field(L10n.text("호스트·출처"), "\(L10n.message(item.host)) · \(L10n.message(item.source)) · \(item.origin)")
@@ -178,13 +196,8 @@ struct SkillInventoryView: View {
                     Button(L10n.text("Finder에서 보기")) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.filePath)]) }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
             }
-            comparison(item)
             if !item.error.isEmpty { Text(L10n.message(item.error)).foregroundStyle(.red).textSelection(.enabled) }
-            Button(L10n.text("백업 후 비활성화…")) { approval = item }
-                .disabled(!item.manageable || item.fingerprint.isEmpty || !item.error.isEmpty
-                    || model.isBusy || (!service.demo && model.cleanupReviewOnly))
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("skills-disable")
+
         }
     }
 
@@ -192,13 +205,13 @@ struct SkillInventoryView: View {
         let peers = items.filter { $0.id != item.id && $0.exists && $0.error.isEmpty && !$0.hash.isEmpty }
         let sameName = peers.filter { $0.name == item.name }
         let candidates = sameName.isEmpty ? peers : sameName
-        let target = candidates.first { $0.id == compareID } ?? candidates.first
+        let target = candidates.first { $0.id == state.compareID } ?? candidates.first
         return evidenceSection(L10n.text("중복·버전 비교")) {
             VStack(alignment: .leading, spacing: 10) {
                 Text(L10n.format("동명 파일 %d개 · SKILL.md 내용 %d종", item.duplicates, item.variants)).font(.callout)
                 if let target, item.exists, item.error.isEmpty, !item.hash.isEmpty {
                     if candidates.count > 1 {
-                        Picker(L10n.text("비교 대상"), selection: Binding(get: { target.id }, set: { compareID = $0 })) {
+                        Picker(L10n.text("비교 대상"), selection: Binding(get: { target.id }, set: { state.compareID = $0 })) {
                             ForEach(candidates) { peer in
                                 Text("\(L10n.message(peer.host)) · \(peer.origin) · \(L10n.message(peer.version)) · \(peer.name)").tag(peer.id)
                             }
@@ -210,7 +223,7 @@ struct SkillInventoryView: View {
                     Text(item.hash == target.hash ? L10n.text("SKILL.md 내용 동일") : L10n.text("SKILL.md 내용 다름")).foregroundStyle(item.hash == target.hash ? Color.secondary : Color.orange)
                     Button(L10n.text("차이 보기")) {
                         service.startRead(["action": "compare", "ids": [item.id, target.id]], model: model) {
-                            showDiff = true
+                            state.showDiff = true
                         }
                     }
                 } else { Text(L10n.text("비교할 다른 설치가 없습니다.")).foregroundStyle(.secondary) }
@@ -249,11 +262,9 @@ struct SkillInventoryView: View {
         }
     }
 
-    private func evidenceSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.headline)
-            content()
-            Divider()
+    private func evidenceSection<Content: View>(_ title: String, @ViewBuilder content: @escaping () -> Content) -> some View {
+        DisclosureGroup(title) {
+            content().padding(.top, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

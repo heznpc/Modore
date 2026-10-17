@@ -14,6 +14,7 @@ Modore - macOS 스캐너 헬퍼 (v0.3)
 
 import hashlib
 import json
+import math
 import os
 import plistlib
 import re
@@ -32,6 +33,16 @@ from typing import Dict, Optional
 # 공용 헬퍼
 # ------------------------------------------------------------
 _MACOS_SYSTEM_PATH_PREFIXES = ("/System/", "/usr/lib", "/usr/sbin", "/usr/libexec", "/usr/bin")
+
+
+def _measured_number(value):
+    if value is None or not str(value).strip():
+        return None
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (ValueError, TypeError):
+        return None
 
 
 def _should_skip_vt(path: str) -> bool:
@@ -588,9 +599,13 @@ def main() -> int:
             load[k.strip()] = v.strip()
 
     raw["sections"]["systemLoad"] = OrderedDict([
-        ("cpuPercent", float(load.get("CPU_PCT") or 0)),
-        ("memoryPercent", float(load.get("MEM_PCT") or 0)),
-        ("totalMemoryGB", float(load.get("MEM_TOTAL_GB") or 0)),
+        ("cpuPercent", _measured_number(load.get("CPU_PCT"))),
+        ("cpuMeasurement", "systemIntervalPercent"),
+        ("memoryPercent", _measured_number(load.get("MEM_PCT"))),
+        ("memoryMeasurement", "activeAndWiredPercent"),
+        ("memoryPressure", _measured_number(load.get("MEM_PRESSURE"))
+         if _measured_number(load.get("MEM_PRESSURE")) in (1, 2, 4) else None),
+        ("totalMemoryGB", _measured_number(load.get("MEM_TOTAL_GB"))),
     ])
 
     raw["sections"]["virustotal"] = OrderedDict([

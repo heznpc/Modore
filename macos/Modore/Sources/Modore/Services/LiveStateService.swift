@@ -10,11 +10,18 @@ enum LiveStateService {
               let total = attributes[.systemSize] as? NSNumber else {
             return nil
         }
+        let capacities = try? URL(fileURLWithPath: path).resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey,
+            .volumeAvailableCapacityForOpportunisticUsageKey
+        ])
         let value = LiveFreeSpace(
             freeBytes: free.int64Value,
-            totalBytes: total.int64Value
+            totalBytes: total.int64Value,
+            importantAvailableBytes: capacities?.volumeAvailableCapacityForImportantUsage,
+            opportunisticAvailableBytes: capacities?.volumeAvailableCapacityForOpportunisticUsage
         )
-        guard value.freeBytes >= 0, value.totalBytes > 0 else { return nil }
+        guard value.freeBytes >= 0, value.totalBytes > 0,
+              value.freeBytes <= value.totalBytes else { return nil }
         return Observation(
             value: value,
             observedAt: observedAt,

@@ -51,21 +51,30 @@ final class CPUWatchTests: XCTestCase {
         XCTAssertTrue(policy.evaluate(usage: low, sample: sample(120, thermal: 1)))
     }
 
-    func testSystemProcessesSupplementRestrictedPIDsWithoutDoubleCounting() {
-        let rows = CPUSample.parseSystemProcesses("445 42.5 /System/WindowServer\n42 80 /Applications/Google Chrome Helper\n9 nan bad\n")
-        XCTAssertEqual(rows.map(\.name), ["WindowServer", "Google Chrome Helper"])
-        var after = sample(20, counters: [.init(pid: 42, started: 1, name: "native", nanoseconds: 21_000_000_000)])
-        after.systemProcesses = rows
+    func testProtectedAndNewProcessesRemainUnavailableInsteadOfUsingDifferentCPUWindow() {
+        var after = sample(20, counters: [
+            .init(pid: 42, started: 1, name: "native", nanoseconds: 21_000_000_000),
+            .init(pid: 43, started: 2, name: "new", nanoseconds: 10_000_000)
+        ])
+        after.enumeratedProcessCount = 3 // one protected PID and one new process
         let before = sample(10, counters: [.init(pid: 42, started: 1, name: "native", nanoseconds: 1_000_000_000)])
         let usage = after.usage(since: before)
-        XCTAssertEqual(usage.map(\.pid), [42, 445])
-        XCTAssertEqual(usage.map(\.percent), [200, 42.5])
+        XCTAssertEqual(usage.map(\.pid), [42])
+        XCTAssertEqual(usage.map(\.percent), [200])
+        let coverage = after.coverage(measuredCount: usage.count)
+        XCTAssertEqual(coverage.measuredProcesses, 1)
+        XCTAssertEqual(coverage.unavailableProcesses, 2)
+        XCTAssertTrue(coverage.isPartial)
+        XCTAssertTrue(sample(0).coverage(measuredCount: 0).isPartial)
     }
 
-    func testSystemReaderRunsThroughBoundedProcessRunner() async {
+    func testNativeCaptureReportsCoverageAndPhysicalFootprint() async {
         let observed = await CPUSample.captureWithSystemProcesses()
-        XCTAssertFalse(observed.systemProcesses.isEmpty)
-        XCTAssertTrue(observed.systemProcesses.contains { $0.pid == getpid() })
+        XCTAssertGreaterThan(observed.enumeratedProcessCount ?? 0, 0)
+        let own = observed.counters.first { $0.pid == getpid() }
+        XCTAssertNotNil(own)
+        XCTAssertGreaterThan(own?.physicalFootprintBytes ?? 0, 0)
+        XCTAssertGreaterThanOrEqual(observed.enumeratedProcessCount ?? 0, observed.counters.count)
     }
 
     func testNativeSamplerMeasuresActualCPUTimeForThisProcess() {

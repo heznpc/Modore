@@ -41,20 +41,20 @@ struct DiagnosticActionAssessment: Sendable {
         return peak >= max(150, baseline * 2, baseline + 75)
     }
     var description: String {
-        func number(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? "미확인" }
-        let metric = after.renderer ? "Renderer" : "앱·작업 합산"
-        var text = "\(event.detail) (+\(number(event.seconds))초): \(metric) CPU, 표식 전 평균 \(number(before.mean))% → 표식 후 평균 \(number(after.mean))%"
+        func number(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? L10n.text("미확인") }
+        let metric = after.renderer ? "Renderer" : L10n.text("앱·작업 합산")
+        var text = L10n.format("%@ (+%@초): %@ CPU, 표식 전 평균 %@%% → 표식 후 평균 %@%%", String(describing: event.detail), String(describing: number(event.seconds)), String(describing: metric), String(describing: number(before.mean)), String(describing: number(after.mean)))
         if let peak = after.peak {
-            text += ", 최고 \(number(after.value(peak)))% (표식 후 \(number(peak.seconds - event.seconds))초 표본)."
+            text += L10n.format(", 최고 %@%% (표식 후 %@초 표본).", String(describing: number(after.value(peak))), String(describing: number(peak.seconds - event.seconds)))
         } else { text += "." }
-        if rose { text += " 표식 직후 CPU 급증이 관측됐습니다." }
-        else if highCPU { text += " 표식 직후 높은 CPU 사용이 관측됐습니다." }
-        else if after.complete { text += " 이 구간에서 150% 이상 CPU 부하는 관측되지 않았습니다. 화면 지연이 없었다는 뜻은 아닙니다." }
-        else { text += " 표식 후 구간의 CPU 관측이 부족합니다." }
-        if !before.complete { text += " 표식 전 자료가 불완전해 증가율은 판정하지 않습니다." }
-        if !after.complete { text += " 표식 후 자료에 누락 또는 짧은 관찰 구간이 있습니다." }
-        if stacksOverlap { text += " 스택 수집과 겹친 구간입니다." }
-        if otherActionOverlaps { text += " 다른 동작 표식과 겹쳐 개별 동작에 귀속하지 않습니다." }
+        if rose { text += L10n.text(" 표식 직후 CPU 급증이 관측됐습니다.") }
+        else if highCPU { text += L10n.text(" 표식 직후 높은 CPU 사용이 관측됐습니다.") }
+        else if after.complete { text += L10n.text(" 이 구간에서 150% 이상 CPU 부하는 관측되지 않았습니다. 화면 지연이 없었다는 뜻은 아닙니다.") }
+        else { text += L10n.text(" 표식 후 구간의 CPU 관측이 부족합니다.") }
+        if !before.complete { text += L10n.text(" 표식 전 자료가 불완전해 증가율은 판정하지 않습니다.") }
+        if !after.complete { text += L10n.text(" 표식 후 자료에 누락 또는 짧은 관찰 구간이 있습니다.") }
+        if stacksOverlap { text += L10n.text(" 스택 수집과 겹친 구간입니다.") }
+        if otherActionOverlaps { text += L10n.text(" 다른 동작 표식과 겹쳐 개별 동작에 귀속하지 않습니다.") }
         return text
     }
 }
@@ -76,21 +76,21 @@ extension DiagnosticResult {
         headline(actions: actionAssessments)
     }
     func headline(actions: [DiagnosticActionAssessment]) -> String {
-        if actions.contains(where: { $0.rose }) { return "동작 표식 직후 CPU 급증 관측" }
-        if actions.contains(where: { $0.highCPU }) { return "동작 표식 직후 높은 CPU 사용 관측" }
-        if let peakCPU, peakCPU >= 150 { return "검사 중 앱·작업 합산 고부하 관측" }
-        if frames.contains(where: { $0.targetCPU != nil }) { return "CPU 고부하 미관측 · 화면 지연 여부와 별개" }
-        return "CPU 관측 자료 부족"
+        if actions.contains(where: { $0.rose }) { return L10n.text("동작 표식 직후 CPU 급증 관측") }
+        if actions.contains(where: { $0.highCPU }) { return L10n.text("동작 표식 직후 높은 CPU 사용 관측") }
+        if let peakCPU, peakCPU >= 150 { return L10n.text("검사 중 앱·작업 합산 고부하 관측") }
+        if frames.contains(where: { $0.targetCPU != nil }) { return L10n.text("CPU 고부하 미관측 · 화면 지연 여부와 별개") }
+        return L10n.text("CPU 관측 자료 부족")
     }
     var assessmentReport: String {
-        var text = "## 분석 결과\n\n\(diagnosticHeadline)\n\n"
+        var text = L10n.format("## 분석 결과\n\n%@\n\n", String(describing: diagnosticHeadline))
         for action in actionAssessments { text += "- \(action.description)\n" }
-        if actionAssessments.isEmpty { text += "동작 표식이 없어 개별 조작 전후 비교는 없습니다.\n" }
-        text += "\n표식 전후 각 3초에서 경계를 넘지 않는 CPU 표본을 비교합니다. 150%는 원인 추적용 기준이며 정상/비정상 판정 기준은 아닙니다. 표식과 부하의 시간적 관계를 보여주며, 입력 지연 시간이나 인과관계를 증명하지 않습니다.\n"
+        if actionAssessments.isEmpty { text += L10n.text("동작 표식이 없어 개별 조작 전후 비교는 없습니다.\n") }
+        text += L10n.text("\n표식 전후 각 3초에서 경계를 넘지 않는 CPU 표본을 비교합니다. 150%는 원인 추적용 기준이며 정상/비정상 판정 기준은 아닙니다. 표식과 부하의 시간적 관계를 보여주며, 입력 지연 시간이나 인과관계를 증명하지 않습니다.\n")
         if !frames.contains(where: { $0.topProcesses != nil }) {
-            text += "이 기록은 프로세스별 CPU를 저장하지 않아 Renderer와 작업 프로세스를 구분할 수 없습니다.\n"
+            text += L10n.text("이 기록은 프로세스별 CPU를 저장하지 않아 Renderer와 작업 프로세스를 구분할 수 없습니다.\n")
         }
-        text += "이 검사에는 시스템 전체 메모리 압력·디스크 대기·화면 프레임 측정이 없어 로컬 시스템과 앱의 원인을 단독 확정할 수 없습니다.\n"
+        text += L10n.text("이 검사에는 시스템 전체 메모리 압력·디스크 대기·화면 프레임 측정이 없어 로컬 시스템과 앱의 원인을 단독 확정할 수 없습니다.\n")
         return text
     }
 }

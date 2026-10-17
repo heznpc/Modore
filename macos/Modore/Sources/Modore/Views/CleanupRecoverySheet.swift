@@ -219,7 +219,7 @@ struct CleanupRecoverySheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             } else {
-                Text("공간 순변화에는 다른 앱의 활동도 포함됩니다.").font(.caption).foregroundStyle(.secondary)
+                Text(L10n.text("공간 순변화에는 다른 앱의 활동도 포함됩니다.")).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             if result.stopAtGoal && !result.goalMet {
