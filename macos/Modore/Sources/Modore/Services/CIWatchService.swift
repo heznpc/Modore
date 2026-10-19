@@ -35,25 +35,8 @@ final class CIWatchService: ObservableObject {
     }
 
     func invoke(root: URL, request: [String: Any]) async throws -> CISnapshot {
-        guard let execution = await Task.detached(priority: .utility, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: root)
-        }).value,
-        let invocation = execution.pinnedInvocation(relativePath: "scripts/ci_watch.py", name: "ci_watch"),
-        let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
-            throw RetirementError(L10n.text("CI 조회 도구를 준비하지 못했습니다."))
-        }
-        var pinned = invocation.files
-        pinned["request"] = try JSONSerialization.data(withJSONObject: request)
-        let wrapper = "import sys; source=open(sys.argv[1],'rb').read(); sys.argv=['ci_watch.py']+sys.argv[2:]; exec(compile(source,'ci_watch.py','exec'),{'__name__':'__main__'})"
-        let result = await LocalProcessRunner.capture(executable: python,
-            arguments: ["-I", "-B", "-c", wrapper, invocation.argument, "--request-file", "@pch-pinned:request"],
-            currentDirectory: execution.runtimeRoot, expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
-            expectedSignedBundleURL: execution.signedBundleURL, pinnedFiles: pinned,
-            timeout: 240, maxOutputBytes: 4_000_000, waitForCleanupOnStop: true)
-        let data = Data(result.output.utf8)
-        if let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-           let error = object["error"] as? String { throw RetirementError(error) }
-        guard result.succeeded else { throw RetirementError(L10n.text("CI 조회가 끝나지 않았습니다. 이전 기록을 유지합니다.")) }
+        let data = try await NativeOperationService.capture("ci", payload: JSONSerialization.data(withJSONObject: request),
+            timeout: 240, maximumBytes: 4_000_000)
         return try JSONDecoder().decode(CISnapshot.self, from: data)
     }
 

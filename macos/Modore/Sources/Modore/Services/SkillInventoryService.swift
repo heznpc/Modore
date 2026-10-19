@@ -65,7 +65,7 @@ final class SkillInventoryService: ObservableObject {
         self.operation = operation
     }
 
-    /// Register reads with the app's termination owner so Python and an optional
+    /// Register reads with the app's termination owner so native workers and an optional
     /// Codex discovery server are cancelled and drained before Cmd-Q completes.
     func startRead(_ request: [String: Any], model: ScanModel,
                    completion: @escaping @MainActor () -> Void = {}) {
@@ -83,30 +83,9 @@ final class SkillInventoryService: ObservableObject {
 
     private func invoke(root: URL, request: [String: Any], demo: Bool) async throws -> Data {
         if let operation { return try await operation(root, request, demo) }
-        guard let execution = await Task.detached(priority: .utility, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: root)
-        }).value,
-        let invocation = execution.pinnedInvocation(relativePath: "scripts/skill_inventory.py", name: "skills"),
-        let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
-            throw RetirementError(L10n.text("스킬 관리 실행 파일을 준비하지 못했습니다."))
-        }
-        var pinned = invocation.files
         var request = request
         request["demo"] = demo
-        pinned["request"] = try JSONSerialization.data(withJSONObject: request)
-        let wrapper = "import sys; source=open(sys.argv[1],'rb').read(); sys.argv=['skill_inventory.py']+sys.argv[2:]; exec(compile(source,'skill_inventory.py','exec'),{'__name__':'__main__'})"
-        let result = await LocalProcessRunner.capture(executable: python,
-            arguments: ["-I", "-B", "-c", wrapper, invocation.argument, "--request-file", "@pch-pinned:request"],
-            currentDirectory: execution.runtimeRoot, expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
-            expectedSignedBundleURL: execution.signedBundleURL, pinnedFiles: pinned, timeout: 180,
-            maxOutputBytes: 8_000_000, waitForCleanupOnStop: true)
-        let data = Data(result.output.utf8)
-        try Task.checkCancellation()
-        if let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let error = object["error"] as? String {
-            throw RetirementError(error)
-        }
-        guard result.succeeded, !result.outputTruncated else { throw RetirementError(L10n.text("스킬 관리 응답을 확인하지 못했습니다. 새로고침하여 백업 기록을 확인하세요.")) }
-        return data
+        return try await NativeOperationService.capture("skills", payload: JSONSerialization.data(withJSONObject: request))
     }
 
     @discardableResult

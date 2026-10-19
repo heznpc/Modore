@@ -58,6 +58,9 @@ final class PCHealthCheckApplicationDelegate: NSObject, NSApplicationDelegate {
 @main
 enum ModoreEntryPoint {
     @MainActor static func main() {
+        if CommandLine.arguments.dropFirst().first == NativeOperationService.argument {
+            NativeOperationService.runAndExit(CommandLine.arguments)
+        }
         if CommandLine.arguments.dropFirst().first == StorageAttributionService.workerArgument {
             StorageAttributionService.runWorkerAndExit(arguments: CommandLine.arguments)
         }

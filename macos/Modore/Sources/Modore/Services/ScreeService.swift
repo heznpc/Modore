@@ -97,36 +97,22 @@ enum ScreeService {
 
     static func sessionBackup(
         execution: RuntimeExecutionContext, operation: SessionBackupOperation,
-        homeOverride: URL? = nil
+        homeOverride: URL? = nil, nativeExecutable: URL? = nil
     ) async -> Result<SessionBackupReceipt, ScreeInspectionError> {
         var arguments = operation.arguments
         if case .create = operation, let homeOverride {
             arguments += ["--home", homeOverride.path]
         }
-        // Raw backup/restore installs a SIGTERM cleanup handler. Do not cut
-        // that exact-inode cleanup off with LocalProcessRunner's ordinary
-        // one-second SIGKILL. A finite one-minute ceiling still prevents a
-        // blocked volume from leaving an untracked Python process forever;
-        // the UI returns its bounded timeout while cleanup continues.
-        switch await invoke(
-            execution: execution,
-            arguments: arguments,
-            timeout: 300,
-            forceKillAfterTermination: 60,
-            waitForCleanupOnStop: true
-        ) {
-        case .timedOut:
-            return .failure(.init(message: L10n.text("5분 안에 검증을 마치지 못했습니다. 백업·복원 성공으로 표시하지 않습니다.")))
-        case .failure(let message):
-            return .failure(.init(message: message))
-        case .success(let output):
-            guard let data = output.data(using: .utf8),
-                  let receipt = try? JSONDecoder().decode(SessionBackupReceipt.self, from: data),
-                  receipt.schemaVersion == 1, receipt.status == operation.expectedStatus,
-                  receipt.fileCount > 0 else {
+        do {
+            let data = try await NativeOperationService.capture("session-backup", payload: JSONSerialization.data(withJSONObject: ["arguments": arguments]),
+                timeout: 300, cleanupGrace: 60, executable: nativeExecutable)
+            let receipt = try JSONDecoder().decode(SessionBackupReceipt.self, from: data)
+            guard receipt.schemaVersion == 1, receipt.status == operation.expectedStatus, receipt.fileCount > 0 else {
                 return .failure(.init(message: L10n.text("백업 검증 결과를 해석하지 못했습니다.")))
             }
             return .success(receipt)
+        } catch {
+            return .failure(.init(message: error.localizedDescription))
         }
     }
 

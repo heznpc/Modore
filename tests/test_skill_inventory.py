@@ -161,7 +161,9 @@ class SkillInventoryTests(unittest.TestCase):
 
     def test_bundle_includes_service_runtime(self):
         script = (Path(__file__).parents[1] / 'scripts/build_macos_swift_app.sh').read_text()
-        self.assertIn('"scripts/skill_inventory.py"', script)
+        self.assertNotIn('"scripts/skill_inventory.py"', script)
+        service = (Path(__file__).parents[1] / 'macos/Modore/Sources/Modore/Services/SkillInventoryService.swift').read_text()
+        self.assertIn('NativeOperationService.capture("skills"', service)
 
     def test_restore_rejects_manifest_path_outside_skill_roots(self):
         p = self.skill(); backup = self.disable(p)

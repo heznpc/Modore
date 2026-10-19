@@ -406,6 +406,8 @@ MACOS_BASE_FILES = COMMON_FILES + [
     "scripts/modules/macos/privacy.sh",
     "scripts/modules/macos/devtool_updates.sh",
     "macos/Modore/Package.swift",
+    "macos/Modore/Package.resolved",
+    "macos/Modore/Sources/Modore/Resources/ThirdPartyNotices.txt",
     "macos/Modore/Sources/Modore/Resources/en.lproj/Localizable.strings",
     "macos/Modore/Sources/Modore/Resources/ja.lproj/Localizable.strings",
     "macos/Modore/Sources/Modore/Resources/ko.lproj/Localizable.strings",

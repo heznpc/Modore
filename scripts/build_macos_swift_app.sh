@@ -457,6 +457,16 @@ done
 for localization in "$PACKAGE_DIR/Sources/Modore/Resources/"*.lproj; do
     /bin/cp -R "$localization" "$APP_DIR/Contents/Resources/"
 done
+/bin/cp "$PACKAGE_DIR/Sources/Modore/Resources/ThirdPartyNotices.txt" "$APP_DIR/Contents/Resources/"
+# SwiftPM dependencies may carry privacy manifests even when their runtime
+# implementation uses only system frameworks. Preserve that pinned resource.
+zip_resources="$binary_dir/ZIPFoundation_ZIPFoundation.bundle"
+if [[ ! -d "$zip_resources" || -L "$zip_resources" ]]; then
+    /usr/bin/printf 'ERROR: ZIPFoundation privacy resources are missing.\n' >&2
+    exit 1
+fi
+/bin/cp -R "$zip_resources" "$APP_DIR/Contents/Resources/"
+/bin/chmod -R u+w "$APP_DIR/Contents/Resources/ZIPFoundation_ZIPFoundation.bundle"
 bundled_executable="$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
 if [[ "${#architectures[@]}" -eq 1 ]]; then
     /bin/cp "$binary_staging/$EXECUTABLE_NAME-${architectures[0]}" "$bundled_executable"
@@ -482,8 +492,6 @@ RUNTIME_FILES=(
     "scripts/scree.py"
     "scripts/asset_retirement.py"
     "scripts/work_resources.py"
-    "scripts/skill_inventory.py"
-    "scripts/ci_watch.py"
     "scripts/environment_retirement.py"
     "scripts/build_lifecycle.py"
     "scripts/generated_cache.py"

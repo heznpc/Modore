@@ -48,9 +48,37 @@ candidates, distinct from directory growth backed by a contemporaneous baseline.
 The existing report/progress JSON files and historical TSV evidence remain
 compatible. Reports are published through `SecureLocalFileIO`.
 
-This is the first native migration slice. Session analysis/backup, skill
-inventory, cleanup validation, and other Python-backed services still use their
-existing runtime; the app as a whole still bundles Python.
+## Native skills, session backups, and CI
+
+The Mac app also runs skill inventory/comparison/disable/restore, raw session
+backup/verification/restore, and CI collection/reconciliation in Swift. These
+operations use the signed app executable's `--native-operation` entry point,
+before SwiftUI or singleton initialization. Requests are bounded JSON passed on
+immutable inherited file descriptors through `LocalProcessRunner`. Skill and
+CI operations no longer package or invoke their Python reference scripts.
+The source-checkout CLI retains its Python implementations; compatibility tests
+check shared fingerprints, backup manifests, incident IDs, and state semantics.
+
+Skill snapshots use CryptoKit hashes, a pinned TOML decoder, no-replace moves,
+independent content copies, and the existing backup manifest format. Native
+session backups use ZIPFoundation with Apple's Compression framework and the
+existing version-1 ZIP/SHA-256 format. Both directions of compatibility with
+Python-created backups are tested. Restore verifies the complete ZIP before
+writing, extracts into a private staging root, pins created inodes, journals
+progress, verifies the restored bytes, and publishes via one no-replace rename.
+SIGTERM/SIGINT request rollback within the worker's bounded cleanup deadline.
+Native interrupted restores recover only the requested destination's journal;
+ambiguous data and legacy Python restore journals require manual review.
+
+CI keeps the GitHub CLI as its authenticated API transport. Swift performs
+collection, log redaction, stable incident grouping, recovery checks, atomic
+state writes, and notification acknowledgments. Its state and lock remain
+compatible with the source CLI. Neither CI nor backup operations use a service
+outside the local worker, except for the explicit GitHub API requests.
+
+Python remains bundled for session analysis/indexing/search/export, resource
+and retirement management, and cleanup validation. The app is not yet entirely
+Python-free. The migrations above are independent of those remaining paths.
 
 ## Mac source layout
 

@@ -63,7 +63,8 @@ final class ScreeBindIntegrationTests: XCTestCase {
         if let home { try? FileManager.default.removeItem(at: home) }
     }
 
-    func testOriginalBackupReachesSealedScriptAndRestoresToolResults() async throws {
+    func testOriginalBackupReachesNativeWorkerAndRestoresToolResults() async throws {
+        let executable = Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("Modore")
         let source = home.appending(path: ".claude/projects/project/session.jsonl")
         let sidecar = home.appending(path: ".claude/projects/project/session/tool-results/call.txt")
         try FileManager.default.createDirectory(at: source.deletingLastPathComponent(),
@@ -77,7 +78,7 @@ final class ScreeBindIntegrationTests: XCTestCase {
         let archive = home.appending(path: "session.zip")
         let created = try await ScreeService.sessionBackup(
             execution: execution,
-            operation: .create(source: source.path, destination: archive), homeOverride: home
+            operation: .create(source: source.path, destination: archive), homeOverride: home, nativeExecutable: executable
         ).get()
         XCTAssertEqual(created.status, "verified")
         XCTAssertEqual(created.fileCount, 2)
@@ -85,12 +86,12 @@ final class ScreeBindIntegrationTests: XCTestCase {
         XCTAssertFalse(created.masked)
 
         let checked = try await ScreeService.sessionBackup(
-            execution: execution, operation: .verify(archive)
+            execution: execution, operation: .verify(archive), nativeExecutable: executable
         ).get()
         XCTAssertEqual(checked.totalBytes, Int64(transcript.count + toolOutput.count))
         let restored = home.appending(path: "new-restore")
         let receipt = try await ScreeService.sessionBackup(
-            execution: execution, operation: .restore(archive: archive, destination: restored)
+            execution: execution, operation: .restore(archive: archive, destination: restored), nativeExecutable: executable
         ).get()
         XCTAssertEqual(receipt.status, "restored")
         let restoredSource = try XCTUnwrap(receipt.restoredSource)
@@ -100,10 +101,10 @@ final class ScreeBindIntegrationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: source), transcript)
 
         let again = await ScreeService.sessionBackup(
-            execution: execution, operation: .restore(archive: archive, destination: restored)
+            execution: execution, operation: .restore(archive: archive, destination: restored), nativeExecutable: executable
         )
         guard case .failure(let error) = again else { return XCTFail("must not overwrite a restore") }
-        XCTAssertTrue(error.message.contains("NEW directory"))
+        XCTAssertTrue(error.message.contains("already exists"))
     }
 
     /// A workspace no session ever touched must come back as a completed

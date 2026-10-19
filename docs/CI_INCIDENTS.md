@@ -1,5 +1,9 @@
 # CI incidents
 
+The Mac app collects and reconciles incidents in Swift, using the authenticated
+GitHub CLI for API transport. The source CLI retains its compatible Python
+implementation; both share the same state format, incident IDs, and lock.
+
 Open **프로젝트·대화 찾기 → CI 문제** (or `modore://work/ci`). Refresh imports
 repositories from the latest 100 GitHub CI notifications and the local Work
 projects' verified `origin` URLs. An owner/name field adds a repository explicitly.

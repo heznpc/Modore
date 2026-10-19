@@ -113,6 +113,8 @@ python3 scripts/scree.py title <session-file>     # one masked line: what that s
 ### Verified session backups (Mac)
 
 In **작업**, select a Claude Code, Claude Desktop Code, or Codex conversation and choose **원본 백업…**.
+The Mac app creates, verifies, and restores these ZIPs in Swift without launching Python;
+the source commands below remain compatible with the same archive format.
 The separate **대화 내보내기…** action still produces masked Markdown text;
 it does not preserve structured tool calls or results.
 
