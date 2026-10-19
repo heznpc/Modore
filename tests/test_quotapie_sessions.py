@@ -223,3 +223,9 @@ def test_manifest_read_revalidates_marker_before_primary_preference(tmp_path, mo
         return result
     monkeypatch.setattr(scree, "_read_regular_bytes_nofollow", replacing_read)
     assert scree.build_current_session(tmp_path, environ={"CODEX_THREAD_ID": SESSION_ID})["source"] == str(retired)
+
+
+def test_untrusted_non_string_identity_remains_an_unmerged_artifact(tmp_path):
+    records = [{"kind": "session", "provider": provider, "session_id": ["invalid"],
+                "source": str(tmp_path / f"{provider}.jsonl")} for provider in ("codex", "claude")]
+    assert len(scree._group_logical_sessions(records, home=tmp_path)) == 2

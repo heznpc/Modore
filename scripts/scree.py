@@ -3809,11 +3809,14 @@ def _group_logical_sessions(records: list[dict], *, home: Optional[Path] = None)
         origins, _ = _codex_consolidated_origins(home)
         by_session: dict[str, list[dict]] = {}
         for record in records:
-            if record.get("provider") == "codex" and record.get("session_id") in origins:
+            if (record.get("provider") == "codex" and isinstance(record.get("session_id"), str)
+                    and record["session_id"] in origins):
                 by_session.setdefault(record["session_id"], []).append(record)
         for index, item in enumerate(grouped):
+            if item.get("provider") != "codex" or not isinstance(item.get("session_id"), str):
+                continue
             origin = origins.get(item.get("session_id"))
-            if item.get("provider") != "codex" or origin is None:
+            if origin is None:
                 continue
             candidates = by_session.get(item.get("session_id"), [])
 
