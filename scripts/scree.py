@@ -126,6 +126,10 @@ TRANSCRIPT_MAX_BYTES = 512 * 1024 * 1024
 TRANSCRIPT_LINE_MAX_BYTES = 16 * 1024 * 1024
 SEARCH_PROBE_MAX_BYTES = TRANSCRIPT_MAX_BYTES
 SEARCH_IO_CHUNK_BYTES = 64 * 1024
+QUOTAPIE_CODEX_PROFILES = (
+    "Library", "Application Support", "QuotaPie", "CodexProfiles",
+)
+CODEX_PROFILE_MAX_ENTRIES = 256
 
 # Claude Desktop's Code surface is a separate store from Claude Code.  One
 # conversation is a metadata JSON beside a same-named directory; the hundreds
@@ -1521,67 +1525,128 @@ def collect_claude_desktop_sessions(home: Path) -> list[dict]:
     return _collect_claude_desktop_sessions_with_coverage(home)[0]
 
 
+def _codex_session_roots(home: Path) -> tuple[list[Path], dict]:
+    """Discover Codex homes without reading profile config or credentials.
+
+    QuotaPie uses each profile's `home` as CODEX_HOME, so its stores are
+    directly below home, not home/.codex. Only this fixed namespace is
+    enumerated; symlinks and foreign-owned profiles remain incomplete coverage.
+    """
+    roots = [home / ".codex" / name
+             for name in ("sessions", "archived_sessions")]
+    parent = home.joinpath(*QUOTAPIE_CODEX_PROFILES)
+    coverage = {"store": "Codex", "status": "ok", "count": 0,
+                "unrecognized": 0}
+    try:
+        descriptor = _open_directory_nofollow(parent)
+    except (OSError, ValueError):
+        return roots, _incomplete_store_status(parent, "Codex")
+    try:
+        if os.fstat(descriptor).st_uid != os.getuid():
+            coverage.update(status="unrecognized", unrecognized=1)
+            return roots, coverage
+        with os.scandir(descriptor) as entries:
+            for index, entry in enumerate(entries):
+                if index >= CODEX_PROFILE_MAX_ENTRIES:
+                    coverage["status"] = "truncated"
+                    break
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    coverage["status"] = "unreadable"
+                    continue
+                if stat.S_ISREG(info.st_mode):
+                    continue  # QuotaPie may keep profile registry metadata here.
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                    coverage["unrecognized"] += 1
+                    continue
+                roots.extend(parent / entry.name / "home" / name
+                             for name in ("sessions", "archived_sessions"))
+    except OSError:
+        coverage["status"] = "unreadable"
+    finally:
+        os.close(descriptor)
+    if coverage["status"] == "ok" and coverage["unrecognized"]:
+        coverage["status"] = "unrecognized"
+    return sorted(roots), coverage
+
+
+def _discover_codex_files(home: Path) -> tuple[list[_DiscoveredRegularFile], dict]:
+    roots, profiles = _codex_session_roots(home)
+    files: list[_DiscoveredRegularFile] = []
+    statuses = [profiles["status"]]
+    unrecognized = int(profiles.get("unrecognized", 0))
+    for root in roots:
+        discovered, coverage = _discover_regular_files_nofollow(root, "Codex", ".jsonl")
+        files.extend(discovered)
+        statuses.append(coverage["status"])
+        unrecognized += int(coverage.get("unrecognized", 0))
+    status = next((value for value in
+                   ("truncated", "unreadable", "unrecognized", "ok")
+                   if value in statuses), "missing")
+    return files, {"store": "Codex", "status": status, "count": len(files),
+                   "unrecognized": unrecognized}
+
+
+def _is_codex_session_relative(source: PurePosixPath) -> bool:
+    parts = source.parts
+    if source.suffix != ".jsonl":
+        return False
+    if len(parts) >= 3 and parts[0] == ".codex":
+        return parts[1] in ("sessions", "archived_sessions")
+    prefix = QUOTAPIE_CODEX_PROFILES
+    return (len(parts) >= len(prefix) + 4
+            and parts[:len(prefix)] == prefix
+            and parts[len(prefix) + 1] == "home"
+            and parts[len(prefix) + 2] in ("sessions", "archived_sessions"))
+
+
 def collect_codex(home: Path) -> tuple[list[dict], dict]:
     records: list[dict] = []
-    unrecognized = 0
-    roots = [home / ".codex" / "sessions", home / ".codex" / "archived_sessions"]
-    seen_root = False
-    root_statuses: list[str] = []
-    for root in roots:
-        discovered, discovery = _discover_regular_files_nofollow(
-            root, "Codex", ".jsonl")
-        if discovery["status"] == "missing":
+    discovered, discovery = _discover_codex_files(home)
+    unrecognized = int(discovery.get("unrecognized", 0))
+    for candidate in discovered:
+        path = candidate.path
+        descriptor, opened, status = _open_regular_nofollow(path)
+        if descriptor is None or opened is None:
+            unrecognized += 1
             continue
-        seen_root = True
-        root_statuses.append(discovery["status"])
-        unrecognized += int(discovery.get("unrecognized", 0))
-        for candidate in discovered:
-            path = candidate.path
-            descriptor, opened, status = _open_regular_nofollow(path)
-            if descriptor is None or opened is None:
-                unrecognized += 1
-                continue
-            try:
-                with os.fdopen(os.dup(descriptor), "rb") as handle:
-                    first = _read_json_line(handle)
-                after = os.fstat(descriptor)
-            except OSError:
-                unrecognized += 1
-                continue
-            finally:
-                os.close(descriptor)
-            if (_stat_signature(opened) != _stat_signature(after)
-                    or _stat_identity(opened)
-                    != _stat_identity(candidate.info)):
-                unrecognized += 1
-                continue
-            payload = (first or {}).get("payload")
-            if (first or {}).get("type") != "session_meta" or not isinstance(payload, dict):
-                unrecognized += 1
-                continue
-            git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
-            # `id` is this task's identity. `session_id` is the root lineage
-            # and is inherited by spawned subagents, so preferring it would
-            # collapse every child task into the parent's conversation.
-            session_id = payload.get("id") or payload.get("session_id")
-            if not isinstance(session_id, str) or not session_id.strip():
-                session_id = None
-            elif len(session_id) > 256 or any(
-                    ord(character) < 32 for character in session_id):
-                session_id = None
-            records.append(_record(
-                "Codex", "session", path, payload.get("cwd"),
-                repo_url=git.get("repository_url"), branch=git.get("branch"),
-                provider="codex", session_id=session_id,
-                source_info=opened))
-    status_value = "missing"
-    if seen_root:
-        status_value = (
-            "truncated" if "truncated" in root_statuses else
-            "unreadable" if "unreadable" in root_statuses else
-            "unrecognized" if "unrecognized" in root_statuses or unrecognized else
-            "ok"
-        )
+        try:
+            with os.fdopen(os.dup(descriptor), "rb") as handle:
+                first = _read_json_line(handle)
+            after = os.fstat(descriptor)
+        except OSError:
+            unrecognized += 1
+            continue
+        finally:
+            os.close(descriptor)
+        if (_stat_signature(opened) != _stat_signature(after)
+                or _stat_identity(opened)
+                != _stat_identity(candidate.info)):
+            unrecognized += 1
+            continue
+        payload = (first or {}).get("payload")
+        if (first or {}).get("type") != "session_meta" or not isinstance(payload, dict):
+            unrecognized += 1
+            continue
+        git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
+        # `id` is this task's identity. `session_id` is the root lineage
+        # and is inherited by spawned subagents, so preferring it would
+        # collapse every child task into the parent's conversation.
+        session_id = payload.get("id") or payload.get("session_id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            session_id = None
+        elif len(session_id) > 256 or any(
+                ord(character) < 32 for character in session_id):
+            session_id = None
+        records.append(_record(
+            "Codex", "session", path, payload.get("cwd"),
+            repo_url=git.get("repository_url"), branch=git.get("branch"),
+            provider="codex", session_id=session_id,
+            source_info=opened))
+    status_value = discovery["status"]
+    if status_value in ("ok", "missing") and unrecognized:
+        status_value = "unrecognized"
     status = {"store": "Codex", "status": status_value,
               "count": len(records), "unrecognized": unrecognized}
     return records, status
@@ -3597,7 +3662,104 @@ CODEX_SESSION_ID_RE = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
-def _group_logical_sessions(records: list[dict]) -> list[dict]:
+def _codex_consolidated_origins(home: Path) -> tuple[dict[str, tuple[Path, Path]], str]:
+    """Read QuotaPie's completed, owned manifest as metadata preference only.
+
+    A preserved source is still an artifact. Its mtime cannot choose the live
+    representative once that exact thread has a verified primary copy. This
+    receipt grants neither session execution nor access to additional roots.
+    """
+    try:
+        home = home.resolve(strict=True)
+        support = home / "Library/Application Support/QuotaPie"
+        snapshots: list[tuple[Path, os.stat_result]] = []
+
+        def directory(raw: object) -> Path:
+            if not isinstance(raw, str) or len(raw) > 4096:
+                raise ValueError("invalid consolidation directory")
+            path = Path(raw)
+            if not path.is_absolute() or str(path) != raw or path.resolve(strict=True) != path:
+                raise ValueError("noncanonical consolidation directory")
+            fd = _open_directory_nofollow(path)
+            try:
+                info = os.fstat(fd)
+                if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                    raise ValueError("unowned consolidation directory")
+            finally:
+                os.close(fd)
+            return path
+
+        def metadata(path: Path, maximum: int) -> tuple[dict, str]:
+            relative = path.relative_to(support)
+            if not relative.parts or path.resolve(strict=True) != path:
+                raise ValueError("noncanonical consolidation metadata")
+            current = path.parent
+            while True:
+                directory(str(current))
+                if current == support:
+                    break
+                current = current.parent
+            raw, info, status = _read_regular_bytes_nofollow(path, maximum)
+            if raw is None or info is None or status != "ok" or info.st_mode & 0o022:
+                raise ValueError("unreadable consolidation metadata")
+            snapshots.append((path, info))
+            value = json.loads(raw)
+            if not isinstance(value, dict):
+                raise ValueError("invalid consolidation metadata")
+            return value, hashlib.sha256(raw).hexdigest()
+
+        marker, marker_hash = metadata(support / "session-consolidation.json", 64 * 1024)
+        completed = marker.get("completedAtMs")
+        sources = marker.get("sources")
+        if (type(marker.get("version")) is not int or marker.get("version") != 1 or marker.get("state") != "complete"
+                or type(completed) not in (int, float) or not 0 < completed <= time.time() * 1000
+                or not isinstance(sources, list) or not 0 < len(sources) <= 128):
+            raise ValueError("incomplete consolidation")
+        primary = marker.get("primary")
+        if not isinstance(primary, dict):
+            raise ValueError("missing primary")
+        primary_home = directory(primary.get("codexHome"))
+        primary_data = directory(primary.get("appData"))
+        if primary_home != home / ".codex" or primary_data != home / "Library/Application Support/Codex":
+            raise ValueError("foreign primary")
+        locations = [primary_home, primary_data]
+        origins: dict[str, tuple[Path, Path]] = {}
+        hashes = [marker_hash]
+        for source in sources:
+            if not isinstance(source, dict):
+                raise ValueError("invalid source")
+            source_home = directory(source.get("codexHome"))
+            source_data = directory(source.get("appData"))
+            for path in (source_home, source_data):
+                if any(path == old or path in old.parents or old in path.parents for old in locations):
+                    raise ValueError("overlapping source")
+                locations.append(path)
+            manifest_path = source.get("manifestPath")
+            if not isinstance(manifest_path, str) or len(manifest_path) > 4096:
+                raise ValueError("invalid manifest path")
+            manifest, actual_hash = metadata(Path(manifest_path), 8 * 1024 * 1024)
+            ids = manifest.get("threadIds")
+            if (actual_hash != source.get("manifestSHA256") or type(manifest.get("version")) is not int or manifest.get("version") != 1
+                    or manifest.get("sourceHome") != str(source_home)
+                    or manifest.get("primaryHome") != str(primary_home)
+                    or not isinstance(ids, list) or len(ids) > 100_000
+                    or any(not isinstance(sid, str) or CODEX_SESSION_ID_RE.fullmatch(sid) is None for sid in ids)
+                    or len(set(ids)) != len(ids) or any(sid in origins for sid in ids)):
+                raise ValueError("invalid thread ownership")
+            hashes.append(actual_hash)
+            origins.update((sid, (primary_home, source_home)) for sid in ids)
+        # Revalidate the complete snapshot after every manifest has been read.
+        for path, before in snapshots:
+            after = path.lstat()
+            if (_stat_signature(before) != _stat_signature(after)
+                    or (before.st_mode, before.st_uid) != (after.st_mode, after.st_uid)):
+                raise ValueError("consolidation changed during read")
+        return origins, hashlib.sha256("\n".join(hashes).encode()).hexdigest()
+    except (OSError, ValueError, TypeError, RecursionError):
+        return {}, "unverified"
+
+
+def _group_logical_sessions(records: list[dict], *, home: Optional[Path] = None) -> list[dict]:
     """Collapse provider fragments without losing their physical sources.
 
     Codex may continue one task in several rollout JSONL files.  A file is an
@@ -3643,6 +3805,38 @@ def _group_logical_sessions(records: list[dict]) -> list[dict]:
         merged["last_active"] = max(
             float(artifact["last_active"]) for artifact in artifacts)
         grouped[existing_position] = merged
+    if home is not None:
+        origins, _ = _codex_consolidated_origins(home)
+        by_session: dict[str, list[dict]] = {}
+        for record in records:
+            if record.get("provider") == "codex" and record.get("session_id") in origins:
+                by_session.setdefault(record["session_id"], []).append(record)
+        for index, item in enumerate(grouped):
+            origin = origins.get(item.get("session_id"))
+            if item.get("provider") != "codex" or origin is None:
+                continue
+            candidates = by_session.get(item.get("session_id"), [])
+
+            def store_root(record: dict) -> Optional[Path]:
+                path = Path(record.get("source") or "")
+                for root in origin:
+                    try:
+                        relative = path.relative_to(root)
+                    except ValueError:
+                        continue
+                    if len(relative.parts) >= 2 and relative.parts[0] in ("sessions", "archived_sessions"):
+                        return root
+                return None
+
+            # A third unrelated copy is ambiguous and keeps the prior rule.
+            if not candidates or any(store_root(record) is None for record in candidates):
+                continue
+            canonical = [record for record in candidates if store_root(record) == origin[0]]
+            if not canonical:
+                continue
+            representative = max(canonical, key=lambda record: float(record.get("last_active") or 0))
+            grouped[index] = {**representative, **{key: item[key] for key in
+                              ("_artifacts", "size_bytes", "last_active")}}
     return grouped
 
 
@@ -3667,18 +3861,11 @@ def _current_codex_candidates(
         home: Path, session_id: str,
         ) -> tuple[list[_DiscoveredRegularFile], bool]:
     """Find filename candidates without opening every transcript body."""
-    found: list[_DiscoveredRegularFile] = []
-    complete = True
-    for root in (home / ".codex" / "sessions",
-                 home / ".codex" / "archived_sessions"):
-        discovered, coverage = _discover_regular_files_nofollow(
-            root, "Codex current", ".jsonl")
-        if (coverage.get("status") not in ("ok", "missing")
-                or int(coverage.get("unrecognized", 0)) != 0):
-            complete = False
-        found.extend(candidate for candidate in discovered
-                     if session_id in candidate.path.name)
-    return (found, complete)
+    discovered, coverage = _discover_codex_files(home)
+    complete = (coverage["status"] in ("ok", "missing")
+                and int(coverage.get("unrecognized", 0)) == 0)
+    return ([candidate for candidate in discovered
+             if session_id in candidate.path.name], complete)
 
 
 def build_current_session(home: Path, *,
@@ -3723,7 +3910,7 @@ def build_current_session(home: Path, *,
             repo_url=git.get("repository_url"), branch=git.get("branch"),
             provider="codex", session_id=session_id, source_info=opened))
 
-    logical = _group_logical_sessions(records)
+    logical = _group_logical_sessions(records, home=home)
     if not logical:
         reason = ("session-artifacts-not-found" if discovery_complete
                   else "session-artifact-discovery-incomplete")
@@ -3779,7 +3966,7 @@ def build_sessions(home: Path, *, limit: int = SESSIONS_DEFAULT_LIMIT) -> dict:
         1 for item in records
         if item.get("kind") in ("session", "workspace_state")
         and item.get("source"))
-    records = _group_logical_sessions(records)
+    records = _group_logical_sessions(records, home=home)
     # Provider-controlled workspace strings may name a sleeping network mount
     # or an automount endpoint. Never let an index/search call perform an
     # unbounded stat in the main process. Desktop records already carry the
@@ -4594,73 +4781,69 @@ def bind_codex(home: Path, workspace: str, repo_url: Optional[str], *,
     wanted = normalize_repo_url(repo_url) if repo_url else None
     out: list[dict] = []
     complete = True
-    for root in (home / ".codex" / "sessions", home / ".codex" / "archived_sessions"):
-        discovered, discovery = _discover_regular_files_nofollow(
-            root, "Codex", ".jsonl")
-        if discovery["status"] == "missing":
-            continue
-        if (discovery["status"] != "ok"
-                or int(discovery.get("unrecognized", 0)) != 0):
+    discovered, discovery = _discover_codex_files(home)
+    if (discovery["status"] not in ("ok", "missing")
+            or int(discovery.get("unrecognized", 0)) != 0):
+        complete = False
+    for candidate in discovered:
+        path = candidate.path
+        descriptor, opened, _ = _open_regular_nofollow(path)
+        if descriptor is None or opened is None:
             complete = False
-        for candidate in discovered:
-            path = candidate.path
-            descriptor, opened, _ = _open_regular_nofollow(path)
-            if descriptor is None or opened is None:
+            continue
+        try:
+            with os.fdopen(os.dup(descriptor), "rb") as handle:
+                first = _read_json_line(handle)
+            after = os.fstat(descriptor)
+        except OSError:
+            # A rollout that could not be opened was not examined. It
+            # may name this workspace; nobody knows. Skipping it and
+            # still reporting a completed look is how "no sessions"
+            # gets asserted about a store that was never read.
+            complete = False
+            continue
+        finally:
+            os.close(descriptor)
+        if (_stat_signature(opened) != _stat_signature(after)
+                or _stat_identity(opened)
+                != _stat_identity(candidate.info)):
+            complete = False
+            continue
+        payload = (first or {}).get("payload")
+        if (first or {}).get("type") != "session_meta" or not isinstance(payload, dict):
+            # Same reasoning: a rollout whose header this build cannot
+            # recognise is an unexamined candidate, not an absent one.
+            complete = False
+            continue
+        git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
+        evidence: list[str] = []
+        recorded = git.get("repository_url")
+        if wanted and recorded and normalize_repo_url(recorded) == wanted:
+            evidence.append("remote-url")
+        cwd = payload.get("cwd")
+        if isinstance(cwd, str) and _under(_canon_workspace(cwd), workspace):
+            evidence.append("working-directory")
+        if not evidence and deep:
+            # Only the rollouts the header did not match: one that is
+            # already bound gains nothing from being read again.
+            found, scanned_fully = _scans_for_paths(
+                path, workspace, source_info=candidate.info)
+            if not scanned_fully:
                 complete = False
-                continue
-            try:
-                with os.fdopen(os.dup(descriptor), "rb") as handle:
-                    first = _read_json_line(handle)
-                after = os.fstat(descriptor)
-            except OSError:
-                # A rollout that could not be opened was not examined. It
-                # may name this workspace; nobody knows. Skipping it and
-                # still reporting a completed look is how "no sessions"
-                # gets asserted about a store that was never read.
-                complete = False
-                continue
-            finally:
-                os.close(descriptor)
-            if (_stat_signature(opened) != _stat_signature(after)
-                    or _stat_identity(opened)
-                    != _stat_identity(candidate.info)):
-                complete = False
-                continue
-            payload = (first or {}).get("payload")
-            if (first or {}).get("type") != "session_meta" or not isinstance(payload, dict):
-                # Same reasoning: a rollout whose header this build cannot
-                # recognise is an unexamined candidate, not an absent one.
-                complete = False
-                continue
-            git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
-            evidence: list[str] = []
-            recorded = git.get("repository_url")
-            if wanted and recorded and normalize_repo_url(recorded) == wanted:
-                evidence.append("remote-url")
-            cwd = payload.get("cwd")
-            if isinstance(cwd, str) and _under(_canon_workspace(cwd), workspace):
-                evidence.append("working-directory")
-            if not evidence and deep:
-                # Only the rollouts the header did not match: one that is
-                # already bound gains nothing from being read again.
-                found, scanned_fully = _scans_for_paths(
-                    path, workspace, source_info=candidate.info)
-                if not scanned_fully:
-                    complete = False
-                if found:
-                    evidence.append("file-access")
-            if not evidence:
-                continue
-            session_id = payload.get("id") or path.stem
-            out.append({
-                "provider": "codex",
-                "sessionId": str(session_id),
-                "source": str(path),
-                "subtranscripts": [],
-                "evidence": evidence,
-                "confidence": _binding_confidence(evidence),
-                "sizeBytes": opened.st_size,
-            })
+            if found:
+                evidence.append("file-access")
+        if not evidence:
+            continue
+        session_id = payload.get("id") or path.stem
+        out.append({
+            "provider": "codex",
+            "sessionId": str(session_id),
+            "source": str(path),
+            "subtranscripts": [],
+            "evidence": evidence,
+            "confidence": _binding_confidence(evidence),
+            "sizeBytes": opened.st_size,
+        })
     return (out, complete)
 
 
@@ -4951,7 +5134,8 @@ BINDABLE_STORES = {
 KNOWN_STORE_ROOTS = {
     "Claude": (".claude/projects",),
     CLAUDE_DESKTOP_TOOL: ("/".join(CLAUDE_DESKTOP_LOCAL_SESSIONS),),
-    "Codex": (".codex/sessions", ".codex/archived_sessions"),
+    "Codex": (".codex/sessions", ".codex/archived_sessions",
+              "/".join(QUOTAPIE_CODEX_PROFILES)),
     "Gemini": (".gemini/tmp",),
 }
 
@@ -5096,14 +5280,10 @@ def _deep_scan_candidates(
         if len(relative.parts) == 2:
             candidates.append(("claude", candidate))
 
-    for root in (home / ".codex" / "sessions",
-                 home / ".codex" / "archived_sessions"):
-        discovered, coverage = _discover_regular_files_nofollow(
-            root, "Codex", ".jsonl")
-        if (coverage["status"] not in ("ok", "missing")
-                or int(coverage.get("unrecognized", 0)) != 0):
-            complete["codex"] = False
-        candidates.extend(("codex", candidate) for candidate in discovered)
+    discovered, coverage = _discover_codex_files(home)
+    complete["codex"] = (coverage["status"] in ("ok", "missing")
+                         and int(coverage.get("unrecognized", 0)) == 0)
+    candidates.extend(("codex", candidate) for candidate in discovered)
 
     gemini_root = home / ".gemini" / "tmp"
     discovered, coverage = _discover_regular_files_nofollow(
@@ -5268,10 +5448,13 @@ def store_fingerprint(
         ).encode("utf-8"))
         # Metadata itself was counted above; the inventory also contains it.
         count += max(0, len(artifact_snapshot[0]) - 1)
+    codex_files, codex_coverage = _discover_codex_files(home)
+    hasher.update(json.dumps(codex_coverage, sort_keys=True).encode("utf-8"))
+    _, consolidation_digest = _codex_consolidated_origins(home)
+    hasher.update(f"codex-consolidation\0{consolidation_digest}\n".encode("utf-8"))
     for path in sorted(
         list((home / ".claude" / "projects").glob("*/*.jsonl"))
-        + list((home / ".codex" / "sessions").rglob("*.jsonl"))
-        + list((home / ".codex" / "archived_sessions").rglob("*.jsonl"))
+        + [candidate.path for candidate in codex_files]
         + list((home / ".gemini" / "tmp").glob("*/chats/*.json"))
         + [meta for _, folder in VSCODE_FORKS
            for meta in (home / "Library" / "Application Support" / folder
@@ -6021,6 +6204,11 @@ def _session_provider(source: Path, home: Path) -> str:
         return "claude"
     if "/.codex/" in text:
         return "codex"
+    try:
+        if _is_codex_session_relative(PurePosixPath(source.relative_to(home).as_posix())):
+            return "codex"
+    except ValueError:
+        pass
     if "/.gemini/" in text:
         return "gemini"
     if "workspaceStorage" in text:
@@ -6336,9 +6524,7 @@ def _backup_scope(source_relative: str) -> tuple[str, list[PurePosixPath]]:
             *[PurePosixPath(".claude") / kind / session
               for kind in ("file-history", "image-cache", "uploads")],
         ]
-    if (len(parts) >= 3 and parts[0] == ".codex"
-            and parts[1] in ("sessions", "archived_sessions")
-            and source.suffix == ".jsonl"):
+    if _is_codex_session_relative(source):
         return "Codex", []
     desktop_prefix = CLAUDE_DESKTOP_LOCAL_SESSIONS
     if (len(parts) >= len(desktop_prefix) + 3
@@ -7165,7 +7351,7 @@ def build_session_backup(source: Path, home: Path, destination: Path, *,
     destination = parent / destination_name
     if any(root == parent or root in parent.parents for root in
            (home / ".claude", home / ".codex/sessions", home / ".codex/archived_sessions",
-            _claude_desktop_root(home))):
+            _claude_desktop_root(home), home.joinpath(*QUOTAPIE_CODEX_PROFILES))):
         raise ValueError("keep the backup outside the live session store")
     manifest = {
         "schemaVersion": 1,
@@ -8748,6 +8934,7 @@ def _restore_live_store_roots() -> tuple[Path, ...]:
     return (
         home / ".claude",
         home / ".codex",
+        home.joinpath(*QUOTAPIE_CODEX_PROFILES),
         _claude_desktop_root(home),
     )
 
