@@ -454,6 +454,7 @@ done
 /bin/mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 # The source CLI must reject older bundles that would open a GUI for this flag.
 /usr/bin/printf '1\n' > "$APP_DIR/Contents/Resources/native-storage-attribution-v1"
+/usr/bin/printf '2\n' > "$APP_DIR/Contents/Resources/native-operations-v2"
 for localization in "$PACKAGE_DIR/Sources/Modore/Resources/"*.lproj; do
     /bin/cp -R "$localization" "$APP_DIR/Contents/Resources/"
 done
@@ -491,9 +492,7 @@ RUNTIME_FILES=(
     "scripts/schedule.sh"
     "scripts/scree.py"
     "scripts/asset_retirement.py"
-    "scripts/work_resources.py"
     "scripts/environment_retirement.py"
-    "scripts/build_lifecycle.py"
     "scripts/generated_cache.py"
     "scripts/archive_cache.py"
     "scripts/app_registrations.py"

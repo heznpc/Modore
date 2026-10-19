@@ -56,8 +56,12 @@ operations use the signed app executable's `--native-operation` entry point,
 before SwiftUI or singleton initialization. Requests are bounded JSON passed on
 immutable inherited file descriptors through `LocalProcessRunner`. Skill and
 CI operations no longer package or invoke their Python reference scripts.
-The source-checkout CLI retains its Python implementations; compatibility tests
-check shared fingerprints, backup manifests, incident IDs, and state semantics.
+On macOS, the source-checkout CLI uses the same executable for CI, skills,
+session backups and app resource operations. A `native-operations-v2` capability
+marker rejects older bundles before launching them. The CLI parses a narrow
+argument contract; it cannot supply private worker request files or home/state
+overrides. Python scripts remain development compatibility references for the
+shared fingerprints, backup manifests, incident IDs, and state semantics.
 
 Skill snapshots use CryptoKit hashes, a pinned TOML decoder, no-replace moves,
 independent content copies, and the existing backup manifest format. Native
@@ -67,8 +71,16 @@ Python-created backups are tested. Restore verifies the complete ZIP before
 writing, extracts into a private staging root, pins created inodes, journals
 progress, verifies the restored bytes, and publishes via one no-replace rename.
 SIGTERM/SIGINT request rollback within the worker's bounded cleanup deadline.
-Native interrupted restores recover only the requested destination's journal;
-ambiguous data and legacy Python restore journals require manual review.
+Restore recovery first inspects the requested destination without changing it.
+The UI shows the ledger location, tracked temporary-file count and reason before
+an explicit recovery action. Native private stages are revalidated, cleaned and
+restored again from the verified archive. Published native roots retain their
+identity and are checked against every manifest path and SHA-256 before finishing
+ledger cleanup. Complete schema-3 Python private plans with matching manifest,
+directory identities and hard-link guards can also recover natively. Incomplete
+legacy plans, published legacy roots, unknown files and changed ownership proofs
+remain available for review. Both formats retain the 192-directory restore bound;
+inspection of old random ledger names is bounded to 4,096 parent entries.
 
 CI keeps the GitHub CLI as its authenticated API transport. Swift performs
 collection, log redaction, stable incident grouping, recovery checks, atomic
@@ -76,8 +88,29 @@ state writes, and notification acknowledgments. Its state and lock remain
 compatible with the source CLI. Neither CI nor backup operations use a service
 outside the local worker, except for the explicit GitHub API requests.
 
-Python remains bundled for session analysis/indexing/search/export, resource
-and retirement management, and cleanup validation. The app is not yet entirely
+Work-resource inventory, bindings, claims, preference changes, boot/shutdown,
+volume ejection and hook diagnosis now run in Swift. `simctl`, `diskutil`, `lsof`
+and the installed Codex app-server remain explicit local transports; Swift parses
+JSON/plists, maintains the compatible registry lock and persists action receipts.
+Expired leases without an explicit release still protect a resource. Simulator
+devices are preserved. Source-only turn/browser lifecycle hooks and hook setup
+continue to use Python and share the same registry.
+
+The app also reads, links and reclaims build products natively. It verifies the
+packager's existing metadata/content seals, installed signatures via Security,
+current process use and retention rules. Reclaim requires explicit artifact IDs,
+rechecks current use and writes an intent/protection marker before descriptor-
+relative removal. Malformed receipts, changed paths, failed/interrupted runs,
+evidence and unknown products remain protected. Developer begin/track/finish
+commands remain in `scripts/build_lifecycle.py`; that script and
+`work_resources.py` are no longer packaged in the app runtime.
+
+Skill comparison emits bounded unified hunks with three context lines, including
+correct empty-file and missing-final-newline handling. Large common edges are
+trimmed before computing the edit sequence.
+
+Python remains bundled for session analysis/indexing/search/export,
+environment/asset retirement management, and cleanup validation. The app is not yet entirely
 Python-free. The migrations above are independent of those remaining paths.
 
 ## Mac source layout

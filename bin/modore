@@ -28,6 +28,10 @@ usage() {
         '  modore sessions [--limit N]' \
         '  modore ci status|refresh [--discover] [--repo owner/name] [--project PATH]' \
         '  modore sessions current' \
+        '  modore sessions backup SOURCE --out NEW.zip --include-sensitive' \
+        '  modore sessions backup-verify ARCHIVE.zip' \
+        '  modore sessions backup-restore|backup-recovery|backup-resume ARCHIVE.zip --out NEW_FOLDER' \
+        '  modore skills status|compare|disable|restore [--id ID] [--fingerprint HASH]' \
         '  modore search [--provider NAME] [--workspace PATH] [--exclude-workspace PATH] [--workspace-exact] [--offset N] [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
         '  modore resources status|acquire|claim|heartbeat|release [options]' \
         '  modore resources bind|unbind --id ID --provider PROVIDER --session ID --project PATH [--fingerprint HASH]' \
@@ -94,6 +98,28 @@ if [[ "${1:-}" == "storage" && "${2:-}" == "explain" ]]; then
     exec "$NATIVE_MODE" --storage-explain "$@"
 fi
 
+# Native operations share the signed app implementation. Reject an older app
+# before launching so these flags can never accidentally open its GUI.
+if [[ "${1:-}:${2:-}" == "resources:delete-duplicate" ]]; then
+    fail_usage 'simulator devices are preserved; deletion is unavailable.'
+fi
+NATIVE_COMMAND=0
+case "${1:-}:${2:-}" in
+    ci:*|skills:*|sessions:backup|sessions:backup-verify|sessions:backup-restore|sessions:backup-recovery|sessions:backup-resume)
+        NATIVE_COMMAND=1 ;;
+    resources:|resources:status|resources:diagnose-hooks|resources:acquire|resources:claim|resources:bind|resources:unbind|resources:boot|resources:shutdown|resources:prefer|resources:eject)
+        NATIVE_COMMAND=1 ;;
+esac
+if [[ "$NATIVE_COMMAND" == "1" ]]; then
+    NATIVE_MODE="$PROJECT_ROOT/build/macos/Modore.app/Contents/MacOS/Modore"
+    NATIVE_MARKER="$PROJECT_ROOT/build/macos/Modore.app/Contents/Resources/native-operations-v2"
+    [[ -x "$NATIVE_MODE" && -f "$NATIVE_MARKER" ]] || {
+        /usr/bin/printf 'ERROR: rebuild the native Mac app before running this command.\n' >&2
+        exit 69
+    }
+    exec "$NATIVE_MODE" --native-cli "$@"
+fi
+
 if [[ -x /usr/bin/python3 ]]; then
     PYTHON=/usr/bin/python3
 else
@@ -107,9 +133,6 @@ COMMAND="${1:-help}"
 case "$COMMAND" in
     tools)
         exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/tool_reuse.py" "$@"
-        ;;
-    ci)
-        exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/ci_watch.py" "$@"
         ;;
     help|-h|--help)
         usage

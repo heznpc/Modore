@@ -149,3 +149,16 @@ modore mcp tools
 This prints the read-only MCP surface. Do not register it globally without the
 user choosing that boundary: results may contain local paths, process names, and
 masked excerpts that the invoking client can send to its model provider.
+
+### Native Mac operations
+
+CI, skills, original session backups, and app resource status/connection operations use the built Mac app's shared implementation. Rebuild the sibling app if the command reports a missing native capability.
+
+- `modore sessions backup SOURCE --out NEW.zip --include-sensitive` creates an acknowledged raw backup.
+- `modore sessions backup-verify ARCHIVE.zip` checks its manifest, CRC and SHA-256.
+- `modore sessions backup-restore ARCHIVE.zip --out NEW_FOLDER` restores outside live provider stores.
+- `modore sessions backup-recovery ARCHIVE.zip --out TARGET_FOLDER` inspects an interrupted destination without modifying it.
+- `modore sessions backup-resume ARCHIVE.zip --out TARGET_FOLDER` acts only on independently revalidated recovery evidence.
+- `modore skills status` reads inventory; `compare --id ID --id ID` shows changed lines. `disable --id ID --fingerprint HASH` and `restore --id BACKUP_ID` are explicit reversible mutations.
+
+Native routes reject home/state/request-file overrides. Simulator devices are preserved. Source-only hook and turn/browser lifecycle commands retain their Python engine and compatible resource registry.

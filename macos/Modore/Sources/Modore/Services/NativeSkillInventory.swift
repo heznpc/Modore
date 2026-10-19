@@ -343,11 +343,8 @@ final class NativeSkillInventory {
             guard NativeFileTree.hash(data) == row["hash"] as? String, let text = String(data: data, encoding: .utf8) else { throw NativeFileTree.fail("비교 중 파일이 바뀌었습니다. 새로고침하세요.") }
             return text
         }
-        if texts[0] == texts[1] { return ["diff": "SKILL.md 내용이 같습니다.", "same": true] }
-        let a = texts[0].components(separatedBy: .newlines), b = texts[1].components(separatedBy: .newlines)
-        // A complete replacement hunk is a valid unified diff and remains bounded by metadata limits.
-        let diff = ["--- " + (selected[0]["filePath"] as! String), "+++ " + (selected[1]["filePath"] as! String),
-                    "@@ -1,\(a.count) +1,\(b.count) @@"] + a.map { "-" + $0 } + b.map { "+" + $0 }
-        return ["diff": diff.joined(separator: "\n"), "same": false]
+        if texts[0].utf8.elementsEqual(texts[1].utf8) { return ["diff": "SKILL.md 내용이 같습니다.", "same": true] }
+        return ["diff": NativeUnifiedDiff.render(texts[0], texts[1],
+            from: selected[0]["filePath"] as! String, to: selected[1]["filePath"] as! String), "same": false]
     }
 }

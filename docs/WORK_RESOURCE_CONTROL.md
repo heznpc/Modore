@@ -128,3 +128,9 @@ remain visible in the registry and receipts. Other browsers are not adopted.
 `resources status` exposes these runs in `browsers`; native resource cards remain
 limited to simulators and volumes. The hook and ops skill guide new test turns
 through the managed launch command; bypassing it is still outside this coverage.
+
+## Mac 앱과 CLI의 공통 실행 경로
+
+앱의 자원 조회·프로젝트 연결·사용 등록·기본 기기 지정·기기 시작/종료·외장 볼륨 추출·Codex 훅 진단은 Swift 구현을 사용합니다. Mac CLI의 해당 명령도 같은 앱 실행 파일을 호출합니다. 파일 목록·상태·plist·사용 기록·영수증을 Swift에서 처리하며 simctl·diskutil·lsof·app-server는 필요한 로컬 전송 수단으로 사용합니다. 모든 simctl 조작은 UDID를 명시합니다. 시뮬레이터 기기는 보존하며 삭제 명령은 제공하지 않습니다.
+
+수명주기 훅의 턴/브라우저 테스트 관리와 훅 설정은 소스 Python 도구에 남아 있으며 같은 leases.json과 lock을 공유합니다. TTL 만료만으로 다른 세션의 작업 종료를 확정하지 않습니다.

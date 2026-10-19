@@ -15,27 +15,10 @@ final class WorkResourceService: ObservableObject {
         await refresh(root: root)
     }
     func invoke(root: URL, request: [String: Any]) async throws -> Data {
-        guard let execution = await Task.detached(priority: .utility, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: root)
-        }).value,
-        let invocation = execution.pinnedInvocation(relativePath: "scripts/work_resources.py", name: "resources"),
-        let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
-            throw RetirementError(L10n.text("작업 자원 런타임을 준비하지 못했습니다."))
-        }
-        var pinned = invocation.files
-        pinned["request"] = try JSONSerialization.data(withJSONObject: request)
-        let wrapper = "import sys; source=open(sys.argv[1],'rb').read(); sys.argv=['work_resources.py']+sys.argv[2:]; exec(compile(source,'work_resources.py','exec'),{'__name__':'__main__'})"
-        let result = await LocalProcessRunner.capture(executable: python,
-            arguments: ["-I", "-B", "-c", wrapper, invocation.argument, "--request-file", "@pch-pinned:request"],
-            currentDirectory: execution.runtimeRoot, expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
-            expectedSignedBundleURL: execution.signedBundleURL, pinnedFiles: pinned, timeout: 90,
-            maxOutputBytes: 8_000_000, waitForCleanupOnStop: true)
-        let data = Data(result.output.utf8)
-        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        if let error = object?["error"] as? String { throw RetirementError(error) }
-        guard result.succeeded else { throw RetirementError(L10n.format("자원 조회·실행 응답 미확인: %@ · %@", String(describing: result.status), String(describing: result.output.prefix(500)))) }
-        return data
+        try await NativeOperationService.capture("resources", payload: JSONSerialization.data(withJSONObject: request),
+            timeout: 90, maximumBytes: 8_000_000)
     }
+
     func refresh(root: URL) async {
         guard !busy else { return }
         busy = true; defer { busy = false }

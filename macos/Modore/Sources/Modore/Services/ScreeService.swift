@@ -24,6 +24,15 @@ enum ScreePreserveOutcome {
     case failure(String)
 }
 
+struct SessionRecoveryInspection: Decodable {
+    let status: String
+    let canResume: Bool
+    let destination: String
+    let ledger: String?
+    let completedFiles, totalFiles: Int
+    let reason: String
+}
+
 struct SessionBackupReceipt: Decodable {
     let schemaVersion: Int
     let status: String
@@ -39,6 +48,7 @@ struct SessionBackupReceipt: Decodable {
     let encrypted: Bool
     let restoredRoot: String?
     let restoredSource: String?
+    let recovery: SessionRecoveryInspection?
 
     var summary: String {
         let size = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
@@ -67,6 +77,8 @@ enum SessionBackupOperation {
     case create(source: String, destination: URL)
     case verify(URL)
     case restore(archive: URL, destination: URL)
+    case recovery(archive: URL, destination: URL)
+    case resume(archive: URL, destination: URL)
 
     var arguments: [String] {
         switch self {
@@ -76,12 +88,19 @@ enum SessionBackupOperation {
             return ["backup-verify", archive.path]
         case .restore(let archive, let destination):
             return ["backup-restore", archive.path, "--out", destination.path]
+        case .recovery(let archive, let destination):
+            return ["backup-recovery", archive.path, "--out", destination.path]
+        case .resume(let archive, let destination):
+            return ["backup-resume", archive.path, "--out", destination.path]
         }
     }
 
     var expectedStatus: String {
-        if case .restore = self { return "restored" }
-        return "verified"
+        switch self {
+        case .restore, .resume: return "restored"
+        case .recovery: return "recovery"
+        case .create, .verify: return "verified"
+        }
     }
 }
 
@@ -100,7 +119,7 @@ enum ScreeService {
         homeOverride: URL? = nil, nativeExecutable: URL? = nil
     ) async -> Result<SessionBackupReceipt, ScreeInspectionError> {
         var arguments = operation.arguments
-        if case .create = operation, let homeOverride {
+        if let homeOverride {
             arguments += ["--home", homeOverride.path]
         }
         do {

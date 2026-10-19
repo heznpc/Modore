@@ -78,9 +78,10 @@ enum NativeFileTree {
             guard let entry = readdir(directory) else {
                 guard errno == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }; break
             }
-            let name = withUnsafePointer(to: &entry.pointee.d_name) {
-                $0.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(cString: $0) }
+            let decoded = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(validatingCString: $0) }
             }
+            guard let name = decoded else { throw fail("UTF-8로 확인할 수 없는 파일 이름이 있어 보존합니다.") }
             if name != "." && name != ".." {
                 guard result.count < limit else { throw fail("폴더 항목 수 제한 초과") }
                 result.append(name)

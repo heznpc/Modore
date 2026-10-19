@@ -30,6 +30,11 @@ struct BuildArtifactLifecycleView: View {
                 Text("\(service.error == nil ? L10n.text("마지막 확인") : L10n.text("이전 확인 결과")) · \(Date(timeIntervalSince1970: report.observedAt).formatted())")
                     .font(.caption).foregroundStyle(.secondary)
                 Text(report.policy).font(.callout)
+                if let warnings = report.warnings, !warnings.isEmpty {
+                    DisclosureGroup(L10n.text("일부 상태를 확인하지 못했습니다")) {
+                        ForEach(warnings, id: \.self) { Text($0).font(.caption).textSelection(.enabled) }
+                    }.foregroundStyle(.orange)
+                }
                 Text(L10n.format("공용 Python 캐시: %@", (report.sharedCache as NSString).abbreviatingWithTildeInPath))
                     .font(.caption.monospaced()).textSelection(.enabled)
                 Text(L10n.text("성공한 빌드·테스트는 종료 시 회수 조건을 검사합니다. 기록이 없는 과거 폴더는 자동 삭제하지 않습니다."))

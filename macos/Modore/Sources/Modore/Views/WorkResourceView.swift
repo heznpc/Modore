@@ -224,7 +224,6 @@ struct WorkResourceView: View {
                     Button(L10n.text("상세 정보…")) { detail = r }
                     if r.kind == "simulator" {
                         Button(L10n.text("공용 기기로 지정")) { act(r, "prefer") }
-                        if !r.duplicates.isEmpty { Button(L10n.text("중복 기기 삭제…"), role: .destructive) { pendingAction = "delete-duplicate"; pending = r }.disabled(r.state != "Shutdown") }
                     }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().help(L10n.text("기기 관리"))
             }
