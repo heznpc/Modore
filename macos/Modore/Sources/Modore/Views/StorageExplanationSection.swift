@@ -46,7 +46,7 @@ struct StorageExplanationSection: View {
                 Text(L10n.text("공간 확보 이후 무엇이 생겼나")).font(.headline)
                 Spacer()
                 Button(running ? L10n.text("원인 측정 중…") : L10n.text("증가 원인 분석")) {
-                    Task { await refresh() }
+                    model.startTrackedApplicationTask { await refresh() }
                 }.disabled(running)
             }
             if running {
@@ -123,24 +123,11 @@ struct StorageExplanationSection: View {
             }
         }
         defer { running = false; monitor.cancel() }
-        let root = model.projectRoot
-        guard let execution = await Task.detached(priority: .utility, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: root)
-        }).value,
-        let invocation = execution.pinnedInvocation(relativePath: "scripts/storage_explain.py", name: "storage_explain"),
-        let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
-            error = L10n.text("저장공간 원인 분석 실행환경을 준비하지 못했습니다."); return
+        do {
+            let result = try await StorageAttributionService.run()
+            report = try JSONDecoder().decode(StorageExplanation.self, from: JSONEncoder().encode(result))
+        } catch {
+            self.error = L10n.format("원인 분석 결과를 읽지 못했습니다: %@", String(describing: error.localizedDescription))
         }
-        let wrapper = "import sys; source=open(sys.argv[1],'rb').read(); sys.argv=['storage_explain.py']; exec(compile(source,'storage_explain.py','exec'),{'__name__':'__main__'})"
-        let result = await LocalProcessRunner.capture(executable: python,
-            arguments: ["-I", "-B", "-c", wrapper, invocation.argument],
-            currentDirectory: execution.runtimeRoot, expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
-            expectedSignedBundleURL: execution.signedBundleURL, pinnedFiles: invocation.files,
-            timeout: 1800, maxOutputBytes: 8_000_000, waitForCleanupOnStop: true)
-        guard result.succeeded else {
-            error = L10n.format("원인 분석을 끝내지 못했습니다: %@. 이전 결과를 유지합니다.", String(describing: result.status)); return
-        }
-        do { report = try JSONDecoder().decode(StorageExplanation.self, from: Data(result.output.utf8)) }
-        catch { self.error = L10n.format("원인 분석 결과를 읽지 못했습니다: %@", String(describing: error.localizedDescription)) }
     }
 }

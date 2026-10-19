@@ -28,6 +28,30 @@ The SwiftUI app owns navigation, local state presentation, approval sheets, and 
 
 Every app build embeds an explicit runtime allowlist under `Contents/Resources/runtime`; no build records the developer checkout path. The signed Mac app also carries a pinned python-build-standalone CPython runtime under `Contents/Resources/modore-python`, reduced to the interpreter and standard library needed by scree. Keeping the complete runtime in Resources prevents ordinary provenance and standard-library files from being misclassified as nested code under `Contents/Helpers`; the Mach-O interpreter itself is still signed before the enclosing app. The build verifies the upstream archive SHA-256, architecture and deployment target; artifact audit requires an exact per-file hash manifest and fixed provenance record. Scree runs that interpreter with `-I -B`; a signed app never falls back to PATH or a separately installed Python. Mutable output stays under `~/Library/Application Support/Modore/results`, separate from the non-executable runtime migration mirror. Production resolution validates the sealed app bundle, binds its active-slice cdhash to the kernel-tracked running process, captures every Bash/JXA/module/rule input, and validates the signature again. The process runner copies those captured bytes into unlinked files and passes only inherited `/dev/fd` handles to interpreters, so later bundle pathname replacement cannot change scanner, report, cleanup, or scheduler bytes. Child processes also start from a fixed minimal environment and pin the runtime working-directory device/inode. User settings remain separate at `~/Library/Application Support/Modore/config.json` (mode `0600`); only `data/config.example.json` is tracked and bundled. Legacy results are copied without overwrite, and unknown files in an old runtime are retained in a `runtime-backup-*` directory instead of being deleted. The minute watcher uses an exact clean-environment LaunchAgent definition; both its on-disk plist and launchd's loaded program/arguments are revalidated, and unstable DMG/App Translocation paths are rejected. The source launcher asks an existing development app to terminate safely before rebuilding, so an old process cannot be paired with new resources.
 
+## Native storage attribution
+
+The storage explanation screen, automatic recovery's follow-up analysis, and
+`modore storage explain` share `StorageAttributionService`. Collection and
+attribution use Swift/Foundation and Darwin file metadata APIs; this path does
+not launch Python or a shell. The source CLI requires a newly built Mac app; a bundled capability marker
+prevents older apps from interpreting the headless request as a GUI launch. `scripts/storage_explain.py` remains a development
+reference for parity tests and is no longer packaged in the app runtime.
+
+The app executable has a headless worker entry point before SwiftUI state or
+singleton coordination is initialized. Each root runs in a separate native
+process with a 30-second deadline, bounded output, and cancellation/draining
+through `LocalProcessRunner`. Directory traversal uses descriptor-relative
+metadata and `O_NOFOLLOW`, stays on the root device, and carries hardlink
+identities between successful workers. A failed root remains incomplete and
+does not establish a measured delta. File birth/modification bytes remain
+candidates, distinct from directory growth backed by a contemporaneous baseline.
+The existing report/progress JSON files and historical TSV evidence remain
+compatible. Reports are published through `SecureLocalFileIO`.
+
+This is the first native migration slice. Session analysis/backup, skill
+inventory, cleanup validation, and other Python-backed services still use their
+existing runtime; the app as a whole still bundles Python.
+
 ## Mac source layout
 
 - `Models/`: scan DTOs, one published content snapshot, storage/history models, and stable selection keys.

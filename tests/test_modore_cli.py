@@ -373,3 +373,24 @@ def test_inspect_can_open_search_hit_position(project_root, tmp_path):
     payload = json.loads(result.stdout)
     assert payload['turns'][0]['index'] == 1
     assert payload['turns'][0]['text'] == 'second'
+
+
+def test_storage_explain_requires_native_capability_marker(project_root, tmp_path):
+    import shutil
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(project_root / "bin/modore", tmp_path / "bin/modore")
+    for name in ("scree.py", "storage_watch.sh", "cleanup.sh", "mcp_server.py", "bounded_exec.py"):
+        (tmp_path / "scripts" / name).touch()
+    executable = tmp_path / "build/macos/Modore.app/Contents/MacOS/Modore"
+    executable.parent.mkdir(parents=True)
+    executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    executable.chmod(0o700)
+    before = run_cli(tmp_path, "storage", "explain")
+    assert before.returncode == 69
+    marker = executable.parent.parent / "Resources/native-storage-attribution-v1"
+    marker.parent.mkdir()
+    marker.write_text("1\n")
+    after = run_cli(tmp_path, "storage", "explain", "--since", "2026-10-01T00:00:00Z")
+    assert after.returncode == 0
+    assert after.stdout.splitlines() == ["--storage-explain", "--since", "2026-10-01T00:00:00Z"]

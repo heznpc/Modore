@@ -56,6 +56,18 @@ final class PCHealthCheckApplicationDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
+enum ModoreEntryPoint {
+    @MainActor static func main() {
+        if CommandLine.arguments.dropFirst().first == StorageAttributionService.workerArgument {
+            StorageAttributionService.runWorkerAndExit(arguments: CommandLine.arguments)
+        }
+        if CommandLine.arguments.dropFirst().first == StorageAttributionService.explainArgument {
+            StorageAttributionService.runCLIAndExit(arguments: CommandLine.arguments)
+        }
+        ModoreApp.main()
+    }
+}
+
 struct ModoreApp: App {
     @NSApplicationDelegateAdaptor(PCHealthCheckApplicationDelegate.self)
     private var applicationDelegate

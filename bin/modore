@@ -82,6 +82,18 @@ for REQUIRED_FILE in "$SCREE" "$STORAGE_WATCH" "$CLEANUP" "$MCP_SERVER" "$BOUNDE
         || { /usr/bin/printf 'ERROR: Modore runtime is incomplete.\n' >&2; exit 1; }
 done
 
+# Storage attribution uses the native collector without resolving a Python runtime.
+if [[ "${1:-}" == "storage" && "${2:-}" == "explain" ]]; then
+    shift 2
+    NATIVE_MODE="$PROJECT_ROOT/build/macos/Modore.app/Contents/MacOS/Modore"
+    NATIVE_MARKER="$PROJECT_ROOT/build/macos/Modore.app/Contents/Resources/native-storage-attribution-v1"
+    [[ -x "$NATIVE_MODE" && -f "$NATIVE_MARKER" ]] || {
+        /usr/bin/printf 'ERROR: rebuild the native Mac app before running storage explain.\n' >&2
+        exit 69
+    }
+    exec "$NATIVE_MODE" --storage-explain "$@"
+fi
+
 if [[ -x /usr/bin/python3 ]]; then
     PYTHON=/usr/bin/python3
 else
@@ -191,9 +203,6 @@ case "$COMMAND" in
         SUBCOMMAND="${1:-}"
         [[ "$#" -eq 0 ]] || shift
         case "$SUBCOMMAND" in
-            explain)
-                exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/storage_explain.py" "$@"
-                ;;
             status)
                 [[ "$#" -eq 0 ]] || fail_usage 'storage status accepts no additional arguments.'
                 "$PYTHON" -I -B "$BOUNDED_EXEC" 60 -- \

@@ -284,33 +284,27 @@ final class AutomaticCacheRecovery: ObservableObject {
                 try save(report)
                 if !execution.succeeded || !outcome.isComplete { break }
             }
-            // Reuse the same signed attribution collector as the action-history screen.
+            // Reuse the same native attribution collector as the action-history screen.
             // It records measured directory growth separately from file-age candidates.
             report.analysisAt = last?.analysisAt
             if enabled, !Task.isCancelled,
                requestedNow || report.occupants == nil || !report.receipts.isEmpty || report.analysisAt.map({ Date().timeIntervalSince($0) >= 86400 }) ?? true {
                 detail = "캐시 처리 후 남은 공간 감소 원인을 분석하는 중"
                 try save(report)
-                let execution = context.execution
-                if let invocation = execution.pinnedInvocation(relativePath: "scripts/storage_explain.py", name: "automatic_attribution"),
-                   let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) {
-                    let wrapper = "import sys; source=open(sys.argv[1],'rb').read(); sys.argv=['storage_explain.py']; exec(compile(source,'storage_explain.py','exec'),{'__name__':'__main__'})"
-                    let analysis = await LocalProcessRunner.capture(executable: python,
-                        arguments: ["-I", "-B", "-c", wrapper, invocation.argument],
-                        currentDirectory: execution.runtimeRoot,
-                        expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
-                        expectedSignedBundleURL: execution.signedBundleURL, pinnedFiles: invocation.files,
-                        timeout: 1800, maxOutputBytes: 8_000_000)
-                    if analysis.succeeded,
-                       let object = try? JSONSerialization.jsonObject(with: Data(analysis.output.utf8)) as? [String: Any],
+                do {
+                    let analysis = try await StorageAttributionService.run()
+                    let data = try JSONEncoder().encode(analysis)
+                    if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                        let rows = object["rows"] as? [[String: Any]] {
                         report.analysisAt = Date()
                         report.occupants = AutomaticCachePolicy.occupants(rows)
                         let causes = AutomaticCachePolicy.evidenceLines(rows)
                         report.evidence += "\n" + causes.joined(separator: " · ")
                         report.outcomes.append("경로별 원인 분석 저장: 조치 기록 → 공간 확보 이후 무엇이 생겼나")
-                    } else { report.outcomes.append("경로별 원인 분석 미완료 · 이전 결과를 현재 근거로 사용하지 않음") }
-                } else { report.outcomes.append("원인 분석 실행환경 미확인") }
+                    }
+                } catch {
+                    report.outcomes.append("경로별 원인 분석 미완료 · 이전 결과를 현재 근거로 사용하지 않음")
+                }
             }
             report.after = Self.freeSpace()
             report.finished = true
