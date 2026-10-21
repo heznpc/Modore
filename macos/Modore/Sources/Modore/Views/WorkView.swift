@@ -583,6 +583,15 @@ private struct WorkDetailPane: View {
     ) -> some View {
         switch model.conversationState(source: source, provider: provider) {
         case .loaded(let conversation):
+            TimelineView(.periodic(from: .now, by: 5)) { _ in
+                if model.conversationSnapshotNeedsRefresh(source: source, provider: provider) {
+                    HStack {
+                        Text(L10n.text("기록이 변경되었습니다. 읽은 시점의 내용을 표시합니다."))
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button(L10n.text("새로고침"), action: retry).buttonStyle(.link)
+                    }
+                }
+            }
             SessionConversationBody(conversation: conversation)
         case .failed(let message):
             VStack(alignment: .leading, spacing: 6) {
