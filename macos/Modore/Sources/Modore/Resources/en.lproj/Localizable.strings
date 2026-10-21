@@ -2739,3 +2739,7 @@
 "전체 측정 시작" = "Start full measurement";
 "저장된 공간 지도가 없습니다. 전체 측정을 시작하면 폴더별 사용량을 확인합니다." = "No storage map has been saved. Start a full measurement to see usage by folder.";
 "측정 중지" = "Stop measurement";
+
+"현재 수집 범위에서 연결된 대화를 하나로 확인하지 못했습니다. 새로고침 후 다시 확인하세요." = "Could not identify one conversation in the current index. Refresh and try again.";
+
+"QuotaPie에서 계정·한도 보기" = "View account and limits in QuotaPie";

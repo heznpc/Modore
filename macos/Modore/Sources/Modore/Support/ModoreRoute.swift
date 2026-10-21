@@ -5,8 +5,21 @@ enum ModoreRoute: Equatable, Sendable {
     case health
     case storageRecovery
     case quotaTask(String)
+    case session(WorkSessionLink)
 
     init?(url: URL) {
+        if let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           parts.scheme?.lowercased() == "modore", parts.host?.lowercased() == "work",
+           parts.user == nil, parts.password == nil, parts.port == nil,
+           parts.percentEncodedQuery == nil, parts.percentEncodedFragment == nil,
+           parts.percentEncodedPath == parts.path {
+            let path = parts.path.split(separator: "/", omittingEmptySubsequences: false)
+            if path.count == 4, path[0].isEmpty, path[1] == "session",
+               let link = WorkSessionLink(provider: String(path[2]), sessionID: String(path[3])) {
+                self = .session(link)
+                return
+            }
+        }
         if url.absoluteString.lowercased() == "modore://work/ci" {
             self = .ci
             return
@@ -45,7 +58,7 @@ enum ModoreRoute: Equatable, Sendable {
 
     func shouldStartStorageScan(hasStorageData: Bool, isBusy: Bool) -> Bool {
         switch self {
-        case .health, .quotaTask, .ci: return false
+        case .health, .quotaTask, .session, .ci: return false
         case .storageRecovery:
             // Existing candidates go straight to bounded, per-target previews.
             // A full scan is needed only when there is no inventory to review.

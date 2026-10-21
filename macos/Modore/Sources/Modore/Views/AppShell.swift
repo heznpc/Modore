@@ -189,7 +189,13 @@ struct ModernRootView: View {
             navigate(to: .work)
             ci.showIncidents = true
         case .quotaTask(let id):
+            quotaWork.requestedSession = nil
             quotaWork.requestedTaskID = id
+            quotaWork.message = nil
+            navigate(to: .work)
+        case .session(let link):
+            quotaWork.requestedTaskID = nil
+            quotaWork.requestedSession = link
             quotaWork.message = nil
             navigate(to: .work)
         case .health:

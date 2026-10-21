@@ -34,6 +34,7 @@ struct WorkPage: View {
             if let message = quotaWork.message {
                 WorkNotice(text: message, action: (L10n.text("닫기"), {
                     quotaWork.requestedTaskID = nil
+                    quotaWork.requestedSession = nil
                     quotaWork.message = nil
                 }))
             }
@@ -57,6 +58,13 @@ struct WorkPage: View {
             resolveQuotaTask()
         }
         .onChange(of: model.sessionIndex) { _ in resolveQuotaTask() }
+        .task(id: quotaWork.requestedSession) {
+            guard quotaWork.requestedSession != nil else { return }
+            model.refreshSessionIndex()
+        }
+        .onChange(of: model.sessionIndexLoading) { loading in
+            if !loading { resolveSessionLink() }
+        }
         .sheet(isPresented: $resources) { WorkResourceView() }
         .sheet(isPresented: $ci.showIncidents) { CIIncidentsView() }
         // The git judgment needs the workspace list the audit produces, so
@@ -87,6 +95,22 @@ struct WorkPage: View {
         }
         quotaWork.requestedTaskID = nil
         quotaWork.message = nil
+        model.selectedSearchMatch = nil
+        model.selectedSessionSource = session.source
+        model.loadSessionTitles(for: [session.source])
+        model.loadConversation(for: session)
+    }
+
+    private func resolveSessionLink() {
+        guard let link = quotaWork.requestedSession else { return }
+        guard let index = model.sessionIndex, let session = link.resolve(in: index.sessions) else {
+            quotaWork.message = L10n.text("현재 수집 범위에서 연결된 대화를 하나로 확인하지 못했습니다. 새로고침 후 다시 확인하세요.")
+            return
+        }
+        quotaWork.requestedSession = nil
+        quotaWork.message = nil
+        model.sessionSearch = ""
+        model.selectedProjectID = model.workProjects.first { $0.sessions.contains { $0.source == session.source } }?.id
         model.selectedSearchMatch = nil
         model.selectedSessionSource = session.source
         model.loadSessionTitles(for: [session.source])
@@ -470,6 +494,10 @@ private struct WorkDetailPane: View {
                                 .accessibilityIdentifier("work-session-backup")
                         }
                         if exporting { ProgressView().controlSize(.small) }
+                        if let link = WorkSessionLink(session: session) {
+                            Button(L10n.text("QuotaPie에서 계정·한도 보기")) { quotaWork.reviewSession(link) }
+                                .accessibilityIdentifier("work-session-quota")
+                        }
                     }
                     if let exportError {
                         Text(exportError).font(.caption).foregroundStyle(.red)
