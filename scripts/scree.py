@@ -10033,9 +10033,218 @@ def _session_evidence_isolated(
             {key: omissions[key] for key in empty})
 
 
+def _search_cursor_encode(state: dict) -> str:
+    import base64
+    return base64.urlsafe_b64encode(json.dumps(
+        state, sort_keys=True, separators=(",", ":")).encode()).decode().rstrip("=")
+
+
+def _search_cursor_decode(cursor: str) -> dict:
+    import base64
+    try:
+        if not isinstance(cursor, str) or not 1 <= len(cursor) <= 4096:
+            raise ValueError()
+        state = json.loads(base64.b64decode(
+            cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True))
+        if not isinstance(state, dict) or state.get("version") != 1:
+            raise ValueError()
+        if type(state.get("discoveryComplete")) is not bool:
+            raise ValueError()
+        position = state.get("position")
+        counts = state.get("counts")
+        flags = state.get("flags")
+        if (not isinstance(position, list) or len(position) != 3
+                or any(type(n) is not int or not 0 <= n <= 10**9 for n in position)
+                or not isinstance(flags, list) or len(flags) != 4
+                or any(type(flag) is not bool for flag in flags)
+                or not isinstance(counts, dict)
+                or set(counts) != {"scannedArtifacts", "unreadableArtifacts", "parseErrorArtifacts",
+                                   "truncatedArtifacts", "leakedWorkerArtifacts", "matchesReturned",
+                                   "unreadableSessions", "parseErrorSessions", "truncatedSessions",
+                                   "leakedWorkerSessions", "matchesOmittedAtLeast"}
+                or any(type(n) is not int or not 0 <= n <= 10**12 for n in counts.values())):
+            raise ValueError()
+        return state
+    except (ValueError, TypeError, RecursionError, UnicodeError):
+        raise ValueError("invalid search cursor; start a new search") from None
+
+
+def _build_search_continuation(query, home, *, cursor, raw, limit, budget_seconds,
+                               provider, workspace, workspace_exact, exclude_workspace):
+    """Bounded, stateless pages. Tokens contain hashes/counters, never text or paths.
+
+    Resume at the unfinished artifact/hit instead of rescanning completed sessions.
+    Overlapping rollout fragments may repeat a hit across pages; matchId lets
+    callers merge those without dropping distinct equal-looking messages.
+    """
+    if limit < 1:
+        raise ValueError("cursor search requires a positive limit")
+    deadline = time.monotonic() + max(0.0, budget_seconds)
+    needle = " ".join(query.split()).casefold()
+    scope = hashlib.sha256(json.dumps(
+        [str(home), needle, raw, provider, list(workspace), workspace_exact,
+         list(exclude_workspace)], ensure_ascii=True).encode()).hexdigest()
+    old = None if cursor == "start" else _search_cursor_decode(cursor)
+    if old is not None and old.get("scope") != scope:
+        raise ValueError("search cursor belongs to another query or scope; start a new search")
+    session_index = _build_sessions_isolated(home, deadline)
+    sessions, discovery_complete = _content_sessions_and_coverage(session_index)
+    if provider:
+        # An unreadable different provider cannot contain a result in this
+        # explicitly selected scope. A failed global discovery still can.
+        relevant = [store for store in session_index["coverage"]["stores"]
+                    if store.get("store") == "Session discovery"
+                    or str(store.get("store", "")).casefold().replace(" ", "-") == provider.casefold()]
+        discovery_complete = all(store.get("status") in ("ok", "missing")
+                                 and int(store.get("unrecognized", 0)) == 0 for store in relevant)
+    sessions = [s for s in sessions
+                if (not provider or str(s.get("tool", "")).casefold().replace(" ", "-") == provider.casefold())
+                and (not workspace or any(
+                    (str(s.get("workspace", "")) == w if workspace_exact
+                     else w.casefold() in str(s.get("workspace", "")).casefold()) for w in workspace))
+                and not any(w.casefold() in str(s.get("workspace", "")).casefold() for w in exclude_workspace)]
+    # Modification times reorder the ordinary newest-first browser. A live
+    # conversation changes during almost every agent call, so cursor pages use
+    # stable identity order and hash the inventory, not every file's live mtime.
+    sessions.sort(key=lambda s: (str(s.get("tool", "")), str(s.get("sessionId") or ""),
+                                 min(_session_artifact_sources(s), default="")))
+    for session in sessions:
+        session["artifactSources"] = sorted(_session_artifact_sources(session))
+    snapshot = hashlib.sha256(json.dumps(
+        [[s.get("tool"), s.get("sessionId"), s.get("workspace"),
+          _session_artifact_sources(s)] for s in sessions],
+        sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+    # An incomplete discovery cannot establish that an existing snapshot changed.
+    # Preserve the original token so a longer/narrower retry does not silently restart.
+    if not discovery_complete and time.monotonic() >= deadline:
+        return {"query": query, "matches": [], "masked": not raw,
+                "coverage": "truncated", "truncatedReason": "discovery",
+                "definitive": False, "nextCursor": cursor, "hasMore": True,
+                "scanFinished": False,
+                "progressMade": False, "evidenceKind": "conversation_mention"}
+    if old is not None and old.get("snapshot") != snapshot:
+        raise ValueError("session store changed since this cursor; start a new search")
+    state = old or {"version": 1, "scope": scope, "snapshot": snapshot,
+        "discoveryComplete": discovery_complete,
+        "position": [0, 0, 0], "flags": [False] * 4, "counts": dict.fromkeys((
+            "scannedArtifacts", "unreadableArtifacts", "parseErrorArtifacts",
+            "truncatedArtifacts", "leakedWorkerArtifacts", "matchesReturned",
+            "unreadableSessions", "parseErrorSessions", "truncatedSessions",
+            "leakedWorkerSessions", "matchesOmittedAtLeast"), 0)}
+    counts = state["counts"]
+    state["discoveryComplete"] = state["discoveryComplete"] and discovery_complete
+    si, ai, hi = start_position = list(state["position"])
+    if si > len(sessions) or (si == len(sessions) and (ai or hi)):
+        raise ValueError("invalid search cursor position")
+    def record_version(session):
+        return hashlib.sha256(json.dumps([session.get("sizeBytes"),
+            session.get("lastActiveEpoch", session.get("lastActive"))]).encode()).hexdigest()
+    if (old is not None and (ai or hi) and si < len(sessions)
+            and old.get("recordVersion") != record_version(sessions[si])):
+        raise ValueError("unfinished session changed since this cursor; start a new search")
+    matches, seen = [], set()
+    reason = None
+    while needle and si < len(sessions):
+        session = sessions[si]
+        sources = _session_artifact_sources(session)
+        if ai >= len(sources):
+            if ai > len(sources) or hi:
+                raise ValueError("invalid search cursor position")
+            si, ai, hi = si + 1, 0, 0
+            state["flags"] = [False] * 4
+            continue
+        if time.monotonic() >= deadline:
+            reason = "time"
+            break
+        found, status, omitted = _search_one_session_isolated(
+            Path(sources[ai]), needle, raw=raw, home=home, deadline=deadline)
+        if hi > len(found):
+            if status == "time":
+                reason = "time"
+                break
+            raise ValueError("search artifact changed since this cursor; start a new search")
+        while hi < len(found):
+            hit = found[hi]
+            session_identity = session.get("sessionId") or session["source"]
+            identity = (["event", session["tool"], session_identity, hit["eventId"]]
+                        if hit.get("eventId") else ["fallback", session["tool"], session_identity,
+                            sources[ai], hit.get("index", hi), hit.get("role"),
+                            hit.get("at"), hit.get("snippet")])
+            match_id = hashlib.sha256(json.dumps(identity, ensure_ascii=True).encode()).hexdigest()
+            if match_id not in seen:
+                if len(matches) >= limit:
+                    reason = "limit"
+                    break
+                seen.add(match_id)
+                matches.append({**hit, "matchId": match_id, "tool": session["tool"],
+                    "source": sources[ai], "workspace": session["workspace"],
+                    "lastActive": session["lastActive"],
+                    **({"sessionId": session["sessionId"]} if session.get("sessionId") else {})})
+            hi += 1
+        if reason:
+            break
+        if status == "time":
+            reason = "time"  # Retry this artifact; never silently skip its unread tail.
+            break
+        counts["scannedArtifacts"] += 1
+        unreadable = status not in ("ok", "truncated", "parse")
+        if unreadable:
+            counts["unreadableArtifacts"] += 1
+        if status == "worker-leaked": counts["leakedWorkerArtifacts"] += 1
+        if status == "parse": counts["parseErrorArtifacts"] += 1
+        if status == "truncated" or omitted: counts["truncatedArtifacts"] += 1
+        counts["matchesOmittedAtLeast"] += omitted
+        for flag, key, present in ((0, "unreadableSessions", unreadable),
+                (1, "parseErrorSessions", status == "parse"),
+                (2, "truncatedSessions", status == "truncated" or bool(omitted)),
+                (3, "leakedWorkerSessions", status == "worker-leaked")):
+            if present and not state["flags"][flag]:
+                counts[key] += 1
+                state["flags"][flag] = True
+        ai, hi = ai + 1, 0
+        if ai == len(sources):
+            si, ai = si + 1, 0
+            state["flags"] = [False] * 4
+        if len(matches) >= limit and si < len(sessions):
+            reason = "limit"
+            break
+    if not needle: si, ai, hi = len(sessions), 0, 0
+    state["position"] = [si, ai, hi]
+    state["recordVersion"] = record_version(sessions[si]) if si < len(sessions) else None
+    counts["matchesReturned"] += len(matches)
+    finished = si == len(sessions)
+    complete = (finished and state["discoveryComplete"] and not any(
+        counts[key] for key in ("unreadableArtifacts", "parseErrorArtifacts",
+                                "truncatedArtifacts", "leakedWorkerArtifacts")))
+    if reason is None and not complete:
+        reason = ("discovery" if not state["discoveryComplete"] else
+                  "unreadable" if counts["unreadableSessions"] else
+                  "parse" if counts["parseErrorSessions"] else "content")
+    return {"query": query, "matches": matches, "masked": not raw,
+            "coverage": "complete" if complete else "truncated", "truncatedReason": reason,
+            "definitive": complete and bool(needle), "evidenceKind": "conversation_mention",
+            "scannedSessions": si, "totalSessions": len(sessions),
+            "scannedArtifacts": counts["scannedArtifacts"],
+            **{key: counts[key] for key in ("unreadableSessions", "parseErrorSessions",
+                "truncatedSessions", "leakedWorkerSessions", "matchesOmittedAtLeast")},
+            "sessionsSkippedByLimit": len(sessions) - si if reason == "limit" else 0,
+            "totalArtifacts": sum(len(_session_artifact_sources(s)) for s in sessions),
+            "progress": dict(counts), "progressMade": state["position"] != start_position,
+            "nextCursor": None if finished else _search_cursor_encode(state),
+            "hasMore": not finished, "scanFinished": finished,
+            "mergeBy": "matchId", "offset": None, "nextOffset": None}
+
+
 def build_search(query, home, *, raw=False, limit=SEARCH_DEFAULT_LIMIT, first=False,
                  budget_seconds=SEARCH_DEFAULT_BUDGET_SECONDS, provider=None,
-                 workspace=(), workspace_exact=False, exclude_workspace=(), offset=0):
+                 workspace=(), workspace_exact=False, exclude_workspace=(), offset=0,
+                 cursor=None):
+    if cursor is not None:
+        if offset or first:
+            raise ValueError("cursor cannot be combined with offset or first")
+        return _build_search_continuation(query, home, cursor=cursor, raw=raw,
+            limit=limit, budget_seconds=budget_seconds, provider=provider,
+            workspace=workspace, workspace_exact=workspace_exact, exclude_workspace=exclude_workspace)
     if offset < 0 or limit < 0:
         raise ValueError("offset and limit must be nonnegative")
     requested = 1 if first else limit
@@ -11445,6 +11654,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     search.add_argument("--workspace-exact", action="store_true")
     search.add_argument("--exclude-workspace", action="append", default=[])
     search.add_argument("--offset", type=int, default=0)
+    search.add_argument("--cursor", default=None, help="start, or nextCursor from a previous page")
+    search.add_argument("--request-json", action="store_true", help=argparse.SUPPRESS)
     search.add_argument("--first", action="store_true",
                         help="stop after the newest matching turn")
     search.add_argument("--budget-seconds", type=float,
@@ -11593,7 +11804,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if args.command in ("search", "evidence"):
-        maximum_query_bytes = 4096
+        request_json = args.command == "search" and args.request_json
+        maximum_query_bytes = 16384 if request_json else 4096
         query = args.query
         if args.query_file is not None:
             if str(args.query_file) in ("/dev/stdin", "/dev/fd/0"):
@@ -11637,6 +11849,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             except UnicodeDecodeError as exc:
                 print(f"{args.command}: {exc}", file=sys.stderr)
                 return 1
+        if request_json:
+            try:
+                request = json.loads(query)
+                if (not isinstance(request, dict) or set(request) != {"query", "cursor"}
+                        or not isinstance(request["query"], str)
+                        or not isinstance(request["cursor"], str)):
+                    raise ValueError("expected query and cursor strings")
+                query, args.cursor = request["query"], request["cursor"]
+                maximum_query_bytes = 4096
+            except (ValueError, TypeError, RecursionError) as exc:
+                print(f"search: invalid request: {exc}", file=sys.stderr)
+                return 2
         if query is None:
             print(f"{args.command}: a query is required", file=sys.stderr)
             return 2
@@ -11658,12 +11882,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         # command whose contract is that it keeps nothing should not
         # leave the answer on disk to be tidied up afterwards -- a
         # `defer` does not run when the app is force quit.
-        _print_wire(json.dumps(
-            build_search(query, args.home, raw=args.raw, limit=args.limit,
+        try:
+            result = build_search(query, args.home, raw=args.raw, limit=args.limit,
                          first=args.first, provider=args.provider, workspace=args.workspace,
                          workspace_exact=args.workspace_exact, exclude_workspace=args.exclude_workspace,
-                         offset=args.offset, budget_seconds=args.budget_seconds),
-            ensure_ascii=False, indent=2))
+                         offset=args.offset, budget_seconds=args.budget_seconds, cursor=args.cursor)
+        except ValueError as exc:
+            print(f"search: {exc}", file=sys.stderr)
+            return 2
+        _print_wire(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "titles":

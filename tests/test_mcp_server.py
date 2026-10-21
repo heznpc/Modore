@@ -524,11 +524,11 @@ def test_agent_session_search_delegates_query_over_stdin_and_forces_masking(monk
     }))
 
     argv = captured["argv"]
-    assert argv[4:] == ["search", "--query-file", "/dev/fd/0", "--limit", "7",
+    assert argv[4:] == ["search", "--query-file", "/dev/fd/0", "--request-json", "--limit", "7",
                         "--budget-seconds", "12"]
     assert "storage pressure" not in argv
     assert "--raw" not in argv
-    assert captured["kwargs"]["input"] == "storage pressure"
+    assert json.loads(captured["kwargs"]["input"]) == {"query": "storage pressure", "cursor": "start"}
     assert "stdin" not in captured["kwargs"]
     assert captured["kwargs"]["timeout"] == 12 + mcp_server.SCREE_SEARCH_PROCESS_GRACE_SECONDS
     assert payload["masked"] is True
@@ -598,9 +598,9 @@ def test_agent_session_tools_delegate_end_to_end_without_unmasking(tmp_path, mon
 
 @pytest.mark.parametrize("arguments", [
     {"query": "x", "user_initiated": True, "limit": 0},
-    {"query": "x", "user_initiated": True, "limit": 201},
+    {"query": "x", "user_initiated": True, "limit": True},
     {"query": "x", "user_initiated": True, "budget_seconds": 0},
-    {"query": "x", "user_initiated": True, "budget_seconds": 61},
+    {"query": "x", "user_initiated": True, "budget_seconds": -1},
     {"query": "\x00", "user_initiated": True},
     {"query": "가" * 1366, "user_initiated": True},
 ])

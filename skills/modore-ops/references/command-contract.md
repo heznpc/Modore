@@ -9,6 +9,7 @@ modore inspect <source> --start 0 --turns 12
 modore search --provider claude --workspace Modore --offset 0 --limit 20
 modore search --first                         # query bytes arrive on stdin
 modore search --limit 20 --budget-seconds 30  # query bytes arrive on stdin
+modore search --cursor <nextCursor> --limit 20 # same query and filters on the next call
 ```
 
 `sessions current` is the narrow first choice for the calling Codex task. It
@@ -19,17 +20,39 @@ retaining their physical sources. `search --first` returns the newest hit and
 explicitly reports incomplete coverage. Ordinary `search` is the exhaustive
 content-reading path;
 snippets remain masked unless a user separately invokes lower-level raw mode.
-The agent surface defaults session listing to 50 and caps it at 500; search is
-capped at 200 matches, a 55-second internal budget, a 60-second outer wall
-clock, and a 4096-byte UTF-8 query. Session listing has a 30-second outer wall
+The agent CLI defaults session listing to 50 and caps it at 500; search is
+capped per page at 200 matches, a 55-second internal budget, a 60-second outer wall
+clock, and a 4096-byte UTF-8 query. Larger positive match/time requests are reduced
+to those per-page bounds with a stderr notice instead of rejecting the search.
+Session listing has a 30-second outer wall
 clock. Do not put the search phrase in shell history, process arguments, or a
 temporary file.
 
 Search filters apply before content reads: repeatable `--workspace` uses case-insensitive
 substring matching (OR); `--workspace-exact` uses exact paths; repeatable
 `--exclude-workspace` excludes matching paths. `--provider` selects claude/claude-desktop/codex/gemini/kiro.
-`nextOffset` advances a result page; `hasMore: null` means the remaining coverage is unknown.
-Offsets are stable only while the session store is unchanged. JSONL reads accept up to
+Ordinary agent CLI and MCP searches return `nextCursor`. Repeat the same query and
+filters with that cursor to continue at the unfinished artifact/hit. Completed
+session bodies are not read again; metadata discovery still runs on each page.
+Cursor pages use stable session identity order, rather
+than the browser's newest-first order; merge pages by `matchId` because overlapping
+rollout fragments may replay the same event. Tokens contain only hashes and counters;
+no search phrase, transcript, path, or token file is retained. MCP accepts `provider`,
+`workspace` (array), `workspace_exact`, `exclude_workspace` (array), and `cursor`.
+MCP reports the requested/effective page bounds (200 matches / 60 seconds maximum).
+
+Coverage and error counters accumulate across cursor pages. `scanFinished` means the
+inventory was traversed; only `coverage: complete` establishes a complete search.
+`progressMade: false` means the unfinished file or discovery could not finish within
+this budget: increase the budget with the same cursor, or start a fresh search with
+narrower filters, instead of repeating unchanged calls. A new/removed session or a changed unfinished session invalidates the cursor
+with an explicit restart error. Already completed live sessions may grow without
+resetting progress; run a fresh search to include their later additions.
+
+Legacy `--offset`/`--first` remain available separately and cannot be combined with
+a continuation cursor. `nextOffset` advances a legacy result page;
+`hasMore: null` means its remaining coverage is unknown. Offsets are stable only
+while the session store is unchanged. JSONL reads accept up to
 512 MiB per file and 16 MiB per record; larger records/files still report truncation. Each file returns at most 2,000 hits;
 that limit is also reported as incomplete coverage, not a complete search.
 

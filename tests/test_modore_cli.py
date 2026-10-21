@@ -169,20 +169,22 @@ def test_sessions_current_rejects_extra_options(project_root):
     assert "sessions current accepts no additional arguments" in result.stderr
 
 
-def test_agent_numeric_budgets_are_bounded(project_root):
+def test_agent_numeric_budgets_are_bounded(project_root, tmp_path):
     sessions = run_cli(project_root, "sessions", "--limit", "501")
     search = run_cli(
         project_root,
         "search",
         "--budget-seconds",
         "56",
+        "--workspace", str(tmp_path / "nonexistent-workspace"),
         stdin="query",
     )
 
     assert sessions.returncode == 64
     assert "between 1 and 500" in sessions.stderr
-    assert search.returncode == 64
-    assert "between 1 and 55" in search.stderr
+    assert search.returncode == 0, search.stderr
+    assert "budget limited to 55" in search.stderr
+    assert json.loads(search.stdout)["scanFinished"] is True
 
 
 def test_bounded_exec_stops_a_spawned_process_group(project_root):
