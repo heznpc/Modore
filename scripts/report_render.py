@@ -181,7 +181,7 @@ def vt_ip_badge(vt_ip) -> str:
         return ""
     m = int(vt_ip.get("malicious", 0))
     s = int(vt_ip.get("suspicious", 0))
-    country = vt_ip.get("country") or "?"
+    country = esc(vt_ip.get("country") or "?")
     asn = esc(vt_ip.get("asnOwner") or "")
     title = f"{country} · {asn} · malicious {m} suspicious {s}"
     if m >= 3:
@@ -201,7 +201,7 @@ def render_cpu_table(i18n: I18n, rows) -> str:
     for r in rows:
         vt_hash = (r.get("vt") or {}).get("hash")
         body.append(f"""
-<tr class="risk-{r.get('risk','unknown')}">
+<tr class="risk-{esc(r.get('risk','unknown'))}">
   <td>{i18n.badge(r.get('risk'))}</td>
   <td class="vt">{vt_badge(i18n, r.get('vt'))}</td>
   <td class="proc-name">{esc(r.get('name'))}</td>
@@ -242,7 +242,7 @@ def render_autoruns_table(i18n: I18n, rows, show_all=False) -> str:
                      '<span class="vt-badge vt-warning" title="no signature">✗</span>')
         vt_hash = (r.get("vt") or {}).get("hash") or r.get("sha256")
         body.append(f"""
-<tr class="risk-{r.get('risk','unknown')}">
+<tr class="risk-{esc(r.get('risk','unknown'))}">
   <td>{i18n.badge(r.get('risk'))}</td>
   <td>{sig_badge}</td>
   <td class="vt">{vt_badge(i18n, r.get('vt'))}</td>
@@ -280,7 +280,7 @@ def render_network_table(i18n: I18n, rows) -> str:
         ip_url = url_encode(r.get("remoteAddress"))
         vt_label = i18n.t("links.vt_lookup")
         body.append(f"""
-<tr class="risk-{r.get('risk','unknown')}">
+<tr class="risk-{esc(r.get('risk','unknown'))}">
   <td>{i18n.badge(r.get('risk'))}</td>
   <td class="vt">{vt_ip_badge(r.get('vtIp'))}</td>
   <td class="proc-name">{esc(r.get('process'))}</td>
@@ -314,7 +314,7 @@ def render_simple_table(i18n: I18n, rows, columns) -> str:
     body = []
     for r in rows:
         cells = "".join(f"<td>{esc(r.get(c['field']))}</td>" for c in columns)
-        body.append(f'<tr class="risk-{r.get("risk","unknown")}">'
+        body.append(f'<tr class="risk-{esc(r.get("risk","unknown"))}">'
                     f'<td>{i18n.badge(r.get("risk"))}</td>{cells}</tr>')
     return f"<table><thead><tr>{headers}</tr></thead><tbody>{''.join(body)}</tbody></table>"
 
@@ -327,7 +327,7 @@ def render_storage_table(i18n: I18n, rows) -> str:
     body = []
     for r in rows:
         body.append(f"""
-<tr class="risk-{r.get('risk','unknown')}">
+<tr class="risk-{esc(r.get('risk','unknown'))}">
   <td>{i18n.badge(r.get('risk'))}</td>
   <td>{esc(r.get('kind'))}</td>
   <td class="proc-name">{esc(r.get('label'))}</td>
@@ -359,7 +359,7 @@ def render_storage_access_table(i18n: I18n, rows) -> str:
     body = []
     for r in rows:
         body.append(f"""
-<tr class="risk-{r.get('risk','unknown')}">
+<tr class="risk-{esc(r.get('risk','unknown'))}">
   <td>{i18n.badge(r.get('risk'))}</td>
   <td>{esc(r.get('label'))}</td>
   <td>{esc(r.get('status'))}</td>
@@ -388,7 +388,7 @@ def render_storage_runtime_table(i18n: I18n, rows) -> str:
     body = []
     for r in rows:
         body.append(f"""
-<tr class="risk-{r.get('risk','unknown')}">
+<tr class="risk-{esc(r.get('risk','unknown'))}">
   <td>{i18n.badge(r.get('risk'))}</td>
   <td>{esc(r.get('kind'))}</td>
   <td class="proc-name">{esc(r.get('label'))}</td>
@@ -462,7 +462,7 @@ def render_monitor(i18n: I18n, m) -> str:
     body = []
     for a in (m.get("aggregate") or [])[:15]:
         body.append(f"""
-<tr class="risk-{a.get('risk','unknown')}">
+<tr class="risk-{esc(a.get('risk','unknown'))}">
   <td>{i18n.badge(a.get('risk'))}</td>
   <td class="proc-name">{esc(a.get('name'))}</td>
   <td class="num">{esc(a.get('averagePercent'))}%</td>
@@ -480,7 +480,7 @@ def render_monitor(i18n: I18n, m) -> str:
   </div>
   <div class="monitor-metric">
     <div class="label">{esc(h("monitor_header.duration_label"))}</div>
-    <div class="value">{m.get('durationMinutes')}{esc(h("monitor_header.duration_unit"))}</div>
+    <div class="value">{esc(m.get('durationMinutes'))}{esc(h("monitor_header.duration_unit"))}</div>
   </div>
   <div class="monitor-metric">
     <div class="label">{esc(h("monitor_header.time_label"))}</div>
@@ -596,14 +596,17 @@ def render_action_plan(i18n: I18n, overall: str, findings) -> str:
 def build_report(i18n: I18n, scan, monitor) -> str:
     h = i18n.t
     summary = scan.get("summary", {})
-    overall = summary.get("overall", "safe")
+    overall = summary.get("overall")
+    valid_overall = overall in ("safe", "warning", "danger", "incomplete")
+    if not valid_overall:
+        overall = "incomplete"
     if monitor:
         m_danger = len([a for a in (monitor.get("aggregate") or []) if a.get("risk") == "danger"])
         if m_danger > 0 and overall == "safe":
             overall = "warning"
 
     verdict_icon = {"safe": "🟢", "warning": "🟡", "danger": "🔴"}.get(overall, "⚪")
-    verdict_msg = summary.get("message", "")
+    verdict_msg = summary.get("message", "") if valid_overall else h("badges.unknown")
 
     # VT 상태 박스
     vt = (scan.get("sections") or {}).get("virustotal") or {}
@@ -617,7 +620,7 @@ def build_report(i18n: I18n, scan, monitor) -> str:
             if vt_skipped > 0 else ""
         )
         vt_summary = (
-            f'<div class="vt-summary">{h("vt_summary.enabled", calls=vt.get("callsThisScan", 0), hours=vt.get("cacheHours", 0))}</div>'
+            f'<div class="vt-summary">{h("vt_summary.enabled", calls=esc(vt.get("callsThisScan", 0)), hours=esc(vt.get("cacheHours", 0)))}</div>'
             f'{vt_budget_note}'
         )
     else:
@@ -700,9 +703,9 @@ def build_report(i18n: I18n, scan, monitor) -> str:
     meta_line = h("meta_line", computer=esc(scan.get("computerName")),
                   user=esc(scan.get("userName")), os=esc(scan.get("osVersion")),
                   scannedAt=esc(scan.get("scannedAt")))
-    load_line = h("load_line", cpu=load.get("cpuPercent", 0),
-                  mem=load.get("memoryPercent", 0),
-                  totalGb=load.get("totalMemoryGB", 0))
+    load_line = h("load_line", cpu=esc(load.get("cpuPercent", 0)),
+                  mem=esc(load.get("memoryPercent", 0)),
+                  totalGb=esc(load.get("totalMemoryGB", 0)))
 
     return f"""<!DOCTYPE html>
 <html lang="{i18n.lang}">
@@ -733,8 +736,8 @@ def build_report(i18n: I18n, scan, monitor) -> str:
 {actions_html}
 
 <div class="cards">
-  <div class="card danger"><div class="count">{summary.get('dangerCount', 0)}</div><div class="label">{esc(h("cards.danger"))}</div></div>
-  <div class="card warning"><div class="count">{summary.get('warningCount', 0)}</div><div class="label">{esc(h("cards.warning"))}</div></div>
+  <div class="card danger"><div class="count">{esc(summary.get('dangerCount', 0))}</div><div class="label">{esc(h("cards.danger"))}</div></div>
+  <div class="card warning"><div class="count">{esc(summary.get('warningCount', 0))}</div><div class="label">{esc(h("cards.warning"))}</div></div>
   <div class="card safe"><div class="count">{safe_count}</div><div class="label">{esc(h("cards.safe"))}</div></div>
 </div>
 

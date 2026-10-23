@@ -106,6 +106,139 @@ final class ScreeBindIntegrationTests: XCTestCase {
         XCTAssertTrue(error.message.contains("NEW directory"))
     }
 
+    func testSearchPagesAllTurnsAndPreservesProviderWorkspaceScopeThroughRealProcess() async throws {
+        let store = home.appending(path: ".claude/projects/-example-archive")
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        let lines = (0..<70).map { index in
+            #"{"type":"user","uuid":"event-\#(index)","cwd":"/Users/example/archive","message":{"role":"user","content":"pagination-marker turn \#(index)"}}"#
+        }.joined(separator: "\n")
+        try Data(lines.utf8).write(to: store.appending(path: "archive.jsonl"))
+        let other = #"{"type":"user","cwd":"/Users/example/archive-extra","message":{"role":"user","content":"pagination-marker wrong workspace"}}"#
+        try Data(other.utf8).write(to: store.appending(path: "current.jsonl"))
+
+        let first = try await ScreeService.search(
+            execution: execution, query: "pagination-marker", limit: 60,
+            provider: "claude", workspace: "/Users/example/archive", homeOverride: home
+        ).get()
+        XCTAssertEqual(first.matches.count, 60)
+        XCTAssertEqual(first.hasMore, true)
+        XCTAssertEqual(first.nextOffset, 60)
+        XCTAssertEqual(first.totalSessions, 1)
+        XCTAssertEqual(first.scope, .init(provider: "claude", workspace: "/Users/example/archive"))
+        let second = try await ScreeService.search(
+            execution: execution, query: "pagination-marker", limit: 60, offset: 60,
+            provider: "claude", workspace: "/Users/example/archive", homeOverride: home
+        ).get()
+        XCTAssertEqual(second.matches.count, 10)
+        XCTAssertEqual(second.hasMore, false)
+        XCTAssertNil(second.nextOffset)
+        XCTAssertTrue(second.isComplete)
+        let combined = first.appending(second)
+        XCTAssertEqual(combined.matches.count, 70)
+        XCTAssertEqual(Set(combined.matches.map(\.id)).count, 70)
+        XCTAssertTrue(combined.matches.allSatisfy { $0.workspace == "/Users/example/archive" })
+        let otherProvider = try await ScreeService.search(
+            execution: execution, query: "pagination-marker", provider: "codex", homeOverride: home
+        ).get()
+        XCTAssertTrue(otherProvider.matches.isEmpty)
+        XCTAssertEqual(otherProvider.totalSessions, 0)
+        let leftovers = try FileManager.default.contentsOfDirectory(at: execution.outputRoot, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("scree-query-") }
+        XCTAssertTrue(leftovers.isEmpty)
+    }
+
+    func testInspectSearchHitReadsItsSourcePositionAndFollowingContext() async throws {
+        let source = home.appending(path: ".claude/projects/-inspect-fixture/session.jsonl")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let rows = try (0..<80).map { index in
+            try JSONSerialization.data(withJSONObject: [
+                "type": "user", "message": ["role": "user", "content": "visible turn \(index)"],
+            ])
+        }
+        var data = Data()
+        for row in rows { data.append(row); data.append(0x0a) }
+        try data.write(to: source)
+        let selected = try await ScreeService.inspect(execution: execution, source: source, turns: 20, start: 7, homeOverride: home).get()
+        XCTAssertEqual(selected.windowStart, 7)
+        XCTAssertEqual(selected.turns.first?.sourceIndex, 7)
+        XCTAssertEqual(selected.turns.first?.text, "visible turn 7")
+        XCTAssertEqual(selected.turns.last?.sourceIndex, 26)
+        let recent = try await ScreeService.inspect(execution: execution, source: source, turns: 20, homeOverride: home).get()
+        XCTAssertEqual(recent.windowStart, 60)
+        XCTAssertEqual(recent.turns.first?.text, "visible turn 60")
+    }
+
+    func testInspectSearchHitCanReachPastTheLegacyFilePrefix() async throws {
+        let source = home.appending(path: ".claude/projects/-inspect-large/session.jsonl")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        XCTAssertTrue(FileManager.default.createFile(atPath: source.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: source)
+        let padding = try JSONSerialization.data(withJSONObject: ["type": "progress", "data": String(repeating: "x", count: 1_024 * 1_024)]) + Data([0x0a])
+        for _ in 0..<33 { try handle.write(contentsOf: padding) }
+        try handle.write(contentsOf: Data(#"{"type":"user","message":{"role":"user","content":"target after 32 MiB"}}"#.utf8))
+        try handle.close()
+        let selected = try await ScreeService.inspect(execution: execution, source: source, start: 0, homeOverride: home).get()
+        XCTAssertEqual(selected.status, .ok)
+        XCTAssertEqual(selected.windowStart, 0)
+        XCTAssertEqual(selected.turns.first?.text, "target after 32 MiB")
+    }
+
+    func testPinnedSearchHelperReusesDifferentQueriesAndInvalidatesChangedTranscript() async throws {
+        let runtime = home.appending(path: "sealed-search-runtime")
+        try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let identity = try XCTUnwrap(FilesystemIdentity.directory(at: runtime))
+        let context = RuntimeExecutionContext(
+            runtimeRoot: runtime, outputRoot: runtime,
+            configurationURL: runtime.appending(path: "config.json"),
+            usesBundledRuntime: true, runtimeRootIdentity: identity, outputRootIdentity: identity,
+            signedBundleURL: nil,
+            sealedRuntimeFiles: [
+                "scripts/scree.py": try Data(contentsOf: root.appending(path: "scripts/scree.py")),
+                "scripts/session_search_index.py": try Data(contentsOf: root.appending(path: "scripts/session_search_index.py")),
+            ])
+        // This directory contains neither script. Both imports must travel
+        // through the pinned descriptors, including the optional index helper.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: runtime.appending(path: "scripts").path))
+        let store = home.appending(path: ".claude/projects/-cache-fixture")
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        let source = store.appending(path: "cache.jsonl")
+        let original = #"{"type":"user","cwd":"/fixture/cache","message":{"role":"user","content":"oldneedle"}}"#
+        try Data(original.utf8).write(to: source)
+        let cold = try await ScreeService.search(
+            execution: context, query: "first-absent-query", provider: "claude", homeOverride: home).get()
+        let coldIndex = try XCTUnwrap(cold.index)
+        XCTAssertTrue(coldIndex.enabled)
+        XCTAssertEqual(coldIndex.sourceArtifactsRead, 1)
+        XCTAssertEqual(coldIndex.indexedArtifacts, 1)
+        XCTAssertTrue(cold.matches.isEmpty)
+
+        let warm = try await ScreeService.search(
+            execution: context, query: "different-absent-query", provider: "claude", homeOverride: home).get()
+        let warmIndex = try XCTUnwrap(warm.index)
+        XCTAssertEqual(warmIndex.reusedArtifacts, 1)
+        XCTAssertEqual(warmIndex.skippedArtifacts, 1)
+        XCTAssertEqual(warmIndex.sourceArtifactsRead, 0)
+        XCTAssertTrue(warm.matches.isEmpty)
+
+        let modifiedAt = try XCTUnwrap(try source.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        let changed = original.replacingOccurrences(of: "oldneedle", with: "newneedle")
+        XCTAssertEqual(original.utf8.count, changed.utf8.count)
+        try Data(changed.utf8).write(to: source)
+        try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: source.path)
+        let updated = try await ScreeService.search(
+            execution: context, query: "newneedle", provider: "claude", homeOverride: home).get()
+        XCTAssertEqual(updated.index?.sourceArtifactsRead, 1)
+        XCTAssertEqual(updated.index?.indexedArtifacts, 1)
+        XCTAssertEqual(updated.matches.first?.snippet, "newneedle")
+        let verified = try await ScreeService.search(
+            execution: context, query: "newneedle", provider: "claude", homeOverride: home).get()
+        XCTAssertEqual(verified.index?.reusedArtifacts, 1)
+        XCTAssertEqual(verified.index?.sourceArtifactsRead, 1,
+                       "A cache candidate still needs verification against the original transcript")
+        XCTAssertEqual(verified.matches.first?.snippet, "newneedle")
+    }
+
     /// A workspace no session ever touched must come back as a completed
     /// assessment, not as a failure. If the wrapper is broken this returns
     /// `notAssessed` instead — same empty result, opposite meaning, and

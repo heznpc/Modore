@@ -416,47 +416,99 @@ extension ScanModel {
     /// transcripts is not, and doing it on every keystroke would turn a
     /// filter box into a disk scan.
     func runContentSearch() {
-        guard !applicationTerminationStarted else { return }
         let query = sessionSearch.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
-        // A search takes tens of seconds, which is long enough for the
-        // person to type something else and press return again. Refusing
-        // the second search while the first runs made the box feel
-        // broken, and letting the first one land would have written a
-        // stale answer under a different query. The newest request wins:
-        // the previous one is cancelled, and any result that arrives from
-        // a superseded generation is dropped.
+        let workspace = contentSearchWorkspace.trimmingCharacters(in: .whitespacesAndNewlines)
+        performContentSearch(.init(
+            query: query,
+            provider: contentSearchProvider == "all" ? nil : contentSearchProvider,
+            workspace: workspace.isEmpty ? nil : workspace,
+            offset: 0, limit: 60
+        ))
+    }
+
+    func loadMoreContentSearch(
+        using run: ((SessionSearchRequest) async -> Result<SessionSearchResult, ScreeInspectionError>)? = nil
+    ) {
+        guard !contentSearchRunning, let request = contentSearchRequest,
+              let result = contentSearch, result.hasMore == true,
+              result.query == request.query, result.scope == request.scope,
+              let offset = result.nextOffset else { return }
+        performContentSearch(request.page(at: offset), using: run)
+    }
+
+    func retryContentSearch(
+        using run: ((SessionSearchRequest) async -> Result<SessionSearchResult, ScreeInspectionError>)? = nil
+    ) {
+        guard !contentSearchRunning else { return }
+        if let request = failedContentSearchRequest {
+            performContentSearch(request, using: run)
+        } else if contentSearch?.truncatedReason == "time", let request = contentSearchRequest {
+            performContentSearch(request.page(at: 0), using: run)
+        }
+    }
+
+    func performContentSearch(
+        _ request: SessionSearchRequest,
+        using run: ((SessionSearchRequest) async -> Result<SessionSearchResult, ScreeInspectionError>)? = nil
+    ) {
+        guard !applicationTerminationStarted else { return }
         cancelAndRetainForDrain(contentSearchTask)
         contentSearchGeneration += 1
         let generation = contentSearchGeneration
+        failedContentSearchRequest = nil
         contentSearchRunning = true
         contentSearchError = nil
         let root = projectRoot
         contentSearchTask = Task {
             defer {
-                if generation == contentSearchGeneration { contentSearchRunning = false }
-            }
-            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
                 if generation == contentSearchGeneration {
-                    contentSearchError = L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")
+                    contentSearchRunning = false
+                    contentSearchTask = nil
                 }
-                return
             }
-            let outcome = await ScreeService.search(execution: execution, query: query)
+            let outcome: Result<SessionSearchResult, ScreeInspectionError>
+            if let run {
+                outcome = await run(request)
+            } else if let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) {
+                guard !Task.isCancelled, generation == contentSearchGeneration else { return }
+                outcome = await ScreeService.search(
+                    execution: execution, query: request.query, limit: request.limit,
+                    offset: request.offset, provider: request.provider, workspace: request.workspace)
+            } else {
+                outcome = .failure(.init(message: L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")))
+            }
             guard !Task.isCancelled, generation == contentSearchGeneration else { return }
             switch outcome {
             case .success(let result):
-                contentSearch = result
+                contentSearchRequest = request
+                if request.offset > 0, let previous = contentSearch {
+                    contentSearch = previous.appending(result)
+                } else {
+                    contentSearch = result
+                }
             case .failure(let error):
+                failedContentSearchRequest = request
                 contentSearchError = error.message
             }
         }
     }
 
-    /// Drops a finished search. The metadata filter keeps working.
-    func clearContentSearch() {
-        contentSearch = nil
+    /// Cancels an in-flight search without discarding already displayed pages.
+    func cancelContentSearch() {
+        contentSearchGeneration += 1
+        cancelAndRetainForDrain(contentSearchTask)
+        contentSearchTask = nil
+        contentSearchRunning = false
         contentSearchError = nil
+        failedContentSearchRequest = nil
+    }
+
+    /// Drops a search and prevents its cancelled subprocess from repopulating it.
+    func clearContentSearch() {
+        cancelContentSearch()
+        contentSearch = nil
+        contentSearchRequest = nil
     }
 
     /// Opens the conversation a search result points at.
@@ -466,10 +518,16 @@ extension ScanModel {
     /// last loaded; the search walked the filesystem just now. A session
     /// created in between is findable and would have been unopenable --
     /// the click would have done nothing at all.
-    func openSearchMatch(_ match: SessionSearchMatch) {
+    func openSearchMatch(
+        _ match: SessionSearchMatch,
+        retry: Bool = false,
+        using inspect: (([URL], Int?) async -> Result<SessionConversation, ScreeInspectionError>)? = nil
+    ) {
         selectedSearchMatch = match
         selectedSessionSource = match.source
-        loadConversation(source: match.sourceURL, provider: match.provider)
+        loadConversation(
+            sources: [match.sourceURL], source: match.sourceURL,
+            provider: match.provider, start: match.index, retry: retry, using: inspect)
     }
 
     var selectedSearchMatchForDetail: SessionSearchMatch? {
@@ -530,11 +588,13 @@ extension ScanModel {
 
     private func loadConversation(
         sources: [URL], source: URL, provider: SessionProvider,
-        retry: Bool = false
+        start: Int? = nil,
+        retry: Bool = false,
+        using inspect: (([URL], Int?) async -> Result<SessionConversation, ScreeInspectionError>)? = nil
     ) {
         let entrySource = source.path
         let key = Self.conversationKey(
-            provider: provider, sessionID: entrySource, source: source
+            provider: provider, sessionID: entrySource, source: source, start: start
         )
         if retry {
             conversationLoads[key] = nil
@@ -547,22 +607,28 @@ extension ScanModel {
         let root = projectRoot
         startTrackedApplicationTask(scope: .workScreen) { [weak self] in
             guard let self else { return }
-            guard let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) else {
-                finishConversationLoad(
-                    key: key,
-                    token: token,
-                    state: Task.isCancelled
-                        ? nil
-                        : .failed(L10n.text("서명된 실행 런타임을 확인하지 못했습니다."))
-                )
-                return
-            }
             guard !Task.isCancelled else {
                 finishConversationLoad(key: key, token: token, state: nil)
                 return
             }
+            let outcome: Result<SessionConversation, ScreeInspectionError>
+            if let inspect {
+                outcome = await inspect(sources, start)
+            } else if let execution = await RuntimeWorkspace.prepareExecutionAsync(projectRoot: root) {
+                guard !Task.isCancelled else {
+                    finishConversationLoad(key: key, token: token, state: nil)
+                    return
+                }
+                if let start {
+                    outcome = await ScreeService.inspect(execution: execution, source: source, start: start)
+                } else {
+                    outcome = await ScreeService.inspect(execution: execution, sources: sources)
+                }
+            } else {
+                outcome = .failure(.init(message: L10n.text("서명된 실행 런타임을 확인하지 못했습니다.")))
+            }
             let state: ConversationLoadState
-            switch await ScreeService.inspect(execution: execution, sources: sources) {
+            switch outcome {
             case .success(let conversation):
                 state = .loaded(conversation)
             case .failure(let error):
@@ -611,10 +677,11 @@ extension ScanModel {
 
     func conversationState(
         source: URL,
-        provider: SessionProvider
+        provider: SessionProvider,
+        start: Int? = nil
     ) -> ConversationLoadState? {
         conversationLoads[Self.conversationKey(
-            provider: provider, sessionID: source.path, source: source
+            provider: provider, sessionID: source.path, source: source, start: start
         )]
     }
 
@@ -624,15 +691,16 @@ extension ScanModel {
     /// -- which is itself a state `inspect` will report on, so the fetch
     /// still has to run rather than being skipped here.
     nonisolated static func conversationKey(
-        provider: SessionProvider, sessionID: String, source: URL
+        provider: SessionProvider, sessionID: String, source: URL, start: Int? = nil
     ) -> String {
+        let window = start.map { "/window:\(max(0, $0))" } ?? ""
         guard let key = PresentationCacheKey(
             provider: provider, sessionID: sessionID, source: source
         ) else {
-            return "unstattable:\(provider.rawValue)/\(sessionID)/\(source.path)"
+            return "unstattable:\(provider.rawValue)/\(sessionID)/\(source.path)" + window
         }
         return "\(key.provider.rawValue)/\(key.sessionID)/\(key.fileIdentity)"
-            + "/\(key.modifiedAt.timeIntervalSince1970)/\(key.sizeBytes)"
+            + "/\(key.modifiedAt.timeIntervalSince1970)/\(key.sizeBytes)" + window
     }
 
     func conversationKey(for binding: SessionBinding) -> String {

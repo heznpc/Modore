@@ -655,9 +655,40 @@ struct SessionSearchMatch: Decodable, Identifiable, Equatable {
 /// Coverage is part of the answer. "Nothing matched" and "I could not
 /// finish looking" are different facts, and a search that quietly stops
 /// at a budget while reporting nothing found is a lie by omission.
+struct SessionSearchScope: Decodable, Equatable {
+    let provider: String?
+    let workspace: String?
+}
+
+/// A submitted query is immutable across pages, even while the search fields
+/// are being edited for the next query.
+struct SessionSearchRequest: Equatable {
+    let query: String
+    let provider: String?
+    let workspace: String?
+    let offset: Int
+    let limit: Int
+
+    var scope: SessionSearchScope { .init(provider: provider, workspace: workspace) }
+
+    func page(at offset: Int) -> Self {
+        Self(query: query, provider: provider, workspace: workspace, offset: offset, limit: limit)
+    }
+}
+
+/// Work done by the most recent page request, not totals across displayed pages.
+struct SessionSearchIndexMetrics: Decodable, Equatable {
+    let enabled: Bool
+    let reusedArtifacts: Int
+    let skippedArtifacts: Int
+    let sourceArtifactsRead: Int
+    let indexedArtifacts: Int
+    let unavailableArtifacts: Int
+}
+
 struct SessionSearchResult: Decodable, Equatable {
     let query: String
-    let matches: [SessionSearchMatch]
+    var matches: [SessionSearchMatch]
     let scannedSessions: Int
     let totalSessions: Int
     let unreadableSessions: Int
@@ -669,6 +700,23 @@ struct SessionSearchResult: Decodable, Equatable {
     let definitive: Bool
     /// A hit means somebody said this, not that it was ever run.
     let evidenceKind: String
+    let offset: Int?
+    let nextOffset: Int?
+    /// nil means the search could not determine whether another page exists.
+    let hasMore: Bool?
+    let scope: SessionSearchScope?
+    let discoveredSessions: Int?
+    let parseErrorSessions: Int?
+    let truncatedSessions: Int?
+    let index: SessionSearchIndexMetrics?
+
+    func appending(_ page: Self) -> Self {
+        guard query == page.query, scope == page.scope else { return page }
+        var result = page
+        var seen = Set(matches.map(\.id))
+        result.matches = matches + page.matches.filter { seen.insert($0.id).inserted }
+        return result
+    }
 
     /// The sweep reached every session. Not the same as being allowed to
     /// conclude anything -- see `definitive`.
@@ -683,9 +731,16 @@ struct SessionSearchResult: Decodable, Equatable {
                 notes.append(L10n.format("시간이 오래 걸려 %@/%@개까지만 훑었습니다.", String(describing: scannedSessions), String(describing: totalSessions)))
             case "discovery":
                 notes.append(L10n.text("일부 로컬 대화 저장소를 확인하지 못했습니다."))
-            default:
+            case "limit" where hasMore == true:
+                notes.append(L10n.text("더 많은 검색 결과가 있습니다. 다음 결과를 불러올 수 있습니다."))
+            case "limit":
                 notes.append(L10n.text("결과가 많아 일부만 표시했습니다. 검색어를 좁히세요."))
+            default:
+                notes.append(L10n.text("모든 대화를 확인하지 못했습니다."))
             }
+        }
+        if (truncatedSessions ?? 0) > 0 {
+            notes.append(L10n.format("세션 %@개는 내용을 끝까지 읽지 못했습니다.", String(truncatedSessions ?? 0)))
         }
         if unreadableSessions > 0 {
             notes.append(L10n.format("세션 %@개는 읽지 못했습니다.", String(describing: unreadableSessions)))

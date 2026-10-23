@@ -186,3 +186,45 @@ def test_collector_uses_latest_created_run_not_old_rerun_and_caches_log():
 def test_repository_cannot_redirect_authenticated_api(repo):
     with pytest.raises(ValueError):
         ci.slug(repo)
+
+
+@pytest.mark.parametrize('payload', [None, [], {'repos': 'owner/repo'},
+                                     {'projects': [None]}, {'notify': 'false'}])
+def test_invalid_request_is_reported_before_creating_state(tmp_path, payload):
+    store = ci.Store(tmp_path / 'ci')
+    with pytest.raises(ValueError, match='CI request'):
+        ci.invoke(payload, store)
+    assert not store.root.exists()
+
+
+@pytest.mark.parametrize('state', [[], None, {'version': 1, 'incidents': None},
+                                  {'version': 1, 'projects': []}])
+def test_invalid_saved_journal_is_reported_without_overwriting_it(tmp_path, state):
+    path = tmp_path / 'state.json'
+    original = json.dumps(state)
+    path.write_text(original)
+    with pytest.raises(RuntimeError, match='CI state'):
+        ci.Store(tmp_path).read()
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize('field,value', [
+    ('incidents', [None]), ('events', ['invalid']), ('repositories', [[]]),
+    ('tracked', [None]), ('tracked', [42]),
+    ('projects', {'owner/repo': None}), ('projects', {'owner/repo': '/work/repo'}),
+    ('projects', {'owner/repo': [None]}),
+])
+def test_status_rejects_invalid_nested_journal_entries(tmp_path, field, value):
+    state = ci.empty_state()
+    state[field] = value
+    path = tmp_path / 'state.json'
+    original = json.dumps(state)
+    path.write_text(original)
+    with pytest.raises(RuntimeError, match='invalid collection entries'):
+        ci.invoke({'action': 'status'}, ci.Store(tmp_path))
+    assert path.read_text() == original
+
+
+def test_timeout_after_child_closes_output_is_a_normal_collection_error():
+    with pytest.raises(RuntimeError, match='GitHub query timed out'):
+        ci.command(['/bin/sh', '-c', 'exec 1>&- 2>&-; sleep 3'], timeout=0.1)

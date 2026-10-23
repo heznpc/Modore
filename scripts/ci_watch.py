@@ -66,13 +66,17 @@ def command(argv, timeout=20, cap=4_000_000):
                         chunks.extend(block)
                         if len(chunks) > cap:
                             raise RuntimeError('GitHub response exceeded the collection limit')
-            code = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+            try:
+                code = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError('GitHub query timed out') from error
         if code:
             raise RuntimeError('GitHub query failed; check gh authentication and repository access')
         return chunks.decode('utf-8', errors='replace')
     finally:
         if proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
         proc.stdout.close()
 
@@ -298,8 +302,22 @@ class Store:
         if self.root.is_symlink() or path.is_symlink() or path.stat().st_uid != os.getuid() or path.stat().st_size > 4_000_000:
             raise RuntimeError('CI state is not a safe local file')
         state = json.loads(path.read_text())
+        if not isinstance(state, dict):
+            raise RuntimeError('CI state must be a JSON object; the saved journal was not changed')
         if state.get('version') != 1:
             raise RuntimeError('Unsupported CI state version')
+        if (any(not isinstance(state.get(key, []), list)
+                for key in ('incidents', 'events', 'repositories', 'tracked'))
+                or not isinstance(state.get('projects', {}), dict)):
+            raise RuntimeError('CI state has invalid collection fields; the saved journal was not changed')
+        if (any(not isinstance(row, dict)
+                for key in ('incidents', 'events', 'repositories')
+                for row in state.get(key, []))
+                or any(not isinstance(repo, str) for repo in state.get('tracked', []))
+                or any(not isinstance(paths, list)
+                       or not all(isinstance(path, str) for path in paths)
+                       for paths in state.get('projects', {}).values())):
+            raise RuntimeError('CI state has invalid collection entries; the saved journal was not changed')
         return state
 
     @contextlib.contextmanager
@@ -367,8 +385,19 @@ def refresh(state, request, api):
 
 
 def invoke(request, store=None, api=None):
+    if not isinstance(request, dict):
+        raise ValueError('CI request must be a JSON object')
+    for key in ('repos', 'projects', 'ids'):
+        if key in request and (not isinstance(request[key], list)
+                               or not all(isinstance(value, str) for value in request[key])):
+            raise ValueError('CI request ' + key + ' must be a list of strings')
+    for key in ('discover', 'notify'):
+        if key in request and not isinstance(request[key], bool):
+            raise ValueError('CI request ' + key + ' must be a boolean')
     store = store or Store()
     action = request.get('action', 'status')
+    if action not in ('status', 'refresh', 'ack'):
+        raise ValueError('Unknown CI action')
     if action == 'status':
         return store.read()
     with store.locked():

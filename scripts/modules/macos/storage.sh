@@ -888,7 +888,7 @@ _pch_project_git_budget_start() {
 _pch_project_git_budget_expired() {
     _pch_project_git_budget_start
     if [[ -z "$_pch_project_git_budget_timer_pid" ]] \
-        || ! /bin/kill -0 "$_pch_project_git_budget_timer_pid" 2>/dev/null; then
+        || ! builtin kill -0 "$_pch_project_git_budget_timer_pid" 2>/dev/null; then
         return 0
     fi
     return 1
@@ -896,7 +896,7 @@ _pch_project_git_budget_expired() {
 
 _pch_project_git_budget_stop() {
     [[ -n "$_pch_project_git_budget_timer_pid" ]] || return 0
-    /bin/kill "$_pch_project_git_budget_timer_pid" 2>/dev/null || true
+    builtin kill "$_pch_project_git_budget_timer_pid" 2>/dev/null || true
     wait "$_pch_project_git_budget_timer_pid" 2>/dev/null || true
     _pch_project_git_budget_timer_pid=""
 }
@@ -973,9 +973,7 @@ _pch_project_discovery_to_file() {
     local scan_root="$1"
     local output_file="$2"
     local max_results="$3"
-    local waited_ticks=0
-    local timeout_ticks=$((_pch_project_discovery_timeout * 10))
-    local command_pid command_status timeout_status="" limit_status=""
+    local command_pid command_timer_pid command_status timeout_status="" limit_status=""
     local limit_status_file="$output_file.limit"
     local test_stall_seconds="${PCH_TEST_PROJECT_DISCOVERY_STALL_SECONDS:-}"
 
@@ -987,6 +985,9 @@ _pch_project_discovery_to_file() {
         return 1
     fi
 
+    # A separate clock keeps scheduling delays from multiplying the deadline.
+    /bin/sleep "$_pch_project_discovery_timeout" >/dev/null 2>&1 &
+    command_timer_pid=$!
     (
         if [[ "${PCH_TEST_MODE:-}" == "1" \
             && "$test_stall_seconds" =~ ^[1-9][0-9]*$ ]]; then
@@ -1004,18 +1005,19 @@ _pch_project_discovery_to_file() {
     ) > "$output_file" 2>/dev/null &
     command_pid=$!
 
-    while /bin/kill -0 "$command_pid" 2>/dev/null; do
+    while builtin kill -0 "$command_pid" 2>/dev/null; do
         if _pch_project_git_budget_expired; then
             timeout_status="total_budget"
             break
         fi
-        if [[ "$waited_ticks" -ge "$timeout_ticks" ]]; then
+        if ! builtin kill -0 "$command_timer_pid" 2>/dev/null; then
             timeout_status="command_timeout"
             break
         fi
         /bin/sleep 0.1
-        waited_ticks=$((waited_ticks + 1))
     done
+    builtin kill "$command_timer_pid" 2>/dev/null || true
+    wait "$command_timer_pid" 2>/dev/null || true
 
     if [[ -n "$timeout_status" ]]; then
         _pch_project_git_kill_tree "$command_pid"
@@ -1051,8 +1053,7 @@ _pch_project_git_to_file() {
     local output_file="$2"
     shift 2
     local waited_ticks=0
-    local command_timeout_ticks=$((_pch_project_git_command_timeout * 10))
-    local command_pid command_status timeout_status="" output_size_bytes=0 limit_status=""
+    local command_pid command_timer_pid command_status timeout_status="" output_size_bytes=0 limit_status=""
     local test_stall_seconds="${PCH_TEST_PROJECT_GIT_STALL_SECONDS:-}"
     local output_limit_bytes=$((_pch_project_git_output_limit_kb * 1024))
     local limit_status_file="$output_file.limit"
@@ -1074,6 +1075,8 @@ _pch_project_git_to_file() {
     # 않는다. pipefail은 손상된 index의 Git 실패를 head 성공으로 숨기지 않는다.
     # checkout/user config의 core.fsmonitor는 실행 파일을 지정할 수 있으므로
     # 읽기 전용 스캔에서 강제로 끄고 optional index write도 금지한다.
+    /bin/sleep "$_pch_project_git_command_timeout" >/dev/null 2>&1 &
+    command_timer_pid=$!
     (
         if [[ "${PCH_TEST_MODE:-}" == "1" \
             && "${PCH_TEST_PROJECT_GIT_STALL_OPERATION:-}" == "$operation" \
@@ -1093,18 +1096,20 @@ _pch_project_git_to_file() {
     ) > "$output_file" 2>/dev/null &
     command_pid=$!
 
-    while /bin/kill -0 "$command_pid" 2>/dev/null; do
+    while builtin kill -0 "$command_pid" 2>/dev/null; do
         if _pch_project_git_budget_expired; then
             timeout_status="total_budget"
             break
         fi
-        if [[ "$waited_ticks" -ge "$command_timeout_ticks" ]]; then
+        if ! builtin kill -0 "$command_timer_pid" 2>/dev/null; then
             timeout_status="command_timeout"
             break
         fi
         /bin/sleep 0.1
         waited_ticks=$((waited_ticks + 1))
     done
+    builtin kill "$command_timer_pid" 2>/dev/null || true
+    wait "$command_timer_pid" 2>/dev/null || true
 
     if [[ -n "$timeout_status" ]]; then
         # 타임아웃 시점의 전체 자손 트리를 먼저 캡처해 종료한다.

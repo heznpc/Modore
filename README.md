@@ -70,12 +70,30 @@ Provider/workspace filters apply before reading bodies, so recent application
 discussions need not crowd out original work. Pages rerun the bounded search;
 they are not timeout checkpoints. `hasMore: null` means unknown coverage, and
 absence still requires `definitive: true`. `inspect --start` reads the exact
-visible-turn position returned by search. The native app retains its existing
-search preview; these scope and paging controls are available in CLI/MCP.
+visible-turn position returned by search. The native app also offers provider
+and exact-workspace filters, shows the submitted scope, and loads further pages
+without hiding previously returned matches. Its results show source coverage
+and index work for the latest page request, separately from accumulated hits.
 CLI/MCP search defaults to a 300-second budget (configurable up to 600 seconds),
 and its outer timeout follows that setting. JSONL search pages stream past the
 old 32 MiB file prefix while retaining a 16 MiB record bound and reporting any
 skips. Store discovery gaps are reported separately in `discoveryCoverage`.
+
+CLI, native-app, and MCP conversation searches share an incremental local index
+at `~/Library/Caches/Modore/session-search`. Once a file is indexed and unchanged,
+the index can exclude it when it cannot match; candidate files are still read
+from the original source. Changed files are indexed again. File discovery and
+metadata checks still run, and unavailable index entries fall back to source
+search. The first search can take longer while the index is built. If it stops
+early, later searches reuse the entries already built and continue indexing
+files they reach; this does not turn page offsets into timeout checkpoints.
+Use `modore search --no-index` to search without reading or updating the cache.
+
+The private cache uses a contentless FTS index: it stores derived search terms
+and source metadata, not full transcript copies, queries, or result snippets.
+The derived terms can still reveal sensitive content, and the cache is not
+encrypted. It is shared by local Modore callers so separate AI sessions can
+reuse indexing work; it is not a shared store of an agent's conclusions.
 
 **Currently implemented — turn test resources:** opt-in Claude/Codex lifecycle
 hooks connect a completed response to simulator runs started by
@@ -121,7 +139,7 @@ python3 scripts/scree.py title <session-file>     # one masked line: what that s
 - **Sole-copy judgment** — agent worktrees *and* primary checkouts stranded off main: protected (dirty or unpushed commits) versus rebuildable, from read-only git evidence, every verdict preview-grade with an explicit revalidation duty.
 - **Orphans & lineage** — sessions pointing at vanished workspaces (`orphan_basis: path_missing`), and every remembered work path classified alive+git / alive+plain / vanished, with macOS case-variant ghosts merged.
 - **Worktree coverage** — scree uses standard Git checks across agent worktrees regardless of their creating tool, primary checkouts stranded off main, and registry entries whose directories are gone.
-- **Contract** — ordinary audits retain only metadata; nested transcripts are attributed by `stat()` without being opened. Explicit `preserve`, `title`, `titles`, `inspect`, `search`, `evidence`, and `bind --deep` commands may read content as documented in `scree.py`. Raw backup operations below are a separate opt-in exception. None of these outputs grants deletion permission, and scans never create backups automatically.
+- **Contract** — ordinary audits retain only metadata; nested transcripts are attributed by `stat()` without being opened. Explicit `preserve`, `title`, `titles`, `inspect`, `search`, `evidence`, and `bind --deep` commands may read content as documented in `scree.py`. Conversation search can retain the private derived index described above; raw backup operations below are a separate opt-in exception. None of these outputs grants deletion permission, and scans never create backups automatically.
 
 ### Verified session backups (Mac)
 

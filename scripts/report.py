@@ -46,10 +46,17 @@ def main():
         print(f"ERROR: {scan_path} 이 없습니다. scanner를 먼저 실행하세요.", file=sys.stderr)
         sys.exit(1)
 
-    scan = load_json(scan_path)
+    try:
+        scan = load_json(scan_path)
+    except (OSError, ValueError) as error:
+        print(f"ERROR: 검사 결과를 읽을 수 없습니다: {error}", file=sys.stderr)
+        return 2
+    if not isinstance(scan, dict):
+        print("ERROR: 검사 결과는 JSON 객체여야 합니다. scanner를 다시 실행하세요.", file=sys.stderr)
+        return 2
 
     schema = scan.get("schemaVersion", "unknown")
-    if schema not in SUPPORTED_SCHEMA:
+    if not isinstance(schema, str) or schema not in SUPPORTED_SCHEMA:
         print(f"경고: scan_result.json의 schemaVersion={schema} 은 호환되지 않을 수 있습니다. "
               f"지원: {sorted(SUPPORTED_SCHEMA)}", file=sys.stderr)
 
@@ -63,19 +70,29 @@ def main():
 
     try:
         monitor = load_json(Path(args.monitor))
-    except Exception as e:
+        if monitor is not None and not isinstance(monitor, dict):
+            raise ValueError("monitor 결과는 JSON 객체여야 합니다.")
+    except (OSError, ValueError) as e:
         print(f"경고: monitor 로드 실패: {e}", file=sys.stderr)
         monitor = None
 
     lang = args.lang or detect_lang()
-    i18n = load_i18n(lang, project_dir, Path(args.explain))
-
-    html_out = build_report(i18n, scan, monitor)
+    try:
+        i18n = load_i18n(lang, project_dir, Path(args.explain))
+        html_out = build_report(i18n, scan, monitor)
+    except (OSError, ValueError, TypeError, AttributeError, KeyError) as error:
+        print(f"ERROR: 리포트를 만들 수 없습니다. 검사 결과 형식을 확인하세요: {error}", file=sys.stderr)
+        return 2
 
     output_path = Path(args.output)
-    output_path.write_text(html_out, encoding="utf-8")
-    print(f"HTML 리포트 생성 ({lang}): {output_path}")
+    try:
+        output_path.write_text(html_out, encoding="utf-8")
+    except OSError as error:
+        print(f"ERROR: 리포트를 저장할 수 없습니다: {error}", file=sys.stderr)
+        return 1
+    print(f"HTML 리포트 생성 ({i18n.lang}): {output_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

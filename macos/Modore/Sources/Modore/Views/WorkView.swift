@@ -113,9 +113,8 @@ struct WorkListPane: View {
                 WorkNotice(text: error, action: (L10n.text("다시 시도"), { model.refreshSessionIndex() }))
             } else if model.sessionIndexLoading && model.sessionIndex == nil {
                 WorkNotice(text: L10n.text("작업을 읽는 중…"), action: nil)
-            } else {
-                list
             }
+            list
         }
         .sheet(isPresented: $showingBackup) {
             SessionBackupSheet(source: nil, tool: nil)
@@ -132,6 +131,29 @@ struct WorkListPane: View {
             TextField(L10n.text("작업·대화 검색 (Return으로 대화 내용까지)"), text: $model.sessionSearch)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { model.runContentSearch() }
+                .accessibilityIdentifier("work-content-search-query")
+            HStack {
+                Picker(L10n.text("대화 제공자"), selection: $model.contentSearchProvider) {
+                    Text(L10n.text("모든 제공자")).tag("all")
+                    Text("Claude Code").tag("claude")
+                    Text("Claude Desktop").tag("claude-desktop")
+                    Text("Codex").tag("codex")
+                    Text("Gemini").tag("gemini")
+                }
+                .labelsHidden()
+                .accessibilityIdentifier("work-content-search-provider")
+                Button(L10n.text("대화 검색")) { model.runContentSearch() }
+                    .disabled(model.sessionSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("work-content-search-submit")
+            }
+            Picker(L10n.text("대화 검색 범위"), selection: $model.contentSearchWorkspace) {
+                Text(L10n.text("모든 프로젝트")).tag("")
+                ForEach(model.workProjects.filter { !$0.isUnassigned }) { project in
+                    Text(project.path).tag(project.path)
+                }
+            }
+            .labelsHidden()
+            .accessibilityIdentifier("work-content-search-workspace")
             Button(L10n.text("백업 확인·복원…")) { showingBackup = true }
                 .font(.caption)
                 .accessibilityIdentifier("work-backup-library")
@@ -146,6 +168,10 @@ struct WorkListPane: View {
                     Text(L10n.text("대화 내용을 검색하는 중…"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L10n.text("취소")) { model.cancelContentSearch() }
+                        .buttonStyle(.link)
+                        .accessibilityIdentifier("work-content-search-cancel")
                 }
             }
         }
@@ -191,13 +217,14 @@ struct WorkListPane: View {
                     Divider()
                 }
                 if let error = model.contentSearchError {
-                    WorkNotice(text: error, action: (L10n.text("다시 시도"), { model.runContentSearch() }))
+                    WorkNotice(text: error, action: (L10n.text("다시 시도"), { model.retryContentSearch() }))
                     Divider()
-                } else if let result = model.contentSearch {
+                }
+                if let result = model.contentSearch {
                     ContentSearchResults(result: result)
                     Divider()
                 }
-                if projects.isEmpty {
+                if projects.isEmpty && !model.sessionIndexLoading && model.sessionIndexError == nil {
                     WorkNotice(
                         text: model.workProjects.isEmpty
                             ? L10n.text("아직 확인된 작업이 없습니다.")
@@ -434,6 +461,7 @@ private struct WorkDetailPane: View {
     @State private var exportError: String?
 
     private var session: SessionIndexEntry? {
+        guard model.selectedSearchMatchForDetail == nil else { return nil }
         guard let source = model.selectedSessionSource else { return nil }
         return model.sessionIndex?.sessions.first { $0.source == source }
     }
@@ -517,13 +545,8 @@ private struct WorkDetailPane: View {
                     conversationDetail(
                         source: searchMatch.sourceURL,
                         provider: searchMatch.provider,
-                        retry: {
-                            model.loadConversation(
-                                source: searchMatch.sourceURL,
-                                provider: searchMatch.provider,
-                                retry: true
-                            )
-                        }
+                        start: searchMatch.index,
+                        retry: { model.openSearchMatch(searchMatch, retry: true) }
                     )
                 } else {
                     WorkAuditSummary()
@@ -535,6 +558,7 @@ private struct WorkDetailPane: View {
         .sheet(item: $backupTarget) { selected in
             SessionBackupSheet(source: selected.source, tool: selected.tool)
         }
+        .id(model.selectedSearchMatchForDetail?.id ?? model.selectedSessionSource)
     }
 
     private func exportConversation(tool: String, source: String) {
@@ -553,11 +577,12 @@ private struct WorkDetailPane: View {
     private func conversationDetail(
         source: URL,
         provider: SessionProvider,
+        start: Int? = nil,
         retry: @escaping () -> Void
     ) -> some View {
-        switch model.conversationState(source: source, provider: provider) {
+        switch model.conversationState(source: source, provider: provider, start: start) {
         case .loaded(let conversation):
-            SessionConversationBody(conversation: conversation)
+            SessionConversationBody(conversation: conversation, highlightedSourceIndex: start)
         case .failed(let message):
             VStack(alignment: .leading, spacing: 6) {
                 Text(message)
@@ -689,22 +714,39 @@ private struct ContentSearchResults: View {
     @EnvironmentObject private var model: ScanModel
     let result: SessionSearchResult
 
-    /// Enough to recognise the moment; the rest is behind the query.
-    static let shown = 12
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        LazyVStack(alignment: .leading, spacing: 6) {
             HStack {
                 // Name the query the results belong to. A search takes
                 // long enough that the box above may already say
                 // something else by the time these land.
                 Text(L10n.format("“%@” 대화 검색 · %@건", String(describing: result.query), String(describing: result.matches.count)))
                     .font(.caption.weight(.semibold))
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button(L10n.text("지우기")) { model.clearContentSearch() }
                     .buttonStyle(.link)
                     .font(.caption)
+            }
+            if let scope = result.scope {
+                Text(L10n.format("검색 범위: %@ · %@", providerName(scope.provider), scope.workspace ?? L10n.text("모든 프로젝트")))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Text(L10n.format("확인한 대화 %@/%@개", String(result.scannedSessions), String(result.totalSessions)))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if let index = result.index, index.enabled {
+                Text(L10n.format("이번 페이지: 색인으로 %@개 파일 제외 · 원문 %@개 확인 · 새로 색인 %@개", String(index.skippedArtifacts), String(index.sourceArtifactsRead), String(index.indexedArtifacts)))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("work-content-search-index")
+                if index.unavailableArtifacts > 0 {
+                    Text(L10n.format("색인 사용 불가 %@개 · 원문 검색 적용", String(index.unavailableArtifacts)))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             if result.matches.isEmpty {
                 // "Nothing matched" is only sayable when the search both
@@ -713,7 +755,7 @@ private struct ContentSearchResults: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            ForEach(result.matches.prefix(Self.shown)) { match in
+            ForEach(result.matches) { match in
                 Button {
                     model.openSearchMatch(match)
                 } label: {
@@ -730,17 +772,21 @@ private struct ContentSearchResults: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(6)
                     .background(
-                        model.selectedSessionSource == match.source
+                        model.selectedSearchMatchForDetail?.id == match.id
                             ? Color.primary.opacity(0.06) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 4))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-            if result.matches.count > Self.shown {
-                Text(L10n.format("외 %@건은 검색어를 좁혀서 보세요.", String(describing: result.matches.count - Self.shown)))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            if result.hasMore == true {
+                Button(L10n.text("검색 결과 더 보기")) { model.loadMoreContentSearch() }
+                    .buttonStyle(.link)
+                    .disabled(model.contentSearchRunning)
+                    .accessibilityIdentifier("work-content-search-more")
+            } else if result.truncatedReason == "time" && !model.contentSearchRunning {
+                Button(L10n.text("이 범위 다시 검색")) { model.retryContentSearch() }
+                    .buttonStyle(.link)
             }
             // The coverage the answer rests on, never omitted.
             if let caveat = result.caveat {
@@ -752,5 +798,15 @@ private struct ContentSearchResults: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Color.primary.opacity(0.03))
+    }
+
+    private func providerName(_ provider: String?) -> String {
+        switch provider {
+        case "claude": return "Claude Code"
+        case "claude-desktop": return "Claude Desktop"
+        case "codex": return "Codex"
+        case "gemini": return "Gemini"
+        default: return L10n.text("모든 제공자")
+        }
     }
 }

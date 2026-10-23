@@ -5,11 +5,10 @@
 ```bash
 modore sessions current
 modore sessions --limit 50
+modore inspect <source> --start 0 --turns 12
+modore search --provider claude --workspace Modore --offset 0 --limit 20
 modore search --first                         # query bytes arrive on stdin
 modore search --limit 20 --budget-seconds 30  # query bytes arrive on stdin
-modore search --provider claude --exclude-workspace apply- --limit 20
-modore search --provider claude --exclude-workspace apply- --offset 20
-modore inspect /absolute/source/from/search.jsonl --start 40 --turns 12
 ```
 
 `sessions current` is the narrow first choice for the calling Codex task. It
@@ -17,38 +16,26 @@ uses `CODEX_THREAD_ID`/`CODEX_SESSION_ID` only as lookup hints, validates the
 matching JSONL header, and reads no conversation body. `sessions` reads
 metadata only and groups Codex rollout fragments by provider session ID while
 retaining their physical sources. `search --first` returns the newest hit and
-explicitly reports incomplete coverage. Ordinary `search` returns pages of
-matching turns, including matches beyond the old three-per-session preview.
-`--provider` selects claude (Claude Code), claude-desktop, codex, or gemini.
-`--workspace` includes a case-insensitive path substring; repeatable
-`--exclude-workspace` removes matching workspaces before content is read.
-These match recorded workspace metadata, not every repository mentioned in a
-conversation. Sessions with unknown workspaces cannot match an inclusion.
-`totalSessions` is the selected scope; `discoveredSessions` is the full catalog.
-Reuse `nextOffset` with the SAME query, filters and limit. `hasMore: null`
-means incomplete coverage, not no more results. Offsets rerun a bounded search;
-they are not timeout checkpoints, and new/edited sessions can move page positions.
-An absence claim still requires `definitive: true`.
-`discoveryCoverage` identifies store-level catalog gaps separately from
-files actually searched; a provider filter uses that provider's coverage.
-CLI/MCP pages stream JSONL beyond the legacy 32 MiB file prefix. Individual
-JSONL records remain bounded at 16 MiB; larger records are skipped with
-explicit incomplete coverage. Monolithic JSON stores retain their read bound.
+explicitly reports incomplete coverage. Ordinary `search` is the exhaustive
+content-reading path;
 snippets remain masked unless a user separately invokes lower-level raw mode.
 The agent surface defaults session listing to 50 and caps it at 500; search is
-capped at 200 matches PER PAGE and a 4096-byte UTF-8 query. Search defaults
-to a 300-second budget, accepts 1..600 seconds, and the outer wall clock follows
-that budget with a 10-second grace period. A hit-filled page returns early. Session listing has a 30-second outer wall
+capped at 200 matches, a 55-second internal budget, a 60-second outer wall
+clock, and a 4096-byte UTF-8 query. Session listing has a 30-second outer wall
 clock. Do not put the search phrase in shell history, process arguments, or a
 temporary file.
 
-`modore inspect` opens a source returned by search. `--start` is the search
-hit's zero-based `index`; omit it for recent turns. `sourceIndex` in the
-returned turns preserves the full conversation position. `--turns` accepts
-1..500; it uses the same full JSONL reader as paged search, while returned
-text remains masked and clipped. This is the existing Modore parser,
-not a separate Python fallback. Backup, verification and restore remain
-available through the app and `scripts/scree.py` for an exact named source/archive.
+Search filters apply before content reads: repeatable `--workspace` uses case-insensitive
+substring matching (OR); `--workspace-exact` uses exact paths; repeatable
+`--exclude-workspace` excludes matching paths. `--provider` selects claude/claude-desktop/codex/gemini/kiro.
+`nextOffset` advances a result page; `hasMore: null` means the remaining coverage is unknown.
+Offsets are stable only while the session store is unchanged. JSONL reads accept up to
+512 MiB per file and 16 MiB per record; larger records/files still report truncation. Each file returns at most 2,000 hits;
+that limit is also reported as incomplete coverage, not a complete search.
+
+Backup, verification and restore remain available through
+the Modore app and `scripts/scree.py`. Those operations require an exact named
+source or archive; do not infer one from a transcript.
 
 ## Storage
 
@@ -81,8 +68,7 @@ The installer merges two synchronous lifecycle hooks and a Vercel CLI reuse
 `PreToolUse` guard into the selected user's
 configuration and backs up existing JSON under Modore's work-resource directory.
 It preserves other hooks and does not grant trust. Codex requires review of the
-lifecycle hooks and CLI guard in CLI `/hooks`; desktop invocation needs separate
-host verification and existing sessions may need a refresh.
+lifecycle hooks and CLI guard in `/hooks`; existing sessions may need a refresh.
 
 `UserPromptSubmit` records metadata and supplies the turn token. `Stop` explicitly
 ends that turn's managed test use. Codex matches `turn_id`; Claude uses a generated

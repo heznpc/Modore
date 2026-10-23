@@ -11,6 +11,23 @@ from pathlib import Path
 import pytest
 
 
+def test_list_is_static_without_a_home_or_runtime_setup(project_root, tmp_path):
+    unavailable_home = tmp_path / 'does-not-exist'
+    result = subprocess.run(
+        [str(project_root / 'scripts/cleanup.sh'), '--list'],
+        env={**os.environ, 'HOME': str(unavailable_home), 'PCH_TEST_MODE': '1',
+             'PCH_HOME_OVERRIDE': str(unavailable_home)},
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    rows = result.stdout.splitlines()
+    assert len([row for row in rows if row.startswith('recipe\t')]) == 12
+    assert 'recipe\tchrome_code_sign_clones' in rows
+    assert 'label\tChrome code-sign clones' in rows
+    assert 'recipe\tinnorix_ex' in rows
+    assert not unavailable_home.exists()
+
+
 def parse_protocol(text: str) -> dict[str, object]:
     values: dict[str, object] = {}
     targets: list[str] = []

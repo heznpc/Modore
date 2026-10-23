@@ -62,13 +62,16 @@ function Render-ListTable($Rows, [string[]]$Fields) {
             $v = $row.PSObject.Properties[$f]
             if ($null -eq $v) { '<td></td>' } else { "<td>$(HtmlEncode $v.Value)</td>" }
         }
-        "<tr class='risk-$risk'>$($cells -join '')<td>$(Get-InvestigateLinks $row)</td></tr>"
+        "<tr class='risk-$(HtmlEncode $risk)'>$($cells -join '')<td>$(Get-InvestigateLinks $row)</td></tr>"
     }
     return "<table><thead><tr>$head</tr></thead><tbody>$($body -join '')</tbody></table>"
 }
 
 $summary = $scanObj.summary
 $overall = [string]$summary.overall
+$validOverall = $overall -cin @('safe', 'warning', 'danger', 'incomplete')
+if (-not $validOverall) { $overall = 'incomplete' }
+$verdictMessage = if ($validOverall) { $summary.message } else { '검사 결과를 확인할 수 없습니다.' }
 $icon = @{ safe = '🟢'; warning = '🟡'; danger = '🔴'; incomplete = '⚪' }[$overall]
 if (-not $icon) { $icon = '⚪' }
 $findings = @($scanObj.findings | Where-Object { $_.level -in @('danger','warning') })
@@ -85,7 +88,7 @@ $actionHtml = ($actions | ForEach-Object { "<li>$(HtmlEncode $_)</li>" }) -join 
 $findingHtml = if ($findings.Count -eq 0) {
     '<p class="muted">주의가 필요한 항목이 발견되지 않았습니다.</p>'
 } else {
-    ($findings | ForEach-Object { "<div class='finding $($_.level)'><b>$(HtmlEncode $_.title)</b><br>$(HtmlEncode $_.detail)</div>" }) -join ''
+    ($findings | ForEach-Object { "<div class='finding $(HtmlEncode $_.level)'><b>$(HtmlEncode $_.title)</b><br>$(HtmlEncode $_.detail)</div>" }) -join ''
 }
 
 $collection = $scanObj.collection
@@ -102,7 +105,7 @@ $collectionHtml = if ($null -eq $collection) {
     @"
 <h2>검사 범위</h2>
 <div class="panel">
-<div>필수 $($collection.completedRequiredCount)/$($collection.requiredCount)건 완료 · 전체 $($collection.completedCount)/$($collection.sourceCount)건 완료</div>
+<div>필수 $(HtmlEncode $collection.completedRequiredCount)/$(HtmlEncode $collection.requiredCount)건 완료 · 전체 $(HtmlEncode $collection.completedCount)/$(HtmlEncode $collection.sourceCount)건 완료</div>
 <table><thead><tr><th scope="col">수집 항목</th><th scope="col">상태</th><th scope="col">상세</th></tr></thead><tbody>$rows</tbody></table>
 </div>
 "@
@@ -122,7 +125,7 @@ $vtHtml = if ($null -eq $vt -or -not $vt.enabled) {
     @"
 <h2>VirusTotal 조회</h2>
 <div class="panel">
-<div>이번 검사 조회 $($vt.callsThisScan)건 · 캐시 유지 $($vt.cacheHours)시간</div>
+<div>이번 검사 조회 $(HtmlEncode $vt.callsThisScan)건 · 캐시 유지 $(HtmlEncode $vt.cacheHours)시간</div>
 $skippedNote
 </div>
 "@
@@ -151,9 +154,9 @@ $html = @"
 <body><main id="main"><div class="container">
 <h1>🩺 Modore 결과</h1>
 <div class="meta">$(HtmlEncode $scanObj.computerName) / $(HtmlEncode $scanObj.userName) · $(HtmlEncode $scanObj.osVersion) · 검사 시각: $(HtmlEncode $scanObj.scannedAt)</div>
-<div class="verdict $overall"><div class="icon">$icon</div><div><div class="big">$(HtmlEncode $summary.message)</div><div>위험 $($summary.dangerCount)건 · 확인 $($summary.warningCount)건</div></div></div>
+<div class="verdict $(HtmlEncode $overall)"><div class="icon">$icon</div><div><div class="big">$(HtmlEncode $verdictMessage)</div><div>위험 $(HtmlEncode $summary.dangerCount)건 · 확인 $(HtmlEncode $summary.warningCount)건</div></div></div>
 <div class="panel"><h2>다음 행동</h2><ol>$actionHtml</ol><div class="share">도움을 요청하려고 리포트를 공유할 때는 PC 이름, 사용자 이름, 경로에 포함된 개인 정보를 먼저 가리세요.</div></div>
-<div class="cards"><div class="card"><div class="count">$($summary.dangerCount)</div><div>위험 항목</div></div><div class="card"><div class="count">$($summary.warningCount)</div><div>확인 필요</div></div><div class="card"><div class="count">$(@($scanObj.findings | Where-Object { $_.level -eq 'safe' }).Count)</div><div>정상 확인</div></div></div>
+<div class="cards"><div class="card"><div class="count">$(HtmlEncode $summary.dangerCount)</div><div>위험 항목</div></div><div class="card"><div class="count">$(HtmlEncode $summary.warningCount)</div><div>확인 필요</div></div><div class="card"><div class="count">$(@($scanObj.findings | Where-Object { $_.level -eq 'safe' }).Count)</div><div>정상 확인</div></div></div>
 <h2>주요 발견 사항</h2>$findingHtml
 $collectionHtml
 $vtHtml

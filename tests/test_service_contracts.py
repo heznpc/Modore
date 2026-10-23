@@ -2371,3 +2371,66 @@ def test_release_report_generators_have_investigation_links(project_root):
         assert "https://www.virustotal.com/gui/file" in source
         assert "noopener noreferrer" in source
         assert "aria-label" in source
+
+
+def _render_native_report(project_root, tmp_path, renderer, scan):
+    scan_path = tmp_path / "native-scan.json"
+    report_path = tmp_path / "native-report.html"
+    scan_path.write_text(json.dumps(scan), encoding="utf-8")
+    if renderer == "jxa":
+        if sys.platform != "darwin":
+            pytest.skip("JXA report renderer requires macOS")
+        command = ["/usr/bin/osascript", "-l", "JavaScript", str(project_root / "scripts/report.jxa.js")]
+        env = {**os.environ, "PCH_LANG": "en", "PCH_REPORT_STRINGS": "", "PCH_SCAN": str(scan_path),
+               "PCH_REPORT_OUTPUT": str(report_path)}
+    else:
+        powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+        if powershell is None:
+            pytest.skip("PowerShell report renderer requires powershell.exe or pwsh")
+        command = [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                   "-File", str(project_root / "scripts/report.ps1"), "-Scan", str(scan_path), "-Output", str(report_path)]
+        env = os.environ.copy()
+    result = subprocess.run(command, env=env, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    return report_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("renderer", ["jxa", "powershell"])
+@pytest.mark.parametrize("overall", [None, "", "unexpected", "safe\" onclick=\"alert(1)", True, {"status": "safe"}])
+def test_native_report_unknown_verdict_is_incomplete(project_root, tmp_path, renderer, overall):
+    summary = {"message": "stale safe conclusion", "dangerCount": 0, "warningCount": 0}
+    if overall is not None:
+        summary["overall"] = overall
+    html = _render_native_report(project_root, tmp_path, renderer, {
+        "summary": summary, "findings": [], "sections": {},
+    })
+    assert 'class="verdict incomplete"' in html
+    assert "stale safe conclusion" not in html
+    assert 'class="verdict safe"' not in html
+
+
+@pytest.mark.parametrize("renderer", ["jxa", "powershell"])
+def test_native_report_escapes_imported_counts_and_attributes(project_root, tmp_path, renderer):
+    from html.parser import HTMLParser
+
+    markup = '<script>alert("untrusted")</script>'
+    risk = "warning' onclick='alert(1)"
+    html = _render_native_report(project_root, tmp_path, renderer, {
+        "summary": {"overall": "warning", "message": markup, "dangerCount": markup, "warningCount": markup},
+        "findings": [{"level": "warning", "title": markup, "detail": markup}],
+        "collection": {"completedRequiredCount": markup, "requiredCount": markup,
+                       "completedCount": markup, "sourceCount": markup, "sources": []},
+        "sections": {"cpu": [{"name": markup, "risk": risk}],
+                     "virustotal": {"enabled": True, "callsThisScan": markup, "cacheHours": markup,
+                                    "skippedForBudget": 0}},
+    })
+    assert '<script>' not in html
+    assert '&lt;script&gt;' in html
+    assert 'class="verdict warning"' in html
+
+    class Attributes(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            assert tag != "script"
+            assert not any(name.startswith("on") for name, _ in attrs), (tag, attrs)
+
+    Attributes().feed(html)

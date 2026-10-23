@@ -42,8 +42,10 @@ default:
   returns masked snippets with the coverage the answer rests on. The one
   exception that is not scoped to named sessions -- it cannot be, since
   finding which session matters is the question -- so it is scoped by the
-  query instead: it runs only on an explicit search, retains nothing, and
-  no verdict reads it.
+  query instead: it runs only on an explicit search and no verdict reads it.
+  `--use-index` reuses a private content-derived local trigram index and source
+  fingerprints. It stores no full transcripts, snippets or queries. Without
+  that flag, no search data is retained.
 - `scree.py evidence <query>` answers "how was this handled before" from
   four separate sources -- what was said, provider tool invocations and
   their correlated outcomes, Modore cleanup receipts, and free-space
@@ -76,6 +78,7 @@ import ctypes
 import errno
 import fcntl
 import hashlib
+import importlib.util
 import io
 import json
 import math
@@ -135,6 +138,13 @@ CLAUDE_DESKTOP_LOCAL_SESSIONS = (
 )
 CLAUDE_DESKTOP_PROVIDER = "claude-desktop"
 CLAUDE_DESKTOP_TOOL = "Claude Desktop"
+# These provider-owned namespaces sit beside conversation metadata, not below
+# a local_* conversation unit. Their plugin/cache depth says nothing about
+# whether every conversation was discovered. Keep the exclusions positional:
+# an unknown namespace elsewhere still receives the usual bounded scan.
+CLAUDE_DESKTOP_ORG_AUXILIARY_DIRECTORIES = frozenset({
+    "cowork_plugins", "rpm", "backups", "debug", ".claude.json.lock",
+})
 CLAUDE_DESKTOP_METADATA_MAX_BYTES = 4 * 1024 * 1024
 CLAUDE_DESKTOP_METADATA_TOTAL_BYTES = 64 * 1024 * 1024
 CLAUDE_DESKTOP_METADATA_MAX_FILES = 4096
@@ -769,6 +779,11 @@ def _claude_desktop_metadata_scan(
                             unrecognized += 1
                         continue
                     if entry.is_dir(follow_symlinks=False):
+                        if ((not relative_parts and name == "skills-plugin")
+                                or (len(relative_parts) == 2
+                                    and name in
+                                    CLAUDE_DESKTOP_ORG_AUXILIARY_DIRECTORIES)):
+                            continue
                         if depth >= 3:
                             truncated = True
                             continue
@@ -1844,7 +1859,8 @@ def collect_claude(home: Path) -> tuple[list[dict], dict]:
     if status == "ok" and unsafe:
         status = "unrecognized"
     return records, {"store": "Claude", "status": status, "count": sessions,
-                     "unrecognized": unresolved + unsafe,
+                     "unrecognized": unsafe,
+                     "unresolved_workspaces": unresolved,
                      "subtranscripts": subtranscripts}
 
 
@@ -3575,6 +3591,11 @@ def _collect_gemini_chats_with_coverage(home: Path) -> tuple[list[dict], dict]:
             relative = candidate.path.relative_to(chat_root)
         except ValueError:
             discovery["unrecognized"] += 1
+            continue
+        if len(relative.parts) == 2 and relative.parts[1] == "logs.json":
+            # Gemini CLI's per-project event log is not a saved chat. Only
+            # this known sibling of chats/ is excluded; unknown JSON leaves
+            # and malformed files inside chats/ still affect coverage.
             continue
         if len(relative.parts) != 3 or relative.parts[1] != "chats":
             # A JSON leaf elsewhere below tmp is a provider layout this build
@@ -5815,6 +5836,7 @@ def _read_jsonl_turns(
 def _read_session_turns(
         source: Path, home: Optional[Path] = None, *,
         deadline: Optional[float] = None, full_content: bool = False,
+        expected_fingerprint: Optional[tuple] = None,
         ) -> tuple[list[VisibleTurn], str]:
     """`(turns, status)` for one session.
 
@@ -5836,6 +5858,8 @@ def _read_session_turns(
             return ([], desktop_status)
         try:
             before = os.fstat(desktop_descriptor)
+            if expected_fingerprint is not None and _search_stat_fingerprint(before) != expected_fingerprint:
+                return ([], "unreadable")
             with os.fdopen(os.dup(desktop_descriptor), "rb") as handle:
                 (turns, decoded_any, truncated, timed_out,
                  parse_failed) = _read_jsonl_turns(
@@ -5861,10 +5885,13 @@ def _read_session_turns(
     if source.suffix == ".json":
         if deadline is not None and time.monotonic() >= deadline:
             return ([], "time")
-        raw, _, read_status = _read_regular_bytes_nofollow(
+        raw, read_info, read_status = _read_regular_bytes_nofollow(
             source, SESSION_CONTENT_MAX_BYTES)
         if raw is None:
             return ([], read_status)
+        if expected_fingerprint is not None and (read_info is None or
+                _search_stat_fingerprint(read_info) != expected_fingerprint):
+            return ([], "unreadable")
         try:
             payload = json.loads(raw.decode("utf-8-sig"))
         except JSON_PARSE_ERRORS:
@@ -5903,6 +5930,8 @@ def _read_session_turns(
     if descriptor is None or before is None:
         return ([], open_status)
     try:
+        if expected_fingerprint is not None and _search_stat_fingerprint(before) != expected_fingerprint:
+            return ([], "unreadable")
         with os.fdopen(os.dup(descriptor), "rb") as handle:
             (turns, decoded_any, truncated, timed_out,
              parse_failed) = _read_jsonl_turns(
@@ -5950,10 +5979,13 @@ def _canonical_visible_turns(turns: list[VisibleTurn]) -> list[VisibleTurn]:
 def visible_turns(
         source: Path, home: Optional[Path] = None, *,
         deadline: Optional[float] = None, full_content: bool = False,
+        expected_fingerprint: Optional[tuple] = None,
         ) -> tuple[list[VisibleTurn], str]:
     """Return visible turns and status for one session. Share this definition across inspect, search, and title. Collapse consecutive duplicate provider representations while preserving distinct user turns, and exclude system and developer harness messages."""
     turns, status = _read_session_turns(source, home, deadline=deadline,
-                                        **({"full_content": True} if full_content else {}))
+                                        **({"full_content": True} if full_content else {}),
+                                        **({"expected_fingerprint": expected_fingerprint}
+                                           if expected_fingerprint is not None else {}))
     if status not in ("ok", "truncated", "time", "parse"):
         return ([], status)
     return (_canonical_visible_turns(turns), status)
@@ -9883,17 +9915,105 @@ def _search_one_session_isolated(
 SEARCH_ARTIFACTS_PER_WORKER = 128
 
 
+def _new_search_index(home: Path):
+    """Load only the sibling module (or the Mac app's pinned module)."""
+    try:
+        module = sys.modules.get("session_search_index")
+        if module is None:
+            path = Path(__file__).absolute().with_name("session_search_index.py")
+            if path.is_symlink() or not path.is_file():
+                return None
+            spec = importlib.util.spec_from_file_location("session_search_index", path)
+            if spec is None or spec.loader is None:
+                return None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+        index = module.SearchIndex(home)
+        if not index.available:
+            index.close()
+            return None
+        return index
+    except (ImportError, OSError, ValueError, AttributeError):
+        return None
+
+
+def _search_stat_fingerprint(info: os.stat_result) -> tuple:
+    return (info.st_dev, info.st_ino, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _search_index_signature(source: Path, home: Path) -> Optional[tuple]:
+    descriptor, _, status = _open_claude_desktop_primary(source, home)
+    if status == "not-desktop":
+        descriptor, _, status = _open_regular_nofollow(source)
+    if descriptor is None or status != "ok":
+        return None
+    try:
+        info = os.fstat(descriptor)
+        return _search_stat_fingerprint(info)
+    finally:
+        os.close(descriptor)
+
+
+def _search_index_text(turns, maximum_bytes: int = 32 * 1024 * 1024) -> Optional[str]:
+    # Oversized files remain searchable through the original reader. Do not
+    # allocate another complete body just to learn that the cache rejects it.
+    if sum(len(turn.text) + 1 for turn in turns) > maximum_bytes:
+        return None
+    chunks = []
+    size = 0
+    for turn in turns:
+        chunk = " ".join(turn.text.split()).casefold()
+        try:
+            size += len(chunk.encode("utf-8")) + 1
+        except UnicodeError:
+            return None
+        if size > maximum_bytes:
+            return None
+        chunks.append(chunk)
+    return "\n".join(chunks)
+
+
+def _indexed_search_turns(source: Path, needle: str, home: Path,
+                          deadline: Optional[float], index, metrics: dict):
+    before = _search_index_signature(source, home)
+    candidate = index.lookup(str(source), before, needle) if before else None
+    if not index.available:
+        metrics["unavailableArtifacts"] += 1
+    if candidate is not None:
+        metrics["reusedArtifacts"] += 1
+    if candidate is False and before == _search_index_signature(source, home):
+        metrics["skippedArtifacts"] += 1
+        return [], "ok"
+    metrics["sourceArtifactsRead"] += 1
+    turns, status = visible_turns(source, home, deadline=deadline, full_content=True,
+                                  expected_fingerprint=before)
+    after = _search_index_signature(source, home)
+    if before is not None and before != after:
+        return [], "unreadable"
+    if status == "ok" and before is not None and candidate is None:
+        text = _search_index_text(turns)
+        if text is not None and index.record(str(source), before, text):
+            metrics["indexedArtifacts"] += 1
+        if not index.available and not metrics["unavailableArtifacts"]:
+            metrics["unavailableArtifacts"] += 1
+    return turns, status
+
+
 def _search_batch_isolated(
         sources: list[str], needle: str, *, raw: bool, home: Path,
         deadline: float, match_budget: int, first: bool,
         per_session_limit: Optional[int] = None,
+        use_index: bool = False, index_metrics: Optional[dict] = None,
         ) -> list[tuple[list[dict], str, int]]:
     """Stream bounded artifact results from one owned reader process.
 
     Each row is committed to the pipe before opening the next source. A stuck
     later file cannot erase earlier hits. The child stops at the first hit or
     remaining match budget, so batching does not read past an explicit stop.
-    No query, transcript, result, or search index is persisted.
+    Queries, full transcripts and results are not persisted. With use_index,
+    completed stable artifacts update the shared private derived index.
     """
     if not sources:
         return []
@@ -9909,16 +10029,29 @@ def _search_batch_isolated(
                 os.close(descriptor)
         return [([], "unreadable", 0)]
     if pid == 0:
+        index = None
         try:
             os.close(read_descriptor)
+            if use_index:
+                index = _new_search_index(home)
             emitted_hits = 0
             for source in sources:
+                metrics = {"reusedArtifacts": 0, "skippedArtifacts": 0,
+                           "sourceArtifactsRead": 0, "indexedArtifacts": 0,
+                           "unavailableArtifacts": 0}
                 extra = ({} if per_session_limit is None else
                          {"match_limit": per_session_limit})
+                if use_index:
+                    if index is not None:
+                        extra.update(search_index=index, index_metrics=metrics)
+                    else:
+                        metrics["unavailableArtifacts"] = 1
+                        metrics["sourceArtifactsRead"] = 1
                 result = _search_one_session_bounded(
                     Path(source), needle, raw=raw, home=home, deadline=deadline,
                     **extra)
-                encoded = (json.dumps(result, ensure_ascii=True,
+                wire_result = (*result, metrics) if use_index else result
+                encoded = (json.dumps(wire_result, ensure_ascii=True,
                                       separators=(",", ":")) + "\n").encode("utf-8")
                 if len(encoded) > SESSION_CONTENT_ISOLATION_MAX_BYTES:
                     break
@@ -9932,6 +10065,8 @@ def _search_batch_isolated(
         except BaseException:
             pass
         finally:
+            if index is not None:
+                index.close()
             os.close(write_descriptor)
         os._exit(0)
 
@@ -9968,7 +10103,7 @@ def _search_batch_isolated(
                         except JSON_PARSE_ERRORS:
                             failure = "unreadable"
                             break
-                        if (not isinstance(row, list) or len(row) != 3
+                        if (not isinstance(row, list) or len(row) != (4 if use_index else 3)
                                 or not isinstance(row[0], list)
                                 or not all(isinstance(hit, dict) for hit in row[0])
                                 or not isinstance(row[1], str)
@@ -9976,6 +10111,16 @@ def _search_batch_isolated(
                                 or len(results) >= len(sources)):
                             failure = "unreadable"
                             break
+                        if use_index:
+                            keys = ("reusedArtifacts", "skippedArtifacts", "sourceArtifactsRead",
+                                    "indexedArtifacts", "unavailableArtifacts")
+                            if (not isinstance(row[3], dict) or any(
+                                    type(row[3].get(key)) is not int or row[3][key] < 0 for key in keys)):
+                                failure = "unreadable"
+                                break
+                            if index_metrics is not None:
+                                for key in keys:
+                                    index_metrics[key] += row[3][key]
                         results.append((row[0], row[1], row[2]))
                     if failure:
                         break
@@ -10047,8 +10192,10 @@ def build_search(query: str, home: Path, *, raw: bool = False,
                  first: bool = False,
                  budget_seconds: float = SEARCH_DEFAULT_BUDGET_SECONDS,
                  provider: Optional[str] = None, workspace: Optional[str] = None,
+                 workspace_exact: Optional[str] = None,
                  exclude_workspace: tuple[str, ...] = (),
-                 per_session_limit: Optional[int] = None) -> dict:
+                 per_session_limit: Optional[int] = None,
+                 use_index: bool = False) -> dict:
     """Find a phrase across every session on the machine.
 
     The one thing the owner kept leaving this app to do. Modore could
@@ -10067,6 +10214,8 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     quietly stops at a time budget while reporting nothing found is the
     same collapse this codebase keeps having to undo.
     """
+    if workspace is not None and workspace_exact is not None:
+        raise ValueError("choose --workspace or --workspace-exact, not both")
     started = time.monotonic()
     deadline = started + max(0.0, budget_seconds)
     needle = " ".join(query.split()).casefold()
@@ -10103,11 +10252,20 @@ def build_search(query: str, home: Path, *, raw: bool = False,
     if workspace:
         sessions = [s for s in sessions
                     if workspace.casefold() in (s.get("workspace") or "").casefold()]
+    if workspace_exact is not None:
+        # Picker values name one recorded workspace. Do not resolve provider
+        # paths or touch mounts, and do not include similarly named siblings.
+        selected_workspace = os.path.normpath(workspace_exact)
+        sessions = [s for s in sessions if s.get("workspace")
+                    and os.path.normpath(s["workspace"]) == selected_workspace]
     if exclude_workspace:
         sessions = [s for s in sessions if not any(
             term.casefold() in (s.get("workspace") or "").casefold()
             for term in exclude_workspace)]
     matches: list[dict] = []
+    index_metrics = {"enabled": use_index, "reusedArtifacts": 0,
+                     "skippedArtifacts": 0, "sourceArtifactsRead": 0,
+                     "indexedArtifacts": 0, "unavailableArtifacts": 0}
     match_ids: set[tuple] = set()
     scanned = unreadable = parse_errors = leaked_workers = truncated_sessions = 0
     scanned_artifacts = 0
@@ -10130,6 +10288,7 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         session_unreadable = session_parse = session_leaked = session_truncated = False
         session_timed_out = False
         for artifact_source in _session_artifact_sources(session):
+            fallback_occurrences: dict[tuple, int] = {}
             if not pending_results and time.monotonic() >= deadline:
                 session_truncated = session_timed_out = True
                 truncated_reason = "time"
@@ -10140,6 +10299,7 @@ def build_search(query: str, home: Path, *, raw: bool = False,
                                      scanned_artifacts + SEARCH_ARTIFACTS_PER_WORKER],
                     needle, raw=raw, home=home, deadline=deadline,
                     match_budget=max(0, limit - len(matches)), first=first,
+                    **({"use_index": True, "index_metrics": index_metrics} if use_index else {}),
                     **({} if per_session_limit is None else
                        {"per_session_limit": per_session_limit}))
             found, read_status, session_omitted = pending_results.pop(0)
@@ -10161,13 +10321,23 @@ def build_search(query: str, home: Path, *, raw: bool = False,
                 if truncated_reason != "time":
                     truncated_reason = "limit"
             for hit in found:
+                session_identity = session.get("sessionId") or session.get("source")
                 identity = (
-                    "event", session["tool"], session.get("sessionId"),
+                    "event", session["tool"], session_identity,
                     hit["eventId"],
                 ) if hit.get("eventId") else (
-                    "fallback", session["tool"], session.get("sessionId"),
-                    hit.get("role"), hit.get("at"), hit.get("snippet"),
+                    "fallback", session["tool"], session_identity,
+                    hit.get("role"), hit.get("at"),
+                    hit.get("_identity", hit.get("snippet")),
                 )
+                if not hit.get("eventId"):
+                    # Replay fragments may repeat a turn, but a person can
+                    # also say the same thing twice in one conversation.
+                    # Match occurrences across artifacts, never snippets or
+                    # separate positions inside a single artifact.
+                    occurrence = fallback_occurrences.get(identity, 0)
+                    fallback_occurrences[identity] = occurrence + 1
+                    identity = (*identity, occurrence)
                 if identity in match_ids:
                     continue
                 match_ids.add(identity)
@@ -10177,7 +10347,8 @@ def build_search(query: str, home: Path, *, raw: bool = False,
                         truncated_reason = "limit"
                     continue
                 context = {
-                    **hit,
+                    **{key: value for key, value in hit.items()
+                       if key != "_identity"},
                     "tool": session["tool"],
                     "source": artifact_source,
                     "workspace": session["workspace"],
@@ -10202,11 +10373,13 @@ def build_search(query: str, home: Path, *, raw: bool = False,
             break
         if limit > 0 and len(matches) >= limit:
             sessions_skipped_by_limit = max(0, len(sessions) - scanned)
-            if sessions_skipped_by_limit or matches_omitted_at_least:
+            if (scanned_artifacts < total_artifacts
+                    or sessions_skipped_by_limit or matches_omitted_at_least):
                 truncated_reason = "limit"
                 break
 
     swept = (truncated_reason is None and scanned == len(sessions)
+             and scanned_artifacts == total_artifacts
              and discovery_complete and truncated_sessions == 0
              and unreadable == 0 and parse_errors == 0)
     if truncated_reason is None:
@@ -10229,7 +10402,9 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         "discoveredSessions": discovered_sessions,
         "discoveryCoverage": {"complete": discovery_complete,
                               "stores": discovery_stores},
-        "scope": {"provider": provider, "workspace": workspace,
+        "scope": {"provider": provider,
+                  "workspace": workspace_exact if workspace_exact is not None else workspace,
+                  "workspaceMatch": "exact" if workspace_exact is not None else "contains",
                   "excludeWorkspace": list(exclude_workspace)},
         "totalArtifacts": total_artifacts,
         "unreadableSessions": unreadable,
@@ -10257,6 +10432,7 @@ def build_search(query: str, home: Path, *, raw: bool = False,
         # two is how "81 occurrences" becomes "ran 81 times".
         "evidenceKind": "conversation_mention",
         "masked": not raw,
+        "index": index_metrics,
     }
 
 
@@ -10264,8 +10440,9 @@ def build_search_page(query: str, home: Path, *, limit: int = 20,
                       offset: int = 0, **kwargs) -> dict:
     """Page matching turns, including those beyond the legacy three-hit preview.
 
-    Offsets apply to the same query/scope on an unchanged corpus. No transcript
-    or query is persisted. A page reruns the bounded search, so a timeout is
+    Offsets apply to the same query/scope on an unchanged corpus. No full
+    transcript or query is persisted. A page reruns the bounded search, reusing
+    the optional derived index, so a timeout is
     never presented as the end of the corpus or as a resumable checkpoint.
     """
     if not 1 <= limit <= 200 or not 0 <= offset <= 100000:
@@ -10504,6 +10681,7 @@ def _search_one_session_bounded(
         source: Path, needle: str, *, raw: bool,
         home: Optional[Path] = None, deadline: Optional[float] = None,
         match_limit: Optional[int] = None,
+        search_index=None, index_metrics: Optional[dict] = None,
         ) -> tuple[list[dict], str, int]:
     """Matching turns in one transcript, and whether it could be read.
 
@@ -10511,6 +10689,13 @@ def _search_one_session_bounded(
     have seen in the viewer: Codex's doubled replies are collapsed and
     the harness's own instructions are not searchable content.
     """
+    if search_index is not None and index_metrics is not None:
+        if search_index.available:
+            turns, read_status = _indexed_search_turns(
+                source, needle, home or Path.home(), deadline, search_index, index_metrics)
+            return _matching_search_turns(turns, read_status, needle, raw, home, match_limit)
+        index_metrics["unavailableArtifacts"] += 1
+        index_metrics["sourceArtifactsRead"] += 1
     desktop_descriptor, _, desktop_status = _open_claude_desktop_primary(
         source, home)
     if desktop_status != "not-desktop":
@@ -10561,6 +10746,11 @@ def _search_one_session_bounded(
         if read_status not in ("ok", "truncated", "time", "parse"):
             return ([], read_status, 0)
 
+    return _matching_search_turns(turns, read_status, needle, raw, home, match_limit)
+
+
+def _matching_search_turns(turns, read_status: str, needle: str, raw: bool,
+                           home: Optional[Path], match_limit: Optional[int]):
     mask_home = home or Path.home()
 
     hits: list[dict] = []
@@ -10574,7 +10764,8 @@ def _search_one_session_bounded(
             omitted_at_least = 1
             break
         hits.append(_search_hit(
-            position, turn, needle, raw=raw, home=mask_home))
+            position, turn, needle, raw=raw, home=mask_home,
+            include_identity=True))
     return (hits, read_status, omitted_at_least)
 
 
@@ -10596,12 +10787,27 @@ def _search_hit(position: int, turn: VisibleTurn, needle: str, *,
     cut so the snippet a person sees is the snippet that was masked.
     """
     flat = " ".join(turn.text.split())
-    where = flat.casefold().find(needle)
+    folded = flat.casefold()
+    where = folded.find(needle)
     if where < 0:
         where = 0
-    half = max(0, (SEARCH_SNIPPET_CHARS - len(needle)) // 2)
+    match_end = where + len(needle)
+    if len(folded) != len(flat):
+        # Case folding can expand a character (for example ß -> ss).
+        # Translate the match boundaries back before slicing visible text.
+        folded_position = 0
+        original_start = 0
+        for character_index, character in enumerate(flat):
+            next_position = folded_position + len(character.casefold())
+            if folded_position <= where < next_position:
+                original_start = character_index
+            if next_position >= match_end:
+                where, match_end = original_start, character_index + 1
+                break
+            folded_position = next_position
+    half = max(0, (SEARCH_SNIPPET_CHARS - (match_end - where)) // 2)
     start = max(0, where - half)
-    end = min(len(flat), where + len(needle) + half)
+    end = min(len(flat), match_end + half)
     snippet = flat[start:end]
     if start > 0:
         snippet = "\u2026" + snippet
@@ -11564,11 +11770,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     search.add_argument("--offset", type=int, default=None,
                         help="page matching turns; reuse nextOffset with the same query/scope")
     search.add_argument("--provider", choices=("claude", "claude-desktop", "codex", "gemini"))
-    search.add_argument("--workspace", help="case-insensitive workspace path substring")
+    search_scope = search.add_mutually_exclusive_group()
+    search_scope.add_argument("--workspace", help="case-insensitive workspace path substring")
+    search_scope.add_argument("--workspace-exact", help="one exact recorded workspace path")
     search.add_argument("--exclude-workspace", action="append", default=[],
                         help="exclude workspace path substring; repeatable")
     search.add_argument("--first", action="store_true",
                         help="stop after the newest matching turn")
+    search.add_argument("--use-index", action="store_true",
+                        help="reuse a private local derived index; verify candidates against source")
     search.add_argument("--budget-seconds", type=float,
                         default=SEARCH_DEFAULT_BUDGET_SECONDS,
                         help="stop after this long and report truncated coverage")
@@ -11786,6 +11996,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 query, args.home, raw=args.raw, limit=args.limit,
                 first=args.first, budget_seconds=args.budget_seconds,
                 provider=args.provider, workspace=args.workspace,
+                workspace_exact=args.workspace_exact,
+                use_index=args.use_index,
                 exclude_workspace=tuple(args.exclude_workspace),
                 **({} if args.offset is None else {"offset": args.offset}))
         except ValueError as exc:

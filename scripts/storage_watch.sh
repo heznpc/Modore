@@ -303,13 +303,18 @@ bounded_metadata_capture() (
     local maximum_ticks=10
     local output_limit_kb=2048
     local output_limit_blocks output_limit_bytes output_size
-    local capture_pid ticks=0 command_status=0
+    local capture_pid timer_pid="" command_status=0
     local status_marker="$output_file.status.$$.$RANDOM"
     local status_staging="$status_marker.tmp"
     # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
     cleanup_metadata_capture() {
         local cleanup_pid="${capture_pid:-}"
         trap - HUP INT TERM EXIT
+        if [[ -n "$timer_pid" ]]; then
+            builtin kill "$timer_pid" 2>/dev/null || true
+            wait "$timer_pid" 2>/dev/null || true
+            timer_pid=""
+        fi
         capture_pid=""
         if [[ -n "$cleanup_pid" ]]; then
             /bin/kill -TERM -- "-$cleanup_pid" 2>/dev/null || true
@@ -347,17 +352,18 @@ bounded_metadata_capture() (
         exit "$provider_status"
     ) > "$output_file" 2>/dev/null &
     capture_pid=$!
+    # Count elapsed time even when scheduling or a poll itself is delayed.
+    /bin/sleep "$((maximum_ticks / 10)).$((maximum_ticks % 10))" >/dev/null 2>&1 &
+    timer_pid=$!
     while [[ ! -f "$status_marker" ]]; do
-        if [[ "$ticks" -ge "$maximum_ticks" ]]; then
-            /bin/kill -TERM -- "-$capture_pid" 2>/dev/null || true
-            /bin/sleep 0.2
-            /bin/kill -KILL -- "-$capture_pid" 2>/dev/null || true
-            wait "$capture_pid" 2>/dev/null || true
+        if ! builtin kill -0 "$timer_pid" 2>/dev/null; then
             return 124
         fi
         /bin/sleep 0.1
-        ticks=$((ticks + 1))
     done
+    builtin kill "$timer_pid" 2>/dev/null || true
+    wait "$timer_pid" 2>/dev/null || true
+    timer_pid=""
     command_status="$(/bin/cat "$status_marker" 2>/dev/null || true)"
     case "$command_status" in ''|*[!0-9]*) command_status=1 ;; esac
     wait "$capture_pid" 2>/dev/null || true

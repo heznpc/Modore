@@ -2116,13 +2116,13 @@ def test_project_residue_scan_follows_git_index_to_nested_swift_packages(
 
 
 def _run_project_residue_only(
-    script: Path, env: dict[str, str]
+    script: Path, env: dict[str, str], shell_preamble: str = ""
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             "/bin/bash",
             "-c",
-            (
+            shell_preamble + (
                 '. "$1"; seen="|"; DU_SIZE_RESULT=5120; '
                 'du_size_kb() { DU_SIZE_RESULT=5120; }; '
                 "record_collection_status() { "
@@ -2219,6 +2219,46 @@ def test_project_git_commands_have_individual_timeout(
     assert list(facts.glob("project_git_*.out")) == []
     status = (facts / "project_status.tsv").read_text().split("\t")
     assert status[0:2] == ["project_residue", "timed_out"]
+
+
+@pytest.mark.parametrize("stalled_operation", ["rev-parse", "ls-files", "discovery"])
+def test_project_timeout_counts_elapsed_time_when_polling_is_delayed(
+    project_root, tmp_path, stalled_operation
+):
+    script = project_root / "scripts" / "modules" / "macos" / "storage.sh"
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    (facts / "storage_paths.tsv").write_text("", encoding="utf-8")
+    scan_root = tmp_path / "scan"
+    _make_nested_swift_repo(scan_root, ["deep-package"])
+    trace = tmp_path / "git-trace.tsv"
+    env = _project_git_test_env(tmp_path, scan_root, facts, trace)
+    env.update(
+        {
+            "PCH_PROJECT_DISCOVERY_TIMEOUT": "1",
+            "PCH_TEST_PROJECT_GIT_STALL_OPERATION": stalled_operation,
+            "PCH_TEST_PROJECT_GIT_STALL_SECONDS": "6",
+        }
+    )
+    if stalled_operation == "discovery":
+        env["PCH_TEST_PROJECT_DISCOVERY_STALL_SECONDS"] = "6"
+    # Delayed scheduling must not turn a one-second deadline into ten slow polls.
+    delayed_polling = (
+        '/bin/sleep() { if [[ "$1" == "0.1" ]]; then '
+        'command /bin/sleep 0.35; else command /bin/sleep "$@"; fi; }; '
+    )
+    started = time.monotonic()
+    result = _run_project_residue_only(script, env, delayed_polling)
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < 3
+    status = (facts / "project_status.tsv").read_text().split("\t")
+    assert status[0:2] == ["project_residue", "timed_out"]
+    if stalled_operation != "discovery":
+        trace_rows = [line.split("\t") for line in trace.read_text().splitlines()]
+        stalled_row = next(row for row in trace_rows if row[0] == stalled_operation)
+        assert stalled_row[1] == "command_timeout"
 
 
 def test_project_git_commands_share_total_timeout(project_root, tmp_path):

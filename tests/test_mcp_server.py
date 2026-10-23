@@ -525,7 +525,7 @@ def test_agent_session_search_delegates_query_over_stdin_and_forces_masking(monk
 
     argv = captured["argv"]
     assert argv[4:] == ["search", "--query-file", "/dev/fd/0", "--limit", "7",
-                        "--budget-seconds", "12", "--offset", "0"]
+                        "--budget-seconds", "12", "--offset", "0", "--use-index"]
     assert "storage pressure" not in argv
     assert "--raw" not in argv
     assert captured["kwargs"]["input"] == "storage pressure"
@@ -944,3 +944,23 @@ def test_session_search_forwards_scope_and_page(monkeypatch):
     assert args[args.index("--provider") + 1] == "claude"
     assert args[args.index("--workspace") + 1] == "SkillBridge"
     assert args[args.index("--exclude-workspace") + 1] == "apply-"
+
+
+def test_session_search_exact_workspace_and_cache_opt_out(monkeypatch):
+    captured = {}
+    def run(script, argv, timeout, **kwargs):
+        captured["argv"] = argv
+        return dict(_SESSION_SEARCH_FIXTURE)
+    monkeypatch.setattr(mcp_server, "_run_json", run)
+    result = _call("agent_session_search", {
+        "query": "needle", "user_initiated": True,
+        "workspace_exact": "/work/apply", "use_index": False})
+    assert not result.get("isError")
+    args = captured["argv"]
+    assert args[args.index("--workspace-exact") + 1] == "/work/apply"
+    assert "--use-index" not in args
+    for invalid in ({"use_index": "false"},
+                    {"workspace": "apply", "workspace_exact": "/work/apply"}):
+        result = _call("agent_session_search", {
+            "query": "needle", "user_initiated": True, **invalid})
+        assert result.get("isError")

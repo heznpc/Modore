@@ -484,8 +484,9 @@ def test_storage_watch_captures_private_tmp_swap_and_bounded_rss_metadata(
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS ps process-group contract")
+@pytest.mark.parametrize("delayed_polling", [False, True])
 def test_storage_watch_ps_timeout_keeps_partial_rss_and_reaps_descendants(
-    project_root, tmp_path
+    project_root, tmp_path, delayed_polling
 ):
     state_dir = tmp_path / "state"
     snapshot_root = tmp_path / "snapshot"
@@ -521,14 +522,27 @@ def test_storage_watch_ps_timeout_keeps_partial_rss_and_reaps_descendants(
         "PCH_TEST_WATCH_METADATA_TICKS": "10",
     }
     script = project_root / "scripts/storage_watch.sh"
+    watch_command = [str(script)]
+    watch_input = None
+    if delayed_polling:
+        # The scheduled watcher also supports execution through stdin. Delay
+        # polling only, so elapsed-time timers retain their requested duration.
+        watch_command = ["/bin/bash", "-p"]
+        watch_input = (
+            '/bin/sleep() { if [[ "$1" == "0.1" ]]; then '
+            'command /bin/sleep 0.35; else command /bin/sleep "$@"; fi; };\n'
+            + script.read_text(encoding="utf-8")
+        )
     baseline = subprocess.run(
-        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=5
+        watch_command, input=watch_input, capture_output=True, text=True,
+        encoding="utf-8", env=env, timeout=5
     )
     assert baseline.returncode == 0, baseline.stderr
 
     env["PCH_TEST_FREE_KB"] = str(40 * 1024 * 1024)
     dropped = subprocess.run(
-        [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=5
+        watch_command, input=watch_input, capture_output=True, text=True,
+        encoding="utf-8", env=env, timeout=5
     )
 
     assert dropped.returncode == 0, dropped.stderr

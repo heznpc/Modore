@@ -177,6 +177,7 @@ struct SessionConversation: Decodable, Equatable {
         /// duplicate ids drops rows out of the conversation it was asked
         /// to show.
         let index: Int
+        let sourceIndex: Int?
         let role: String
         let text: String
         var id: Int { index }
@@ -239,11 +240,12 @@ struct SessionConversation: Decodable, Equatable {
     let firstUserTurn: String?
     let turns: [Turn]
     let omittedTurns: Int
+    let windowStart: Int?
     let masked: Bool
 
     private enum CodingKeys: String, CodingKey {
         case status, provider, sessionId, workspace, messageCount
-        case userTurnCount, firstUserTurn, turns, omittedTurns, masked
+        case userTurnCount, firstUserTurn, turns, omittedTurns, windowStart, masked
     }
 
     init(from decoder: Decoder) throws {
@@ -257,6 +259,7 @@ struct SessionConversation: Decodable, Equatable {
         firstUserTurn = try container.decodeIfPresent(String.self, forKey: .firstUserTurn)
         turns = try container.decode([Turn].self, forKey: .turns)
         omittedTurns = try container.decode(Int.self, forKey: .omittedTurns)
+        windowStart = try container.decodeIfPresent(Int.self, forKey: .windowStart)
         masked = try container.decode(Bool.self, forKey: .masked)
     }
 }

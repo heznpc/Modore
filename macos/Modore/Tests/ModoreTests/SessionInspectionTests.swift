@@ -397,6 +397,15 @@ final class SessionSearchResultTests: XCTestCase {
         XCTAssertFalse(caveat.contains("좁히"))
     }
 
+    func testReadFailuresAreNotMisreportedAsTooManyResults() throws {
+        for reason in ["content", "parse", "unreadable", "unknown"] {
+            let caveat = try XCTUnwrap(try result(coverage: "truncated", reason: reason).caveat)
+            XCTAssertTrue(caveat.contains("확인하지 못했습니다"))
+            XCTAssertFalse(caveat.contains("결과가 많아"))
+            XCTAssertFalse(caveat.contains("좁히"))
+        }
+    }
+
     /// Sessions that could not be opened are counted even when the sweep
     /// itself finished.
     func test_unreadableSessionsAreAlwaysDisclosed() throws {

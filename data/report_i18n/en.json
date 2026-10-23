@@ -225,6 +225,7 @@
     "항목": "Entry",
     "시간": " hours",
     "조사": "Investigate",
-    "건": " entries"
+    "건": " entries",
+    "검사 결과를 확인할 수 없습니다.": "The check result could not be verified."
   }
 }

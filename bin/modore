@@ -29,8 +29,9 @@ usage() {
         '  modore ci status|refresh [--discover] [--repo owner/name] [--project PATH]' \
         '  modore sessions current' \
         '  modore search [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
-        '    [--provider claude|claude-desktop|codex|gemini] [--workspace TEXT]' \
+        '    [--provider claude|claude-desktop|codex|gemini] [--workspace TEXT | --workspace-exact PATH]' \
         '    [--exclude-workspace TEXT] [--offset N]  # nextOffset continues results' \
+        '    [--no-index]  # default: private shared incremental search index' \
         '  modore inspect SOURCE [--start N] [--turns N]  # open a search hit' \
         '  modore resources status|hooks-status|acquire|claim|heartbeat|release [options]' \
         '  modore resources begin-test|hold --provider codex|claude --session ID --turn ID [options]' \
@@ -139,10 +140,11 @@ case "$COMMAND" in
         [[ ! -t 0 ]] || fail_usage 'search reads an explicit user query from stdin, never argv.'
         SEARCH_LIMIT=20
         SEARCH_BUDGET_SECONDS=300
+        SEARCH_USE_INDEX=1
         SEARCH_SCOPE_ARGS=(--offset 0)
         while [[ "$#" -gt 0 ]]; do
             case "$1" in
-                --provider|--workspace|--exclude-workspace|--offset)
+                --provider|--workspace|--workspace-exact|--exclude-workspace|--offset)
                     [[ "$#" -ge 2 && -n "$2" ]] || fail_usage "$1 requires a value."
                     if [[ "$1" == "--offset" ]]; then
                         [[ "$2" == "0" ]] || bounded_positive_integer "$2" 100000 \
@@ -168,12 +170,17 @@ case "$COMMAND" in
                     SEARCH_FIRST=1
                     shift
                     ;;
+                --no-index)
+                    SEARCH_USE_INDEX=0
+                    shift
+                    ;;
                 *) fail_usage 'unsupported search option; see modore search --help; send the query on stdin.' ;;
             esac
         done
         SEARCH_ARGS=(search --query-file /dev/stdin --limit "$SEARCH_LIMIT" \
             --budget-seconds "$SEARCH_BUDGET_SECONDS" "${SEARCH_SCOPE_ARGS[@]}")
         [[ "${SEARCH_FIRST:-0}" == "0" ]] || SEARCH_ARGS+=(--first)
+        [[ "$SEARCH_USE_INDEX" == "0" ]] || SEARCH_ARGS+=(--use-index)
         exec "$PYTHON" -I -B "$BOUNDED_EXEC" "$((10#$SEARCH_BUDGET_SECONDS + 10))" -- \
             "$PYTHON" -I -B "$SCREE" "${SEARCH_ARGS[@]}"
         ;;

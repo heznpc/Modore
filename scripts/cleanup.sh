@@ -1128,6 +1128,31 @@ apply_recipe_guidance() {
     return 0
 }
 
+# Names are static catalog metadata. Reading the catalog must not discover
+# targets, inspect Chrome processes, or migrate the user's support directory.
+static_recipe_label() {
+    case "$1" in
+        npm_cache) printf '%s' 'npm cache' ;;
+        pnpm_store) printf '%s' 'pnpm store' ;;
+        playwright_browsers) printf '%s' 'Playwright browser cache' ;;
+        gradle_cache) printf '%s' 'Gradle cache' ;;
+        cocoapods_cache) printf '%s' 'CocoaPods cache' ;;
+        pub_cache) printf '%s' 'Dart/Flutter pub cache' ;;
+        uv_cache) printf '%s' 'uv cache' ;;
+        swiftpm_cache) printf '%s' 'Swift Package Manager cache' ;;
+        homebrew_cache) printf '%s' 'Homebrew download cache' ;;
+        pip_cache) printf '%s' 'pip wheel cache' ;;
+        codex_runtime_cache) printf '%s' 'Codex runtime cache' ;;
+        codex_temp_cache) printf '%s' 'Codex temporary cache' ;;
+        claude_vm_bundles) printf '%s' 'Claude Cowork VM bundles' ;;
+        ollama_models) printf '%s' 'Ollama model blobs' ;;
+        xcode_derived_data) printf '%s' 'Xcode DerivedData' ;;
+        chrome_code_sign_clones) printf '%s' 'Chrome code-sign clones' ;;
+        innorix_ex) printf '%s' 'INNORIX-EX web transfer module' ;;
+        *) return 1 ;;
+    esac
+}
+
 define_recipe() {
     local recipe="$1"
     LABEL=""
@@ -1208,9 +1233,9 @@ define_recipe() {
         return 0
     fi
 
+    LABEL="$(static_recipe_label "$recipe")" || return 1
     case "$recipe" in
         npm_cache)
-            LABEL="npm cache"
             # npm/npx는 거의 항상 shebang 스크립트라, 커널이 인터프리터를 앞에
             # 세워 실행한다 — 실행 이름 앵커만으로는 놓친다. mise 셈에서는
             # 잠깐 `bash .../bin/npm`으로 보이다가 `node .../npm-cli.js`로
@@ -1221,7 +1246,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/.npm"
             ;;
         pnpm_store)
-            LABEL="pnpm store"
             # 맨 `node`는 편집기 언어 서버, MCP 서버, Electron 헬퍼를 전부 잡는다.
             # 그것들은 이 store에 쓰지 않으므로 사용자가 무엇을 닫아도 차단이
             # 풀리지 않는다. store에 쓰는 주체는 pnpm 자신이고, store에서 실행된
@@ -1237,7 +1261,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/Library/pnpm"
             ;;
         playwright_browsers)
-            LABEL="Playwright browser cache"
             # 위험은 이 캐시 안의 바이너리가 실행 중일 때만 생긴다. --headless와
             # remote-debugging-pipe는 Electron 앱이나 자동화 도구가 공통으로 쓰는
             # 범용 Chromium 플래그여서, 그것까지 차단하면 캐시와 무관한 앱 때문에
@@ -1249,7 +1272,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/Library/Caches/ms-playwright"
             ;;
         gradle_cache)
-            LABEL="Gradle cache"
             # org.gradle을 그냥 좁히면 classpath로만 캐시를 쥔 Kotlin daemon을
             # 놓치므로, 실행 이름은 좁히고 대상 경로 토큰으로 보완한다.
             PROCESS_PATTERN='GradleDaemon|org\.gradle\.(launcher|wrapper)|(^|/)(gradle|gradlew)( |$)|/\.gradle/caches/'
@@ -1258,7 +1280,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/.gradle/caches"
             ;;
         cocoapods_cache)
-            LABEL="CocoaPods cache"
             # pod도 shebang 스크립트를 거쳐 ruby로 넘어가므로, 실행줄 맨
             # 앞이 아니라 경로 중간에 온다 — 앵커를 pnpm과 같은 방식으로 푼다.
             PROCESS_PATTERN='(^|/)pod( |$)|/Caches/CocoaPods/'
@@ -1267,7 +1288,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/Library/Caches/CocoaPods"
             ;;
         pub_cache)
-            LABEL="Dart/Flutter pub cache"
             # Flutter SDK 설치 경로가 /flutter로 끝나서, SDK 디렉터리를 인자로
             # 주는 모든 명령이 걸렸다. 실행 위치만 본다. analysis server는
             # package: 해석을 위해 pub cache를 실제로 읽으므로 남긴다.
@@ -1277,7 +1297,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/.pub-cache"
             ;;
         uv_cache)
-            LABEL="uv cache"
             # 실행 이름이 uv인 것과, 캐시 경로를 인자로 쥔 프로세스를 함께 본다.
             PROCESS_PATTERN='^(\S*/)?uv( |$)|/\.cache/uv/'
             PROCESS_NOTE="uv/파이썬 의존성 설치를 먼저 종료하세요."
@@ -1285,7 +1304,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/.cache/uv"
             ;;
         swiftpm_cache)
-            LABEL="Swift Package Manager cache"
             # SourceKitService와 swift-build가 이 캐시를 읽는다. 실행 이름과
             # 캐시 경로 토큰을 함께 본다.
             PROCESS_PATTERN='^(\S*/)?swift(-build|-package)?( |$)|SourceKitService|/Caches/org\.swift\.swiftpm/'
@@ -1294,7 +1312,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/Library/Caches/org.swift.swiftpm"
             ;;
         homebrew_cache)
-            LABEL="Homebrew download cache"
             # brew는 자기 자신을 `bash .../Homebrew/brew.sh`로 재실행한다
             # (brew.sh:350의 exec). 두 단계 다 이 머신에서 직접 확인했다.
             PROCESS_PATTERN='(^|/)brew( |$)|(^|/)brew\.sh( |$)|/Caches/Homebrew/'
@@ -1303,7 +1320,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/Library/Caches/Homebrew"
             ;;
         pip_cache)
-            LABEL="pip wheel cache"
             # pip은 python -m pip으로도 실행되므로 캐시 경로 토큰으로 보완한다.
             PROCESS_PATTERN='(^|/)pip[0-9.]*( |$)|(^|/)python[0-9.]* -m pip|/Caches/pip/'
             PROCESS_NOTE="pip 설치를 먼저 종료하세요."
@@ -1311,7 +1327,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/Library/Caches/pip"
             ;;
         codex_runtime_cache)
-            LABEL="Codex runtime cache"
             # `/codex`는 이름이 codex로 시작하는 저장소 안의 모든 프로세스를
             # 잡으면서, 정작 `~/.codex/`는 `/.codex`라서 놓친다. 실행 이름은
             # 앵커로 잡고 대상 디렉터리는 경로 토큰으로 잡는다.
@@ -1321,14 +1336,12 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/.cache/codex-runtimes"
             ;;
         codex_temp_cache)
-            LABEL="Codex temporary cache"
             PROCESS_PATTERN='Codex\.app/Contents/MacOS/Codex|(^|/)codex( |$)|(^|/)node_repl( |$)|SkyComputerUseClient|/\.codex/\.tmp'
             PROCESS_NOTE="Codex 앱과 진행 중인 Codex 작업을 먼저 종료하세요."
             WARNING="임시 런타임 파일만 정리합니다. .codex/sessions와 로그 DB는 건드리지 않습니다."
             add_target_if_present "$HOME_ROOT/.codex/.tmp"
             ;;
         claude_vm_bundles)
-            LABEL="Claude Cowork VM bundles"
             # /claude와 claude-code는 vm_bundles를 쓰지 않는 별개 제품(Claude
             # Code CLI)을 잡고, local-agent-mode는 이 recipe가 보존한다고 선언한
             # 디렉터리를 잡는다. vm_bundles를 쓰는 주체는 Claude Desktop뿐이다.
@@ -1338,7 +1351,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/Library/Application Support/Claude/vm_bundles"
             ;;
         ollama_models)
-            LABEL="Ollama model blobs"
             # ollama serve(백그라운드 데몬)와 CLI 둘 다 모델을 읽는 동안 잡는다.
             # 대상은 models/뿐이라 같은 폴더의 SSH 키(id_ed25519*)는 건드리지 않는다.
             PROCESS_PATTERN='(^|/)ollama( |$)|Ollama\.app/Contents/MacOS/Ollama'
@@ -1347,7 +1359,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/.ollama/models"
             ;;
         xcode_derived_data)
-            LABEL="Xcode DerivedData"
             # Xcode.app 번들 안에는 DerivedData와 무관한 실행 파일도 들어 있다.
             # 특히 Simulator.app이 그 안에 있어서, 번들 경로만 보면 시뮬레이터를
             # 띄워둔 것만으로 정리가 영구히 막힌다. Xcode 본체와 실제 빌드
@@ -1361,7 +1372,6 @@ define_recipe() {
             add_target_if_present "$HOME_ROOT/Library/Developer/Xcode/DerivedData"
             ;;
         chrome_code_sign_clones)
-            LABEL="Chrome code-sign clones"
             # Chrome can stay open: select only unused, individual clone children.
             # lsof matches hard-linked executables by inode as well as bundle files.
             PROCESS_PATTERN='GoogleSoftwareUpdate|(^|/)ksadmin( |$)'
@@ -1383,7 +1393,6 @@ define_recipe() {
             fi
             ;;
         innorix_ex)
-            LABEL="INNORIX-EX web transfer module"
             PROCESS_PATTERN='INNORIX-EX|innorixes\.app|innorixes'
             PROCESS_POLICY="stop"
             PROCESS_NOTE="실행 중이면 승인 후 LaunchAgent와 프로세스를 먼저 종료합니다."
@@ -2650,14 +2659,14 @@ write_receipt() {
 }
 
 list_recipes() {
-    local recipe
+    local recipe label
     for recipe in \
         npm_cache pnpm_store playwright_browsers gradle_cache cocoapods_cache pub_cache \
         codex_runtime_cache codex_temp_cache claude_vm_bundles xcode_derived_data \
         chrome_code_sign_clones innorix_ex; do
-        define_recipe "$recipe"
+        label="$(static_recipe_label "$recipe")" || return 1
         emit "recipe" "$recipe"
-        emit "label" "$LABEL"
+        emit "label" "$label"
     done
 }
 
@@ -2907,13 +2916,12 @@ run_execute() {
 
 main() {
     parse_arguments "$@"
-    [[ "$OPERATION" != "preview" ]] || emit "previewPhase" "runtime-setup" >&2
-    configure_roots
-
     if [[ "$OPERATION" == "list" ]]; then
         list_recipes
-        return 0
+        return $?
     fi
+    [[ "$OPERATION" != "preview" ]] || emit "previewPhase" "runtime-setup" >&2
+    configure_roots
 
     [[ "$OPERATION" != "preview" ]] || emit "previewPhase" "request-validation" >&2
     define_recipe "$RECIPE_ID" || fail_usage "허용되지 않은 recipe ID입니다: $RECIPE_ID"

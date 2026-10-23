@@ -557,9 +557,15 @@ extension ScreeService {
         execution: RuntimeExecutionContext,
         source: URL,
         turns: Int = 20,
+        start: Int? = nil,
         homeOverride: URL? = nil
     ) async -> Result<SessionConversation, ScreeInspectionError> {
         var arguments = ["inspect", source.path, "--turns", String(turns)]
+        if let start {
+            // Search scans the full JSONL stream, so its visible-turn ordinal
+            // must not be resolved against inspect's legacy file prefix.
+            arguments += ["--start", String(max(0, start)), "--full-content"]
+        }
         if let homeOverride { arguments += ["--home", homeOverride.path] }
         let outcome = await invoke(execution: execution, arguments: arguments, timeout: 60)
         let output: String
@@ -676,7 +682,10 @@ extension ScreeService {
     static func search(
         execution: RuntimeExecutionContext,
         query: String,
-        limit: Int = 200,
+        limit: Int = 60,
+        offset: Int = 0,
+        provider: String? = nil,
+        workspace: String? = nil,
         homeOverride: URL? = nil
     ) async -> Result<SessionSearchResult, ScreeInspectionError> {
         // The phrase goes in a file, not in argv: any local process can
@@ -689,12 +698,19 @@ extension ScreeService {
         }
         defer { try? FileManager.default.removeItem(at: queryFile) }
 
-        var arguments = ["search", "--query-file", queryFile.path, "--limit", String(limit)]
+        var arguments = [
+            "search", "--query-file", queryFile.path, "--limit", String(limit),
+            "--offset", String(offset), "--budget-seconds", "300", "--use-index",
+        ]
+        if let provider { arguments += ["--provider", provider] }
+        if let workspace { arguments += ["--workspace-exact", workspace] }
         if let homeOverride { arguments += ["--home", homeOverride.path] }
         // The answer comes back on stdout and is never written to disk:
         // a few hundred short snippets fit easily, and a result file
         // would outlive a force quit that skips every `defer`.
-        switch await invoke(execution: execution, arguments: arguments, timeout: 180) {
+        // Give the engine its full budget plus time to encode the result, so
+        // timeout coverage reaches the UI instead of being killed mid-response.
+        switch await invoke(execution: execution, arguments: arguments, timeout: 360) {
         case .timedOut:
             return .failure(.init(message: L10n.text("검색이 시간 안에 끝나지 않았습니다.")))
         case .failure(let message):
@@ -1105,8 +1121,27 @@ extension ScreeService {
         // pinned path as a plain argument instead and read it explicitly with
         // `-c`, executing it with __name__ == "__main__" so scree.py's own
         // entry guard still fires and argparse still sees a normal argv.
+        var pinnedFiles = invocation.files
+        var scriptArguments = [invocation.argument]
+        var helperBootstrap = ""
+        if arguments.contains("--use-index") {
+            guard let helper = execution.pinnedInvocation(
+                relativePath: "scripts/session_search_index.py", name: "session_search_index"
+            ) else {
+                return .failure(L10n.text("봉인한 scree 스크립트를 확인하지 못해 실행하지 않았습니다."))
+            }
+            pinnedFiles.merge(helper.files) { _, helperData in helperData }
+            scriptArguments.append(helper.argument)
+            helperBootstrap = """
+            import types
+            helper = types.ModuleType('session_search_index')
+            sys.modules['session_search_index'] = helper
+            exec(compile(open(sys.argv.pop(2), 'rb').read(), 'session_search_index.py', 'exec'), helper.__dict__)
+            """
+        }
         let wrapper = """
         import sys
+        \(helperBootstrap)
         path = sys.argv[1]
         sys.argv = ["scree.py"] + sys.argv[2:]
         source = open(path, "rb").read()
@@ -1114,11 +1149,11 @@ extension ScreeService {
         """
         let result = await LocalProcessRunner.capture(
             executable: python3,
-            arguments: ["-I", "-B", "-c", wrapper, invocation.argument] + arguments,
+            arguments: ["-I", "-B", "-c", wrapper] + scriptArguments + arguments,
             currentDirectory: execution.runtimeRoot,
             expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
             expectedSignedBundleURL: execution.signedBundleURL,
-            pinnedFiles: invocation.files,
+            pinnedFiles: pinnedFiles,
             timeout: timeout,
             forceKillAfterTermination: forceKillAfterTermination,
             waitForCleanupOnStop: waitForCleanupOnStop

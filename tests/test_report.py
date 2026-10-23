@@ -11,6 +11,76 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize('content', ['[]', 'null', '{invalid'])
+def test_report_invalid_input_is_actionable_and_preserves_previous_report(project_root, tmp_path, content):
+    scan = tmp_path / 'scan.json'
+    scan.write_text(content)
+    output = tmp_path / 'report.html'
+    output.write_text('previous report')
+    result = subprocess.run(
+        [sys.executable, str(project_root / 'scripts/report.py'),
+         '--scan', str(scan), '--output', str(output)], capture_output=True, text=True)
+    assert result.returncode == 2
+    assert 'ERROR:' in result.stderr
+    assert 'Traceback' not in result.stderr
+    assert output.read_text() == 'previous report'
+
+
+def test_report_ignores_invalid_optional_monitor(project_root, fixtures_dir, tmp_path):
+    monitor = tmp_path / 'monitor.json'
+    monitor.write_text('["invalid"]')
+    output = tmp_path / 'report.html'
+    result = subprocess.run(
+        [sys.executable, str(project_root / 'scripts/report.py'),
+         '--scan', str(fixtures_dir / 'sample_scan_macos.json'),
+         '--monitor', str(monitor), '--output', str(output)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert 'monitor' in result.stderr
+    assert 'Traceback' not in result.stderr
+    assert output.exists()
+
+
+def test_report_cannot_turn_scan_values_into_html(project_root, sample_windows_scan):
+    from html.parser import HTMLParser
+    from report_i18n import load_i18n
+    from report_render import build_report
+
+    class Elements(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.tags = []
+        def handle_starttag(self, tag, attrs):
+            self.tags.append((tag, dict(attrs)))
+
+    attack = '\"><img src=x onerror="alert(1)">'
+    scan = sample_windows_scan
+    scan['summary'].update(overall=attack, dangerCount=attack, warningCount=attack)
+    scan['sections']['cpu'] = [{'risk': attack, 'name': attack}]
+    scan['sections']['network'] = [{'risk': attack, 'vtIp': {'status': 'ok', 'country': attack}}]
+    scan['sections']['systemLoad'] = {'cpuPercent': attack, 'memoryPercent': attack, 'totalMemoryGB': attack}
+    scan['sections']['virustotal'] = {'enabled': True, 'callsThisScan': attack, 'cacheHours': attack}
+    monitor = {'durationMinutes': attack, 'aggregate': [{'risk': attack}]}
+    i18n = load_i18n('en', project_root, project_root / 'data/explain.json')
+    html = build_report(i18n, scan, monitor)
+    parsed = Elements()
+    parsed.feed(html)
+    assert not any(tag in ('img', 'script') for tag, _ in parsed.tags)
+    assert not any(key.startswith('on') for _, attrs in parsed.tags for key in attrs)
+    assert 'verdict-incomplete' in html
+    assert 'badges.' not in html
+    assert '<b>VirusTotal enabled</b>' in html
+
+
+def test_report_missing_verdict_does_not_claim_safe(project_root):
+    from report_i18n import load_i18n
+    from report_render import build_report
+    i18n = load_i18n('en', project_root, project_root / 'data/explain.json')
+    html = build_report(i18n, {'summary': {'message': 'UNSUPPORTED_SAFE_CLAIM'}, 'sections': {}}, None)
+    assert 'class="verdict verdict-incomplete"' in html
+    assert 'UNSUPPORTED_SAFE_CLAIM' not in html
+    assert i18n.t('badges.unknown') in html
+
+
 def test_report_generates_from_sample(fixtures_dir, project_root, tmp_path):
     """샘플 fixture로 report.py 실행 → HTML이 만들어지고 기본 요소 포함"""
     scan_path = fixtures_dir / "sample_scan_windows.json"

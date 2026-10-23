@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Modore 리포트 - 로컬라이제이션(i18n) 로더."""
+import html
 import os
 import sys
 from pathlib import Path
@@ -39,8 +40,8 @@ class I18n:
         return value
 
     def badge(self, risk: str) -> str:
-        label = self.t(f"badges.{risk or 'unknown'}")
         cls = risk if risk in ("danger", "warning", "info", "safe") else "unknown"
+        label = html.escape(self.t(f"badges.{cls}"))
         return f'<span class="badge {cls}">{label}</span>'
 
 

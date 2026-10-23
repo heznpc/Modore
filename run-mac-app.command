@@ -10,12 +10,29 @@ umask 022
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset BASH_ENV ENV CDPATH GLOBIGNORE
 
+MODE="${1:-run}"
+if [[ "$#" -gt 1 ]]; then
+    echo "Usage: $0 [--verify]" >&2
+    exit 64
+fi
+case "$MODE" in
+    run|--verify) ;;
+    -h|--help) echo "Usage: $0 [--verify]"; exit 0 ;;
+    *) echo "Usage: $0 [--verify]" >&2; exit 64 ;;
+esac
+
+pause_on_failure() {
+    if [[ -t 0 ]]; then
+        read -r -p "엔터를 누르면 종료합니다..." _
+    fi
+}
+
 cd "$(/usr/bin/dirname "$0")" || exit 1
 cd -P . || exit 1
 
 if [[ "$(/usr/bin/uname)" != "Darwin" ]]; then
     echo "이 실행기는 macOS 전용입니다."
-    read -r -p "엔터를 누르면 종료합니다..." _
+    pause_on_failure
     exit 1
 fi
 
@@ -36,7 +53,7 @@ if [[ -x "$APP_BIN" ]] && app_binary_is_running; then
         -e 'function run(argv) { const target = argv[0]; const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("me.heznpc.modore"); let count = 0; for (let index = 0; index < apps.count; index += 1) { const app = apps.objectAtIndex(index); const url = app.bundleURL; if (url && ObjC.unwrap(url.path) === target) { if (app.terminate) { count += 1; } } } return String(count); }' \
         -- "$APP_PATH" >/dev/null; then
         echo "실행 중인 앱에 종료를 요청하지 못했습니다. 앱을 직접 종료한 뒤 다시 실행하세요."
-        read -r -p "엔터를 누르면 종료합니다..." _
+        pause_on_failure
         exit 75
     fi
     for _ in {1..300}; do
@@ -45,7 +62,7 @@ if [[ -x "$APP_BIN" ]] && app_binary_is_running; then
     done
     if app_binary_is_running; then
         echo "앱이 아직 안전한 작업을 마치는 중입니다. 종료가 끝난 뒤 다시 실행하세요."
-        read -r -p "엔터를 누르면 종료합니다..." _
+        pause_on_failure
         exit 75
     fi
 fi
@@ -59,10 +76,31 @@ status=$?
 if [[ $status -ne 0 ]]; then
     echo ""
     echo "앱 빌드에 실패했습니다. 위 오류를 확인하세요."
-    read -r -p "엔터를 누르면 종료합니다..." _
+    pause_on_failure
     exit $status
 fi
 
 echo ""
 echo "앱을 여는 중..."
 /usr/bin/open -n "$APP_PATH"
+status=$?
+if [[ "$status" -ne 0 ]]; then
+    echo "앱을 열지 못했습니다. macOS 실행 오류를 확인하세요." >&2
+    pause_on_failure
+    exit "$status"
+fi
+
+if [[ "$MODE" == "--verify" ]]; then
+    for _ in {1..100}; do
+        app_binary_is_running && break
+        /bin/sleep 0.1
+    done
+    # open(1) can succeed before launch or an immediate crash. Verify this
+    # checkout's executable, not a different installed Modore process.
+    /bin/sleep 2
+    if ! app_binary_is_running; then
+        echo "앱 실행을 확인하지 못했습니다. macOS 충돌 기록을 확인하세요." >&2
+        exit 1
+    fi
+    echo "Modore 앱 실행을 확인했습니다."
+fi

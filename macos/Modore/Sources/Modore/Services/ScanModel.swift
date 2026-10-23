@@ -260,6 +260,8 @@ final class ScanModel: ObservableObject {
     /// Content-search results, and whether one is running. Separate from
     /// `sessionSearch` because typing filters metadata instantly while
     /// reading transcript bodies waits for an explicit return.
+    @Published var contentSearchProvider = "all"
+    @Published var contentSearchWorkspace = ""
     @Published var contentSearch: SessionSearchResult?
     @Published var contentSearchRunning = false
     @Published var contentSearchError: String?
@@ -267,6 +269,8 @@ final class ScanModel: ObservableObject {
     /// dropped rather than written under a query nobody asked.
     var contentSearchGeneration = 0
     var contentSearchTask: Task<Void, Never>?
+    var contentSearchRequest: SessionSearchRequest?
+    var failedContentSearchRequest: SessionSearchRequest?
     /// Storage incident evidence is an explicit transcript-body query,
     /// separate from the always-local known-root snapshot above it.
     @Published var storageEvidenceQuery = ""

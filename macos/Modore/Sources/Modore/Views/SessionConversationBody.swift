@@ -7,6 +7,7 @@ import SwiftUI
 /// turn cap are applied at the source, and nothing here re-requests raw.
 struct SessionConversationBody: View {
     let conversation: SessionConversation
+    var highlightedSourceIndex: Int? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -28,7 +29,11 @@ struct SessionConversationBody: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                if let first = conversation.firstUserTurn,
+                if highlightedSourceIndex != nil, let start = conversation.windowStart {
+                    Text(L10n.format("검색 위치부터 %@–%@번째 대화 표시", String(start + 1), String(start + conversation.turns.count)))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if let first = conversation.firstUserTurn,
                    conversation.omittedTurns > 0 {
                     Text(L10n.format("시작: %@", String(describing: first)))
                         .font(.caption2)
@@ -37,6 +42,11 @@ struct SessionConversationBody: View {
                 }
                 ForEach(conversation.turns) { turn in
                     VStack(alignment: .leading, spacing: 1) {
+                        if highlightedSourceIndex != nil && turn.sourceIndex == highlightedSourceIndex {
+                            Label(L10n.text("검색된 대화"), systemImage: "magnifyingglass")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
+                        }
                         Text(turn.speakerLabel)
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(turn.isUser ? Color.primary : Color.secondary)
@@ -46,7 +56,7 @@ struct SessionConversationBody: View {
                             .textSelection(.enabled)
                     }
                 }
-                if conversation.omittedTurns > 0 {
+                if conversation.omittedTurns > 0 && highlightedSourceIndex == nil {
                     Text(L10n.format("이전 %@개 턴은 생략됨. 대화 내보내기는 텍스트만 포함하며, 도구 기록은 원본 백업이 필요합니다.", String(describing: conversation.omittedTurns)))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)

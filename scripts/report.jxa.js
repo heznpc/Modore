@@ -123,7 +123,9 @@ const outputPath = env("PCH_REPORT_OUTPUT", project + (redacted ? "/검사결과
 const rawScan = JSON.parse(readText(scanPath));
 const scan = redacted ? redactScan(rawScan) : rawScan;
 if (!scan.summary) throw new Error(t("scan_result.json에 summary가 없습니다."));
-const overall = scan.summary.overall || "safe";
+const validOverall = ["safe", "warning", "danger", "incomplete"].indexOf(scan.summary.overall) >= 0;
+const overall = validOverall ? scan.summary.overall : "incomplete";
+const verdictMessage = validOverall ? scan.summary.message : t("검사 결과를 확인할 수 없습니다.");
 const icon = { safe: "●", warning: "●", danger: "●", incomplete: "○" }[overall] || "○";
 const findings = (scan.findings || []).filter(f => f.level === "danger" || f.level === "warning");
 const actions = overall === "danger"
@@ -187,7 +189,7 @@ const shareNotice = redacted
 const html = localized`<!doctype html><html lang="${reportLanguage}" dir="ltr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Modore 결과</title><style>${css}</style></head><body><main id="main"><div class="container">
 <h1>🩺 Modore${redacted ? t(" 공유용") : ""} 결과</h1>
 <div class="meta">${esc(scan.computerName)} / ${esc(scan.userName)} · ${esc(scan.osVersion)} · 검사 시각: ${esc(scan.scannedAt)}</div>
-<div class="verdict ${esc(overall)}"><div class="icon">${icon}</div><div><div class="big">${esc(scan.summary.message)}</div><div>위험 ${esc(scan.summary.dangerCount)}건 · 확인 ${esc(scan.summary.warningCount)}건</div></div></div>
+<div class="verdict ${esc(overall)}"><div class="icon">${icon}</div><div><div class="big">${esc(verdictMessage)}</div><div>위험 ${esc(scan.summary.dangerCount)}건 · 확인 ${esc(scan.summary.warningCount)}건</div></div></div>
 <div class="panel"><h2>다음 행동</h2><ol>${actions.map(a => localized`<li>${esc(a)}</li>`).join("")}</ol>${shareNotice}</div>
 ${collectionHtml}
 ${vtHtml}

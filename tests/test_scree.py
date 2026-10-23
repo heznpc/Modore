@@ -183,7 +183,8 @@ def test_claude_collection_never_lists_arbitrary_directories_for_bucket_fallback
 
     assert calls == [("-missing-workspace", {"allow_directory_listing": False})]
     assert records[0]["workspace"] is None
-    assert status["unrecognized"] == 1
+    assert status["unrecognized"] == 0
+    assert status["unresolved_workspaces"] == 1
 
 
 def test_missing_cwd_never_borrows_another_session_workspace_in_lossy_bucket(
@@ -209,7 +210,8 @@ def test_missing_cwd_never_borrows_another_session_workspace_in_lossy_bucket(
 
     assert by_name["explicit.jsonl"]["workspace"] == str(first_workspace)
     assert by_name["missing.jsonl"]["workspace"] is None
-    assert status["unrecognized"] == 1
+    assert status["unrecognized"] == 0
+    assert status["unresolved_workspaces"] == 1
 
 
 def test_restricted_bucket_fallback_also_owns_nested_transcript_aggregate(
@@ -7503,6 +7505,64 @@ def test_search_pages_reach_past_three_hits_and_sixty_results(tmp_path):
     assert second["nextOffset"] is None
 
 
+def test_search_keeps_distinct_turns_with_the_same_display_snippet(tmp_path):
+    shared = "needle " + "shared prefix " * 40
+    source = _stored_session(tmp_path, "similar",
+                             ("user", shared + "first ending"),
+                             ("assistant", "intervening response"),
+                             ("user", shared + "second ending"))
+    result = scree.build_search_page("needle", tmp_path)
+    assert [hit["index"] for hit in result["matches"]] == [0, 2]
+    assert all(hit["source"] == str(source) for hit in result["matches"])
+    assert result["matches"][0]["snippet"] == result["matches"][1]["snippet"]
+    assert all("_identity" not in hit for hit in result["matches"])
+
+
+@pytest.mark.parametrize("query,phrase", [("needle", "needle"), ("strasse", "Straße")])
+def test_search_snippet_uses_original_positions_after_unicode_casefold(
+        tmp_path, query, phrase):
+    _stored_session(tmp_path, "unicode", ("user", "ß" * 300 + " " + phrase + " " + "tail " * 80))
+    result = scree.build_search_page(query, tmp_path)
+    assert len(result["matches"]) == 1
+    assert phrase in result["matches"][0]["snippet"]
+    assert result["matches"][0]["index"] == 0
+    assert len(result["matches"][0]["snippet"]) <= scree.SEARCH_SNIPPET_CHARS + 2
+
+
+def test_search_preserves_repeated_turns_but_deduplicates_fragment_replay(
+        tmp_path, monkeypatch):
+    turns = (("user", "needle repeat"),
+             ("assistant", "intervening response"),
+             ("user", "needle repeat"))
+    first = _stored_session(tmp_path, "first", *turns)
+    replay = _stored_session(tmp_path, "replay", *turns)
+    catalog = scree.build_sessions(tmp_path)
+    catalog["sessions"] = [{**catalog["sessions"][0],
+                            "artifactSources": [str(first), str(replay)]}]
+    monkeypatch.setattr(scree, "_build_sessions_isolated", lambda *_: catalog)
+    result = scree.build_search_page("needle", tmp_path)
+    assert [hit["index"] for hit in result["matches"]] == [0, 2]
+    assert result["scannedArtifacts"] == 2
+    assert result["coverage"] == "complete"
+
+
+def test_search_does_not_claim_completion_with_unsearched_session_fragments(
+        tmp_path, monkeypatch):
+    first = _stored_session(tmp_path, "first", ("user", "needle first"))
+    second = _stored_session(tmp_path, "second", ("user", "needle second"))
+    catalog = scree.build_sessions(tmp_path)
+    catalog["sessions"] = [{**catalog["sessions"][0],
+                            "artifactSources": [str(first), str(second)]}]
+    monkeypatch.setattr(scree, "_build_sessions_isolated", lambda *_: catalog)
+    result = scree.build_search("needle", tmp_path, limit=1)
+    assert result["scannedSessions"] == result["totalSessions"] == 1
+    assert result["scannedArtifacts"] == 1
+    assert result["totalArtifacts"] == 2
+    assert result["coverage"] == "truncated"
+    assert result["truncatedReason"] == "limit"
+    assert result["definitive"] is False
+
+
 def test_search_scope_filters_before_recent_results_fill_limit(tmp_path, monkeypatch):
     wanted = _stored_session(tmp_path, "original", ("user", "needle original"))
     unwanted = _stored_session(tmp_path, "application", ("user", "needle application"))
@@ -7521,6 +7581,109 @@ def test_search_scope_filters_before_recent_results_fill_limit(tmp_path, monkeyp
     assert result["coverage"] == "complete"
     result = scree.build_search_page("needle", tmp_path, workspace="SKILLBRIDGE", limit=1)
     assert result["matches"][0]["source"] == str(wanted)
+
+
+def test_search_exact_workspace_does_not_include_a_similarly_named_project(
+        tmp_path, monkeypatch):
+    wanted = _stored_session(tmp_path, "wanted", ("user", "needle wanted"))
+    _stored_session(tmp_path, "sibling", ("user", "needle sibling"))
+    catalog = scree.build_sessions(tmp_path)
+    for row in catalog["sessions"]:
+        row["workspace"] = "/work/apply" if row["source"] == str(wanted) else "/work/apply-tk"
+    monkeypatch.setattr(scree, "_build_sessions_isolated", lambda *_: catalog)
+    exact = scree.build_search_page("needle", tmp_path, workspace_exact="/work/apply/")
+    assert [hit["source"] for hit in exact["matches"]] == [str(wanted)]
+    assert exact["scope"]["workspaceMatch"] == "exact"
+    assert len(scree.build_search_page("needle", tmp_path, workspace="/work/apply")["matches"]) == 2
+    with pytest.raises(ValueError, match="not both"):
+        scree.build_search_page("needle", tmp_path, workspace="apply", workspace_exact="/work/apply")
+
+
+def test_shared_search_index_skips_unchanged_negative_sources(tmp_path, monkeypatch):
+    for index in range(4):
+        _stored_session(tmp_path, f"indexed-{index}", ("user", f"ordinary message {index}"))
+    cold = scree.build_search_page("absentneedle", tmp_path, use_index=True)
+    assert cold["coverage"] == "complete"
+    assert cold["index"]["indexedArtifacts"] == 4
+    assert cold["index"]["sourceArtifactsRead"] == 4
+
+    def no_body_read(*_args, **_kwargs):
+        raise AssertionError("unchanged negative artifact was reparsed")
+    monkeypatch.setattr(scree, "visible_turns", no_body_read)
+    warm = scree.build_search_page("anotherabsentquery", tmp_path, use_index=True)
+    assert warm["coverage"] == "complete"
+    assert warm["index"]["reusedArtifacts"] == 4
+    assert warm["index"]["skippedArtifacts"] == 4
+    assert warm["index"]["sourceArtifactsRead"] == 0
+
+
+def test_search_index_refreshes_changed_sources_and_verifies_candidates(tmp_path):
+    source = _stored_session(tmp_path, "changing", ("user", "oldneedle"))
+    old = source.stat()
+    cold = scree.build_search_page("oldneedle", tmp_path, use_index=True)
+    assert cold["index"]["indexedArtifacts"] == 1
+    _stored_session(tmp_path, "changing", ("user", "newneedle"))
+    os.utime(source, ns=(old.st_atime_ns, old.st_mtime_ns))
+    changed = scree.build_search_page("newneedle", tmp_path, use_index=True)
+    assert changed["index"]["indexedArtifacts"] == 1
+    assert changed["matches"][0]["snippet"] == "newneedle"
+    verified = scree.build_search_page("newneedle", tmp_path, use_index=True)
+    assert verified["index"]["reusedArtifacts"] == 1
+    assert verified["index"]["sourceArtifactsRead"] == 1
+    assert verified["matches"][0]["index"] == 0
+
+
+def test_search_index_failure_falls_back_to_original_sources(tmp_path, monkeypatch):
+    _stored_session(tmp_path, "uncached", ("user", "needle still found"))
+    monkeypatch.setattr(scree, "_new_search_index", lambda _home: None)
+    result = scree.build_search_page("needle", tmp_path, use_index=True)
+    assert result["coverage"] == "complete"
+    assert len(result["matches"]) == 1
+    assert result["index"]["unavailableArtifacts"] == 1
+
+
+def test_search_index_checks_the_fingerprint_of_the_parsed_descriptor(tmp_path, monkeypatch):
+    source = _stored_session(tmp_path, "original", ("user", "needle original"))
+    replacement = _session_with_turns(tmp_path / "replacement.jsonl", ("user", "different body"))
+    original_open = scree._open_regular_nofollow
+    calls = 0
+    def swapped_open(path, *args, **kwargs):
+        nonlocal calls
+        if path == source:
+            calls += 1
+            if calls == 2:  # Only the canonical reader sees the replacement.
+                return original_open(replacement, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(scree, "_open_regular_nofollow", swapped_open)
+    with scree._new_search_index(tmp_path) as index:
+        metrics = {"reusedArtifacts": 0, "skippedArtifacts": 0,
+                   "sourceArtifactsRead": 0, "indexedArtifacts": 0, "unavailableArtifacts": 0}
+        turns, status = scree._indexed_search_turns(source, "needle", tmp_path, None, index, metrics)
+        assert turns == []
+        assert status == "unreadable"
+        assert metrics["indexedArtifacts"] == 0
+
+
+def test_search_index_text_is_bounded_before_joining():
+    assert scree._search_index_text([scree.VisibleTurn("user", "a" * 100)], 10) is None
+    assert scree._search_index_text([scree.VisibleTurn("user", "한글")], 5) is None
+    assert scree._search_index_text([scree.VisibleTurn("user", "A  B")], 10) == "a b"
+
+
+def test_search_index_is_shared_by_separate_cli_processes(tmp_path):
+    _stored_session(tmp_path, "cli-index", ("user", "original words"))
+    command = [sys.executable, "-I", "-B", str(Path(scree.__file__)),
+               "search", "--query-file", "/dev/stdin", "--offset", "0",
+               "--home", str(tmp_path), "--use-index"]
+    first = subprocess.run(command, input="absentphrase", text=True,
+                           capture_output=True, check=True, timeout=20)
+    second = subprocess.run(command, input="differentmissingphrase", text=True,
+                            capture_output=True, check=True, timeout=20)
+    assert json.loads(first.stdout)["index"]["indexedArtifacts"] == 1
+    result = json.loads(second.stdout)
+    assert result["coverage"] == "complete"
+    assert result["index"]["skippedArtifacts"] == 1
+    assert result["index"]["sourceArtifactsRead"] == 0
 
 
 def test_search_page_timeout_is_unknown_not_end_of_results(tmp_path):
