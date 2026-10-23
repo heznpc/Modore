@@ -26,7 +26,7 @@ SwiftUI view
 
 The SwiftUI app owns navigation, local state presentation, approval sheets, and process execution. It mirrors the cleanup recipe catalog only to hide stale/unsupported actions in old scan results; `cleanup.sh` remains the final authority and independently rejects every unknown recipe or changed target.
 
-Every app build embeds an explicit runtime allowlist under `Contents/Resources/runtime`; no build records the developer checkout path. Mutable output stays under `~/Library/Application Support/Modore/results`, separate from the non-executable runtime migration mirror. Production resolution validates the sealed app bundle, binds its active-slice cdhash to the kernel-tracked running process, captures every Bash/JXA/module/rule input, and validates the signature again. The process runner copies those captured bytes into unlinked files and passes only inherited `/dev/fd` handles to interpreters, so later bundle pathname replacement cannot change scanner, report, cleanup, or scheduler bytes. Child processes also start from a fixed minimal environment and pin the runtime working-directory device/inode. User settings remain separate at `~/Library/Application Support/Modore/config.json` (mode `0600`); only `data/config.example.json` is tracked and bundled. Legacy results are copied without overwrite, and unknown files in an old runtime are retained in a `runtime-backup-*` directory instead of being deleted. The hourly watcher uses an exact clean-environment LaunchAgent definition; both its on-disk plist and launchd's loaded program/arguments are revalidated, and unstable DMG/App Translocation paths are rejected. The source launcher asks an existing development app to terminate safely before rebuilding, so an old process cannot be paired with new resources.
+Every app build embeds an explicit runtime allowlist under `Contents/Resources/runtime`; no build records the developer checkout path. The signed Mac app also carries a pinned python-build-standalone CPython runtime under `Contents/Resources/modore-python`, reduced to the interpreter and standard library needed by scree. Keeping the complete runtime in Resources prevents ordinary provenance and standard-library files from being misclassified as nested code under `Contents/Helpers`; the Mach-O interpreter itself is still signed before the enclosing app. The build verifies the upstream archive SHA-256, architecture and deployment target; artifact audit requires an exact per-file hash manifest and fixed provenance record. Scree runs that interpreter with `-I -B`; a signed app never falls back to PATH or a separately installed Python. Mutable output stays under `~/Library/Application Support/Modore/results`, separate from the non-executable runtime migration mirror. Production resolution validates the sealed app bundle, binds its active-slice cdhash to the kernel-tracked running process, captures every Bash/JXA/module/rule input, and validates the signature again. The process runner copies those captured bytes into unlinked files and passes only inherited `/dev/fd` handles to interpreters, so later bundle pathname replacement cannot change scanner, report, cleanup, or scheduler bytes. Child processes also start from a fixed minimal environment and pin the runtime working-directory device/inode. User settings remain separate at `~/Library/Application Support/Modore/config.json` (mode `0600`); only `data/config.example.json` is tracked and bundled. Legacy results are copied without overwrite, and unknown files in an old runtime are retained in a `runtime-backup-*` directory instead of being deleted. The hourly watcher uses an exact clean-environment LaunchAgent definition; both its on-disk plist and launchd's loaded program/arguments are revalidated, and unstable DMG/App Translocation paths are rejected. The source launcher asks an existing development app to terminate safely before rebuilding, so an old process cannot be paired with new resources.
 
 ## Mac source layout
 
@@ -39,16 +39,41 @@ Every app build embeds an explicit runtime allowlist under `Contents/Resources/r
 ## Session & residue audit (scree)
 
 - `scripts/scree.py` is a deterministic, stdlib-only CLI module beside the scanner: it joins local
-  AI-agent traces (Claude Code, Codex, Gemini CLI, VS Code forks) by workspace/repository, estimates
+  AI-agent traces (Claude Code, Claude Desktop Code conversation units, Codex, Gemini CLI, VS Code forks) by workspace/repository, estimates
   per-store rolling retention windows, flags sessions near expiry inside still-living workspaces,
   marks orphaned workspaces with an explicit `orphan_basis`, and judges agent git worktrees
   protected-versus-rebuildable from read-only registry/push state.
 - Contract: leading JSONL lines are decoded in memory but message content is never retained or
-  emitted; nested subagent transcripts are attributed by `stat()` without being opened; every
+  emitted. Claude Desktop listing reads only a bounded metadata whitelist and treats one
+  `local_*.json` plus its same-stem directory as one conversation; nested and sidecar transcripts
+  are attributed by descriptor-bound `stat()` without being emitted. Every
   verdict is `evidence: preview` with a `requires_revalidation` duty for destructive consumers.
-- The one deliberate exception is `scree.py preserve <source>`: a single-session, caller-named,
-  mask-by-default Markdown export for records about to expire. There is no bulk-export path, and
-  no cleanup recipe consumes scree output.
+- Deliberate user-triggered exceptions are masked single-session inspect/search/export and deep
+  binding. Raw backup is a separate opt-in path: it stores one named Claude Code/Codex transcript
+  or one complete Claude Desktop conversation unit in a versioned ZIP with per-file SHA-256,
+  verifies it, and restores only into a new directory. It never registers the result with a
+  provider, follows selected workspace folders, or authorizes cleanup.
+
+The native **Work** page is the composition boundary: Swift groups scree sessions, Mothball's
+read-only repository assessment, and discovered worktrees by canonical workspace. Mothball's
+archive/trash API remains unreachable without Modore's approval-token boundary. QuotaPie remains
+a separate producer: Modore optionally reads only its owner-controlled semantic-v2
+`~/Library/Application Support/QuotaPie/quota.json`; it does not share collectors, credentials,
+network behavior, or process lifecycle.
+
+Work passes Mothball only the exact repository roots already established by scree; it never falls
+back to recursive discovery when a root disappears. The assessment has one 30-second screen budget,
+a five-second/100,000-working-file measurement bound per repository, and path-specific incomplete
+results. Git, `du`, and `find` are spawned from `/private/tmp` before the repository path reaches the
+child through `git -C` or argv, keeping slow external-volume access inside cancellable process groups.
+The optional QuotaPie file uses the same bounded no-follow open for existence and reading, so a
+symlinked or malformed producer boundary is shown as invalid rather than followed.
+
+Every scree invocation also reclaims scratch files left by a force quit only after one hour and
+only when an exact generated prefix/UUID/extension, current owner, regular single-link type,
+private results directory, and path/descriptor identities all still match. Restore output is
+create-only and must remain outside every live Claude Code, Codex, and Claude Desktop session
+store, including case variants and resolved symlink aliases.
 
 ## Absorbed audits (hfscan, mcpaudit, fileaccess)
 

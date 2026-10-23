@@ -22,6 +22,9 @@ struct ActivityPage: View {
         .task {
             await model.refreshStorageWatchEvidence()
         }
+        .onDisappear {
+            model.cancelActivityScreenTasks()
+        }
     }
 }
 

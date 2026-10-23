@@ -2,7 +2,8 @@ import Foundation
 
 extension ScanModel {
     func prepareBrowserAutomationStop(signal: RuntimeSignal) {
-        guard signal.kind == "browser_automation_root",
+        guard !applicationTerminationStarted,
+              signal.kind == "browser_automation_root",
               signal.pid > 1,
               !isBusy,
               browserAutomationStopPreview == nil else { return }
@@ -31,7 +32,8 @@ extension ScanModel {
     }
 
     func executeBrowserAutomationStop(_ preview: BrowserAutomationStopPreview) {
-        guard !isBusy,
+        guard !applicationTerminationStarted,
+              !isBusy,
               browserAutomationStopPreview?.id == preview.id else { return }
         browserAutomationStopInFlight = true
         browserAutomationStopIsExecuting = true

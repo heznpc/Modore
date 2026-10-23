@@ -1,4 +1,5 @@
 import Foundation
+import ModoreDomain
 
 enum ObservationSource: String, Equatable, Sendable {
     case systemVolume
@@ -33,27 +34,6 @@ struct LiveFreeSpace: Equatable, Sendable {
     var pressure: StoragePressure {
         StoragePressure.classify(freeBytes: freeBytes)
     }
-}
-
-/// Classifies the current system-volume headroom without relying on a deep
-/// scan snapshot. Keeping this as a pure byte-boundary decision lets every UI
-/// surface agree on exactly when recovery becomes advisable or urgent.
-enum StoragePressure: String, Equatable, Sendable {
-    case normal
-    case warning
-    case danger
-
-    private static let gibibyte: Int64 = 1_073_741_824
-    static let dangerThresholdBytes: Int64 = 5 * gibibyte
-    static let warningThresholdBytes: Int64 = 20 * gibibyte
-
-    static func classify(freeBytes: Int64) -> StoragePressure {
-        if freeBytes < dangerThresholdBytes { return .danger }
-        if freeBytes < warningThresholdBytes { return .warning }
-        return .normal
-    }
-
-    var needsRecovery: Bool { self != .normal }
 }
 
 enum ObservationStatus: Equatable, Sendable {

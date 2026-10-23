@@ -20,9 +20,9 @@ struct SessionBackupSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(source == nil ? "백업 확인·복원" : "세션 원본 백업")
                 .font(.title2.bold())
-            Text("Claude·Codex 세션 원본을 로컬 ZIP으로 보관합니다. Claude는 해당 세션의 서브에이전트·도구 결과·파일 스냅샷·이미지·첨부 파일도 있는 만큼 포함합니다.")
+            Text("Claude Code·Claude Desktop Code·Codex 세션 원본을 로컬 ZIP으로 보관합니다. 선택한 세션이나 Desktop 대화 단위에 속한 보조 파일도 함께 보존합니다.")
                 .font(.callout)
-            Text("작업 폴더의 코드, 프로젝트 메모리, 설정·인증정보 파일과 외부 경로의 파일은 포함하지 않습니다. 백업 성공은 원본 삭제 허가가 아닙니다.")
+            Text("세션 단위 밖의 작업 폴더와 외부 참조 경로는 따라가지 않습니다. 단위 내부 파일에는 코드·설정 복사본·비밀값이 포함될 수 있습니다. 백업 성공은 원본 삭제 허가가 아닙니다.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -126,8 +126,7 @@ struct SessionBackupSheet: View {
         busy = true
         error = nil
         receipt = nil
-        Task {
-            let result = await ScreeService.sessionBackup(projectRoot: model.projectRoot, operation: operation)
+        model.startSessionBackup(operation: operation) { result in
             busy = false
             switch result {
             case .success(let value):

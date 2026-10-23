@@ -151,14 +151,3 @@ struct CleanupRecoveryResult {
     var skippedCount: Int { max(0, plannedCount - items.count) }
     var failedItems: [CleanupRecoveryItemResult] { items.filter { !$0.succeeded } }
 }
-
-enum StorageRecoveryPolicy {
-    static let desiredFreeGB = 20.0
-
-    static func requiredGainGB(
-        currentFreeGB: Double,
-        desiredFreeGB: Double = StorageRecoveryPolicy.desiredFreeGB
-    ) -> Double {
-        max(0, desiredFreeGB - max(0, currentFreeGB))
-    }
-}

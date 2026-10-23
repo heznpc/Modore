@@ -12,7 +12,8 @@ struct ScreeReport {
     let retentionStores: [ScreeRetentionStore]
     let expiring: [ScreeExpiringSession]
     let worktreeItems: [ScreeWorktreeItem]
-    let registeredMissing: [String]
+    let registeredMissing: [ScreeRegisteredMissing]
+    let worktreeDiscovery: ScreeWorktreeDiscovery
 
     init?(json: [String: Any]) {
         contract = JsonRead.string(json, "contract")
@@ -31,11 +32,56 @@ struct ScreeReport {
 
         let worktrees = json["worktrees"] as? [String: Any] ?? [:]
         worktreeItems = ((worktrees["items"] as? [[String: Any]]) ?? []).map(ScreeWorktreeItem.init)
-        registeredMissing = (worktrees["registered_missing"] as? [String]) ?? []
+        registeredMissing = ((worktrees["registered_missing"] as? [[String: Any]]) ?? [])
+            .map(ScreeRegisteredMissing.init)
+        worktreeDiscovery = ScreeWorktreeDiscovery(json: worktrees)
     }
 
     var protectedWorktreeCount: Int {
         worktreeItems.filter { $0.verdict == "protected" }.count
+    }
+}
+
+/// How much of the Mac the worktree inventory actually observed.
+///
+/// The automatic audit follows workspace paths already named by local
+/// session metadata. It intentionally does not crawl broad home-directory
+/// roots, so an empty `items` array cannot mean "this Mac has no worktrees".
+struct ScreeWorktreeDiscovery: Equatable {
+    let scope: String
+    let globalComplete: Bool
+    let observedWorkspaces: Int
+    let unreadable: Int
+    let truncated: Bool
+
+    init(json: [String: Any]) {
+        scope = JsonRead.string(json, "scope", "unspecified")
+        globalComplete = JsonRead.bool(json, "global_complete") ?? false
+        observedWorkspaces = JsonRead.int(json, "observed_workspaces")
+        unreadable = JsonRead.int(json, "unreadable")
+        truncated = JsonRead.bool(json, "truncated") ?? false
+    }
+
+    var emptyStateText: String {
+        globalComplete
+            ? "등록된 에이전트 워크트리가 없습니다."
+            : "세션 기록이 가리킨 경로에서는 에이전트 워크트리를 찾지 못했습니다."
+    }
+
+    var coverageText: String {
+        if globalComplete {
+            return "디스크 전체 범위를 확인했습니다."
+        }
+        var text = scope == "session-metadata"
+            ? "세션 기록의 작업 경로 \(observedWorkspaces)곳만 확인했습니다. 디스크 전체 검색 결과가 아닙니다."
+            : "확인 범위가 제한되어 디스크 전체 검색 결과로 해석할 수 없습니다."
+        if unreadable > 0 {
+            text += " \(unreadable)곳은 읽지 못했습니다."
+        }
+        if truncated {
+            text += " 시간 또는 수량 한도에서 확인을 멈췄습니다."
+        }
+        return text
     }
 }
 
@@ -106,7 +152,9 @@ struct ScreeWorktreeItem: Identifiable {
     let path: String
     let repo: String
     let branch: String
-    let registered: Bool
+    /// `nil` means the registry query failed or exhausted its shared budget.
+    /// Unknown must not collapse to the same value as a confirmed anchor break.
+    let registered: Bool?
     let dirty: Bool
     let unpushedCommits: Int
     let lastCommit: String
@@ -125,7 +173,7 @@ struct ScreeWorktreeItem: Identifiable {
         path = JsonRead.string(json, "path")
         repo = JsonRead.string(json, "repo")
         branch = JsonRead.string(json, "branch")
-        registered = JsonRead.bool(json, "registered") ?? false
+        registered = JsonRead.bool(json, "registered")
         dirty = JsonRead.bool(json, "dirty") ?? false
         unpushedCommits = JsonRead.int(json, "unpushed_commits")
         lastCommit = JsonRead.string(json, "last_commit")
@@ -154,11 +202,17 @@ struct ScreeWorktreeItem: Identifiable {
     /// instead of re-deriving a second, less honest description from
     /// already-collapsed booleans.
     var reasonText: String {
-        guard verdict != "unreadable" else { return "git 확인 실패 · 재검사 필요" }
+        if verdict == "unreadable" {
+            return registered == false
+                ? "git 확인 실패 · 등록 끊김 · 재검사 필요"
+                : "git 확인 실패 · 재검사 필요"
+        }
         var parts: [String] = []
         if dirty { parts.append("dirty") }
         if unpushedCommits > 0 { parts.append("unpushed \(unpushedCommits)") }
         if parts.isEmpty { parts.append("clean") }
+        if registered == nil { parts.append("등록 여부 확인 실패") }
+        if registered == false { parts.append("등록 끊김") }
         return parts.joined(separator: " · ")
     }
 
@@ -176,6 +230,21 @@ struct ScreeWorktreeItem: Identifiable {
         case "rebuildable": return "arrow.triangle.2.circlepath"
         default: return "questionmark.circle"
         }
+    }
+}
+
+struct ScreeRegisteredMissing: Identifiable {
+    var id: String { "\(repo)\n\(path)" }
+    let repo: String
+    let path: String
+
+    init(json: [String: Any]) {
+        repo = JsonRead.string(json, "repo")
+        path = JsonRead.string(json, "path")
+    }
+
+    var displayLabel: String {
+        URL(fileURLWithPath: path).lastPathComponent
     }
 }
 
@@ -229,6 +298,9 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
     /// `session` or `workspace_state`, straight from scree.
     let kind: String
     let sizeBytes: Int64
+    /// `false` means the fast metadata index deliberately skipped a recursive
+    /// unit walk. The explicit backup receipt computes the exact byte total.
+    let sizeComplete: Bool?
     let lastActive: String
 
     var id: String { source }
@@ -252,6 +324,7 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
     static func provider(forTool tool: String) -> SessionProvider {
         switch tool.lowercased() {
         case "claude": return .claude
+        case "claude desktop": return .claudeDesktop
         case "codex": return .codex
         case "gemini": return .gemini
         case "cursor": return .cursor
@@ -271,8 +344,24 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
     /// not there.
     var isReadable: Bool { kind == "session" && provider.keepsTranscripts }
 
+    /// Raw backup support is narrower than conversation readability. Gemini
+    /// can be inspected, for example, but scree has no byte-preserving Gemini
+    /// backup contract. Keep the button coupled to the providers the backup
+    /// engine actually accepts, including Desktop's conversation-unit handle.
+    var supportsOriginalBackup: Bool {
+        ["claude", "claude desktop", "codex"].contains(tool.lowercased())
+    }
+
+    var supportsConversationExport: Bool {
+        isReadable && (
+            sourceURL.pathExtension.lowercased() == "jsonl"
+                || tool.caseInsensitiveCompare("Claude Desktop") == .orderedSame
+        )
+    }
+
     var subtitle: String {
-        var parts = [tool, isReadable ? "대화" : "편집기 상태", lastActive, sizeText]
+        var parts = [tool, isReadable ? "대화" : "편집기 상태", lastActive]
+        parts.append(sizeComplete == false ? "전체 크기는 백업 시 계산" : sizeText)
         if !workspace.isEmpty && !workspaceExists {
             parts.append("작업 경로 소멸")
         }
@@ -292,6 +381,78 @@ struct SessionIndex: Decodable, Equatable {
     /// rather than presenting a truncated list as the whole machine.
     let total: Int
     let sessions: [SessionIndexEntry]
+    /// Store-by-store discovery coverage. A result from an older runtime that
+    /// omitted it decodes as incomplete rather than silently implying that the
+    /// visible rows are the whole machine.
+    let coverage: SessionIndexCoverage
+
+    init(
+        total: Int,
+        sessions: [SessionIndexEntry],
+        coverage: SessionIndexCoverage = .unknown
+    ) {
+        self.total = total
+        self.sessions = sessions
+        self.coverage = coverage
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case total, sessions, coverage
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        total = try values.decode(Int.self, forKey: .total)
+        sessions = try values.decode([SessionIndexEntry].self, forKey: .sessions)
+        coverage = try values.decodeIfPresent(
+            SessionIndexCoverage.self,
+            forKey: .coverage
+        ) ?? .unknown
+    }
+}
+
+struct SessionIndexCoverage: Decodable, Equatable {
+    let complete: Bool
+    let stores: [SessionIndexStoreCoverage]
+
+    static let unknown = SessionIndexCoverage(complete: false, stores: [])
+
+    /// A partial index remains useful, but an empty/short list must never be
+    /// presented as everything on the Mac when a provider root was unreadable
+    /// or contained records this build could not recognize.
+    var warningText: String? {
+        guard !complete else { return nil }
+        let issues = stores.compactMap(\.issueText)
+        guard !issues.isEmpty else {
+            return "일부 로컬 대화 저장소를 끝까지 확인하지 못했습니다. 현재 목록을 전체 기록으로 단정하지 않습니다."
+        }
+        return "일부 로컬 대화 저장소를 끝까지 확인하지 못했습니다: "
+            + issues.joined(separator: " · ")
+            + ". 현재 목록을 전체 기록으로 단정하지 않습니다."
+    }
+}
+
+struct SessionIndexStoreCoverage: Decodable, Equatable, Identifiable {
+    var id: String { store }
+    let store: String
+    let status: String
+    let count: Int
+    let unrecognized: Int
+
+    var issueText: String? {
+        switch status {
+        case "ok", "missing":
+            return unrecognized > 0 ? "\(store) 형식 미인식 \(unrecognized)개" : nil
+        case "unreadable":
+            return "\(store) 읽기 실패"
+        case "truncated":
+            return "\(store) 확인 중단"
+        case "unrecognized":
+            return "\(store) 형식 미인식 \(max(1, unrecognized))개"
+        default:
+            return "\(store) 상태 확인 불가"
+        }
+    }
 }
 
 
@@ -332,6 +493,17 @@ struct SessionSearchMatch: Decodable, Identifiable, Equatable {
     var subtitle: String {
         [displayLabel, tool, lastActive, isUser ? "나" : "에이전트"].joined(separator: " · ")
     }
+
+    var supportsOriginalBackup: Bool {
+        ["claude", "claude desktop", "codex"].contains(tool.lowercased())
+    }
+
+    var supportsConversationExport: Bool {
+        provider.keepsTranscripts && (
+            sourceURL.pathExtension.lowercased() == "jsonl"
+                || tool.caseInsensitiveCompare("Claude Desktop") == .orderedSame
+        )
+    }
 }
 
 /// A whole search, including how much of the machine it managed to read.
@@ -362,9 +534,14 @@ struct SessionSearchResult: Decodable, Equatable {
     var caveat: String? {
         var notes: [String] = []
         if !isComplete {
-            notes.append(truncatedReason == "time"
-                ? "시간이 오래 걸려 \(scannedSessions)/\(totalSessions)개까지만 훑었습니다."
-                : "결과가 많아 일부만 표시했습니다. 검색어를 좁히세요.")
+            switch truncatedReason {
+            case "time":
+                notes.append("시간이 오래 걸려 \(scannedSessions)/\(totalSessions)개까지만 훑었습니다.")
+            case "discovery":
+                notes.append("일부 로컬 대화 저장소를 확인하지 못했습니다.")
+            default:
+                notes.append("결과가 많아 일부만 표시했습니다. 검색어를 좁히세요.")
+            }
         }
         if unreadableSessions > 0 {
             notes.append("세션 \(unreadableSessions)개는 읽지 못했습니다.")
@@ -414,9 +591,14 @@ struct ScreeEvidenceResult: Decodable, Equatable {
         guard !definitive else { return nil }
         var notes: [String] = []
         if coverage != "complete" {
-            notes.append(truncatedReason == "time"
-                ? "시간 제한으로 \(scannedSessions)/\(totalSessions)개 대화까지만 확인했습니다."
-                : "결과 제한에 닿아 모든 대화를 확인하지 못했습니다.")
+            switch truncatedReason {
+            case "time":
+                notes.append("시간 제한으로 \(scannedSessions)/\(totalSessions)개 대화까지만 확인했습니다.")
+            case "discovery":
+                notes.append("일부 로컬 대화 저장소를 확인하지 못했습니다.")
+            default:
+                notes.append("결과 제한에 닿아 모든 대화를 확인하지 못했습니다.")
+            }
         }
         if unreadableSessions > 0 {
             notes.append("대화 \(unreadableSessions)개는 읽지 못했습니다.")

@@ -117,7 +117,7 @@ extension ScanModel {
     }
 
     private func prepareCleanup(recipeID: String, label: String) {
-        guard !recipeID.isEmpty, !isBusy else { return }
+        guard !applicationTerminationStarted, !recipeID.isEmpty, !isBusy else { return }
         cleanupInFlight = true
         cleanupIsExecuting = false
         errorMessage = nil
@@ -163,7 +163,8 @@ extension ScanModel {
     }
 
     func executeCleanup(_ preview: CleanupPreview) {
-        guard preview.canExecute,
+        guard !applicationTerminationStarted,
+              preview.canExecute,
               !isBusy,
               cleanupPreview?.recipeID == preview.recipeID,
               cleanupPreview?.approvalToken == preview.approvalToken else { return }
@@ -237,7 +238,7 @@ extension ScanModel {
     }
 
     func prepareRecoveryPlan(_ items: [StorageItem], desiredFreeGB: Double) {
-        guard !isBusy, desiredFreeGB > 0 else { return }
+        guard !applicationTerminationStarted, !isBusy, desiredFreeGB > 0 else { return }
         var seenExecutions: Set<String> = []
         let candidates = items.compactMap {
             item -> (item: StorageItem, tier: CleanupTier, request: CleanupExecutionRequest?)? in
@@ -326,7 +327,8 @@ extension ScanModel {
     }
 
     func executeRecoveryPlan(_ plan: CleanupRecoveryPlan) {
-        guard !isBusy,
+        guard !applicationTerminationStarted,
+              !isBusy,
               !plan.readyEntries.isEmpty,
               cleanupRecoveryPlan?.id == plan.id,
               cleanupRecoveryPlan?.entries.map({ $0.preview.approvalToken })
@@ -554,12 +556,15 @@ extension ScanModel {
     }
 
     func setStorageWatchEnabled(_ enabled: Bool) {
-        guard !storageWatchInFlight, enabled != storageWatchEnabled else { return }
+        guard !applicationTerminationStarted,
+              !storageWatchInFlight,
+              enabled != storageWatchEnabled else { return }
         storageWatchInFlight = true
         errorMessage = nil
         let root = projectRoot
         let command = enabled ? "--install" : "--uninstall"
-        Task {
+        startTrackedApplicationTask { [weak self] in
+            guard let self else { return }
             defer { storageWatchInFlight = false }
             // Ask now, in this clear foreground moment the owner just triggered —
             // never from the scheduled launch itself, which runs invisibly and
