@@ -87,4 +87,14 @@ final class NativeBuildLifecycleTests: XCTestCase {
         try FileManager.default.removeItem(at: other); try FileManager.default.removeItem(at: file)
         XCTAssertEqual(mkfifo(file.path, 0o600), 0); XCTAssertThrowsError(try NativeArtifactEvidence.seal(folder))
     }
+    func testSecurityFrameworkMatchesCodesignForTheBuiltApp() throws {
+        let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let app = package.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/macos/Modore.app")
+        try XCTSkipUnless(NativeFileTree.exists(app), "A signed local app build is required")
+        let result = try NativeCommand.run("/usr/bin/codesign", ["-d", "--verbose=4", app.path])
+        XCTAssertEqual(result.status, 0, result.errorText)
+        let expected = try XCTUnwrap(result.errorText.split(separator: "\n").first { $0.hasPrefix("CDHash=") }.map { String($0.dropFirst(7)) })
+        XCTAssertEqual(NativeArtifactEvidence.applicationHash(app), expected)
+    }
+
 }

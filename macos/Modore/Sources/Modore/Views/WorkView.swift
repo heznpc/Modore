@@ -16,6 +16,7 @@ import MothballCore
 struct WorkPage: View {
     @EnvironmentObject private var ci: CIWatchService
     @State private var resources = false
+    @State private var buildArtifacts = false
     @EnvironmentObject private var quotaWork: QuotaWorkModel
     @EnvironmentObject private var model: ScanModel
 
@@ -27,6 +28,8 @@ struct WorkPage: View {
                 Menu(L10n.text("개발 도구")) {
                     Button(L10n.text("CI 실행 결과")) { ci.showIncidents = true }
                         .accessibilityIdentifier("work-ci-incidents")
+                    Button(L10n.text("빌드 산출물 보관·회수")) { buildArtifacts = true }
+                        .accessibilityIdentifier("work-build-artifacts")
                     Button(L10n.text("작업 환경 보기")) { resources = true }
                         .keyboardShortcut("k", modifiers: [.command, .shift])
                 }
@@ -57,7 +60,8 @@ struct WorkPage: View {
             resolveQuotaTask()
         }
         .onChange(of: model.sessionIndex) { _ in resolveQuotaTask() }
-        .sheet(isPresented: $resources) { WorkResourceView() }
+        .sheet(isPresented: $resources) { NavigationStack { WorkResourceView() } }
+        .sheet(isPresented: $buildArtifacts) { BuildArtifactLifecycleView().frame(width: 1000, height: 720) }
         .sheet(isPresented: $ci.showIncidents) { CIIncidentsView() }
         // The git judgment needs the workspace list the audit produces, so
         // a cold start waits until that lands. A boolean only changes on the

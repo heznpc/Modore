@@ -121,12 +121,13 @@ it does not preserve structured tool calls or results.
 - **Scope:** one named session from a recognized local store. Claude Code includes its transcript plus existing session-scoped `subagents/`, `tool-results/`, `file-history/`, `image-cache/`, and `uploads/`. Claude Desktop Code includes the `local_*.json` metadata object and its same-stem conversation-unit directory, including transcript, audit, queue, output, subagent, upload, and owned sidecar entries; it never follows selected workspace folders or other external references. Codex contains the selected transcript only. Workspace code, shared project memory, other sessions, and externally referenced files are excluded.
 - **Integrity:** a ZIP with a versioned manifest, file sizes, and SHA-256 digests. Creation detects source changes, verifies the archive, and refuses to overwrite a destination. Limits are 10,000 files and 2 GiB of uncompressed data per session.
 - **Restore:** **백업 확인·복원…** opens an existing backup even when its original session is gone. All entries are checked before extraction; restore creates a new directory outside the live Claude/Codex session stores and verifies the extracted bytes. Existing directories, provider-store destinations, casing/symlink aliases of those stores, and unsafe archive paths are rejected. Claude Desktop-owned leaf sidecar symlinks are recorded and restored as links without being followed; symlinks are rejected in every other backup scope. Restore does not register or resume the session inside a provider app.
+- **Interrupted restores:** the app inspects the selected destination before restoring. Verifiable private native stages and complete Python schema-3 private plans can be recovered; unknown files and incomplete ownership evidence stay available for review. Restore is bounded to 192 directories.
 - **Privacy:** raw backups require acknowledgement. They are **not masked or encrypted** and can contain secrets already present in transcripts. ZIPs and restored files are owner-only (0600), restored directories 0700. No upload or model call occurs. Keep a separate protected copy off the source disk for disk-failure protection; do not publish raw backups in a public Git repository.
 
 ```bash
 bin/modore sessions backup <session-file> --out <new-backup.zip> --include-sensitive
 bin/modore sessions backup-verify <backup.zip>
-python3 scripts/scree.py backup-restore <backup.zip> --out <new-directory>
+bin/modore sessions backup-restore <backup.zip> --out <new-directory>
 ```
 
 **Design intent:** inspect what matters, preserve original evidence, and test

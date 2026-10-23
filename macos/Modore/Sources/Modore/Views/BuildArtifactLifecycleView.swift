@@ -2,6 +2,7 @@ import SwiftUI
 
 struct BuildArtifactLifecycleView: View {
     @EnvironmentObject private var model: ScanModel
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var service = BuildArtifactLifecycleService()
     @State private var query = ""
     @State private var reviewedItems: [BuildArtifactReport.Item] = []
@@ -22,6 +23,8 @@ struct BuildArtifactLifecycleView: View {
                     approvalOpen = true
                 }
                     .disabled(service.busy || model.isBusy || model.cleanupReviewOnly || service.report?.items.contains(where: \.eligible) != true)
+                Button(L10n.text("닫기")) { dismiss() }.keyboardShortcut(.cancelAction)
+                    .disabled(service.busy).accessibilityIdentifier("build-artifacts-close")
             }
             CleanupReviewOnlyNotice()
             if service.busy { ProgressView(L10n.text("생성 기록·현재 사용·보관 조건을 확인하고 있습니다…")) }
