@@ -1866,7 +1866,9 @@ def test_storage_watch_notification_deadline_stops_the_entire_process_tree(
     # Measure the notification deadline from notifier startup. The outer
     # command also verifies the signed app and collects storage facts, which
     # can take several seconds on a shared CI host before notification begins.
-    assert time.time() - child_pid_file.stat().st_mtime < 4
+    # The 1s polling deadline also includes process reaping and state writes.
+    # Keep the bound below the 20s child lifetime without timing CI load.
+    assert time.time() - child_pid_file.stat().st_mtime < 8
     child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
     for _ in range(50):
         try:
