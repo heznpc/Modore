@@ -64,6 +64,12 @@ inspection.
 `search --first` stops at the newest matching turn; ordinary `search` keeps its
 full coverage contract for absence claims.
 
+QuotaPie Codex profiles under
+`~/Library/Application Support/QuotaPie/CodexProfiles/*/home/{sessions,archived_sessions}`
+are discovered automatically alongside `~/.codex`. Listing, search, inspection,
+workspace binding, and original backup share this support. Copies with the same
+Codex session ID appear as one conversation.
+
 **Currently implemented — turn test resources:** opt-in Claude/Codex lifecycle
 hooks connect a completed response to simulator runs started by
 `modore resources begin-test`. Modore shuts down only its registered test run,
@@ -124,8 +130,8 @@ it does not preserve structured tool calls or results.
 - **Privacy:** raw backups require acknowledgement. They are **not masked or encrypted** and can contain secrets already present in transcripts. ZIPs and restored files are owner-only (0600), restored directories 0700. No upload or model call occurs. Keep a separate protected copy off the source disk for disk-failure protection; do not publish raw backups in a public Git repository.
 
 ```bash
-python3 scripts/scree.py backup <session-file> --out <new-backup.zip> --include-sensitive
-python3 scripts/scree.py backup-verify <backup.zip>
+bin/modore sessions backup <session-file> --out <new-backup.zip> --include-sensitive
+bin/modore sessions backup-verify <backup.zip>
 python3 scripts/scree.py backup-restore <backup.zip> --out <new-directory>
 ```
 
@@ -176,7 +182,7 @@ python3 scripts/mcp_server.py --tools    # inspect the surface without speaking 
 
 - `agent_state_report` — the join, retention forecast, orphan/sole-copy/lineage judgment, by section, with every truncation reported.
 - `agent_session_list` — newest-first local session metadata from `scree sessions`; conversation bodies are not opened.
-- `agent_session_search` — an explicit user-requested phrase search delegated to `scree search`; the query stays off argv and returned snippets remain masked.
+- `agent_session_search` — explicit, masked phrase search with provider/workspace filters and `nextCursor` continuation. Query and cursor travel over stdin. Large positive limits/budgets are capped per page (200 matches / 60 seconds), with effective bounds reported. Pass the cursor with the same query and filters, and merge overlapping fragments by `matchId`.
 - `operator_friction_report` — the pushback taxonomy, filterable by store, category, and minimum severity.
 - `model_residue_report` — which models in the Hugging Face hub cache no project file names, and how many gigabytes those account for. Reports `search_complete`; when the search could not be exhaustive every model is `unknown`, never `unreferenced`.
 - `mcp_hygiene` — registered MCP servers that cannot start: dead command, missing script path, duplicate entry, or an `env` block worth a human look (reported as a key count, never as keys or values).
@@ -283,7 +289,7 @@ The Mac app bundles only the allowlisted Bash/JXA/data/rule runtime it needs. A 
 ### Requirements
 - **macOS script mode**: Bash + `osascript` (built into macOS).
 - **macOS SwiftUI source mode**: macOS 13 or later plus Swift tools 5.9 or later from the system-selected, root-owned Xcode under `/Applications` or Command Line Tools under `/Library/Developer/CommandLineTools`. The explicitly nonpublishable local/CI packaging check may also use an ephemeral current-user-owned Xcode when it is not group/world writable; public distribution never receives that exception. A notarized DMG does not require the toolchain.
-- **Source-checkout `bin/modore` command**: Python 3.9+ available as `/usr/bin/python3`. The installed Mac app does not require or install this command.
+- **Source-checkout `bin/modore` command**: native CI, skill, backup and resource commands require a newly built sibling Mac app. Session analysis and source lifecycle-hook commands still use Python 3.9+ available as `/usr/bin/python3`. The installed Mac app does not require or install this command.
 - **Windows**: PowerShell 5.1+ (built into Windows 10/11).
 - **Development / tests only**: Python 3.11+ for pytest, release-smoke packaging, and local docs preview.
 

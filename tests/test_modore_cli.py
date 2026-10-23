@@ -91,7 +91,7 @@ def test_storage_status_rejects_target_or_approval_flags(project_root):
 def test_storage_status_discards_the_watchers_duplicate_success_protocol(project_root):
     source = (project_root / "bin" / "modore").read_text(encoding="utf-8")
 
-    assert '/bin/bash -p "$STORAGE_WATCH" >/dev/null' in source
+    assert '/bin/bash -p "$STORAGE_WATCH" --observe-only >/dev/null' in source
     assert "watchStatus\\tbusy" in source
     assert '"lastEvidenceAt"' in source
     assert 'tail -n 1 "$EVIDENCE"' not in source
@@ -169,20 +169,22 @@ def test_sessions_current_rejects_extra_options(project_root):
     assert "sessions current accepts no additional arguments" in result.stderr
 
 
-def test_agent_numeric_budgets_are_bounded(project_root):
+def test_agent_numeric_budgets_are_bounded(project_root, tmp_path):
     sessions = run_cli(project_root, "sessions", "--limit", "501")
     search = run_cli(
         project_root,
         "search",
         "--budget-seconds",
         "56",
+        "--workspace", str(tmp_path / "nonexistent-workspace"),
         stdin="query",
     )
 
     assert sessions.returncode == 64
     assert "between 1 and 500" in sessions.stderr
-    assert search.returncode == 64
-    assert "between 1 and 55" in search.stderr
+    assert search.returncode == 0, search.stderr
+    assert "budget limited to 55" in search.stderr
+    assert json.loads(search.stdout)["scanFinished"] is True
 
 
 def test_bounded_exec_stops_a_spawned_process_group(project_root):
@@ -394,3 +396,31 @@ def test_storage_explain_requires_native_capability_marker(project_root, tmp_pat
     after = run_cli(tmp_path, "storage", "explain", "--since", "2026-10-01T00:00:00Z")
     assert after.returncode == 0
     assert after.stdout.splitlines() == ["--storage-explain", "--since", "2026-10-01T00:00:00Z"]
+
+
+def test_ci_and_backups_require_the_native_capability_before_launch(project_root, tmp_path):
+    import shutil
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(project_root / "bin/modore", tmp_path / "bin/modore")
+    for name in ("scree.py", "storage_watch.sh", "cleanup.sh", "mcp_server.py", "bounded_exec.py"):
+        (tmp_path / "scripts" / name).touch()
+    executable = tmp_path / "build/macos/Modore.app/Contents/MacOS/Modore"
+    executable.parent.mkdir(parents=True)
+    executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    executable.chmod(0o700)
+    for args in (("ci", "status"), ("sessions", "backup-verify", "example.zip"), ("resources", "status")):
+        assert run_cli(tmp_path, *args).returncode == 69
+    marker = executable.parent.parent / "Resources/native-operations-v2"
+    marker.parent.mkdir()
+    marker.write_text("2\n")
+    for args in (("ci", "status"), ("sessions", "backup-verify", "example.zip"), ("resources", "status")):
+        result = run_cli(tmp_path, *args)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ["--native-cli", *args]
+
+
+def test_resource_cli_preserves_simulator_devices(project_root):
+    result = run_cli(project_root, "resources", "delete-duplicate", "--id", "12345678-1234-1234-1234-123456789abc")
+    assert result.returncode == 64
+    assert "devices are preserved" in result.stderr

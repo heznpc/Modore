@@ -16,6 +16,20 @@ struct SpaceGoalWorkspaceList: View {
     @State private var coverageExpanded = false
     @State private var supplemental: SupplementalStorageAudit?
     @State private var diskBalance: DiskBalance?
+    @State private var inspectedKey: String?
+    @State private var showingInspector = false
+    @State private var showingOptions = false
+    private struct Candidate: Identifiable {
+        let item: StorageItem
+        var id: String { item.investigationKey }
+    }
+    private var inspectedItem: StorageItem? { inventory.first { $0.investigationKey == inspectedKey } }
+    private func selectionBinding(_ item: StorageItem) -> Binding<Bool> {
+        Binding(get: { selectedKeys.contains(SpaceGoalSelection.key(item)) }, set: { selected in
+            if selected && judgment(item) == .ready { selectedKeys.insert(SpaceGoalSelection.key(item)) }
+            else { selectedKeys.remove(SpaceGoalSelection.key(item)) }
+        })
+    }
 
     private var inventory: [StorageItem] {
         var paths = Set<String>()
@@ -45,6 +59,7 @@ struct SpaceGoalWorkspaceList: View {
             || $0.path.localizedCaseInsensitiveContains(query)) }
     }
     private var ready: [StorageItem] { inventory.filter { judgment($0) == .ready } }
+    private var readyVisible: [StorageItem] { visible.filter { judgment($0) == .ready } }
     private var selection: [StorageItem] { ready.filter { selectedKeys.contains(SpaceGoalSelection.key($0)) } }
     private var investigable: [StorageItem] { visible.filter(\.hasSupportedCleanupRecipe) }
     private var pending: [StorageItem] { investigable.filter { judgment($0) == .uncertain } }
@@ -64,46 +79,89 @@ struct SpaceGoalWorkspaceList: View {
             header
             Divider()
             filters
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    coverageView
-                    ForEach(StorageJudgment.allCases) { group in
-                        let items = visible.filter { judgment($0) == group }
-                        if !items.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(L10n.text(group.title)).font(.headline)
-                                    Text("\(items.count)").font(.callout).foregroundStyle(.secondary)
-                                    Spacer()
-                                    if group == .ready {
-                                        Button(L10n.text("이 그룹 선택")) { selectedKeys.formUnion(items.map(SpaceGoalSelection.key)) }
-                                            .disabled(model.isBusy)
-                                    }
-                                }.padding(.vertical, 6)
-                                ForEach(items, id: \.investigationKey) { item in
-                                    SpaceGoalCandidateRow(item: item, evidence: evidence(item), judgment: group,
-                                        scanDate: sourceDate(item),
-                                        isSelected: Binding(get: { selectedKeys.contains(SpaceGoalSelection.key(item)) },
-                                            set: { if $0 { selectedKeys.insert(SpaceGoalSelection.key(item)) }
-                                                else { selectedKeys.remove(SpaceGoalSelection.key(item)) } }))
-                                    if let device = storage.simulatorDevices.first(where: { $0.path == item.path }) {
-                                        DisclosureGroup(L10n.text("기기 보존 설정·개별 검토")) { WorkspaceSimulatorRow(device: device) }
-                                            .font(.caption).padding(.bottom, 8)
-                                    }
-                                    Divider()
-                                }
-                            }
-                        }
+            Table(visible.map(Candidate.init), selection: $inspectedKey) {
+                TableColumn(L10n.text("선택")) { row in
+                    if judgment(row.item) == .ready {
+                        Toggle(L10n.format("%@ 정리 대상으로 선택", row.item.label), isOn: selectionBinding(row.item))
+                            .labelsHidden().toggleStyle(.checkbox)
+                            .disabled(model.isBusy)
+                    } else {
+                        Text("—").foregroundStyle(.tertiary)
+                            .accessibilityLabel(L10n.text(judgment(row.item).title))
                     }
-                    if visible.isEmpty {
-                        Text(L10n.text("현재 필터에 해당하는 항목이 없습니다. 조사 범위와 검색어를 확인하세요."))
-                            .foregroundStyle(.secondary).padding(.vertical, 24)
+                }.width(36)
+                TableColumn(L10n.text("항목")) { row in
+                    HStack(spacing: 10) {
+                        NativeSourceIcon(item: row.item, fallbackSymbol: "folder")
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(row.item.label).fontWeight(.medium).lineLimit(1)
+                            Text((row.item.path as NSString).abbreviatingWithTildeInPath)
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }.padding(.vertical, 9)
                     }
-                    optionsAndHistory
-                }.padding(20)
+                }.width(min: 140, ideal: 300)
+                TableColumn(L10n.text("크기")) { row in
+                    Text(candidateSize(row.item)).monospacedDigit()
+                }.width(min: 75, ideal: 90, max: 110)
+                TableColumn(L10n.text("상태")) { row in
+                    Text(L10n.text(judgment(row.item).title)).font(.caption).foregroundStyle(.secondary)
+                }.width(min: 70, ideal: 110, max: 140)
+                TableColumn(L10n.text("상세 보기")) { row in
+                    Button(L10n.text("내용 보기")) {
+                        inspectedKey = row.id
+                        showingInspector = true
+                    }
+                    .accessibilityLabel(L10n.format("%@ 내용 보기", row.item.label))
+                }.width(80)
             }
-            Divider()
+            .overlay {
+                if visible.isEmpty {
+                    Text(L10n.text("현재 필터에 해당하는 항목이 없습니다. 조사 범위와 검색어를 확인하세요."))
+                        .foregroundStyle(.secondary).padding(24)
+                }
+            }
             actionBar
+        }
+        .modoreStaticScrollEdges()
+        .modoreInspector(isPresented: $showingInspector) {
+            ScrollView {
+                if let item = inspectedItem {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(L10n.text(judgment(item).title)).font(.headline)
+                        SpaceGoalCandidateRow(item: item, evidence: evidence(item), judgment: judgment(item),
+                            scanDate: sourceDate(item), isSelected: selectionBinding(item))
+                        if let device = storage.simulatorDevices.first(where: { $0.path == item.path }) {
+                            DisclosureGroup(L10n.text("기기 보존 설정·개별 검토")) { WorkspaceSimulatorRow(device: device) }
+                        }
+                    }.padding(20)
+                }
+            }
+        }
+        .onChange(of: inspectedKey) { showingInspector = $0 != nil }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showingOptions = true } label: { Label(L10n.text("범위·목표·기록"), systemImage: "slider.horizontal.3") }
+            }
+            if !readyVisible.isEmpty || !selection.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        if !readyVisible.isEmpty {
+                            Button(L10n.text("이 범위의 정리 가능 항목 선택")) {
+                                selectedKeys.formUnion(readyVisible.map(SpaceGoalSelection.key))
+                            }.disabled(model.isBusy)
+                        }
+                        if !selection.isEmpty {
+                            Button(L10n.text("선택 해제")) { selectedKeys.removeAll() }
+                        }
+                    } label: { Label(L10n.text("선택"), systemImage: "checklist") }
+                }
+            }
+        }
+        .sheet(isPresented: $showingOptions) {
+            VStack(alignment: .trailing) {
+                Button(L10n.text("닫기")) { showingOptions = false }
+                ScrollView { VStack(alignment: .leading, spacing: 24) { coverageView; optionsAndHistory }.padding(8) }
+            }.padding(24).frame(width: 700, height: 560)
         }
         .onAppear {
             filter = initialFilter
@@ -138,15 +196,13 @@ struct SpaceGoalWorkspaceList: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n.text("공간 비우기")).font(.title.bold())
-                    Text(L10n.text("후보 확인 → 선택 → 정리 내용 확인 → 결과"))
-                        .font(.callout).foregroundStyle(.secondary)
+                    Text(L10n.text("정리 후보")).font(.headline)
                 }
                 Spacer()
                 Button(L10n.text("정리 후보 확인")) {
                     selectedKeys.removeAll()
                     model.prepareStorageReview()
-                }.buttonStyle(.borderedProminent)
+                }.modoreGlassButton(prominent: true)
                     .disabled(model.isBusy)
             }
             Text(L10n.text("검사와 사용 상태 확인을 함께 진행합니다. 확인 후 정리할 항목을 직접 선택하세요."))
@@ -174,7 +230,7 @@ struct SpaceGoalWorkspaceList: View {
     private func metric(_ title: String, _ value: String, _ detail: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.title2.weight(.semibold)).monospacedDigit()
+            Text(value).font(.title3.weight(.semibold)).monospacedDigit()
             Text(detail).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -236,7 +292,7 @@ struct SpaceGoalWorkspaceList: View {
     }
 
     private var actionBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        ModoreGlassGroup { VStack(alignment: .leading, spacing: 8) {
             if model.isRunning {
                 HStack {
                     ProgressView().controlSize(.small)
@@ -252,6 +308,15 @@ struct SpaceGoalWorkspaceList: View {
                     Spacer()
                     Button(L10n.text("조사 중지")) { model.cancelCleanupPreviewRequest() }
                 }
+            } else if selection.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n.text(readyVisible.isEmpty
+                        ? "현재 범위에는 바로 정리할 수 있는 항목이 없습니다."
+                        : "정리 가능 항목의 체크 상자를 선택하세요."))
+                        .fontWeight(.medium)
+                    Text(L10n.text("내용 보기에서 선택할 수 없는 이유와 가능한 조작을 확인할 수 있습니다."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
             } else {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
@@ -259,15 +324,21 @@ struct SpaceGoalWorkspaceList: View {
                         Text(L10n.text("다음 화면에서 현재 상태와 정리 영향을 확인한 뒤 승인합니다"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    .padding(.vertical, 12)
                     Spacer()
-                    if !selection.isEmpty { Button(L10n.text("선택 해제")) { selectedKeys.removeAll() } }
+                    Button(L10n.text("선택 해제")) { selectedKeys.removeAll() }.modoreGlassButton()
                     Button(L10n.text("정리 내용 확인")) {
                         model.prepareRecoveryPlan(selection,
                             requestedGainBytes: StorageBytes.fromLegacyGiB(targetGiB) ?? StorageBytes.perGiB,
                             stopAtGoal: goalEnabled)
-                    }.buttonStyle(.borderedProminent).disabled(model.isBusy || selection.isEmpty)
+                    }.modoreGlassButton(prominent: true).controlSize(.large).disabled(model.isBusy)
                 }
             }
-        }.padding(16)
+        }.padding(16) }
+    }
+
+    private func candidateSize(_ item: StorageItem) -> String {
+        if let evidence = evidence(item) { return StorageBytes.text(evidence.bytes) }
+        return item.measureStatus == "ok" ? StorageBytes.text(StorageBytes.fromLegacyGiB(item.sizeGB)) : L10n.text("크기 미확인")
     }
 }

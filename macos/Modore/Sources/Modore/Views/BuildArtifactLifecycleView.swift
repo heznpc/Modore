@@ -2,6 +2,7 @@ import SwiftUI
 
 struct BuildArtifactLifecycleView: View {
     @EnvironmentObject private var model: ScanModel
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var service = BuildArtifactLifecycleService()
     @State private var query = ""
     @State private var reviewedItems: [BuildArtifactReport.Item] = []
@@ -22,6 +23,8 @@ struct BuildArtifactLifecycleView: View {
                     approvalOpen = true
                 }
                     .disabled(service.busy || model.isBusy || model.cleanupReviewOnly || service.report?.items.contains(where: \.eligible) != true)
+                Button(L10n.text("닫기")) { dismiss() }.keyboardShortcut(.cancelAction)
+                    .disabled(service.busy).accessibilityIdentifier("build-artifacts-close")
             }
             CleanupReviewOnlyNotice()
             if service.busy { ProgressView(L10n.text("생성 기록·현재 사용·보관 조건을 확인하고 있습니다…")) }
@@ -30,6 +33,11 @@ struct BuildArtifactLifecycleView: View {
                 Text("\(service.error == nil ? L10n.text("마지막 확인") : L10n.text("이전 확인 결과")) · \(Date(timeIntervalSince1970: report.observedAt).formatted())")
                     .font(.caption).foregroundStyle(.secondary)
                 Text(report.policy).font(.callout)
+                if let warnings = report.warnings, !warnings.isEmpty {
+                    DisclosureGroup(L10n.text("일부 상태를 확인하지 못했습니다")) {
+                        ForEach(warnings, id: \.self) { Text($0).font(.caption).textSelection(.enabled) }
+                    }.foregroundStyle(.orange)
+                }
                 Text(L10n.format("공용 Python 캐시: %@", (report.sharedCache as NSString).abbreviatingWithTildeInPath))
                     .font(.caption.monospaced()).textSelection(.enabled)
                 Text(L10n.text("성공한 빌드·테스트는 종료 시 회수 조건을 검사합니다. 기록이 없는 과거 폴더는 자동 삭제하지 않습니다."))

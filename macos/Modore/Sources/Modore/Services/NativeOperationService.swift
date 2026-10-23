@@ -27,20 +27,28 @@ enum NativeOperationService {
             // Request is an immutable, inherited descriptor owned by the spawning app.
             let data = try NativeFileTree.read(URL(fileURLWithPath: arguments[3]), limit: 8_000_000)
             guard let request = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw NativeFileTree.fail("작업 요청이 객체 형식이 아닙니다.") }
-            let result: [String: Any]
-            switch arguments[2] {
-            case "skills": result = try skills(request)
-            case "ci": result = try NativeCIWatch.invoke(request)
-            case "session-backup":
-                NativeBackupCancellation.shared.install()
-                result = try NativeSessionBackup.dispatch(request)
-            default: throw NativeFileTree.fail("지원하지 않는 작업입니다.")
-            }
-            FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: result, options: [.withoutEscapingSlashes]))
+            if arguments[2] == "session-backup" { NativeBackupCancellation.shared.install() }
+            try printResult(perform(arguments[2], request: request))
             exit(0)
         } catch {
             let data = (try? JSONSerialization.data(withJSONObject: ["error": error.localizedDescription])) ?? Data("{}".utf8)
             FileHandle.standardOutput.write(data); exit(1)
+        }
+    }
+    static func printResult(_ result: [String: Any]) throws {
+        let data = try JSONSerialization.data(withJSONObject: result, options: [.withoutEscapingSlashes])
+        guard data.count <= 8_000_000 else { throw NativeFileTree.fail("작업 응답 크기 제한 초과") }
+        FileHandle.standardOutput.write(data)
+    }
+    static func perform(_ operation: String, request: [String: Any]) throws -> [String: Any] {
+        switch operation {
+        case "memory-diagnosis": return try MemoryDiagnosis.dictionary(MemoryDiagnosis.capture())
+        case "skills": return try skills(request)
+        case "ci": return try NativeCIWatch.invoke(request)
+        case "resources": return try NativeWorkResources().invoke(request)
+        case "build-artifacts": return try NativeBuildLifecycle().invoke(request)
+        case "session-backup": return try NativeSessionBackup.dispatch(request)
+        default: throw NativeFileTree.fail("지원하지 않는 작업입니다.")
         }
     }
     static func skills(_ request: [String: Any]) throws -> [String: Any] {
@@ -69,7 +77,7 @@ enum NativeOperationService {
         case "probe":
             guard !demo else { throw NativeFileTree.fail("검증 자료는 호스트에 등록되지 않습니다.") }
             var result = manager.status()
-            let found = try CodexSkillProbe.read(home: home)
+            let found = try NativeCodexRPC.read(home: home)
             var rows = result["items"] as? [[String: Any]] ?? []
             for index in rows.indices where rows[index]["host"] as? String == "Codex" {
                 if let match = found.first(where: { $0["path"] as? String == rows[index]["filePath"] as? String }) {
@@ -87,8 +95,12 @@ enum NativeOperationService {
     }
 }
 
-private enum CodexSkillProbe {
+enum NativeCodexRPC {
     static func read(home: URL) throws -> [[String: Any]] {
+        let result = try request("skills/list", params: ["cwds": [home.path], "forceReload": true], directory: home)
+        return (result["data"] as? [[String: Any]] ?? []).flatMap { $0["skills"] as? [[String: Any]] ?? [] }
+    }
+    static func request(_ method: String, params: [String: Any], directory home: URL) throws -> [String: Any] {
         let choices = ["/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
                        "/Applications/Codex.app/Contents/Resources/codex"]
         guard let executable = choices.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { throw NativeFileTree.fail("설치된 Codex app-server 실행 파일을 찾지 못했습니다.") }
@@ -134,10 +146,9 @@ private enum CodexSkillProbe {
             }
             throw NativeFileTree.fail("Codex 발견 조회 시간 초과")
         }
-        try send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "modore_skills", "version": "1"]]])
+        try send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "modore_diagnostics", "version": "1"], "capabilities": ["experimentalApi": true]]])
         _ = try receive(1); try send(["method": "initialized"])
-        try send(["id": 2, "method": "skills/list", "params": ["cwds": [home.path], "forceReload": true]])
-        let result = try receive(2)
-        return (result["data"] as? [[String: Any]] ?? []).flatMap { $0["skills"] as? [[String: Any]] ?? [] }
+        try send(["id": 2, "method": method, "params": params])
+        return try receive(2)
     }
 }

@@ -121,7 +121,7 @@ enum BackgroundNotifier {
                 return
             }
             let content = UNMutableNotificationContent()
-            content.title = "Modore"
+            content.title = L10n.text("저장공간 검토가 필요합니다")
             content.body = backgroundRequest.message
             content.userInfo = ["modoreRoute": "storage"]
             content.categoryIdentifier = PressureNotification.category

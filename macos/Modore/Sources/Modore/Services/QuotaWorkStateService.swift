@@ -175,6 +175,7 @@ final class QuotaWorkModel: ObservableObject {
     @Published private(set) var state: QuotaWorkState = .missing
     @Published private(set) var revision = 0
     @Published var requestedTaskID: String?
+    @Published var requestedSession: WorkSessionLink?
     @Published var message: String?
 
     func refresh() async {
@@ -187,9 +188,29 @@ final class QuotaWorkModel: ObservableObject {
     func review(_ task: QuotaWorkSnapshot.Task) {
         guard let snapshot = state.snapshot, snapshot.isCurrent(),
               snapshot.tasks.contains(where: { $0.id == task.id }),
-              let url = task.reviewURL, NSWorkspace.shared.open(url) else {
+              let url = task.reviewURL else {
             message = L10n.text("QuotaPie를 열 수 없습니다. 앱과 최신 수집 상태를 확인하세요.")
             return
+        }
+        openQuotaPie(url)
+    }
+
+    func reviewSession(_ link: WorkSessionLink) {
+        openQuotaPie(link.quotaPieURL)
+    }
+
+    private func openQuotaPie(_ url: URL) {
+        let candidates = [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/QuotaPie.app"),
+                          URL(fileURLWithPath: "/Applications/QuotaPie.app")]
+        if let app = candidates.first(where: { Bundle(url: $0)?.bundleIdentifier == "local.quotapie.menubar" }) {
+            NSWorkspace.shared.open([url], withApplicationAt: app, configuration: .init()) { [weak self] running, error in
+                guard running == nil || error != nil, let self else { return }
+                Task { @MainActor in
+                    self.message = L10n.text("QuotaPie를 열 수 없습니다. 앱과 최신 수집 상태를 확인하세요.")
+                }
+            }
+        } else if !NSWorkspace.shared.open(url) {
+            message = L10n.text("QuotaPie를 열 수 없습니다. 앱과 최신 수집 상태를 확인하세요.")
         }
     }
 }

@@ -52,7 +52,7 @@ struct SessionBackupSheet: View {
             }
             if let receipt {
                 Divider()
-                Label(receipt.status == "restored" ? L10n.text("새 폴더 복원·검증 성공") : L10n.text("백업 파일 검증 성공"),
+                Label(receipt.status == "recovery" ? L10n.text("중단된 복원 작업") : (receipt.status == "restored" ? L10n.text("새 폴더 복원·검증 성공") : L10n.text("백업 파일 검증 성공")),
                       systemImage: "checkmark.shield")
                     .font(.headline)
                 Text(receipt.summary).font(.callout)
@@ -60,6 +60,22 @@ struct SessionBackupSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Text((receipt.archive as NSString).abbreviatingWithTildeInPath)
                     .font(.caption.monospaced()).textSelection(.enabled)
+                if let recovery = receipt.recovery {
+                    Text(L10n.message(recovery.reason)).font(.callout).textSelection(.enabled)
+                    Text(L10n.format("임시 파일 %d개 · 백업 파일 %d개", recovery.completedFiles, recovery.totalFiles))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(recovery.destination).font(.caption.monospaced()).textSelection(.enabled)
+                    if let ledger = recovery.ledger {
+                        Button(L10n.text("보존 위치에서 확인")) {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: ledger)])
+                        }
+                    }
+                    if recovery.canResume {
+                        Button(recovery.status == "published" ? L10n.text("보관 기록 정리·검증") : L10n.text("검증 후 다시 복원")) {
+                            run(.resume(archive: URL(fileURLWithPath: receipt.archive), destination: URL(fileURLWithPath: recovery.destination)))
+                        }.accessibilityIdentifier("session-backup-resume")
+                    }
+                }
                 if let restored = receipt.restoredRoot {
                     Text(L10n.format("복원 위치: %@", String(describing: (restored as NSString).abbreviatingWithTildeInPath)))
                         .font(.caption).textSelection(.enabled)
@@ -119,7 +135,7 @@ struct SessionBackupSheet: View {
         panel.message = L10n.text("지정한 이름으로 새 폴더를 만듭니다. 기존 폴더·Claude 저장소를 덮어쓰지 않습니다.")
         panel.nameFieldStringValue = "session-restored-\(UUID().uuidString.prefix(8))"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        run(.restore(archive: archive, destination: url))
+        run(.recovery(archive: archive, destination: url))
     }
 
     private func run(_ operation: SessionBackupOperation) {
@@ -130,6 +146,10 @@ struct SessionBackupSheet: View {
             busy = false
             switch result {
             case .success(let value):
+                if value.recovery?.status == "none", let destination = value.recovery?.destination {
+                    run(.restore(archive: URL(fileURLWithPath: value.archive), destination: URL(fileURLWithPath: destination)))
+                    return
+                }
                 receipt = value
                 AccessibilityAnnouncer.announce(value.status == "restored"
                     ? L10n.text("세션 복원 파일의 무결성을 확인했습니다") : L10n.text("세션 백업 파일의 무결성을 확인했습니다"))

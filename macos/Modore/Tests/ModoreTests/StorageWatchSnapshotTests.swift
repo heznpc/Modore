@@ -3,6 +3,35 @@ import XCTest
 @testable import Modore
 
 final class StorageWatchSnapshotTests: XCTestCase {
+    func testMonitorCoverageDoesNotEquateFreeSpaceSamplingWithDirectoryAccess() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("storage-watch.tsv")
+        let now = ISO8601DateFormatter().date(from: "2026-10-20T01:00:00Z")!
+        XCTAssertEqual(StorageWatchService.coverageDetail(stateURL: url, now: now), "폴더별 원인 추적 기록 미확인")
+        for (status, expected) in [
+            ("partial", "폴더별 원인 추적 일부 미완료 · 경로별 접근 권한·측정 상태 확인 필요"),
+            ("complete", "감시 대상 경로 측정 완료"),
+            ("unknown", "폴더별 원인 추적 기록 미확인"),
+        ] {
+            try writePrivate("lastPathEvidenceAt\t2026-10-20T00:59:00Z\nsnapshotCompleteness\t\(status)\n", to: url)
+            XCTAssertEqual(StorageWatchService.coverageDetail(stateURL: url, now: now), expected)
+        }
+    }
+
+    func testMonitorCoverageRejectsStaleFutureAndSignalOnlyEvidence() throws {
+        let directory = try makePrivateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("storage-watch.tsv")
+        let now = ISO8601DateFormatter().date(from: "2026-10-20T01:00:00Z")!
+        try writePrivate("lastPathEvidenceAt\t2026-10-18T00:59:00Z\nsnapshotCompleteness\tcomplete\n", to: url)
+        XCTAssertEqual(StorageWatchService.coverageDetail(stateURL: url, now: now), "폴더별 원인 추적 기록이 오래됨")
+        for timestamp in ["", "2026-10-21T00:59:00Z", "invalid"] {
+            try writePrivate("lastPathEvidenceAt\t\(timestamp)\nlastEvidenceAt\t2026-10-20T00:59:00Z\nsnapshotCompleteness\tcomplete\n", to: url)
+            XCTAssertEqual(StorageWatchService.coverageDetail(stateURL: url, now: now), "폴더별 원인 추적 기록 미확인")
+        }
+    }
+
     func testLoadsValidatedRowsAndGroupsOneDropEvent() throws {
         let directory = try makePrivateDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

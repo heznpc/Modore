@@ -83,6 +83,8 @@ final class WorkWorkspaceAdapterTests: XCTestCase {
             "sessionId": "logical-1", "artifactSources": ["/transcripts/a.jsonl", "/transcripts/b.jsonl"],
         ]
         let logical = try JSONDecoder().decode(SessionIndexEntry.self, from: JSONSerialization.data(withJSONObject: json))
+        let projects = WorkProjectBuilder.build(sessions: [logical], worktrees: [], assessments: [])
+        XCTAssertEqual(WorkListPane.filter(projects, search: "logical-1").first?.sessions, [logical])
         let physical = SessionInspectionFixtures.entry(tool: "Codex", workspace: "/repo", source: "logical-1")
         var provenance = WorkProvenance()
         provenance.didPublish(.sessionIndex)

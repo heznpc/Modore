@@ -454,6 +454,7 @@ done
 /bin/mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 # The source CLI must reject older bundles that would open a GUI for this flag.
 /usr/bin/printf '1\n' > "$APP_DIR/Contents/Resources/native-storage-attribution-v1"
+/usr/bin/printf '2\n' > "$APP_DIR/Contents/Resources/native-operations-v2"
 for localization in "$PACKAGE_DIR/Sources/Modore/Resources/"*.lproj; do
     /bin/cp -R "$localization" "$APP_DIR/Contents/Resources/"
 done
@@ -491,9 +492,7 @@ RUNTIME_FILES=(
     "scripts/schedule.sh"
     "scripts/scree.py"
     "scripts/asset_retirement.py"
-    "scripts/work_resources.py"
     "scripts/environment_retirement.py"
-    "scripts/build_lifecycle.py"
     "scripts/generated_cache.py"
     "scripts/archive_cache.py"
     "scripts/app_registrations.py"
@@ -786,11 +785,19 @@ run_clean /bin/bash -p "$icon_builder" \
     "$ROOT_DIR/assets/macos/AppIcon.svg"
 
 /usr/bin/plutil -create xml1 "$APP_DIR/Contents/Info.plist"
+build_date="$(/bin/date '+%Y-%m-%d %H:%M:%S %z')"
+source_digest="$({
+    /usr/bin/find "$PACKAGE_DIR/Sources/Modore" -type f -print | LC_ALL=C /usr/bin/sort | while IFS= read -r source_file; do
+        /usr/bin/shasum -a 256 "$source_file"
+    done
+} | /usr/bin/shasum -a 256 | /usr/bin/awk '{print substr($1, 1, 12)}')"
 /usr/libexec/PlistBuddy -c "Add :CFBundleName string Modore" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Modore" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $IDENTIFIER" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $APP_VERSION" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $APP_VERSION" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :ModoreBuildDate string $build_date" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :ModoreSourceDigest string $source_digest" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string $EXECUTABLE_NAME" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP_DIR/Contents/Info.plist"

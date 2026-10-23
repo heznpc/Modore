@@ -399,7 +399,7 @@ struct SessionIndexEntry: Identifiable, Equatable, Decodable {
     /// What a search matches against. Path included: people look for a
     /// session by the project it ran in as often as by its name.
     var searchHaystack: String {
-        "\(displayLabel)\n\(workspace)\n\(tool)\n\(artifactSources.joined(separator: "\n"))"
+        "\(displayLabel)\n\(workspace)\n\(tool)\n\(providerSessionId ?? "")\n\(artifactSources.joined(separator: "\n"))"
             .lowercased()
     }
 

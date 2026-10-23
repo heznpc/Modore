@@ -6,6 +6,7 @@ import ZIPFoundation
 /// Original session backups keep the existing version-1 ZIP format.
 /// All archive payload names are data, never paths passed to a ZIP extraction API.
 enum NativeSessionBackup {
+    static let quotaPieProfilesPrefix = "Library/Application Support/QuotaPie/CodexProfiles/"
     static let maximumBytes: Int64 = 2 * 1024 * 1024 * 1024
     static let maximumFiles = 10_000
     static let maximumDirectories = 192
@@ -59,6 +60,11 @@ enum NativeSessionBackup {
                     + ["file-history", "image-cache", "uploads"].map { ".claude/" + $0 + "/" + session })
         }
         if parts.count >= 3, parts[0] == ".codex", ["sessions", "archived_sessions"].contains(parts[1]), url.pathExtension == "jsonl" {
+            return Scope(provider: "Codex", name: "codex-session", roots: [])
+        }
+        if source.hasPrefix(quotaPieProfilesPrefix), parts.count >= 8,
+           parts[5] == "home", ["sessions", "archived_sessions"].contains(parts[6]),
+           url.pathExtension == "jsonl" {
             return Scope(provider: "Codex", name: "codex-session", roots: [])
         }
         if source.hasPrefix(desktopPrefix), parts.count >= 7, url.pathExtension == "json",

@@ -27,8 +27,13 @@ usage() {
         'Usage:' \
         '  modore sessions [--limit N]' \
         '  modore ci status|refresh [--discover] [--repo owner/name] [--project PATH]' \
+        '  modore betacue status' \
         '  modore sessions current' \
-        '  modore search [--provider NAME] [--workspace PATH] [--exclude-workspace PATH] [--workspace-exact] [--offset N] [--first] [--limit N] [--budget-seconds N]  # query on stdin' \
+        '  modore sessions backup SOURCE --out NEW.zip --include-sensitive' \
+        '  modore sessions backup-verify ARCHIVE.zip' \
+        '  modore sessions backup-restore|backup-recovery|backup-resume ARCHIVE.zip --out NEW_FOLDER' \
+        '  modore skills status|compare|disable|restore [--id ID] [--fingerprint HASH]' \
+        '  modore search [--provider NAME] [--workspace PATH] [--exclude-workspace PATH] [--workspace-exact] [--cursor TOKEN|--offset N|--first] [--limit N] [--budget-seconds N]  # query on stdin' \
         '  modore resources status|acquire|claim|heartbeat|release [options]' \
         '  modore resources bind|unbind --id ID --provider PROVIDER --session ID --project PATH [--fingerprint HASH]' \
         '  modore resources diagnose-hooks --project PATH' \
@@ -94,6 +99,28 @@ if [[ "${1:-}" == "storage" && "${2:-}" == "explain" ]]; then
     exec "$NATIVE_MODE" --storage-explain "$@"
 fi
 
+# Native operations share the signed app implementation. Reject an older app
+# before launching so these flags can never accidentally open its GUI.
+if [[ "${1:-}:${2:-}" == "resources:delete-duplicate" ]]; then
+    fail_usage 'simulator devices are preserved; deletion is unavailable.'
+fi
+NATIVE_COMMAND=0
+case "${1:-}:${2:-}" in
+    ci:*|skills:*|sessions:backup|sessions:backup-verify|sessions:backup-restore|sessions:backup-recovery|sessions:backup-resume)
+        NATIVE_COMMAND=1 ;;
+    resources:|resources:status|resources:memory|resources:diagnose-hooks|resources:acquire|resources:claim|resources:bind|resources:unbind|resources:boot|resources:shutdown|resources:prefer|resources:eject)
+        NATIVE_COMMAND=1 ;;
+esac
+if [[ "$NATIVE_COMMAND" == "1" ]]; then
+    NATIVE_MODE="$PROJECT_ROOT/build/macos/Modore.app/Contents/MacOS/Modore"
+    NATIVE_MARKER="$PROJECT_ROOT/build/macos/Modore.app/Contents/Resources/native-operations-v2"
+    [[ -x "$NATIVE_MODE" && -f "$NATIVE_MARKER" ]] || {
+        /usr/bin/printf 'ERROR: rebuild the native Mac app before running this command.\n' >&2
+        exit 69
+    }
+    exec "$NATIVE_MODE" --native-cli "$@"
+fi
+
 if [[ -x /usr/bin/python3 ]]; then
     PYTHON=/usr/bin/python3
 else
@@ -108,8 +135,10 @@ case "$COMMAND" in
     tools)
         exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/tool_reuse.py" "$@"
         ;;
-    ci)
-        exec "$PYTHON" -I -B "$PROJECT_ROOT/scripts/ci_watch.py" "$@"
+    betacue)
+        [[ "$#" -eq 1 && "$1" == "status" ]] || fail_usage 'betacue requires status with no additional arguments.'
+        exec "$PYTHON" -I -B "$BOUNDED_EXEC" 5 -- \
+            "$PYTHON" -I -B "$PROJECT_ROOT/scripts/betacue_state.py" status
         ;;
     help|-h|--help)
         usage
@@ -164,38 +193,57 @@ case "$COMMAND" in
         SEARCH_SCOPE=()
         SEARCH_LIMIT=20
         SEARCH_BUDGET_SECONDS=30
+        SEARCH_CURSOR=start
+        SEARCH_LEGACY=0
         while [[ "$#" -gt 0 ]]; do
             case "$1" in
                 --limit|--budget-seconds)
                     [[ "$#" -ge 2 ]] || fail_usage "$1 requires a value."
+                    [[ "$2" =~ ^[0-9]{1,12}$ ]] && [[ $((10#$2)) -gt 0 ]] \
+                        || fail_usage "$1 requires a positive integer (at most 12 digits)."
+                    SEARCH_REQUESTED=$((10#$2))
                     if [[ "$1" == "--limit" ]]; then
-                        bounded_positive_integer "$2" 200 \
-                            || fail_usage '--limit must be between 1 and 200.'
-                        SEARCH_LIMIT="$2"
+                        SEARCH_LIMIT="$SEARCH_REQUESTED"
+                        if [[ "$SEARCH_LIMIT" -gt 200 ]]; then
+                            SEARCH_LIMIT=200
+                            /usr/bin/printf 'Search page limited to 200 matches; use nextCursor for the rest.\n' >&2
+                        fi
                     else
-                        bounded_positive_integer "$2" 55 \
-                            || fail_usage '--budget-seconds must be between 1 and 55.'
-                        SEARCH_BUDGET_SECONDS="$2"
+                        SEARCH_BUDGET_SECONDS="$SEARCH_REQUESTED"
+                        if [[ "$SEARCH_BUDGET_SECONDS" -gt 55 ]]; then
+                            SEARCH_BUDGET_SECONDS=55
+                            /usr/bin/printf 'Search page budget limited to 55 seconds; use nextCursor to continue.\n' >&2
+                        fi
                     fi
                     shift 2
                     ;;
                 --provider|--workspace|--exclude-workspace|--offset)
                     [[ "$#" -ge 2 ]] || fail_usage "$1 requires a value."
+                    [[ "$1" != "--offset" ]] || SEARCH_LEGACY=1
                     SEARCH_SCOPE+=("$1" "$2")
                     shift 2
                     ;;
                 --workspace-exact)
                     SEARCH_SCOPE+=("$1"); shift ;;
                 --first)
+                    SEARCH_LEGACY=1
                     SEARCH_FIRST=1
                     shift
                     ;;
+                --cursor)
+                    [[ "$#" -ge 2 && -n "$2" && ${#2} -le 4096 ]] || fail_usage '--cursor requires a returned nextCursor.'
+                    SEARCH_CURSOR="$2"; shift 2 ;;
                 *) fail_usage 'unsupported search option; send the query on stdin.' ;;
             esac
         done
         SEARCH_ARGS=(search --query-file /dev/stdin --limit "$SEARCH_LIMIT" \
             --budget-seconds "$SEARCH_BUDGET_SECONDS")
         [[ "${SEARCH_FIRST:-0}" == "0" ]] || SEARCH_ARGS+=(--first)
+        if [[ "$SEARCH_LEGACY" == 0 ]]; then
+            SEARCH_ARGS+=(--cursor "$SEARCH_CURSOR")
+        elif [[ "$SEARCH_CURSOR" != start ]]; then
+            fail_usage '--cursor cannot be combined with --offset or --first.'
+        fi
         exec "$PYTHON" -I -B "$BOUNDED_EXEC" 60 -- \
             "$PYTHON" -I -B "$SCREE" "${SEARCH_ARGS[@]}" ${SEARCH_SCOPE[@]+"${SEARCH_SCOPE[@]}"}
         ;;
@@ -206,7 +254,7 @@ case "$COMMAND" in
             status)
                 [[ "$#" -eq 0 ]] || fail_usage 'storage status accepts no additional arguments.'
                 "$PYTHON" -I -B "$BOUNDED_EXEC" 60 -- \
-                    /bin/bash -p "$STORAGE_WATCH" >/dev/null
+                    /bin/bash -p "$STORAGE_WATCH" --observe-only >/dev/null
                 WATCH_STATUS=$?
                 [[ "$WATCH_STATUS" == "0" || "$WATCH_STATUS" == "75" ]] \
                     || exit "$WATCH_STATUS"

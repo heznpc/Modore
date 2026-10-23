@@ -160,6 +160,7 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
     func start() {
         UNUserNotificationCenter.current().delegate = self
         PressureNotification.register(on: UNUserNotificationCenter.current())
+        PressureNotification.retireLegacyNotices(on: UNUserNotificationCenter.current())
         Task { await refreshNotificationStatus() }
         guard enabled, task == nil else { return }
         PlatformContextService.shared.start()
@@ -270,19 +271,21 @@ final class CPUWatchService: NSObject, ObservableObject, UNUserNotificationCente
             noticePolicy.didAttempt(current, accepted: false, now: Date())
             return
         }
+        // Capture ancestry only when a RAM notice will actually be delivered,
+        // not on every health sample. Launch groups never authorize termination.
+        var toolAccumulation: MemoryToolAccumulation?
+        if !notifyStorage, (current.memoryPressure ?? 0) >= 2 {
+            toolAccumulation = await Task.detached(priority: .utility) {
+                MemoryDiagnosis.capture().families.compactMap(\.toolAccumulation).max { $0.bytes < $1.bytes }
+            }.value
+        }
+        guard !Task.isCancelled else { return }
         let content = UNMutableNotificationContent()
-        content.title = current.issues.isEmpty ? L10n.text("부하가 낮아졌습니다") : (
-            notifyStorage
-                ? L10n.format("공간 부족 · %@ 남음", String(describing: HealthSnapshot.bytes(current.freeBytes)))
-                : ((current.memoryPressure ?? 0) >= 2 ? L10n.text("RAM 사용을 줄여야 합니다") : (current.cpuElevated ? L10n.text("CPU 부하가 계속 높습니다") : L10n.text("CPU 순간 부하 감지"))))
-        let topProcess = usage.first.map { "\(String($0.name.prefix(22))) CPU \(Int($0.percent))%" }
-        let memory = (current.memoryPressure ?? 0) >= 2 ? L10n.text("RAM 주의") : nil
-        content.body = notifyStorage
-            ? [current.summary, current.cpuElevated || current.cpuBurst == true ? topProcess : nil,
-               L10n.text("공간 확보 또는 실행 중인 앱 확인을 여세요.")].compactMap { $0 }.joined(separator: "\n")
-            : [topProcess, memory].compactMap { $0 }.joined(separator: " · ")
-        content.userInfo = ["modoreRoute": notifyStorage ? "storage" : "health"]
-        if notifyStorage { content.categoryIdentifier = PressureNotification.category }
+        let notice = ResourceNotice.health(current, notifyStorage: notifyStorage, toolAccumulation: toolAccumulation)
+        content.title = notice.title
+        content.body = notice.body
+        content.userInfo = ["modoreRoute": notice.route]
+        content.categoryIdentifier = notifyStorage ? PressureNotification.category : PressureNotification.healthCategory
         do {
             try await UNUserNotificationCenter.current().add(UNNotificationRequest(
                 identifier: notifyStorage ? PressureNotification.category : "modore-health", content: content, trigger: nil))

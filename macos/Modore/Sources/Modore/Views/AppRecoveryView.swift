@@ -9,6 +9,7 @@ private struct RestartableApp: Identifiable {
     let identity: FilesystemIdentity
     let icon: NSImage?
     let memory: UInt64?
+    let processCount: Int
 }
 struct AppRecoveryView: View {
     @EnvironmentObject private var model: ScanModel
@@ -19,6 +20,7 @@ struct AppRecoveryView: View {
     @State private var selected: RestartableApp?
     @State private var busy = false
     @State private var message = ""
+    init(initialPID: Int32? = nil) { _highlighted = State(initialValue: initialPID) }
     var body: some View {
         VStack(alignment:.leading,spacing:20) {
             HStack {
@@ -50,6 +52,7 @@ struct AppRecoveryView: View {
                         appIcon(app).frame(width:72,height:72)
                         Text(app.name).font(.title2.bold())
                         Label(memoryLabel(app),systemImage:"memorychip").foregroundStyle(.secondary)
+                        Text(L10n.format("프로세스 %@개 합산", String(app.processCount))).font(.caption).foregroundStyle(.secondary)
                         Button { focus(app) } label: { Label(L10n.text("앱 앞으로 가져오기"),systemImage:"arrow.up.forward.app").frame(maxWidth:.infinity).padding(8) }.buttonStyle(.borderedProminent).tint(.teal).disabled(busy)
                         Button { selected=app } label: { Label(L10n.text("종료 후 다시 열기…"),systemImage:"arrow.clockwise").frame(maxWidth:.infinity).padding(8) }.buttonStyle(.bordered).disabled(busy)
                         Text(L10n.text("저장 요청이 나오면 앱에서 처리하세요.")).font(.caption).foregroundStyle(.secondary)
@@ -63,7 +66,7 @@ struct AppRecoveryView: View {
             }
             if busy { ProgressView(L10n.text("앱의 정상 종료와 재실행을 확인하고 있습니다…")) }
             if !message.isEmpty { Text(message).textSelection(.enabled) }
-            Text(L10n.text("메모리는 측정된 프로세스의 상주량입니다. 미측정 앱과 별도 보조 프로세스는 합산하지 않습니다.")).font(.caption).foregroundStyle(.secondary)
+            Text(L10n.text("앱과 관찰 가능한 자식 프로세스의 실제 점유 메모리를 합산합니다. 접근 제한·독립 실행 서비스는 빠질 수 있고 공유 영역은 중복될 수 있습니다.")).font(.caption).foregroundStyle(.secondary)
         }.padding(24).frame(maxWidth:.infinity,maxHeight:.infinity).interactiveDismissDisabled(busy)
         .onAppear { refresh() }
         .confirmationDialog(L10n.format("%@을 다시 시작할까요?", selected?.name ?? L10n.text("앱")),isPresented:Binding(get:{selected != nil},set:{if !$0 {selected=nil}}),titleVisibility:.visible) {
@@ -83,11 +86,18 @@ struct AppRecoveryView: View {
         if !app.activate(options:[.activateIgnoringOtherApps]) { message=L10n.text("앱을 앞으로 가져오지 못했습니다.") }
     }
     private func refresh() {
+        guard !busy else { return }
+        busy = true
+        Task {
+        let diagnosis = await Task.detached(priority: .utility) { MemoryDiagnosis.capture() }.value
         apps=NSWorkspace.shared.runningApplications.compactMap { app in
             guard app.activationPolicy == .regular, app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
                   let url=app.bundleURL, let identity=FilesystemIdentity.directory(at:url) else {return nil}
-            return RestartableApp(id:app.processIdentifier,name:app.localizedName ?? url.lastPathComponent,url:url,launched:app.launchDate,identity:identity,icon:app.icon,memory:monitor.snapshot?.processes.first(where:{$0.pid == app.processIdentifier})?.residentBytes)
+            let family = diagnosis.families.first { $0.id == app.processIdentifier && NativeCPUReader.read($0.id)?.started == $0.root.started }
+            return RestartableApp(id:app.processIdentifier,name:app.localizedName ?? url.lastPathComponent,url:url,launched:app.launchDate,identity:identity,icon:app.icon,memory:family?.bytes,processCount:family?.members.count ?? 0)
         }.sorted { if $0.memory != $1.memory { return ($0.memory ?? 0) > ($1.memory ?? 0) }; return $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        busy = false
+        }
     }
     private func restart(_ item:RestartableApp) async {
         guard !busy,!model.cleanupInFlight,!model.applicationTerminationStarted else {return}
@@ -100,8 +110,8 @@ struct AppRecoveryView: View {
         do {
             guard let app=NSRunningApplication(processIdentifier:item.id), app.launchDate==item.launched,
                   app.bundleURL==item.url, FilesystemIdentity.directory(at:item.url)==item.identity else {throw RetirementError(L10n.text("앱의 대상 상태가 바뀌었습니다. 목록을 다시 확인하세요."))}
-            let before=try await EnvironmentRetirementService.invoke(root:model.projectRoot,request:["action":"health"])
-            receipt["before"]=try JSONSerialization.jsonObject(with:before)
+            let before = await Task.detached(priority: .utility) { MemoryDiagnosis.capture() }.value
+            receipt["before"] = try MemoryDiagnosis.dictionary(before)
             receipt["mutation"]="attempting";try save()
             guard app.terminate() else {throw RetirementError(L10n.text("앱이 정상 종료 요청을 받지 못했습니다."))}
             for _ in 0..<60 {
@@ -119,9 +129,9 @@ struct AppRecoveryView: View {
             receipt["mutation"]="succeeded"
             receipt["verification"]=(!launched.isTerminated && launched.bundleURL==item.url) ? "verified":"pending"
             receipt["newPID"]=launched.processIdentifier
-            let after=try await EnvironmentRetirementService.invoke(root:model.projectRoot,request:["action":"health"])
-            receipt["after"]=try JSONSerialization.jsonObject(with:after)
-            message=L10n.format("%@을 다시 열었습니다. 메모리·디스크 전후 상태를 기록했습니다.", item.name)
+            let after = await Task.detached(priority: .utility) { MemoryDiagnosis.capture() }.value
+            receipt["after"] = try MemoryDiagnosis.dictionary(after)
+            message=L10n.format("%@을 다시 열었습니다. 메모리·디스크 전후 상태를 기록했습니다.", item.name) + "\n" + after.snapshot.change(from: before.snapshot)
         } catch {receipt["error"]=error.localizedDescription;message=error.localizedDescription}
         receipt["finishedAt"]=Date().timeIntervalSince1970
         do {try save()} catch {message += "\n" + L10n.format("기록 저장 실패: %@", error.localizedDescription)}

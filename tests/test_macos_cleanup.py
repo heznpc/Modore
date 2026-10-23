@@ -1264,6 +1264,27 @@ def test_project_residue_rejects_unproven_or_out_of_bounds_target(
     assert (protected / "keep.txt").read_text(encoding="utf-8") == "keep"
 
 
+def test_project_residue_preserves_modified_swift_dependency(project_root, tmp_path):
+    home = tmp_path / "home"
+    project = home / "Projects" / "swift-app"
+    target = project / ".build"
+    dependency = target / "checkouts" / "dependency"
+    dependency.mkdir(parents=True)
+    (project / "Package.swift").write_text("// swift-tools-version: 6.0\n")
+    (project / "Package.resolved").write_text("{}")
+    source = dependency / "source.swift"
+    source.write_text("original")
+    subprocess.run(["git", "init", str(dependency)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(dependency), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(dependency), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                    "commit", "-m", "fixture"], check=True, capture_output=True)
+    source.write_text("local edit")
+    result = run_project_residue_preview(project_root, home, target)
+    assert result.returncode == 0, result.stderr
+    assert parse_protocol(result.stdout)["status"] == "blocked"
+    assert source.read_text() == "local edit"
+
+
 def test_project_residue_rejects_tracked_target_and_broken_git_check(
     project_root, tmp_path
 ):
@@ -3057,7 +3078,7 @@ def make_swift_output(home, relative="Documents/work/project"):
 
 def test_swift_outputs_remove_only_compiler_products_preserving_projects_and_checkouts(project_root, tmp_path):
     home = tmp_path / "home"
-    projects = [make_swift_output(home, p) for p in ["Documents/deep/project", "IdeaProjects/project", ".codex/worktrees/existing/project"]]
+    projects = [make_swift_output(home, p) for p in ["Documents/deep/project", "IdeaProjects/project", "Developer/project", ".codex/worktrees/existing/project"]]
     for project, _ in projects:
         (project / ".build/checkouts/local-edits").mkdir(parents=True)
         (project / ".build/checkouts/local-edits/source.swift").write_text("important local changes")

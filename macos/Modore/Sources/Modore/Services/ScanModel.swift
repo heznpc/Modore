@@ -250,6 +250,7 @@ final class ScanModel: ObservableObject {
     /// `loadConversation`. Display-only cache; never consulted by any
     /// judgment.
     @Published var conversationLoads: [String: ConversationLoadState] = [:]
+    @Published var conversationDisplayKeys: [String: String] = [:]
     var conversationLoadTokens: [String: UUID] = [:]
     /// The session browser's index, and how fetching it went.
     @Published var sessionIndex: SessionIndex? {

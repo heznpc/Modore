@@ -532,10 +532,7 @@ extension ScanModel {
         sources: [URL], source: URL, provider: SessionProvider,
         retry: Bool = false
     ) {
-        let entrySource = source.path
-        let key = Self.conversationKey(
-            provider: provider, sessionID: entrySource, source: source
-        )
+        let key = selectConversationSnapshot(source: source, provider: provider)
         if retry {
             conversationLoads[key] = nil
         } else if conversationLoads[key] != nil {
@@ -613,9 +610,25 @@ extension ScanModel {
         source: URL,
         provider: SessionProvider
     ) -> ConversationLoadState? {
-        conversationLoads[Self.conversationKey(
-            provider: provider, sessionID: source.path, source: source
-        )]
+        let selection = provider.rawValue + "\0" + source.path
+        let key = conversationDisplayKeys[selection] ?? Self.conversationKey(
+            provider: provider, sessionID: source.path, source: source)
+        return conversationLoads[key]
+    }
+
+    /// Keep the result of this explicit read visible even if an active agent
+    /// appends while it is in flight. Cache identity still changes; the view
+    /// marks the displayed snapshot as outdated instead of discarding it.
+    @discardableResult
+    func selectConversationSnapshot(source: URL, provider: SessionProvider) -> String {
+        let key = Self.conversationKey(provider: provider, sessionID: source.path, source: source)
+        conversationDisplayKeys[provider.rawValue + "\0" + source.path] = key
+        return key
+    }
+
+    func conversationSnapshotNeedsRefresh(source: URL, provider: SessionProvider) -> Bool {
+        guard let displayed = conversationDisplayKeys[provider.rawValue + "\0" + source.path] else { return false }
+        return displayed != Self.conversationKey(provider: provider, sessionID: source.path, source: source)
     }
 
     /// The cache identity for one binding's conversation.

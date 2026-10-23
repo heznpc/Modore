@@ -28,7 +28,7 @@ def _payload(result: dict) -> dict:
 def test_only_the_read_only_judgment_tools_are_exposed():
     assert sorted(mcp_server.HANDLERS) == ["agent_file_access", "agent_session_list",
                                            "agent_session_search", "agent_state_report",
-                                           "ci_incident_status", "environment_retirement_status", "mcp_hygiene", "model_residue_report",
+                                           "betacue_status", "ci_incident_status", "environment_retirement_status", "mcp_hygiene", "model_residue_report",
                                            "operator_friction_report", "system_scan_summary",
                                            "uninstall_residue_report", "work_resource_status"]
 
@@ -82,7 +82,7 @@ def test_no_tool_can_run_anything_but_the_judgment_scripts(monkeypatch, tmp_path
         script = Path(argv[3]).name
         if script == "environment_retirement.py":
             assert argv[4:] == ["--inventory"]
-        assert script in ("ci_watch.py", "scree.py", "friction.py", "moraine.py", "hfscan.py",
+        assert script in ("betacue_state.py", "ci_watch.py", "scree.py", "friction.py", "moraine.py", "hfscan.py",
                           "mcpaudit.py", "fileaccess.py", "work_resources.py", "environment_retirement.py"), argv
         joined = " ".join(argv)
         for forbidden in ("cleanup", "scanner", "storage_watch", "schedule",
@@ -524,11 +524,11 @@ def test_agent_session_search_delegates_query_over_stdin_and_forces_masking(monk
     }))
 
     argv = captured["argv"]
-    assert argv[4:] == ["search", "--query-file", "/dev/fd/0", "--limit", "7",
+    assert argv[4:] == ["search", "--query-file", "/dev/fd/0", "--request-json", "--limit", "7",
                         "--budget-seconds", "12"]
     assert "storage pressure" not in argv
     assert "--raw" not in argv
-    assert captured["kwargs"]["input"] == "storage pressure"
+    assert json.loads(captured["kwargs"]["input"]) == {"query": "storage pressure", "cursor": "start"}
     assert "stdin" not in captured["kwargs"]
     assert captured["kwargs"]["timeout"] == 12 + mcp_server.SCREE_SEARCH_PROCESS_GRACE_SECONDS
     assert payload["masked"] is True
@@ -598,9 +598,9 @@ def test_agent_session_tools_delegate_end_to_end_without_unmasking(tmp_path, mon
 
 @pytest.mark.parametrize("arguments", [
     {"query": "x", "user_initiated": True, "limit": 0},
-    {"query": "x", "user_initiated": True, "limit": 201},
+    {"query": "x", "user_initiated": True, "limit": True},
     {"query": "x", "user_initiated": True, "budget_seconds": 0},
-    {"query": "x", "user_initiated": True, "budget_seconds": 61},
+    {"query": "x", "user_initiated": True, "budget_seconds": -1},
     {"query": "\x00", "user_initiated": True},
     {"query": "가" * 1366, "user_initiated": True},
 ])
@@ -730,7 +730,7 @@ def test_initialize_echoes_a_supported_version_and_falls_back_otherwise():
 
 def test_tools_list_declares_closed_input_schemas():
     tools = mcp_server.handle_request("tools/list", {})["tools"]
-    assert [t["name"] for t in tools] == ["ci_incident_status", "environment_retirement_status", "agent_state_report", "agent_session_list",
+    assert [t["name"] for t in tools] == ["betacue_status", "ci_incident_status", "environment_retirement_status", "agent_state_report", "agent_session_list",
                                           "agent_session_search", "operator_friction_report",
                                           "model_residue_report", "mcp_hygiene",
                                           "agent_file_access", "system_scan_summary",
@@ -782,7 +782,7 @@ def test_serve_handles_a_full_session_including_malformed_input():
 def test_cli_tools_dump_is_the_registered_surface(capsys):
     assert mcp_server.main(["--tools"]) == 0
     dumped = json.loads(capsys.readouterr().out)
-    assert [t["name"] for t in dumped["exposed"]] == ["ci_incident_status", "environment_retirement_status", "agent_state_report", "agent_session_list",
+    assert [t["name"] for t in dumped["exposed"]] == ["betacue_status", "ci_incident_status", "environment_retirement_status", "agent_state_report", "agent_session_list",
                                                       "agent_session_search", "operator_friction_report",
                                                       "model_residue_report", "mcp_hygiene",
                                                       "agent_file_access", "system_scan_summary",

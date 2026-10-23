@@ -2407,7 +2407,7 @@
 "비교하지 않음" = "No comparison";
 "빈 입력창 등록" = "Register an empty input field";
 "사용 중이거나 검증되지 않아 보존한 경로:\n" = "Paths kept because they are in use or unverified:\n";
-"사용 중인 항목은 건너뛰고, 실제 여유 공간 변화와 처리 기록을 남깁니다. 30분 간격으로 재평가하며, 처리한 캐시는 24시간 동안 다시 지우지 않습니다." = "Items in use are skipped. Actual changes in free space and cleanup actions are recorded. Checks run every 30 minutes, and cleaned caches are left untouched for 24 hours.";
+"사용 중인 항목은 건너뛰고, 실제 여유 공간 변화와 처리 기록을 남깁니다. 30분마다 확인하며, 여유 공간이 2GiB 미만이면 1분마다 확인합니다. 정리 완료 항목은 10분 후 다시 측정하고, 결과가 불확실한 실행은 24시간 보류합니다." = "Items in use are skipped, and actual free-space changes and receipts are recorded. Checks run every 30 minutes, or every minute below 2 GiB free. Completed items can be measured again after 10 minutes; runs with uncertain outcomes are held for 24 hours.";
 "사용 확인: %@" = "Usage check: %@";
 "사용·재생성 근거 조사" = "Check usage and regeneration evidence";
 "사용하며 기록" = "Use and record";
@@ -2428,7 +2428,7 @@
 "앱·작업 합산 CPU" = "App and task CPU combined";
 "어떤 앱에서 느려지나요?" = "Which app feels slow?";
 "여유 공간 감소 %@ · 측정 당시 여유 %@" = "Free space decreased %@ · free at measurement %@";
-"여유 공간이 20GiB 미만이면 업데이트 다운로드·Chrome 임시 복제본·테스트 브라우저·패키지 캐시·Xcode 빌드 데이터를 측정해 큰 항목부터 정리합니다. 문서·개발 프로젝트·기존 워크트리 안의 미사용 Swift 컴파일 산출물도 확인합니다. 저장공간 감시를 켜 두면 앱을 닫아도 자동으로 실행됩니다. 소스·대화·node_modules·_npx·의존성 체크아웃·워크트리·시뮬레이터는 보존합니다." = "Below 20 GiB of free space, Modore measures update downloads, temporary Chrome copies, test browsers, package caches, and Xcode build data, then cleans larger items first. It also checks unused Swift compilation outputs in Documents, development projects, and existing worktrees. With storage monitoring enabled, this can run while the app is closed. Source code, conversations, node_modules, _npx, dependency checkouts, worktrees, and simulators are preserved.";
+"여유 공간이 40GiB 미만이면 업데이트 다운로드·Chrome 임시 복제본·테스트 브라우저·패키지 캐시·Xcode 빌드 데이터를 측정해 큰 항목부터 정리합니다. 문서·개발 프로젝트·기존 워크트리 안의 미사용 Swift 컴파일 산출물도 확인합니다. 저장공간 감시를 켜 두면 앱을 닫아도 자동으로 실행됩니다. 소스·대화·node_modules·_npx·의존성 체크아웃·워크트리·시뮬레이터는 보존합니다." = "Below 40 GiB of free space, Modore measures update downloads, temporary Chrome copies, test browsers, package caches, and Xcode build data, then cleans larger items first. It also checks unused Swift compilation outputs in Documents, development projects, and existing worktrees. With storage monitoring enabled, this can run while the app is closed. Source code, conversations, node_modules, _npx, dependency checkouts, worktrees, and simulators are preserved.";
 "열린 파일이 관측되지 않아도 미사용을 확정하지 않습니다. 실행 직전에 다시 확인합니다." = "The absence of observed open files does not establish that an item is unused. It is checked again immediately before cleanup.";
 "요약 복사됨" = "Summary copied";
 "용량 미확인" = "Size unknown";
@@ -2739,3 +2739,137 @@
 "전체 측정 시작" = "Start full measurement";
 "저장된 공간 지도가 없습니다. 전체 측정을 시작하면 폴더별 사용량을 확인합니다." = "No storage map has been saved. Start a full measurement to see usage by folder.";
 "측정 중지" = "Stop measurement";
+
+/* Native workspace navigation and build identity. */
+"근거 상세" = "Evidence details";
+"도구" = "Tools";
+"범위·목표·기록" = "Scope, goal, and history";
+"빌드 시각" = "Built at";
+"빌드 정보" = "Build information";
+"상태" = "Status";
+"새로고침" = "Refresh";
+"소스 식별값" = "Source fingerprint";
+"실행 중인 앱의 빌드 정보" = "Build information for the running app";
+"왼쪽에서 프로젝트를 선택하면 대화와 작업 상태를 확인할 수 있습니다." = "Select a project to read its conversations and review its work status.";
+"작업 감사" = "Work audit";
+"전원" = "Power";
+"최근 대화 읽기" = "Read latest conversation";
+"최소 · 일부 접근 제한" = "Minimum · partial access";
+"측정 당시 여유" = "Free at measurement";
+"측정 상태" = "Measurement status";
+"크기" = "Size";
+"항목" = "Item";
+"항목을 선택하세요" = "Select an item";
+
+"중단된 복원 작업" = "Interrupted restore";
+"임시 파일 %d개 · 백업 파일 %d개" = "%d temporary files · %d backup files";
+"보존 위치에서 확인" = "Show preserved files";
+"보관 기록 정리·검증" = "Finish and verify recovery";
+"검증 후 다시 복원" = "Verify and restart restore";
+"최신 대화를 다시 읽어주세요." = "Read the conversation again to see the latest content.";
+
+/* Storage recovery verification and attribution coverage. */
+"폴더별 원인 추적 기록 미확인" = "Directory attribution evidence unavailable";
+"폴더별 원인 추적 기록이 오래됨" = "Directory attribution evidence is stale";
+"감시 대상 경로 측정 완료" = "Monitored paths measured";
+"폴더별 원인 추적 일부 미완료 · 경로별 접근 권한·측정 상태 확인 필요" = "Directory attribution incomplete · check path access and measurement status";
+"삭제 전에 차단된 항목은 다음 점검에서 다시 측정합니다. 일부만 처리됐거나 결과를 확인하지 못한 실행은 자동 반복을 보류합니다." = "Items blocked before deletion are measured again at the next check. Partial or unverified executions are held from automatic repetition.";
+
+/* Actionable resource notifications */
+"RAM 사용량 검토" = "Review RAM usage";
+"CPU 부하 검토" = "Review CPU load";
+"눌러서 정리할 항목과 예상 확보량을 검토하세요." = "Click to review cleanup items and estimated reclaimable space.";
+"측정된 메모리 상위: %@ · %@" = "Highest measured memory: %@ · %@";
+"앱별 메모리 사용량은 아직 확인하지 못했습니다." = "Per-app memory usage is not available yet.";
+"RAM 압박 · 사용 앱을 확인하세요" = "Memory pressure · Review running apps";
+"눌러서 사용량을 확인하고, 필요 없는 앱을 닫으세요." = "Click to review usage, then close apps you no longer need.";
+"측정된 CPU 상위: %@ · %@%%" = "Highest measured CPU: %@ · %@%%";
+"프로세스별 CPU 사용량은 아직 확인하지 못했습니다." = "Per-process CPU usage is not available yet.";
+"CPU 부하 지속 · 실행 작업을 확인하세요" = "Sustained CPU load · Review running work";
+"CPU 순간 부하 · 실행 작업을 확인하세요" = "CPU spike · Review running work";
+"눌러서 실행 작업과 중단·재시작 방법을 확인하세요." = "Click to review running work and options to stop or restart it.";
+"관찰된 부하가 낮아졌습니다" = "Observed load has decreased";
+"눌러서 현재 상태와 관찰 기록을 확인하세요." = "Click to review current status and observation history.";
+"자동 정리가 중단됐습니다" = "Automatic cleanup was interrupted";
+"눌러서 처리 기록과 남은 정리 항목을 확인하세요." = "Click to review the operation record and remaining cleanup items.";
+"정리 후 여유 공간을 확인하지 못했습니다" = "Free space after cleanup could not be measured";
+"눌러서 현재 공간과 처리 기록을 다시 확인하세요." = "Click to check current space and the operation record.";
+"여유 %@ · 추가 확보 필요" = "%@ free · More space needed";
+"여유 %@ · 확보 목표 도달" = "%@ free · Space target reached";
+"%@ 목표까지 %@ 부족. 눌러서 정리할 항목을 선택하세요." = "%@ target; %@ still needed. Click to choose cleanup items.";
+"추가 정리는 필요하지 않습니다. 누르면 처리 기록을 볼 수 있습니다." = "No further cleanup is needed for this target. Click to view the record.";
+"이번 실행에서 확인된 정리 기록 없음." = "No cleanup receipt was recorded in this run.";
+"캐시 처리 기록 %@건." = "%@ cache operation records.";
+"정리 후보 검토" = "Review cleanup candidates";
+"사용량·조치 보기" = "Review usage and actions";
+"저장공간 검토가 필요합니다" = "Storage needs review";
+"필요 없는 빌드·테스트는 실행한 앱에서 중단하세요. 계속 높은 앱은 작업을 저장한 뒤 재시작을 검토하세요." = "Stop unneeded builds or tests in the app that started them. If an app stays busy, save your work before considering a restart.";
+"사용하지 않는 앱·탭을 닫으세요. 계속 메모리를 많이 쓰는 앱은 작업을 저장한 뒤 재시작을 검토하세요." = "Close unused apps or tabs. If an app keeps using substantial memory, save your work before considering a restart.";
+"앱 선택·재시작 검토" = "Choose an app · Review restart";
+"활동 모니터 열기" = "Open Activity Monitor";
+"순위는 원인 확정이 아닙니다. 시스템 프로세스는 강제 종료 대상으로 권하지 않습니다." = "Usage rank does not establish the cause. Force-quitting system processes is not recommended.";
+"새 관찰이 도착하면 사용량을 표시합니다." = "Usage will appear when a new observation arrives.";
+"CPU 사용량 순" = "By CPU usage";
+"메모리 사용량 순" = "By memory usage";
+"자동 정리 결과" = "Automatic cleanup result";
+"기록 시각 %@ · 현재 공간은 상단 상태에서 확인하세요." = "Recorded %@ · See the status above for current free space.";
+"자동 정리 처리 내역" = "Automatic cleanup details";
+"자동 정리 기록을 찾지 못했습니다. 현재 정리 후보를 확인하세요." = "No automatic cleanup record was found. Review current cleanup candidates.";
+"남은 정리 후보 확인" = "Review remaining cleanup candidates";
+
+"실행 중인 시뮬레이터" = "Running simulator";
+
+"앱·작업별 메모리 합계" = "Memory by app and workload";
+
+"조치 후 다시 측정" = "Measure again after action";
+
+"앱과 자식 프로세스를 함께 측정합니다…" = "Measuring apps and their child processes…";
+
+"물리 RAM %@ · 압축 메모리 %@ · 관찰 %@" = "Physical RAM %@ · Compressed %@ · Observed %@";
+
+"스왑은 RAM에서 밀려난 데이터를 담는 시스템 공간입니다. 아래 큰 작업의 사용을 줄여 RAM 압박부터 낮추세요. 스왑 파일 직접 삭제나 캐시 정리로 해결하지 않습니다. 작업 종료 후에도 이미 할당된 공간은 즉시 줄지 않을 수 있습니다." = "Swap is system storage for data moved out of RAM. Reduce the large workloads below to relieve memory pressure. Do not delete swap files or clear caches to fix it. Allocated space may not shrink immediately after a workload exits.";
+
+"아래 이전 측정 대비 변화는 같은 PID와 시작 시각인 작업만 비교합니다. 다른 작업의 영향도 포함됩니다." = "Changes compare only workloads with the same PID and start time. Other activity also affects the system totals.";
+
+"프로세스 %@개 합산" = "%@ processes combined";
+
+"일부 프로세스는 실제 점유량 대신 상주 메모리 사용" = "Resident memory substitutes for footprint in some processes";
+
+"작업 확인" = "Check work";
+
+"재시작 검토…" = "Review restart…";
+
+"기기 확인·실행만 종료…" = "Review device and shut down runtime…";
+
+"서버·작업 종료 검토…" = "Review servers and running work…";
+
+"포함된 프로세스" = "Included processes";
+
+"메모리 상위 8개 표시 · 합계에는 전체 포함" = "Top 8 by memory shown · Total includes all";
+
+"조회 가능 %@ / 전체 %@개 프로세스. 접근 제한·종료된 프로세스는 제외합니다. 합계는 관찰 가능한 부모·자식 관계 기준이며 세션 소유권이나 누수의 증명은 아닙니다. 공유 메모리는 중복될 수 있습니다." = "Readable %@ / %@ processes. Inaccessible or exited processes are excluded. Totals follow observed parent-child relationships; they do not establish session ownership or a leak. Shared memory may be counted more than once.";
+
+"앱과 관찰 가능한 자식 프로세스의 실제 점유 메모리를 합산합니다. 접근 제한·독립 실행 서비스는 빠질 수 있고 공유 영역은 중복될 수 있습니다." = "Combines the memory footprint of the app and its observable children. Restricted or independent services may be missing; shared regions can be counted more than once.";
+
+"정리 실행 환경을 검증하지 못했습니다. Modore를 종료한 뒤 설치된 앱을 다시 열어 재시도하세요. 계속 실패하면 앱 설치 상태를 확인해야 합니다. 삭제는 시작하지 않았습니다." = "The cleanup runtime could not be verified. Quit Modore and reopen the installed app, then retry. If it still fails, check the app installation. Deletion has not started.";
+
+"현재 수집 범위에서 연결된 대화를 하나로 확인하지 못했습니다. 새로고침 후 다시 확인하세요." = "Could not identify one conversation in the current index. Refresh and try again.";
+
+"QuotaPie에서 계정·한도 보기" = "View account and limits in QuotaPie";
+
+"기록이 변경되었습니다. 읽은 시점의 내용을 표시합니다." = "The record has changed. Showing the last read snapshot.";
+
+"여러 시점에 시작한 도구 %@개가 실행 중 · %@" = "%@ tools from multiple launches are running · %@";
+
+"앱 안의 작업을 확인한 뒤 아래에서 재시작을 검토하세요. 시작 시각만으로 작업 종료를 판별할 수 없어 자동 종료하지 않습니다." = "Review your work in the app before considering a restart below. Start times alone cannot establish whether work has ended, so these processes are not stopped automatically.";
+
+"RAM 압박 · 도구 프로세스 %@개 실행 중" = "RAM pressure · %@ tool processes running";
+
+"여러 시점에 시작된 도구 · %@\n눌러서 실행 앱과 관련 작업을 확인하세요." = "Tools started at multiple times · %@\nClick to review the app and related work.";
+// Cleanup selection affordances
+"내용 보기" = "View details";
+"%@ 내용 보기" = "View details for %@";
+"이 범위의 정리 가능 항목 선택" = "Select cleanable items in this view";
+"현재 범위에는 바로 정리할 수 있는 항목이 없습니다." = "There are no items in this view that can be cleaned immediately.";
+"정리 가능 항목의 체크 상자를 선택하세요." = "Select the checkbox for an item marked Cleanable.";
+"내용 보기에서 선택할 수 없는 이유와 가능한 조작을 확인할 수 있습니다." = "Open View details to see why an item cannot be selected and which actions are available.";

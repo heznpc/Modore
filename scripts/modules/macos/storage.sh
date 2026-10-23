@@ -1277,7 +1277,7 @@ _pch_collect_project_residue() {
     # 무시하고 macOS 저장공간 설정은 뭉뚱그리므로, 수 GB가 쌓여도 어떤 도구에도
     # 보이지 않는 사각지대가 된다. 검색은 흔한 개발 루트로 한정하고 깊이와
     # 개수를 제한해 빠른 검사 예산 안에 머문다.
-    local scan_roots="${PCH_PROJECT_SCAN_ROOTS:-$HOME/IdeaProjects:$HOME/Developer:$HOME/Projects:$HOME/Documents:$HOME/StudioProjects:$HOME/dev:$HOME/workspace:$HOME/src}"
+    local scan_roots="${PCH_PROJECT_SCAN_ROOTS:-$HOME/.codex/worktrees:$HOME/Documents/Codex:$HOME/IdeaProjects:$HOME/Developer:$HOME/Projects:$HOME/Documents:$HOME/StudioProjects:$HOME/dev:$HOME/workspace:$HOME/src}"
     local max_projects="${PCH_PROJECT_SCAN_LIMIT:-256}"
     local max_repositories="${PCH_PROJECT_GIT_SCAN_LIMIT:-128}"
     local max_manifests="${PCH_PROJECT_SWIFTPM_MANIFEST_LIMIT:-256}"

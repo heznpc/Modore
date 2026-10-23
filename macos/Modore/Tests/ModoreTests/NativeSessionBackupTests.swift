@@ -29,6 +29,24 @@ final class NativeSessionBackupTests: XCTestCase {
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
     private func verify(_ archive: URL) throws -> NativeSessionBackup.Manifest { try NativeSessionBackup.withArchive(archive) { try NativeSessionBackup.verify(fd: $0) } }
+    func testQuotaPieProfileBackupRoundTripAndLiveStoreProtection() throws {
+        for store in ["sessions", "archived_sessions"] {
+            let root = try temporary(), home = root.appendingPathComponent("home")
+            let relative = NativeSessionBackup.quotaPieProfilesPrefix + "profile-a/home/" + store + "/2026/10/rollout.jsonl"
+            let source = try write(home, relative), archive = root.appendingPathComponent("profile.zip")
+            _ = try NativeSessionBackup.create(source: source, home: home, destination: archive, includeSensitive: true)
+            let manifest = try verify(archive)
+            XCTAssertEqual(manifest.provider, "Codex")
+            XCTAssertEqual(manifest.sourceRelative, relative)
+            let reference = try python(home, "print(json.dumps(m.verify_session_backup(Path(sys.argv[3]))))", extra: [archive.path])
+            XCTAssertEqual(reference["provider"] as? String, "Codex")
+            let destination = root.appendingPathComponent("restored")
+            _ = try NativeSessionBackup.restore(archive: archive, destination: destination, home: home)
+            XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent(relative)), try Data(contentsOf: source))
+            XCTAssertThrowsError(try NativeSessionBackup.create(source: source, home: home, destination: source.deletingLastPathComponent().appendingPathComponent("backup.zip"), includeSensitive: true))
+            XCTAssertThrowsError(try NativeSessionBackup.restore(archive: archive, destination: home.appendingPathComponent(NativeSessionBackup.quotaPieProfilesPrefix + "profile-b"), home: home))
+        }
+    }
     func testClaudeBackupIsReadableAndRestorableByPython() throws {
         let root = try temporary(), home = root.appendingPathComponent("home"), relative = ".claude/projects/project/session.jsonl"
         let source = try write(home, relative)

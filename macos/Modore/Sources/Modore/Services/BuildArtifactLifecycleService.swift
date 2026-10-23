@@ -13,6 +13,7 @@ struct BuildArtifactReport: Decodable {
     let observedAt: Double
     let items: [Item]
     let sharedCache, policy: String
+    let warnings: [String]?
 }
 
 @MainActor
@@ -69,24 +70,7 @@ final class BuildArtifactLifecycleService: ObservableObject {
     }
 
     private static func invoke(root: URL, arguments: [String]) async throws -> Data {
-        guard let execution = await Task.detached(priority: .utility, operation: {
-            RuntimeWorkspace.prepareExecution(projectRoot: root)
-        }).value,
-        let invocation = execution.pinnedInvocation(relativePath: "scripts/build_lifecycle.py", name: "build_lifecycle"),
-        let python = ScreeService.python3Path(signedBundleURL: execution.signedBundleURL) else {
-            throw RetirementError("빌드 산출물 관리 실행환경을 준비하지 못했습니다.")
-        }
-        let wrapper = "import sys; source=open(sys.argv[1],'rb').read(); sys.argv=['build_lifecycle.py']+sys.argv[2:]; exec(compile(source,'build_lifecycle.py','exec'),{'__name__':'__main__'})"
-        let result = await LocalProcessRunner.capture(executable: python,
-            arguments: ["-I", "-B", "-c", wrapper, invocation.argument] + arguments,
-            currentDirectory: execution.runtimeRoot, expectedCurrentDirectoryIdentity: execution.runtimeRootIdentity,
-            expectedSignedBundleURL: execution.signedBundleURL, pinnedFiles: invocation.files,
-            timeout: 300, maxOutputBytes: 4_000_000, waitForCleanupOnStop: true)
-        let data = Data(result.output.utf8)
-        if let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let error = object["error"] as? String {
-            throw RetirementError(error)
-        }
-        guard result.succeeded && !result.outputTruncated else { throw RetirementError("산출물 관리 결과를 확인하지 못했습니다. 기록을 새로 고쳐 확인하세요.") }
-        return data
+        try await NativeOperationService.capture("build-artifacts", payload: JSONSerialization.data(withJSONObject: ["arguments": arguments]),
+            timeout: 300, maximumBytes: 4_000_000)
     }
 }

@@ -1,13 +1,24 @@
 #!/bin/bash -p
 # Lightweight local disk-pressure watch. It records free space and, only after
 # a large drop, a bounded size snapshot of known cache/runtime roots. It never
-# reads file contents or deletes files.
+# reads file contents. Scheduled runs can launch the consent-gated recovery app;
+# --observe-only measures without launching recovery or notifications.
 
 set -u
 set -o pipefail
 umask 077
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset BASH_ENV ENV CDPATH GLOBIGNORE
+
+OBSERVE_ONLY=0
+if [[ "$#" -gt 0 ]]; then
+    if [[ "$#" == 1 && "$1" == "--observe-only" ]]; then
+        OBSERVE_ONLY=1
+    else
+        /usr/bin/printf 'Usage: storage_watch.sh [--observe-only]\n' >&2
+        exit 64
+    fi
+fi
 
 # 이 스크립트는 LaunchAgent에서 파일이 아니라 stdin 파이프로 실행된다
 # (scripts/schedule.sh의 WATCH_WRAPPER). 그 경로에서는 BASH_SOURCE가 비어 있어
@@ -744,12 +755,12 @@ if [[ "$FREE_KB" -lt "$FREE_THRESHOLD_KB" ]]; then
     elif [[ "$FREE_KB" -lt $((10 * 1024 * 1024)) ]]; then
         PRESSURE_LEVEL=2; NOTIFY_INTERVAL=1800
     fi
-    MESSAGE="여유 공간 ${FREE_GB}GB. 빌드와 스왑에 쓸 공간이 부족합니다. 공간 확보 또는 실행 중인 앱 확인을 여세요."
-    [[ "$PRESSURE_LEVEL" -lt 3 ]] || MESSAGE="디스크 위험 · ${FREE_GB}GB 남음. 빌드·다운로드를 잠시 멈추고 공간 확보 또는 실행 중인 앱 확인을 여세요."
+    MESSAGE="여유 ${FREE_GB}GB. 눌러서 정리할 항목과 예상 확보량을 검토하세요."
+    [[ "$PRESSURE_LEVEL" -lt 3 ]] || MESSAGE="디스크 위험 · ${FREE_GB}GB 남음. 빌드·다운로드를 잠시 멈추고, 눌러서 정리할 항목을 선택하세요."
 elif [[ "$DROP_KB" -ge "$DROP_THRESHOLD_KB" || "$HOUR_DROP_KB" -ge "$DROP_THRESHOLD_KB" ]]; then
     STATUS="warning"
     PRESSURE_LEVEL=1
-    MESSAGE="여유 공간 ${FREE_GB}GB. 최근 점검 또는 한 시간 사이에 ${DROP_THRESHOLD_GB}GB 이상 줄었습니다. 공간 확보에서 원인을 확인하세요."
+    MESSAGE="여유 ${FREE_GB}GB · 최근 점검 또는 한 시간 사이 ${DROP_THRESHOLD_GB}GB 이상 감소. 눌러서 큰 항목과 정리 가능 여부를 확인하세요."
 fi
 [[ "$STATUS" == "warning" ]] || LAST_NOTIFY_LEVEL=0
 
@@ -1545,7 +1556,9 @@ notify_via_app_bundle() {
 # Launch at most once per five minutes; the app rechecks standing consent and
 # actual free space, then coordinates with the foreground recovery via a lease.
 RECOVERY_LAUNCH_RESULT="not-due"
-if [[ "$FREE_KB" -lt 20971520 && $((NOW_EPOCH - LAST_RECOVERY_CHECK)) -ge 300 ]]; then
+if [[ "$OBSERVE_ONLY" == 1 ]]; then
+    RECOVERY_LAUNCH_RESULT="observation-only"
+elif [[ "$FREE_KB" -lt 41943040 && $((NOW_EPOCH - LAST_RECOVERY_CHECK)) -ge 300 ]]; then
     RECOVERY_LAUNCH_RESULT="failed"
     if start_automatic_recovery; then
         LAST_RECOVERY_CHECK="$NOW_EPOCH"
@@ -1554,7 +1567,7 @@ if [[ "$FREE_KB" -lt 20971520 && $((NOW_EPOCH - LAST_RECOVERY_CHECK)) -ge 300 ]]
 fi
 
 NOTIFICATION_RESULT="not-due"
-if [[ "$STATUS" == "warning" && "$NOTIFY" == "1" ]]; then
+if [[ "$OBSERVE_ONLY" == 0 && "$STATUS" == "warning" && "$NOTIFY" == "1" ]]; then
     if [[ "$PRESSURE_LEVEL" -gt "$LAST_NOTIFY_LEVEL" || $((NOW_EPOCH - LAST_NOTIFY)) -ge "$NOTIFY_INTERVAL" ]]; then
         NOTIFICATION_RESULT="deferred"
         notification_delivered=0

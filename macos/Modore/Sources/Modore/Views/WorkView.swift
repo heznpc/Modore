@@ -16,33 +16,49 @@ import MothballCore
 struct WorkPage: View {
     @EnvironmentObject private var ci: CIWatchService
     @State private var resources = false
+    @State private var buildArtifacts = false
+    @State private var betaCue = false
+    @State private var audit = false
     @EnvironmentObject private var quotaWork: QuotaWorkModel
     @EnvironmentObject private var model: ScanModel
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(L10n.text("프로젝트·대화")).font(.headline)
-                Spacer()
-                Menu(L10n.text("개발 도구")) {
-                    Button(L10n.text("CI 실행 결과")) { ci.showIncidents = true }
-                        .accessibilityIdentifier("work-ci-incidents")
-                    Button(L10n.text("작업 환경 보기")) { resources = true }
-                        .keyboardShortcut("k", modifiers: [.command, .shift])
-                }
-            }.padding(12)
             if let message = quotaWork.message {
                 WorkNotice(text: message, action: (L10n.text("닫기"), {
                     quotaWork.requestedTaskID = nil
+                    quotaWork.requestedSession = nil
                     quotaWork.message = nil
                 }))
             }
         HSplitView {
             WorkListPane()
-                .frame(minWidth: 340, idealWidth: 420)
+                .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
             WorkDetailPane()
-                .frame(minWidth: 320)
+                .frame(minWidth: 360)
         }
+        }
+        .searchable(text: $model.sessionSearch, prompt: L10n.text("작업·대화 검색 (Return으로 대화 내용까지)"))
+        .onSubmit(of: .search) { model.runContentSearch() }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("BetaCue") { betaCue = true }.accessibilityIdentifier("work-betacue")
+                    Button(L10n.text("CI 실행 결과")) { ci.showIncidents = true }.accessibilityIdentifier("work-ci-incidents")
+                    Button(L10n.text("빌드 산출물 보관·회수")) { buildArtifacts = true }.accessibilityIdentifier("work-build-artifacts")
+                    Button(L10n.text("작업 환경 보기")) { resources = true }.keyboardShortcut("k", modifiers: [.command, .shift])
+                    Divider()
+                    Button(L10n.text("작업 감사")) { audit = true }
+                } label: { Label(L10n.text("개발 도구"), systemImage: "wrench.and.screwdriver") }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { model.refreshSessionIndex(); model.refreshScreeReport() } label: { Label(L10n.text("새로고침"), systemImage: "arrow.clockwise") }
+                    .disabled(model.sessionIndexLoading || model.screeLoading)
+            }
+        }
+        .sheet(isPresented: $audit) {
+            VStack(alignment: .trailing) { Button(L10n.text("닫기")) { audit = false }.padding(); WorkAuditSummary() }
+                .frame(width: 780, height: 650)
         }
         .task {
             repeat {
@@ -57,8 +73,17 @@ struct WorkPage: View {
             resolveQuotaTask()
         }
         .onChange(of: model.sessionIndex) { _ in resolveQuotaTask() }
-        .sheet(isPresented: $resources) { WorkResourceView() }
+        .task(id: quotaWork.requestedSession) {
+            guard quotaWork.requestedSession != nil else { return }
+            model.refreshSessionIndex()
+        }
+        .onChange(of: model.sessionIndexLoading) { loading in
+            if !loading { resolveSessionLink() }
+        }
+        .sheet(isPresented: $resources) { NavigationStack { WorkResourceView() } }
+        .sheet(isPresented: $buildArtifacts) { BuildArtifactLifecycleView().frame(width: 1000, height: 720) }
         .sheet(isPresented: $ci.showIncidents) { CIIncidentsView() }
+        .sheet(isPresented: $betaCue) { BetaCueView() }
         // The git judgment needs the workspace list the audit produces, so
         // a cold start waits until that lands. A boolean only changes on the
         // first report; a revision also restarts binding after a successful
@@ -87,6 +112,23 @@ struct WorkPage: View {
         }
         quotaWork.requestedTaskID = nil
         quotaWork.message = nil
+        model.selectedProjectID = model.workProjects.first { $0.sessions.contains { $0.source == session.source } }?.id
+        model.selectedSearchMatch = nil
+        model.selectedSessionSource = session.source
+        model.loadSessionTitles(for: [session.source])
+        model.loadConversation(for: session)
+    }
+
+    private func resolveSessionLink() {
+        guard let link = quotaWork.requestedSession else { return }
+        guard let index = model.sessionIndex, let session = link.resolve(in: index.sessions) else {
+            quotaWork.message = L10n.text("현재 수집 범위에서 연결된 대화를 하나로 확인하지 못했습니다. 새로고침 후 다시 확인하세요.")
+            return
+        }
+        quotaWork.requestedSession = nil
+        quotaWork.message = nil
+        model.sessionSearch = ""
+        model.selectedProjectID = model.workProjects.first { $0.sessions.contains { $0.source == session.source } }?.id
         model.selectedSearchMatch = nil
         model.selectedSessionSource = session.source
         model.loadSessionTitles(for: [session.source])
@@ -98,10 +140,8 @@ struct WorkListPane: View {
     @EnvironmentObject private var model: ScanModel
     @State private var showingBackup = false
 
-    /// Conversation titles shown under a project before it is selected.
-    /// Enough to recognise the work, few enough that one project cannot
-    /// take the whole viewport.
-    static let previewCount = 3
+    /// Read conversation titles only for the selected project.
+    static let previewCount = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -122,14 +162,7 @@ struct WorkListPane: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Typing filters metadata; return searches conversations. Both
-            // in one box, because "where is the thing I said" and "where
-            // is the project" are the same question asked two ways, and
-            // making the user pick the right box first is how the answer
-            // ended up in a terminal instead.
-            TextField(L10n.text("작업·대화 검색 (Return으로 대화 내용까지)"), text: $model.sessionSearch)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { model.runContentSearch() }
+            Text(L10n.text("프로젝트·대화")).font(.headline)
             Button(L10n.text("백업 확인·복원…")) { showingBackup = true }
                 .font(.caption)
                 .accessibilityIdentifier("work-backup-library")
@@ -182,8 +215,8 @@ struct WorkListPane: View {
 
     private var list: some View {
         let projects = Self.filter(model.workProjects, search: model.sessionSearch)
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+        return List {
+            Group {
                 if let coverageWarning = model.sessionIndex?.coverage.warningText {
                     WorkNotice(text: coverageWarning, action: nil)
                     Divider()
@@ -209,10 +242,9 @@ struct WorkListPane: View {
                         expanded: model.selectedProjectID == project.id,
                         previewCount: Self.previewCount
                     )
-                    Divider()
                 }
-            }
-        }
+            }.listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 4))
+        }.listStyle(.inset)
     }
 }
 
@@ -249,6 +281,8 @@ struct WorkProjectRow: View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
                 model.selectedProjectID = expanded ? nil : project.id
+                model.selectedSessionSource = nil
+                model.selectedSearchMatch = nil
             } label: {
                 summary
             }
@@ -278,6 +312,8 @@ struct WorkProjectRow: View {
             if !expanded, project.conversationCount > previewCount {
                 Button(L10n.format("전체 대화 %@개 보기", String(describing: project.conversationCount))) {
                     model.selectedProjectID = project.id
+                    model.selectedSessionSource = nil
+                    model.selectedSearchMatch = nil
                 }
                 .buttonStyle(.link)
                 .font(.caption)
@@ -317,35 +353,9 @@ struct WorkProjectRow: View {
                     .font(.body.weight(.semibold))
                     .lineLimit(1)
                     .foregroundStyle(project.isUnassigned ? Color.secondary : Color.primary)
-                Text(Self.subtitle(project))
+                Text(L10n.format("대화 %@개", String(project.conversationCount)) + (project.lastActive.map { " · " + $0 } ?? ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if !project.gitRisks.isEmpty {
-                    Text(project.gitRisks.joined(separator: " · "))
-                        .font(.caption)
-                        // Weight, not hue: this project reserves chromatic
-                        // status colour for states that mean stop, and on a
-                        // machine that runs agents daily most rows carry
-                        // one of these.
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                }
-                // Facts that describe the repo without warning about it.
-                // They were computed and then dropped on the floor, so
-                // "400일 미사용" -- the reason a repo is a good candidate
-                // -- never reached the screen at all.
-                if !project.gitNotes.isEmpty {
-                    Text(project.gitNotes.joined(separator: " · "))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                // Said out loud, because a repo nobody looked at drew the
-                // same row as a repo that was looked at and found clean.
-                if let unknown = project.git.unknownReason {
-                    Text(unknown)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
             Spacer()
             if project.needsAttention {
@@ -451,7 +461,7 @@ private struct WorkDetailPane: View {
                 if let session {
                     Text(ConversationTitleRow.label(
                         session: session, title: model.sessionTitles[session.source]))
-                        .font(.headline)
+                        .font(.title2.weight(.semibold))
                     Text(session.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -470,6 +480,10 @@ private struct WorkDetailPane: View {
                                 .accessibilityIdentifier("work-session-backup")
                         }
                         if exporting { ProgressView().controlSize(.small) }
+                        if let link = WorkSessionLink(session: session) {
+                            Button(L10n.text("QuotaPie에서 계정·한도 보기")) { quotaWork.reviewSession(link) }
+                                .accessibilityIdentifier("work-session-quota")
+                        }
                     }
                     if let exportError {
                         Text(exportError).font(.caption).foregroundStyle(.red)
@@ -524,11 +538,17 @@ private struct WorkDetailPane: View {
                         }
                     )
                 } else {
-                    WorkAuditSummary()
+                    if let project = model.workProjects.first(where: { $0.id == model.selectedProjectID }) {
+                        WorkProjectOverview(project: project)
+                    } else {
+                        ModernEmptyState(symbol: "folder", title: L10n.text("프로젝트·대화"),
+                            message: L10n.text("왼쪽에서 프로젝트를 선택하면 대화와 작업 상태를 확인할 수 있습니다."))
+                            .padding(32)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(hasConversationSelection ? 16 : 0)
+            .padding(hasConversationSelection ? 28 : 0)
         }
         .sheet(item: $backupTarget) { selected in
             SessionBackupSheet(source: selected.source, tool: selected.tool)
@@ -555,6 +575,15 @@ private struct WorkDetailPane: View {
     ) -> some View {
         switch model.conversationState(source: source, provider: provider) {
         case .loaded(let conversation):
+            TimelineView(.periodic(from: .now, by: 5)) { _ in
+                if model.conversationSnapshotNeedsRefresh(source: source, provider: provider) {
+                    HStack {
+                        Text(L10n.text("기록이 변경되었습니다. 읽은 시점의 내용을 표시합니다."))
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button(L10n.text("새로고침"), action: retry).buttonStyle(.link)
+                    }
+                }
+            }
             SessionConversationBody(conversation: conversation)
         case .failed(let message):
             VStack(alignment: .leading, spacing: 6) {
@@ -565,12 +594,17 @@ private struct WorkDetailPane: View {
                     .buttonStyle(.link)
                     .font(.caption)
             }
-        case .loading, .none:
+        case .loading:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text(L10n.text("대화를 읽는 중…"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        case .none:
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.text("최신 대화를 다시 읽어주세요.")).foregroundStyle(.secondary)
+                Button(L10n.text("다시 시도"), action: retry).modoreGlassButton()
             }
         }
     }
@@ -579,6 +613,36 @@ private struct WorkDetailPane: View {
         let tool: String
         let source: String
         var id: String { source }
+    }
+}
+
+private struct WorkProjectOverview: View {
+    @EnvironmentObject private var model: ScanModel
+    let project: WorkProject
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Image(systemName: "folder").font(.system(size: 36, weight: .light)).foregroundStyle(.secondary)
+            Text(project.name).font(.title.weight(.semibold))
+            Text(project.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            Text(WorkProjectRow.subtitle(project)).font(.callout).foregroundStyle(.secondary)
+            Divider()
+            ForEach(project.gitRisks, id: \.self) { Text($0).fontWeight(.medium) }
+            ForEach(project.gitNotes, id: \.self) { Text($0).foregroundStyle(.secondary) }
+            if let unknown = project.git.unknownReason { Text(unknown).foregroundStyle(.secondary) }
+            HStack {
+                if let session = project.conversations.first {
+                    Button(L10n.text("최근 대화 읽기")) {
+                        model.selectedSearchMatch = nil
+                        model.selectedSessionSource = session.source
+                        model.loadSessionTitles(for: [session.source])
+                        model.loadConversation(for: session)
+                    }.modoreGlassButton(prominent: true)
+                }
+                Button(L10n.text("아카이브·로컬 정리")) {
+                    model.retirementReview = RetirementReviewTarget(id: project.id)
+                }.modoreGlassButton()
+            }
+        }.padding(32).frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -48,7 +48,7 @@ enum AppDestination: String, CaseIterable, Identifiable, Hashable {
     var symbol: String {
         switch self {
         case .start: return "house"
-        case .health: return "heart.text.clipboard"
+        case .health: return "macbook"
         case .appDiagnostic: return "cursorarrow.motionlines"
         case .status: return "waveform.path.ecg"
         case .macRecheck: return "list.bullet.clipboard"
@@ -68,7 +68,10 @@ struct ModernRootView: View {
     @EnvironmentObject private var quotaWork: QuotaWorkModel
     @State private var selection: AppDestination = .health
     @State private var storageSection: StorageWorkspaceSection = .overview
+    @State private var healthResourceFocus: HealthResourceFocus?
     @State private var navigationPath = NavigationPath()
+    @State private var betaCue = false
+    @State private var buildInfo = false
     @StateObject private var skillService = SkillInventoryService()
     @StateObject private var skillState = SkillInventoryViewState()
 
@@ -79,7 +82,6 @@ struct ModernRootView: View {
         } detail: {
           NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
-                contextualNavigation
                 TimelineView(.periodic(from: .now, by: 5)) { context in
                     if selection != .macRecheck,
                        let freeSpace = model.liveState.currentFreeSpace(at: context.date),
@@ -96,6 +98,7 @@ struct ModernRootView: View {
                 ModernDetailView(
                     destination: selection,
                     storageSection: $storageSection,
+                    healthResourceFocus: $healthResourceFocus,
                     skillService: skillService,
                     skillState: skillState,
                     onOpenStorage: openStorage,
@@ -104,6 +107,22 @@ struct ModernRootView: View {
             }
             .navigationTitle(selection.title)
             .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    if selection.topLevel == .work {
+                        Menu {
+                            Button(L10n.text("프로젝트·대화")) { navigate(to: .work) }
+                            Button(L10n.text("AI 스킬")) { navigate(to: .skills) }
+                        } label: { Label(L10n.text("개발 작업"), systemImage: "square.grid.2x2") }
+                    } else if selection != selection.topLevel && selection != .start {
+                        Button { navigate(to: selection.topLevel) } label: {
+                            Label(L10n.text("Mac 상태로 돌아가기"), systemImage: "chevron.left")
+                        }
+                    }
+                }
+                ToolbarItem(placement: .automatic) {
+                    Button { buildInfo = true } label: { Label(L10n.text("빌드 정보"), systemImage: "info.circle") }
+                        .help(L10n.text("실행 중인 앱의 빌드 정보"))
+                }
                 if [.status, .security].contains(selection) {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
@@ -122,6 +141,8 @@ struct ModernRootView: View {
         }
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         .onOpenURL(perform: openURL)
+        .sheet(isPresented: $betaCue) { BetaCueView() }
+        .sheet(isPresented: $buildInfo) { ModoreBuildInfo() }
         .onChange(of: monitor.showHealth) { value in
             if value { navigate(to: .health); monitor.showHealth = false }
         }
@@ -138,34 +159,9 @@ struct ModernRootView: View {
         }
     }
 
-    @ViewBuilder
-    private var contextualNavigation: some View {
-        if selection.topLevel == .work {
-            Picker(L10n.text("개발 작업"), selection: Binding(get: { selection }, set: { navigate(to: $0) })) {
-                Text(L10n.text("프로젝트·대화")).tag(AppDestination.work)
-                Text(L10n.text("AI 스킬")).tag(AppDestination.skills)
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 360)
-            .padding(12)
-            Divider()
-        } else if selection != selection.topLevel && selection != .start {
-            HStack {
-                Button { navigate(to: selection.topLevel) } label: {
-                    Label(L10n.text("Mac 상태로 돌아가기"), systemImage: "chevron.left")
-                }
-                .buttonStyle(.plain)
-                Spacer()
-                Text(selection.title).font(.callout.weight(.semibold))
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            Divider()
-        }
-    }
-
     private func navigate(to destination: AppDestination) {
         navigationPath = NavigationPath()
+        healthResourceFocus = nil
         selection = destination == .start ? .health : destination
     }
 
@@ -185,15 +181,29 @@ struct ModernRootView: View {
 
     private func apply(_ route: ModoreRoute) {
         switch route {
+        case .betaCue:
+            navigate(to: .work)
+            betaCue = true
         case .ci:
             navigate(to: .work)
             ci.showIncidents = true
         case .quotaTask(let id):
+            quotaWork.requestedSession = nil
             quotaWork.requestedTaskID = id
+            quotaWork.message = nil
+            navigate(to: .work)
+        case .session(let link):
+            quotaWork.requestedTaskID = nil
+            quotaWork.requestedSession = link
             quotaWork.message = nil
             navigate(to: .work)
         case .health:
             navigate(to: .health)
+        case .healthResources(let focus):
+            navigate(to: .health)
+            healthResourceFocus = focus
+        case .storageRecoveryResult:
+            openStorage(.result)
         case .storageRecovery:
             openStorage(.goal)
             if route.shouldStartStorageScan(
@@ -474,6 +484,7 @@ private struct SidebarScanStatus: View {
 struct ModernDetailView: View {
     let destination: AppDestination
     @Binding var storageSection: StorageWorkspaceSection
+    @Binding var healthResourceFocus: HealthResourceFocus?
     @ObservedObject var skillService: SkillInventoryService
     @ObservedObject var skillState: SkillInventoryViewState
     let onOpenStorage: (StorageWorkspaceSection) -> Void
@@ -485,6 +496,7 @@ struct ModernDetailView: View {
             AppDiagnosticPage()
         case .health, .start:
             HealthContextView(
+                resourceFocus: $healthResourceFocus,
                 openRecovery: { onOpenStorage(.goal) },
                 openWork: { onNavigate(.work) },
                 openStorageOverview: { onOpenStorage(.overview) },

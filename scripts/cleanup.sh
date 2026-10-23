@@ -479,7 +479,7 @@ project_has_git_marker() {
 # checkouts/repositories. Existing worktrees and project files remain in place.
 swift_build_output_candidates() {
     local root build output
-    for root in "$HOME_ROOT/Documents" "$HOME_ROOT/IdeaProjects" "$HOME_ROOT/.codex/worktrees"; do
+    for root in "$HOME_ROOT/Documents" "$HOME_ROOT/IdeaProjects" "$HOME_ROOT/Developer" "$HOME_ROOT/.codex/worktrees"; do
         [[ -d "$root" && ! -L "$root" ]] || continue
         while IFS= read -r -d '' build; do
             owned_regular_file "${build%/.build}/Package.swift" || continue
@@ -669,6 +669,21 @@ exec(compile(source,"generated_cache.py","exec"),{"__name__":"__main__"})' \
     }
 }
 
+project_swift_checkouts_clean() {
+    local target="$1" repo status count=0 checkouts="$1/checkouts"
+    [[ -e "$checkouts" || -L "$checkouts" ]] || return 0
+    [[ -d "$checkouts" && ! -L "$checkouts" ]] || return 1
+    for repo in "$checkouts"/* "$checkouts"/.[!.]* "$checkouts"/..?*; do
+        [[ -e "$repo" || -L "$repo" ]] || continue
+        count=$((count + 1))
+        [[ "$count" -le 256 && -d "$repo" && ! -L "$repo" ]] || return 1
+        # Do not mistake an enclosing project's Git status for the dependency.
+        [[ -e "$repo/.git" && ! -L "$repo/.git" ]] || return 1
+        status="$(safe_git -C "$repo" status --porcelain --untracked-files=all 2>/dev/null)" || return 1
+        [[ -z "$status" ]] || return 1
+    done
+}
+
 validate_project_residue_contract() {
     local target="$1" parent canonical_parent basename owner marker marker_path found=""
     [[ "$target" == "$PROJECT_RESIDUE_TARGET" && -d "$target" && ! -L "$target" ]] || return 1
@@ -706,6 +721,10 @@ validate_project_residue_contract() {
     done < <(project_residue_candidate_names)
     [[ -n "$found" ]] || return 1
     PROJECT_RESIDUE_PRIMARY_MARKER="$found"
+    if [[ "$basename" == ".build" ]] && ! project_swift_checkouts_clean "$target"; then
+        PROJECT_GENERATED_ERROR="Swift 의존성 체크아웃에 수정본이 있거나 상태를 확인하지 못했습니다. 컴파일 산출물만 별도로 정리하세요."
+        return 1
+    fi
     project_git_state "$parent" "$target"
 }
 
@@ -1620,7 +1639,7 @@ allowed_target() {
     case "$recipe" in
         swift_build_outputs)
             case "$target" in
-                "$HOME_ROOT/Documents/"*|"$HOME_ROOT/IdeaProjects/"*|"$HOME_ROOT/.codex/worktrees/"*) ;;
+                "$HOME_ROOT/Documents/"*|"$HOME_ROOT/IdeaProjects/"*|"$HOME_ROOT/Developer/"*|"$HOME_ROOT/.codex/worktrees/"*) ;;
                 *) return 1 ;;
             esac
             [[ "$target" == */.build/arm64-apple-macosx || "$target" == */.build/x86_64-apple-macosx ]]

@@ -4,6 +4,7 @@ enum StorageWorkspaceSection: String, CaseIterable, Identifiable {
     case overview
     case cleanup
     case goal
+    case result
     case development
     case applications
     case simulators
@@ -15,6 +16,7 @@ enum StorageWorkspaceSection: String, CaseIterable, Identifiable {
         case .overview: return L10n.text("사용 현황")
         case .cleanup: return L10n.text("정리 후보")
         case .goal: return L10n.text("공간 확보")
+        case .result: return L10n.text("자동 정리 결과")
         case .development: return L10n.text("개발")
         case .applications: return L10n.text("앱")
         case .simulators: return L10n.text("시뮬레이터")
@@ -24,6 +26,7 @@ enum StorageWorkspaceSection: String, CaseIterable, Identifiable {
 
 struct StorageWorkspacePage: View {
     @EnvironmentObject private var model: ScanModel
+    @EnvironmentObject private var recovery: AutomaticCacheRecovery
     @Binding var section: StorageWorkspaceSection
     @State private var reviewPath: String?
     @State private var retirementOpen = false
@@ -48,6 +51,24 @@ struct StorageWorkspacePage: View {
                 }.fixedSize()
             }.padding(.horizontal, 20).padding(.vertical, 10)
             Divider()
+            if section == .result {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let report = recovery.last {
+                        let notice = ResourceNotice.automaticRecovery(report)
+                        Text(notice.title).font(.title2.bold())
+                        Text(L10n.format("기록 시각 %@ · 현재 공간은 상단 상태에서 확인하세요.", report.date.formatted(date: .abbreviated, time: .shortened)))
+                            .font(.caption).foregroundStyle(.secondary)
+                        DisclosureGroup(L10n.text("자동 정리 처리 내역")) { AutomaticRecoveryDetails(report: report) }
+                    } else {
+                        Text(L10n.text("자동 정리 기록을 찾지 못했습니다. 현재 정리 후보를 확인하세요."))
+                    }
+                    Button(L10n.text("남은 정리 후보 확인")) {
+                        section = .goal
+                        if model.storage == nil { model.prepareStorageReview() }
+                    }.buttonStyle(.borderedProminent).disabled(model.isBusy)
+                }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                Divider()
+            }
             if section == .overview {
                 FullStorageBalanceView(onReviewCleanup: { path in reviewPath = path; section = .goal })
             } else if let storage = model.storage {

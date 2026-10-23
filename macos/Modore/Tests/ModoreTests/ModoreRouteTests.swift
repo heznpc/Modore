@@ -27,6 +27,11 @@ final class ModoreRouteTests: XCTestCase {
             "modore://user@storage/recovery",
             "modore://storage:443/recovery",
             "modore://storage/%72ecovery",
+            "modore://health/memory?terminate=true",
+            "modore://health/cpu#kill",
+            "modore://health/%6demory",
+            "modore://user@health/memory",
+            "modore://storage/result?execute=true",
         ]
 
         for value in unsupported {

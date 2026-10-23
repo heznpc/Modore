@@ -141,10 +141,36 @@ enum StorageWatchService {
         }
         return StorageWatchStatus(
             enabled: enabled,
-            detail: detail,
+            detail: enabled ? detail + " · " + coverageDetail() : detail,
             freeSpaceSamples: samples,
             healthState: health
         )
+    }
+
+    /// A successful free-space sample does not imply that directory attribution
+    /// succeeded. Read only the small committed status file, never rescan trees
+    /// or load weeks of path history just to render the monitor status.
+    static func coverageDetail(
+        stateURL: URL = StorageWatchEvidenceCommitStore.stateURL,
+        now: Date = Date()
+    ) -> String {
+        let unknown = L10n.text("폴더별 원인 추적 기록 미확인")
+        guard let parent = FilesystemIdentity.directory(at: stateURL.deletingLastPathComponent()),
+              let data = try? SecureLocalFileIO.boundedRead(from: stateURL, maximumBytes: 4096,
+                  requireCurrentOwner: true, expectedParentIdentity: parent),
+              let text = String(data: data, encoding: .utf8) else { return unknown }
+        let values = protocolValues(text)
+        guard let timestamp = values["lastPathEvidenceAt"] ?? values["lastEvidenceAt"],
+              let captured = try? Date.ISO8601FormatStyle().parse(timestamp),
+              now.timeIntervalSince(captured) >= -StorageHistoryStore.futureTimestampTolerance else { return unknown }
+        guard now.timeIntervalSince(captured) <= 86400 else {
+            return L10n.text("폴더별 원인 추적 기록이 오래됨")
+        }
+        switch values["snapshotCompleteness"] {
+        case "complete": return L10n.text("감시 대상 경로 측정 완료")
+        case "partial": return L10n.text("폴더별 원인 추적 일부 미완료 · 경로별 접근 권한·측정 상태 확인 필요")
+        default: return unknown
+        }
     }
 
     static var heartbeatURL: URL {

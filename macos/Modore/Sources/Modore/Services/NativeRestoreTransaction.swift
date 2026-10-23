@@ -56,10 +56,10 @@ final class NativeRestoreTransaction {
         let fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw NativeSessionBackup.failure("restore directory is missing, changed or a link") }; return fd
     }
-    private static func ledgerName(_ leaf: String) -> String {
+    static func ledgerName(_ leaf: String) -> String {
         ".modore-native-restore-v1-" + NativeFileTree.hash(NativeSessionBackup.pathKey(leaf))
     }
-    static func recover(parent: URL, name: String) throws -> Int {
+    static func recover(parent: URL, name: String, dryRun: Bool = false) throws -> Int {
         let parentFD = try NativeFileTree.directory(parent); defer { close(parentFD) }
         let guardName = ledgerName(name)
         var named = stat()
@@ -70,9 +70,13 @@ final class NativeRestoreTransaction {
         guard named.st_uid == geteuid(), named.st_mode & 0o077 == 0 else { throw NativeSessionBackup.failure("restore ledger is not private") }
         let lockFD = openat(guardFD, ".lock", O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard lockFD >= 0 else { throw NativeSessionBackup.failure("restore recovery requires manual review: no private lock") }; defer { close(lockFD) }
+        let lockInfo = try info(lockFD)
+        guard lockInfo.st_mode & S_IFMT == S_IFREG, lockInfo.st_uid == geteuid(), lockInfo.st_nlink == 1, lockInfo.st_mode & 0o077 == 0 else { throw NativeSessionBackup.failure("restore lock identity is unsafe") }
         guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { throw NativeSessionBackup.failure("another restore of this destination is active") }
         let journalFD = openat(guardFD, "journal.jsonl", O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard journalFD >= 0 else { throw NativeSessionBackup.failure("restore recovery requires manual review: no journal") }; defer { close(journalFD) }
+        let journalInfo = try info(journalFD)
+        guard journalInfo.st_uid == geteuid(), journalInfo.st_nlink == 1, journalInfo.st_mode & 0o077 == 0 else { throw NativeSessionBackup.failure("restore journal is not private") }
         let data = try NativeFileTree.read(journalFD, limit: 16 * 1024 * 1024)
         let lines = data.split(separator: 10)
         let events = try lines.map { try JSONDecoder().decode(Event.self, from: Data($0)) }
@@ -83,12 +87,21 @@ final class NativeRestoreTransaction {
         guard nodes.count <= NativeSessionBackup.maximumFiles + NativeSessionBackup.maximumDirectories,
               nodes.filter({ $0.kind == "directory" }).count <= NativeSessionBackup.maximumDirectories,
               Set(nodes.map(\.path)).count == nodes.count else { throw NativeSessionBackup.failure("invalid restore recovery journal") }
+        guard events.filter({ $0.type == "header" }).count == 1,
+              events.allSatisfy({ ["header", "node", "prepared", "published"].contains($0.type) }),
+              nodes.allSatisfy({ ["directory", "file", "symlink"].contains($0.kind) }) else { throw NativeSessionBackup.failure("unsupported restore journal event") }
         for node in nodes { _ = try NativeSessionBackup.relative(node.path) }
+        let guardNames = nodes.filter { $0.kind != "directory" }.compactMap(\.guardName)
+        guard Set(guardNames).count == guardNames.count, guardNames.count == nodes.filter({ $0.kind != "directory" }).count else { throw NativeSessionBackup.failure("invalid restore inode guard set") }
+        let allowedNames = Set(guardNames + [".lock", "journal.jsonl", ".restore-root"])
+        guard Set(try NativeFileTree.names(guardFD)).isSubset(of: allowedNames) else { throw NativeSessionBackup.failure("restore ledger contains unrecorded data") }
         let stageFD = openat(guardFD, ".restore-root", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if stageFD < 0 {
             guard events.contains(where: { $0.type == "prepared" }),
                   fstatat(parentFD, name, &named, AT_SYMLINK_NOFOLLOW) == 0, rootNode.matches(named) else { throw NativeSessionBackup.failure("restore recovery root changed; manual review required") }
             // A fully published root is user data. Recovery releases only guard links.
+            try releaseGuardLinks(guardFD: guardFD, nodes: nodes, dryRun: true)
+            if dryRun { return 1 }
             try releaseGuardLinks(guardFD: guardFD, nodes: nodes)
         } else {
             defer { close(stageFD) }
@@ -117,6 +130,16 @@ final class NativeRestoreTransaction {
                 guard fstatat(guardFD, guardName, &guarded, AT_SYMLINK_NOFOLLOW) == 0, node.matches(guarded),
                       fstatat(parent, parts.last!, &current, AT_SYMLINK_NOFOLLOW) == 0, node.matches(current),
                       guarded.st_nlink == 2, current.st_nlink == 2 else { throw NativeSessionBackup.failure("restore recovery file changed; manual review required") }
+            }
+            if dryRun { return 1 }
+            for node in nodes.reversed() where node.kind != "directory" {
+                let parts = try NativeSessionBackup.relative(node.path), key = parts.dropLast().joined(separator: "/")
+                guard let parent = opened[key], let guardName = node.guardName,
+                      guardName.range(of: "^owned-[0-9]+$", options: .regularExpression) != nil else { throw NativeSessionBackup.failure("invalid restore inode guard") }
+                var guarded = stat(), current = stat()
+                guard fstatat(guardFD, guardName, &guarded, AT_SYMLINK_NOFOLLOW) == 0, node.matches(guarded),
+                      fstatat(parent, parts.last!, &current, AT_SYMLINK_NOFOLLOW) == 0, node.matches(current),
+                      guarded.st_nlink == 2, current.st_nlink == 2 else { throw NativeSessionBackup.failure("restore recovery file changed; manual review required") }
                 guard unlinkat(parent, parts.last!, 0) == 0, unlinkat(guardFD, guardName, 0) == 0 else { throw NativeSessionBackup.failure("restore recovery could not remove its own file") }
             }
             for node in nodes.reversed() where node.kind == "directory" {
@@ -133,13 +156,13 @@ final class NativeRestoreTransaction {
         _ = fsync(parentFD)
         return 1
     }
-    private static func releaseGuardLinks(guardFD: Int32, nodes: [Node]) throws {
+    private static func releaseGuardLinks(guardFD: Int32, nodes: [Node], dryRun: Bool = false) throws {
         for node in nodes where node.kind != "directory" {
             guard let name = node.guardName, name.range(of: "^owned-[0-9]+$", options: .regularExpression) != nil else { throw NativeSessionBackup.failure("invalid restore guard name") }
             var current = stat()
             let status = fstatat(guardFD, name, &current, AT_SYMLINK_NOFOLLOW)
             if status != 0, errno == ENOENT { continue }
-            guard status == 0, node.matches(current), unlinkat(guardFD, name, 0) == 0 else { throw NativeSessionBackup.failure("restore inode guard changed") }
+            guard status == 0, node.matches(current), dryRun || unlinkat(guardFD, name, 0) == 0 else { throw NativeSessionBackup.failure("restore inode guard changed") }
         }
     }
     init(parent: URL, name: String) throws {

@@ -676,7 +676,10 @@ def test_storage_watch_retains_simulator_facts_despite_stalled_root(
         "PCH_WATCH_PRIVATE_TMP_ROOT": str(private_tmp),
         "PCH_TEST_WATCH_DU_BIN": str(fake_du),
         "PCH_WATCH_SNAPSHOT_TOTAL_SECONDS": "15",
-        "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "1",
+        # Bash SECONDS has one-second resolution. A one-second budget can
+        # expire at the next tick before even a healthy child starts on a
+        # busy host, which would test spawn timing instead of fair retries.
+        "PCH_WATCH_SNAPSHOT_ITEM_SECONDS": "2",
         "PCH_WATCH_SNAPSHOT_DEVICE_SECONDS": "5",
         "PCH_WATCH_SNAPSHOT_EVENT_LIMIT": "2",
     }
@@ -696,6 +699,7 @@ def test_storage_watch_retains_simulator_facts_despite_stalled_root(
     assert first_event
     assert first_state["previousEvidenceAt"] == ""
 
+    first_call_count = len(du_log.read_text(encoding="utf-8").splitlines())
     device_payload.write_bytes(b"d" * (6 * 1024 * 1024))
     env["PCH_TEST_FREE_KB"] = str(30 * 1024 * 1024)
     second = subprocess.run(
@@ -721,12 +725,18 @@ def test_storage_watch_retains_simulator_facts_despite_stalled_root(
     assert len(device_rows) == 2
     assert all(row[2] == "ok" for row in device_rows)
     assert int(device_rows[1][1]) > int(device_rows[0][1]) > 0
-    # The slow root receives a longer retry on the second capture. Healthy
-    # roots deferred by that retry must resume on the next capture, rather
-    # than being represented as freshly measured or permanently starved.
+    # The deadline is wall-clock based: healthy roots may still fit before
+    # the slow retry. Verify actual invocation rather than requiring every
+    # healthy root to miss its budget. Unvisited roots must remain deferred.
+    second_calls = du_log.read_text(encoding="utf-8").splitlines()[first_call_count:]
     for row in latest:
         if row[3] in labels[:-1]:
-            assert row[2] == "deferred"
+            assert row[2] in {"ok", "deferred"}
+            if row[2] == "ok":
+                assert str(roots[row[3]]) in second_calls
+            else:
+                assert str(roots[row[3]]) not in second_calls
+                assert row[1] == "0"
     env["PCH_TEST_FREE_KB"] = str(20 * 1024 * 1024)
     third = subprocess.run(
         [str(script)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=30
@@ -1584,7 +1594,7 @@ def _stub_binary(tmp_path, name, *, exit_code=0, acknowledge=False):
 
 
 def _run_watch_with_stubbed_notifiers(
-    project_root, env, tmp_path, *, open_exit=0, open_ack=False, osascript_exit=0
+    project_root, env, tmp_path, *, open_exit=0, open_ack=False, osascript_exit=0, args=()
 ):
     """Runs storage_watch.sh with notification binaries stubbed out and reports
     which were invoked without touching the real Notification Center. The
@@ -1600,9 +1610,41 @@ def _run_watch_with_stubbed_notifiers(
         "PCH_TEST_WATCH_NOTIFICATION_TICKS": "10",
     }
     script = project_root / "scripts" / "storage_watch.sh"
-    result = subprocess.run([str(script)], capture_output=True, text=True, encoding="utf-8", env=env)
+    result = subprocess.run([str(script), *args], capture_output=True, text=True, encoding="utf-8", env=env)
     calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     return result, "open" in calls, "osascript" in calls
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS signed recovery app")
+def test_observation_measures_low_space_without_launching_or_delaying_scheduled_recovery(project_root, tmp_path):
+    state = tmp_path / "state"
+    roots = tmp_path / "roots"
+    (roots / "cache").mkdir(parents=True)
+    bundle = _signed_app_bundle(tmp_path)
+    env = {**os.environ, "PCH_TEST_MODE": "1", "PCH_STATE_DIR": str(state),
+           "PCH_TEST_FREE_KB": str(19 * 1024 * 1024), "PCH_WATCH_NOTIFY": "1",
+           "PCH_WATCH_SNAPSHOT_ROOT": str(roots),
+           "PCH_STORAGE_WATCH_APP_BUNDLE": str(bundle),
+           "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256": _app_executable_hash(bundle)}
+    result, opened, _ = _run_watch_with_stubbed_notifiers(
+        project_root, env, tmp_path, open_ack=True, args=("--observe-only",))
+    assert result.returncode == 0, result.stderr
+    assert not opened
+    values = parse_protocol((state / "storage-watch.tsv").read_text())
+    assert values["freeKB"] == str(19 * 1024 * 1024)
+    assert values["recoveryLaunchResult"] == "observation-only"
+    assert values["lastRecoveryCheck"] == "0"
+    assert values["lastNotify"] == "0"
+    assert (state / "storage-samples.tsv").is_file()
+
+    # No AI hook is involved in either invocation. Observing must not consume
+    # the schedule's launch/notification cooldown or switch off maintenance.
+    result, opened, _ = _run_watch_with_stubbed_notifiers(project_root, env, tmp_path, open_ack=True)
+    assert result.returncode == 0, result.stderr
+    assert opened
+    values = parse_protocol((state / "storage-watch.tsv").read_text())
+    assert values["recoveryLaunchResult"] == "launched"
+    assert int(values["lastRecoveryCheck"]) > 0
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS watcher wrapper")
@@ -2492,7 +2534,8 @@ def test_timeout_gets_first_budget_when_attempt_timestamps_tie(project_root, tmp
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="signed app fixture")
-def test_recovery_launch_is_independent_of_notifications_and_rate_limited(project_root, tmp_path):
+@pytest.mark.parametrize("free_gib", [11, 32])
+def test_recovery_launch_is_independent_of_notifications_and_rate_limited(project_root, tmp_path, free_gib):
     state = tmp_path / "state"
     roots = tmp_path / "roots"
     roots.mkdir()
@@ -2502,7 +2545,7 @@ def test_recovery_launch_is_independent_of_notifications_and_rate_limited(projec
     stub.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "' + str(log) + '"\n')
     stub.chmod(0o755)
     env = {**os.environ, "PCH_TEST_MODE": "1", "PCH_STATE_DIR": str(state),
-           "PCH_TEST_FREE_KB": str(11 * 1024 * 1024), "PCH_WATCH_NOTIFY": "0",
+           "PCH_TEST_FREE_KB": str(free_gib * 1024 * 1024), "PCH_WATCH_NOTIFY": "0",
            "PCH_WATCH_SNAPSHOT_ROOT": str(roots), "PCH_TEST_OPEN_BIN": str(stub),
            "PCH_STORAGE_WATCH_APP_BUNDLE": str(bundle),
            "PCH_STORAGE_WATCH_APP_EXECUTABLE_SHA256": _app_executable_hash(bundle)}

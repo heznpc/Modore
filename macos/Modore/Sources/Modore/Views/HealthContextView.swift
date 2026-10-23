@@ -6,6 +6,7 @@ private struct HealthWorkbenchRoute: Identifiable { let id:String }
 struct HealthContextView: View {
     @EnvironmentObject private var monitor: CPUWatchService
     @EnvironmentObject private var model: ScanModel
+    @Binding var resourceFocus: HealthResourceFocus?
     let openRecovery: () -> Void
     let openWork: () -> Void
     let openStorageOverview: () -> Void
@@ -18,31 +19,10 @@ struct HealthContextView: View {
     @State private var environmentRoute: HealthWorkbenchRoute?
     @State private var appRecovery = false
     @State private var showHistory = false
-    @State private var showProcesses = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(L10n.text("Mac 상태")).font(.largeTitle.bold())
-                        Text(L10n.text("상태를 확인하고 필요한 조치의 결과를 이어서 확인하세요."))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Menu(L10n.text("추가 점검")) {
-                        Button(L10n.text("Mac 재점검"), action: openRecheck)
-                        Button(L10n.text("권한·자동 실행 점검"), action: openSecurity)
-                        Button(L10n.text("기기·개발 환경 관리")) { environmentRoute = HealthWorkbenchRoute(id: "space") }
-                        Divider()
-                        Button(L10n.text("관찰 기록")) { showHistory = true }
-                        Button(copied ? L10n.text("복사됨") : L10n.text("상황 설명 복사")) { copyContext() }
-                            .disabled(monitor.snapshot == nil)
-                        Button(L10n.text("조치 전 상태 기록")) { monitor.markAction(L10n.text("사용자가 조치 전 상태 기록")) }
-                            .disabled(!hasCurrentSnapshot)
-                        Button(L10n.text("활동 모니터")) { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
-                    }
-                }
                 if let error = monitor.journalError {
                     Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.orange)
                 }
@@ -55,28 +35,65 @@ struct HealthContextView: View {
                     results: openActivity
                 )
             }
-            .padding(24)
-            .frame(maxWidth: 1100, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(28)
+            .frame(maxWidth: 940, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showHistory = true } label: { Label(L10n.text("관찰 기록"), systemImage: "clock.arrow.circlepath") }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button(L10n.text("Mac 재점검"), action: openRecheck)
+                    Button(L10n.text("권한·자동 실행 점검"), action: openSecurity)
+                    Button(L10n.text("기기·개발 환경 관리")) { environmentRoute = HealthWorkbenchRoute(id: "space") }
+                    Divider()
+                    Button(copied ? L10n.text("복사됨") : L10n.text("상황 설명 복사")) { copyContext() }.disabled(monitor.snapshot == nil)
+                    Button(L10n.text("조치 전 상태 기록")) { monitor.markAction(L10n.text("사용자가 조치 전 상태 기록")) }.disabled(!hasCurrentSnapshot)
+                    Button(L10n.text("활동 모니터")) { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
+                } label: { Label(L10n.text("추가 점검"), systemImage: "ellipsis.circle") }
+            }
         }
         .navigationDestination(isPresented:Binding(get:{environmentRoute != nil},set:{if !$0 {environmentRoute=nil}})) { EnvironmentRetirementView(initialTab:environmentRoute?.id ?? "space") }
-        .navigationDestination(isPresented:$showProcesses) {
+        .navigationDestination(isPresented: Binding(
+            get: { resourceFocus != nil }, set: { if !$0 { resourceFocus = nil } }
+        )) {
             ScrollView {
                 VStack(alignment:.leading,spacing:20) {
                     HStack {
-                        Text(L10n.text("실행 작업")).font(.largeTitle.bold())
+                        Text((resourceFocus ?? .memory).title).font(.largeTitle.bold())
                         Spacer()
-                        Button(L10n.text("앱 재시작 검토")) { appRecovery = true }
+                    }
+                    if resourceFocus == .memory {
+                        MemoryDiagnosisView()
+                    } else {
+                    Text(L10n.text(resourceFocus == .cpu
+                        ? "필요 없는 빌드·테스트는 실행한 앱에서 중단하세요. 계속 높은 앱은 작업을 저장한 뒤 재시작을 검토하세요."
+                        : "사용하지 않는 앱·탭을 닫으세요. 계속 메모리를 많이 쓰는 앱은 작업을 저장한 뒤 재시작을 검토하세요."))
+                    HStack {
+                        Button(L10n.text("앱 선택·재시작 검토")) { appRecovery = true }
+                            .buttonStyle(.borderedProminent)
+                        Button(L10n.text("활동 모니터 열기")) { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
                         Button(L10n.text("서버·가상머신 관리")) { environmentRoute = HealthWorkbenchRoute(id: "finish") }
                     }
+                    Text(L10n.text("순위는 원인 확정이 아닙니다. 시스템 프로세스는 강제 종료 대상으로 권하지 않습니다."))
+                        .font(.caption).foregroundStyle(.secondary)
                     if let snapshot = monitor.snapshot {
+                        Text(hasCurrentSnapshot
+                             ? snapshot.summary
+                             : L10n.text("마지막 관찰 · 현재 상태 미확인"))
+                            .font(.headline)
                         Text(L10n.format("관찰 시각 %@", snapshot.date.formatted())).font(.callout).foregroundStyle(.secondary)
                         processSection(snapshot)
+                    } else {
+                        Text(L10n.text("새 관찰이 도착하면 사용량을 표시합니다."))
                     }
-                    if let peak = monitor.journal.incidents.compactMap(\.cpuPeak).first {
+                    if resourceFocus == .cpu, let peak = monitor.journal.incidents.compactMap(\.cpuPeak).first {
                         DisclosureGroup(L10n.text("최근 부하 당시 · ") + peak.date.formatted()) {
                             processSection(peak)
                         }
+                    }
                     }
                 }.padding(24)
             }
@@ -86,8 +103,8 @@ struct HealthContextView: View {
         .task {
             await monitor.refreshNotificationStatus()
         }
-        .onChange(of: showProcesses) { visible in
-            if visible && model.sessionIndex == nil && !model.sessionIndexLoading { model.refreshSessionIndex() }
+        .onChange(of: resourceFocus) { focus in
+            if focus != nil && model.sessionIndex == nil && !model.sessionIndexLoading { model.refreshSessionIndex() }
         }
     }
 
@@ -112,11 +129,30 @@ struct HealthContextView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 if current {
+                    HStack(spacing: 16) {
+                        Image(systemName: snapshot.issues.isEmpty ? (snapshot.complete ? "checkmark.circle" : "questionmark.circle") : "exclamationmark.circle")
+                            .font(.system(size: 30, weight: .light))
+                            .foregroundStyle(snapshot.issues.isEmpty ? Color.secondary : .orange).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(snapshot.issues.isEmpty ? (snapshot.complete ? L10n.text("관찰 범위에서 현재 경고 기준 아래입니다.") : L10n.text("일부 관찰값이 없어 정상 여부를 확정하지 못했습니다.")) : snapshot.issues.map(L10n.text).joined(separator: " · "))
+                                .font(.title2.weight(.semibold))
+                            if !snapshot.issues.isEmpty {
+                                Text(snapshot.explanation(from: monitor.journal.incidents.first?.first)).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 12)
+                        if !snapshot.issues.isEmpty {
+                            Button(L10n.text("확인")) {
+                                if snapshot.storagePressure?.needsRecovery == true { openRecovery() }
+                                else { resourceFocus = (snapshot.memoryPressure ?? 0) >= 2 ? .memory : .cpu }
+                            }.modoreGlassButton().controlSize(.large)
+                        }
+                    }.padding(.vertical, 18)
                     HealthDashboardTiles(
                         snapshot: snapshot,
                         storage: openStorageOverview,
-                        memory: { showProcesses = true },
-                        cpu: { showProcesses = true }
+                        memory: { resourceFocus = .memory },
+                        cpu: { resourceFocus = .cpu }
                     )
                 } else {
                     Text(L10n.text("새 관찰이 도착하면 현재 상태를 표시합니다. 이전 기록은 관찰 기록에서 확인할 수 있습니다."))
@@ -139,10 +175,10 @@ struct HealthContextView: View {
             HStack {
                 Text(L10n.text("관찰 당시 자원을 쓰는 작업")).font(.title3.bold())
                 Spacer()
-                Text(L10n.text("CPU·메모리 상위 작업")).font(.caption).foregroundStyle(.secondary)
+                Text(L10n.text(resourceFocus == .cpu ? "CPU 사용량 순" : "메모리 사용량 순")).font(.caption).foregroundStyle(.secondary)
             }
             LazyVGrid(columns:[GridItem(.flexible()),GridItem(.flexible())],spacing:12) {
-                ForEach(snapshot.processes) { process in
+                ForEach((resourceFocus ?? .memory).sorted(snapshot.processes)) { process in
                     VStack(alignment:.leading,spacing:12) {
                         HStack(spacing:12) {
                             Image(systemName:process.name.contains("VirtualMachine") ? "server.rack" : "app").font(.title2).foregroundStyle(.teal)
@@ -153,6 +189,11 @@ struct HealthContextView: View {
                             Label(processCPUText(process, snapshot: snapshot), systemImage: "cpu")
                             Label(processMemoryText(process), systemImage: "memorychip")
                         }.font(.callout.weight(.medium)).monospacedDigit()
+                        if let app = NSRunningApplication(processIdentifier: process.pid), app.activationPolicy == .regular {
+                            Button(L10n.text("앱 앞으로 가져오기")) {
+                                if !app.isTerminated { _ = app.activate(options: [.activateIgnoringOtherApps]) }
+                            }.buttonStyle(.bordered)
+                        }
                         if let workspace=process.workspace {
                             HStack {
                                 Label(URL(fileURLWithPath:workspace).lastPathComponent,systemImage:"folder").lineLimit(1).help(workspace)

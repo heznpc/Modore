@@ -18,6 +18,7 @@ extension NativeSessionBackup {
     }
     static func liveRoots(home: URL) -> [URL] {
         [home.appendingPathComponent(".claude"), home.appendingPathComponent(".codex"),
+         home.appendingPathComponent(quotaPieProfilesPrefix),
          home.appendingPathComponent("Library/Application Support/Claude/local-agent-mode-sessions")]
     }
     static func pathKey(_ path: String) -> String {

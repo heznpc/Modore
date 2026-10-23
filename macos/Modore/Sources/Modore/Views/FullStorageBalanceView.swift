@@ -2,7 +2,7 @@ import SwiftUI
 
 struct DiskBalance: Decodable, Sendable {
     struct Volume: Decodable, Sendable { let name: String; let bytes: Int64 }
-    struct Directory: Decodable, Sendable { let name, path: String; let bytes: Int64?; let complete: Bool; var directory: Bool?; var classification: String?; var evidence: String?; var cleanupReview: Bool? }
+    struct Directory: Decodable, Sendable, Identifiable { var id: String { path }; let name, path: String; let bytes: Int64?; let complete: Bool; var directory: Bool?; var classification: String?; var evidence: String?; var cleanupReview: Bool? }
     struct AccessIssue: Decodable, Sendable { let path, reason: String }
     struct Change: Decodable, Sendable { let path: String; let bytes, previousBytes, deltaBytes: Int64; let previousAt: Double }
     struct UAFMetadata: Decodable, Sendable {
@@ -49,67 +49,123 @@ struct FullStorageBalanceView: View {
     @State private var findingsQuery = ""
     @State private var appDuplicates = false
     @State private var workbench = false
-    private let colors:[Color] = [.teal,.indigo,.orange,.purple,.blue,.mint,.gray]
+    @State private var selectedPath: String?
+    @State private var showingInspector = false
+    @State private var showingEvidence = false
+    private let colors: [Color] = [.blue, .blue.opacity(0.65), .secondary.opacity(0.5), .secondary.opacity(0.3)]
+    private var selectedDirectory: DiskBalance.Directory? { entries.first { $0.path == selectedPath } }
     private var entries:[DiskBalance.Directory] { (folder?.entries ?? balance?.directories ?? []).filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }.sorted { ($0.bytes ?? -1) > ($1.bytes ?? -1) } }
     var body: some View {
-        ScrollView {
-            VStack(alignment:.leading,spacing:24) {
-                HStack {
-                    VStack(alignment:.leading,spacing:6) {
-                        Text(L10n.text("공간 지도")).font(.system(size:32,weight:.bold))
-                        if let balance { Text(L10n.text("전체 측정 ") + Date(timeIntervalSince1970:balance.observedAt).formatted()).font(.caption).foregroundStyle(.secondary) }
-                    }
-                    Spacer()
-                    Button(balance == nil ? L10n.text("전체 측정 시작") : L10n.text("전체 다시 측정")) { folder=nil;measure() }.disabled(model.isBusy)
-                }
-                if let balance { volumeMap(balance) }
-                else if !busy {
+        VStack(spacing: 0) {
+            if let balance {
+                volumeMap(balance).padding(22)
+            } else if !busy {
+                VStack(alignment: .leading, spacing: 12) {
                     Text(L10n.text("저장된 공간 지도가 없습니다. 전체 측정을 시작하면 폴더별 사용량을 확인합니다."))
                         .foregroundStyle(.secondary)
+                    Button(L10n.text("전체 측정 시작")) { measure() }.modoreGlassButton(prominent: true).disabled(model.isBusy)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
+            }
+            HStack(spacing: 10) {
+                Button { folder = nil; query = ""; selectedPath = nil } label: {
+                    Label(L10n.text("내부 디스크"), systemImage: "internaldrive")
+                }.buttonStyle(.plain).disabled(model.isBusy)
+                if let folder {
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    Text(URL(fileURLWithPath: folder.path).lastPathComponent).lineLimit(1)
+                    Button(L10n.text("상위 폴더")) { browse(URL(fileURLWithPath: folder.path).deletingLastPathComponent().path) }.disabled(model.isBusy)
                 }
-                if folder == nil, let balance {
-                    DisclosureGroup(L10n.text("측정 근거")) { investigationSummary(balance) }
-                }
-                HStack(spacing:16) {
-                    HealthActionTile(title:L10n.text("앱 중복 찾기"),subtitle:L10n.text("설치 복사본 · 남은 등록"),icon:"square.on.square") { appDuplicates=true }
-                    HealthActionTile(title:L10n.text("개발 환경 정리"),subtitle:L10n.text("시뮬레이터 · 서버 · SSD"),icon:"square.stack.3d.up") { workbench=true }
-                }
-                HStack {
-                    Button { folder=nil;query="" } label: { Label(L10n.text("내부 디스크"),systemImage:"internaldrive") }.buttonStyle(.plain).disabled(model.isBusy)
-                    if let folder { Image(systemName:"chevron.right"); Text(URL(fileURLWithPath:folder.path).lastPathComponent).fontWeight(.semibold); Button(L10n.text("상위 폴더")) { browse(URL(fileURLWithPath:folder.path).deletingLastPathComponent().path) }.disabled(model.isBusy) }
-                    Spacer()
-                    TextField(L10n.text("이름으로 찾기"),text:$query).textFieldStyle(.roundedBorder).frame(width:180)
-                }
-                if busy {
-                    HStack {
-                        ProgressView(L10n.text("용량 측정 중"))
-                        Spacer()
-                        Button(L10n.text("측정 중지")) { model.cancelStorageScreenTasks() }
-                    }
-                }
-                LazyVGrid(columns:[GridItem(.adaptive(minimum:220),spacing:14)],spacing:14) {
-                    ForEach(Array(entries.enumerated()),id:\.element.path) { index,item in
-                        VStack(alignment:.leading) {
-                            directoryTile(item,index:index)
-                            if item.cleanupReview == true, let onReviewCleanup {
-                                Button(L10n.text("정리 후보에서 검토"), action:{ onReviewCleanup(item.path) })
+                Spacer()
+                TextField(L10n.text("이름으로 찾기"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 180)
+            }.padding(.horizontal, 22).padding(.bottom, 16)
+            if busy {
+                HStack { ProgressView().controlSize(.small); Text(L10n.text("용량 측정 중")); Spacer(); Button(L10n.text("측정 중지")) { model.cancelStorageScreenTasks() } }
+                    .padding(.horizontal, 22).padding(.bottom, 12)
+            }
+            Table(entries, selection: $selectedPath) {
+                TableColumn(L10n.text("항목")) { item in
+                    HStack(spacing: 10) {
+                        Image(systemName: item.directory == false ? "doc" : "folder").foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.name).fontWeight(.medium).lineLimit(1)
+                            if let classification = item.classification {
+                                Text(L10n.message(classification)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
-                        }
-                    }
-                }
-                Text(L10n.text("폴더 크기 = 파일 할당량 · 최소 = 일부 접근 제한 · 미측정 ≠ 0 · APFS 공유 블록 때문에 위 물리 용량과 합계가 다를 수 있습니다.")).font(.caption).foregroundStyle(.secondary)
-                if !error.isEmpty { Label(L10n.message(error),systemImage:"exclamationmark.circle").foregroundStyle(.orange) }
-            }.padding(26)
+                        }.padding(.vertical, 9)
+                    }.help(item.path)
+                }.width(min: 130, ideal: 260)
+                TableColumn(L10n.text("크기")) { item in
+                    Text(item.bytes.map(size) ?? L10n.text("미측정")).monospacedDigit()
+                }.width(min: 75, ideal: 95, max: 115)
+                TableColumn(L10n.text("측정 상태")) { item in
+                    Text(item.bytes == nil ? L10n.text("미측정") : item.complete ? L10n.text("측정 완료") : L10n.text("최소 · 일부 접근 제한"))
+                        .font(.caption).foregroundStyle(.secondary)
+                }.width(min: 135, ideal: 150, max: 180)
+            }
+            if !error.isEmpty { Label(L10n.message(error), systemImage: "exclamationmark.circle").foregroundStyle(.orange).padding(12) }
+            Text(L10n.text("폴더 크기 = 파일 할당량 · 최소 = 일부 접근 제한 · 미측정 ≠ 0 · APFS 공유 블록 때문에 위 물리 용량과 합계가 다를 수 있습니다."))
+                .font(.caption).foregroundStyle(.secondary).padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .modoreStaticScrollEdges()
+        .modoreInspector(isPresented: $showingInspector) { directoryInspector }
+        .onChange(of: selectedPath) { value in showingInspector = value != nil }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { folder = nil; selectedPath = nil; measure() } label: {
+                    Label(balance == nil ? L10n.text("전체 측정 시작") : L10n.text("전체 다시 측정"), systemImage: "arrow.clockwise")
+                }.disabled(model.isBusy)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button(L10n.text("근거 상세")) { showingInspector.toggle() }.disabled(selectedDirectory == nil)
+                    Button(L10n.text("측정 근거")) { showingEvidence = true }.disabled(balance == nil)
+                    Button(L10n.text("앱 중복 찾기")) { appDuplicates = true }
+                    Button(L10n.text("개발 환경 정리")) { workbench = true }
+                } label: { Label(L10n.text("도구"), systemImage: "ellipsis.circle") }
+            }
+        }
+        .sheet(isPresented: $showingEvidence) {
+            VStack(alignment: .trailing) {
+                Button(L10n.text("닫기")) { showingEvidence = false }
+                ScrollView { if let balance { investigationSummary(balance).padding(8) } }
+            }.padding(24).frame(width: 730, height: 600)
         }
         .task {
-            // Opening a tab reads a bounded cache only; traversal is an explicit action.
             let cached = await Task.detached(priority: .utility) { DiskBalance.latest() }.value
             guard !Task.isCancelled else { return }
             balance = cached
         }
         .onDisappear { model.cancelStorageScreenTasks() }
-            .navigationDestination(isPresented:$appDuplicates) { EnvironmentRetirementView(initialTab:"apps") }
-            .navigationDestination(isPresented:$workbench) { EnvironmentRetirementView() }
+        .navigationDestination(isPresented: $appDuplicates) { EnvironmentRetirementView(initialTab: "apps") }
+        .navigationDestination(isPresented: $workbench) { EnvironmentRetirementView() }
+    }
+
+    @ViewBuilder private var directoryInspector: some View {
+        if let item = selectedDirectory {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack {
+                        Image(systemName: item.directory == false ? "doc" : "folder").font(.largeTitle).foregroundStyle(.secondary)
+                        Spacer()
+                        Button { showingInspector = false } label: { Label(L10n.text("닫기"), systemImage: "xmark") }
+                            .labelStyle(.iconOnly).modoreGlassButton()
+                    }
+                    Text(item.name).font(.title3.weight(.semibold))
+                    Text(item.bytes.map { (item.complete ? "" : L10n.text("최소 ")) + size($0) } ?? L10n.text("미측정")).font(.title2).monospacedDigit()
+                    Divider()
+                    Text(item.path).font(.caption.monospaced()).textSelection(.enabled)
+                    if let classification = item.classification { Text(L10n.message(classification)).fontWeight(.medium) }
+                    if let evidence = item.evidence { Text(L10n.message(evidence)).foregroundStyle(.secondary) }
+                    if item.directory != false {
+                        Button(L10n.text("하위 내용 확인")) { browse(item.path) }.disabled(model.isBusy)
+                    }
+                    Button(L10n.text("Finder에서 보기")) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)]) }
+                    if item.cleanupReview == true, let onReviewCleanup {
+                        Button(L10n.text("정리 후보에서 검토")) { onReviewCleanup(item.path) }.modoreGlassButton(prominent: true)
+                    }
+                }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else { Text(L10n.text("항목을 선택하세요")).foregroundStyle(.secondary).padding(24) }
     }
     private func investigationSummary(_ b: DiskBalance) -> some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -178,8 +234,8 @@ struct FullStorageBalanceView: View {
     private func volumeMap(_ b:DiskBalance)->some View {
         VStack(alignment:.leading,spacing:18) {
             HStack(alignment:.firstTextBaseline) {
-                Text(size(b.freeBytes)).font(.system(size:36,weight:.bold,design:.rounded))
-                Text(L10n.text("여유")).foregroundStyle(.secondary)
+                Text(size(b.freeBytes)).font(.system(size:28,weight:.semibold)).monospacedDigit()
+                Text(L10n.text("측정 당시 여유")).foregroundStyle(.secondary)
                 Spacer(); Text(L10n.text("전체 ") + size(b.totalBytes)).foregroundStyle(.secondary)
             }
             GeometryReader { geo in
@@ -189,43 +245,22 @@ struct FullStorageBalanceView: View {
                     }
                     Rectangle().fill(Color.secondary.opacity(0.12))
                 }.clipShape(RoundedRectangle(cornerRadius:10))
-            }.frame(height:42)
+            }.frame(height:12)
             LazyVGrid(columns:[GridItem(.adaptive(minimum:150),alignment:.leading)],alignment:.leading,spacing:12) {
                 ForEach(Array(b.volumes.enumerated()),id:\.offset) { i,v in
-                    HStack(spacing:8) { RoundedRectangle(cornerRadius:3).fill(colors[i % colors.count]).frame(width:10,height:24); VStack(alignment:.leading,spacing:3) { Text(L10n.text(v.name)).font(.caption); Text(size(v.bytes)).font(.callout.weight(.semibold)) } }
+                    HStack(spacing:8) { RoundedRectangle(cornerRadius:3).fill(colors[i % colors.count]).frame(width:7,height:7); VStack(alignment:.leading,spacing:3) { Text(L10n.text(v.name)).font(.caption); Text(size(v.bytes)).font(.callout.weight(.semibold)) } }
                 }
             }
-        }.padding(22).background(Color.teal.opacity(0.045),in:RoundedRectangle(cornerRadius:20))
-    }
-    private func directoryTile(_ item:DiskBalance.Directory,index:Int)->some View {
-        let color=colors[index % colors.count]
-        let maxBytes=max(entries.compactMap(\.bytes).max() ?? 1,1)
-        return Button {
-            if item.directory == false { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath:item.path)]) }
-            else { browse(item.path) }
-        } label: {
-            VStack(alignment:.leading,spacing:14) {
-                HStack { Image(systemName:item.directory == false ? "doc" : "folder.fill").font(.system(size:30)).foregroundStyle(color); Spacer(); Image(systemName:"arrow.up.right").foregroundStyle(.secondary) }
-                Text(item.name).font(.headline).lineLimit(1)
-                Text(item.bytes.map { (item.complete ? "" : L10n.text("최소 ")) + size($0) } ?? L10n.text("미측정")).font(.system(size:23,weight:.semibold,design:.rounded))
-                if let classification = item.classification {
-                    Text(L10n.text(classification)).font(.caption.weight(.semibold))
-                    Text(L10n.text(item.evidence ?? "")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-                }
-                if let n=item.bytes { ProgressView(value:Double(n),total:Double(maxBytes)).tint(color) }
-                else { Label(L10n.text("접근·측정 확인 필요"),systemImage:"questionmark.circle").font(.caption).foregroundStyle(.orange) }
-            }.padding(18).frame(maxWidth:.infinity,alignment:.leading).background(color.opacity(0.06),in:RoundedRectangle(cornerRadius:16)).contentShape(Rectangle())
-        }.buttonStyle(.plain).disabled(model.isBusy).help(item.path)
-            .contextMenu {
-                if item.cleanupReview == true, let onReviewCleanup {
-                    Button(L10n.text("정리 후보에서 검토"), action:{ onReviewCleanup(item.path) })
-                }
-                Button(L10n.text("Finder에서 보기")) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath:item.path)]) }; Text(item.path) }
+                    Text(L10n.text("전체 측정 ") + Date(timeIntervalSince1970: b.observedAt).formatted())
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
     private func browse(_ path: String) {
         runMeasurement(["action": "directory", "path": path]) { data in
             folder = try JSONDecoder().decode(DirectoryBalance.self, from: data)
             query = ""
+            selectedPath = nil
+            showingInspector = false
         }
     }
 

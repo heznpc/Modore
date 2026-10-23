@@ -116,7 +116,7 @@ struct HealthSnapshot: Codable, Equatable, Sendable {
                     compressedBytes: statisticsOK && pageSizeOK && !compressed.overflow ? compressed.partialValue : nil,
                     cpuCoverage: sample.coverage(measuredCount: usage.count), power: power, connectivity: connectivity)
     }
-    private static func workspace(pid: Int32) -> String? {
+    static func workspace(pid: Int32) -> String? {
         var info = proc_vnodepathinfo()
         let size = Int32(MemoryLayout.size(ofValue: info))
         guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return nil }
